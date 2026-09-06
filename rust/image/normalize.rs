@@ -1,5 +1,5 @@
 use crate::errors::value_err;
-use crate::sample::{DecodedSample, ImageDType, ImageLayout, ImageSample};
+use crate::sample::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
 use pyo3::prelude::*;
 
 #[derive(Clone)]
@@ -37,13 +37,12 @@ impl NormalizeConfig {
             )));
         }
 
-        let values = match sample.dtype {
-            ImageDType::U8 => sample
-                .image
+        let values = match sample.image {
+            ImageBuffer::U8(values) => values
                 .iter()
                 .map(|value| f32::from(*value) / 255.0)
                 .collect::<Vec<_>>(),
-            ImageDType::F32 => bytes_to_f32(&sample.image)?,
+            ImageBuffer::F32(values) => values,
         };
         let normalized = match sample.layout {
             ImageLayout::Hwc => normalize_hwc(&values, &self.mean, &self.std, channel_count),
@@ -58,12 +57,11 @@ impl NormalizeConfig {
         };
 
         Ok(ImageSample::Decoded(DecodedSample {
-            image: f32_to_bytes(&normalized),
+            image: ImageBuffer::F32(normalized),
             width: sample.width,
             height: sample.height,
             channels: sample.channels,
             label: sample.label,
-            dtype: ImageDType::F32,
             layout: sample.layout,
         }))
     }
@@ -102,25 +100,34 @@ fn normalize_chw(
         .collect()
 }
 
-fn bytes_to_f32(bytes: &[u8]) -> PyResult<Vec<f32>> {
-    if bytes.len() % 4 != 0 {
-        return Err(value_err(
-            "float32 image buffer length must be divisible by 4",
-        ));
+#[cfg(test)]
+mod tests {
+    use super::NormalizeConfig;
+    use crate::sample::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
+
+    #[test]
+    fn normalize_u8_to_f32() {
+        let sample = ImageSample::Decoded(DecodedSample {
+            image: ImageBuffer::U8(vec![0, 255, 128]),
+            width: 1,
+            height: 1,
+            channels: 3,
+            label: 0,
+            layout: ImageLayout::Hwc,
+        });
+        let out = NormalizeConfig::new(vec![0.5], vec![0.5])
+            .unwrap()
+            .apply(sample)
+            .unwrap()
+            .into_decoded()
+            .unwrap();
+
+        match out.image {
+            ImageBuffer::F32(values) => {
+                assert_eq!(values[0], -1.0);
+                assert_eq!(values[1], 1.0);
+            }
+            ImageBuffer::U8(_) => panic!("expected f32 output"),
+        }
     }
-
-    Ok(bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-        .collect())
-}
-
-fn f32_to_bytes(values: &[f32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(values.len() * 4);
-
-    for value in values {
-        bytes.extend_from_slice(&value.to_ne_bytes());
-    }
-
-    bytes
 }

@@ -9,6 +9,7 @@ use crate::image::normalize::NormalizeConfig;
 use crate::image::resize::ResizeConfig;
 use crate::sample::ImageLayout;
 use crate::sample::{DecodedSample, EncodedImageSample, ImageSample};
+use crate::sampler::SamplerPlan;
 use pyo3::prelude::*;
 use std::sync::Arc;
 
@@ -38,14 +39,13 @@ pub(crate) enum IndexOp {
 }
 
 impl IndexOp {
-    pub(crate) fn apply(&self, indices: &mut Vec<usize>) {
+    pub(crate) fn apply_range(&self, start: &mut usize, end: &mut usize) {
         match self {
             Self::Skip { count } => {
-                let drain_end = (*count).min(indices.len());
-                indices.drain(..drain_end);
+                *start = (*start + *count).min(*end);
             }
             Self::Take { count } => {
-                indices.truncate(*count);
+                *end = (*start + *count).min(*end);
             }
         }
     }
@@ -71,6 +71,7 @@ impl SampleOp {
         ctx: &mut SampleContext,
     ) -> PyResult<ImageSample> {
         let _sample_index = ctx.sample_index;
+        let _sample_seed = ctx.sample_seed();
 
         match self {
             Self::DecodeImage(op) => op.apply(sample),
@@ -104,33 +105,35 @@ impl BatchConfig {
 
 pub(crate) struct SampleContext {
     pub(crate) sample_index: usize,
+    pub(crate) epoch: u64,
+    pub(crate) global_seed: u64,
 }
 
 impl SampleContext {
     pub(crate) fn new(sample_index: usize) -> Self {
-        Self { sample_index }
+        Self {
+            sample_index,
+            epoch: 0,
+            global_seed: 0,
+        }
+    }
+
+    pub(crate) fn sample_seed(&self) -> u64 {
+        let mut seed = self.global_seed ^ 0x9E37_79B9_7F4A_7C15;
+        seed = mix_seed(seed ^ self.epoch);
+        mix_seed(seed ^ self.sample_index as u64)
     }
 }
 
 #[derive(Clone)]
 pub(crate) struct ExecutionPlan {
     pub(crate) source: SourceOp,
-    pub(crate) index_ops: Vec<IndexOp>,
+    pub(crate) sampler: SamplerPlan,
     pub(crate) sample_ops: Vec<SampleOp>,
     pub(crate) batch: BatchConfig,
 }
 
 impl ExecutionPlan {
-    pub(crate) fn indices(&self, len: usize) -> Vec<usize> {
-        let mut indices = (0..len).collect::<Vec<_>>();
-
-        for op in &self.index_ops {
-            op.apply(&mut indices);
-        }
-
-        indices
-    }
-
     pub(crate) fn apply_sample_ops(
         &self,
         sample: EncodedImageSample,
@@ -145,6 +148,23 @@ impl ExecutionPlan {
 
         sample.into_decoded()
     }
+}
+
+pub(crate) fn compile_sampler(len: usize, index_ops: &[IndexOp]) -> SamplerPlan {
+    let mut start = 0usize;
+    let mut end = len;
+
+    for op in index_ops {
+        op.apply_range(&mut start, &mut end);
+    }
+
+    SamplerPlan::Sequential { start, end }
+}
+
+fn mix_seed(mut value: u64) -> u64 {
+    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^ (value >> 31)
 }
 
 impl SampleOp {

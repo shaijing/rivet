@@ -25,6 +25,14 @@ def _normalize_arrow_files(arrow_files: Iterable[str | Path]) -> list[str]:
     return [str(Path(path)) for path in arrow_files]
 
 
+def _validate_hf_dataset(dataset: Any) -> None:
+    if getattr(dataset, "_indices", None) is not None:
+        raise ValueError(
+            "Rivet currently requires a contiguous Hugging Face Dataset; "
+            "call dataset.flatten_indices() first."
+        )
+
+
 def _maybe_numpy_batch(batch: dict[str, Any], as_numpy: bool) -> dict[str, Any]:
     if as_numpy:
         return batch
@@ -65,6 +73,7 @@ class ArrowDataset:
         label_column: str = "label",
     ) -> "ArrowDataset":
         """Build an ArrowDataset from a loaded Hugging Face dataset split."""
+        _validate_hf_dataset(dataset)
         return cls(
             hf_arrow_files(dataset),
             image_column=image_column,
@@ -166,6 +175,7 @@ def scan_hf(
     image_column: str = "img",
     label_column: str = "label",
 ) -> Pipeline:
+    _validate_hf_dataset(dataset)
     return ArrowDataset.from_huggingface(
         dataset,
         image_column=image_column,
@@ -203,6 +213,7 @@ class DataLoader:
 
 def hf_arrow_files(dataset: Any) -> list[str]:
     """Return local Hugging Face Arrow cache files for a loaded dataset split."""
+    _validate_hf_dataset(dataset)
     files: list[str] = []
 
     for cache_file in getattr(dataset, "cache_files", []):

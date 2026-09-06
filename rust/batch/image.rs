@@ -1,22 +1,71 @@
 use crate::errors::value_err;
-use crate::sample::{DecodedSample, ImageBatch, ImageDType, ImageLayout};
+use crate::sample::{DecodedSample, ImageBatch, ImageBuffer, ImageDType, ImageLayout};
 use pyo3::prelude::*;
 
+enum ImageBatchBufferBuilder {
+    Empty,
+    U8(Vec<u8>),
+    F32(Vec<f32>),
+}
+
+impl ImageBatchBufferBuilder {
+    fn dtype(&self) -> Option<ImageDType> {
+        match self {
+            Self::Empty => None,
+            Self::U8(_) => Some(ImageDType::U8),
+            Self::F32(_) => Some(ImageDType::F32),
+        }
+    }
+
+    fn push(&mut self, image: ImageBuffer) -> PyResult<()> {
+        match (std::mem::replace(self, Self::Empty), image) {
+            (Self::Empty, ImageBuffer::U8(values)) => {
+                *self = Self::U8(values);
+                Ok(())
+            }
+            (Self::Empty, ImageBuffer::F32(values)) => {
+                *self = Self::F32(values);
+                Ok(())
+            }
+            (Self::U8(mut buffer), ImageBuffer::U8(values)) => {
+                buffer.extend(values);
+                *self = Self::U8(buffer);
+                Ok(())
+            }
+            (Self::F32(mut buffer), ImageBuffer::F32(values)) => {
+                buffer.extend(values);
+                *self = Self::F32(buffer);
+                Ok(())
+            }
+            (current, _) => {
+                *self = current;
+                Err(value_err("all images in a batch must have the same dtype"))
+            }
+        }
+    }
+
+    fn finish(self) -> ImageBuffer {
+        match self {
+            Self::Empty => ImageBuffer::U8(Vec::new()),
+            Self::U8(values) => ImageBuffer::U8(values),
+            Self::F32(values) => ImageBuffer::F32(values),
+        }
+    }
+}
+
 pub(crate) struct ImageBatchBuilder {
-    images: Vec<u8>,
+    images: ImageBatchBufferBuilder,
     labels: Vec<i64>,
     expected_shape: Option<(u32, u32, u8)>,
-    dtype: Option<ImageDType>,
     layout: Option<ImageLayout>,
 }
 
 impl ImageBatchBuilder {
     pub(crate) fn with_capacity(batch_size: usize) -> Self {
         Self {
-            images: Vec::new(),
+            images: ImageBatchBufferBuilder::Empty,
             labels: Vec::with_capacity(batch_size),
             expected_shape: None,
-            dtype: None,
             layout: None,
         }
     }
@@ -35,12 +84,10 @@ impl ImageBatchBuilder {
             self.expected_shape = Some(shape);
         }
 
-        if let Some(dtype) = self.dtype {
-            if dtype != sample.dtype {
+        if let Some(dtype) = self.images.dtype() {
+            if dtype != sample.image.dtype() {
                 return Err(value_err("all images in a batch must have the same dtype"));
             }
-        } else {
-            self.dtype = Some(sample.dtype);
         }
 
         if let Some(layout) = self.layout {
@@ -51,7 +98,7 @@ impl ImageBatchBuilder {
             self.layout = Some(sample.layout);
         }
 
-        self.images.extend_from_slice(&sample.image);
+        self.images.push(sample.image)?;
         self.labels.push(sample.label);
         Ok(())
     }
@@ -59,7 +106,7 @@ impl ImageBatchBuilder {
     pub(crate) fn finish(self) -> ImageBatch {
         let batch_len = self.labels.len();
         let (height, width, channels) = self.expected_shape.unwrap_or((0, 0, 3));
-        let dtype = self.dtype.unwrap_or(ImageDType::U8);
+        let images = self.images.finish();
         let layout = self.layout.unwrap_or(ImageLayout::Hwc);
         let shape = match layout {
             ImageLayout::Hwc => (
@@ -77,11 +124,43 @@ impl ImageBatchBuilder {
         };
 
         ImageBatch {
-            images: self.images,
+            images,
             labels: self.labels,
             shape,
-            dtype,
             layout,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ImageBatchBuilder;
+    use crate::sample::{DecodedSample, ImageBuffer, ImageLayout};
+
+    fn sample(values: Vec<f32>) -> DecodedSample {
+        DecodedSample {
+            image: ImageBuffer::F32(values),
+            width: 1,
+            height: 1,
+            channels: 1,
+            label: 7,
+            layout: ImageLayout::Hwc,
+        }
+    }
+
+    #[test]
+    fn batch_builder_preserves_f32_buffer() {
+        let mut builder = ImageBatchBuilder::with_capacity(2);
+
+        builder.push(sample(vec![1.0])).unwrap();
+        builder.push(sample(vec![2.0])).unwrap();
+        let batch = builder.finish();
+
+        assert_eq!(batch.shape, (2, 1, 1, 1));
+        assert_eq!(batch.images.dtype().as_str(), "float32");
+        match batch.images {
+            ImageBuffer::F32(values) => assert_eq!(values, vec![1.0, 2.0]),
+            ImageBuffer::U8(_) => panic!("expected f32 batch"),
         }
     }
 }

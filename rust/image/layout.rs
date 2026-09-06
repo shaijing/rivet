@@ -1,5 +1,5 @@
 use crate::errors::value_err;
-use crate::sample::{DecodedSample, ImageLayout, ImageSample};
+use crate::sample::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
 use pyo3::prelude::*;
 
 #[derive(Clone, Copy)]
@@ -26,61 +26,149 @@ impl LayoutConfig {
 }
 
 fn convert_hwc_to_chw(sample: DecodedSample) -> PyResult<DecodedSample> {
-    let bytes_per_value = sample.dtype.bytes_per_value();
-    let width = sample.width as usize;
-    let height = sample.height as usize;
-    let channels = sample.channels as usize;
-    let expected = width * height * channels * bytes_per_value;
+    let DecodedSample {
+        image,
+        width,
+        height,
+        channels,
+        label,
+        layout: _,
+    } = sample;
 
-    if sample.image.len() != expected {
-        return Err(value_err("image buffer length does not match HWC shape"));
-    }
+    let out = match image {
+        ImageBuffer::U8(values) => ImageBuffer::U8(convert_hwc_values_to_chw(
+            values,
+            width as usize,
+            height as usize,
+            channels as usize,
+        )?),
+        ImageBuffer::F32(values) => ImageBuffer::F32(convert_hwc_values_to_chw(
+            values,
+            width as usize,
+            height as usize,
+            channels as usize,
+        )?),
+    };
 
-    let mut out = vec![0u8; sample.image.len()];
-
-    for h in 0..height {
-        for w in 0..width {
-            for c in 0..channels {
-                let src = ((h * width + w) * channels + c) * bytes_per_value;
-                let dst = (c * height * width + h * width + w) * bytes_per_value;
-                out[dst..dst + bytes_per_value]
-                    .copy_from_slice(&sample.image[src..src + bytes_per_value]);
-            }
-        }
-    }
-
-    Ok(with_layout(sample, out, ImageLayout::Chw))
+    Ok(DecodedSample {
+        image: out,
+        width,
+        height,
+        channels,
+        label,
+        layout: ImageLayout::Chw,
+    })
 }
 
 fn convert_chw_to_hwc(sample: DecodedSample) -> PyResult<DecodedSample> {
-    let bytes_per_value = sample.dtype.bytes_per_value();
-    let width = sample.width as usize;
-    let height = sample.height as usize;
-    let channels = sample.channels as usize;
-    let expected = width * height * channels * bytes_per_value;
+    let DecodedSample {
+        image,
+        width,
+        height,
+        channels,
+        label,
+        layout: _,
+    } = sample;
 
-    if sample.image.len() != expected {
-        return Err(value_err("image buffer length does not match CHW shape"));
+    let out = match image {
+        ImageBuffer::U8(values) => ImageBuffer::U8(convert_chw_values_to_hwc(
+            values,
+            width as usize,
+            height as usize,
+            channels as usize,
+        )?),
+        ImageBuffer::F32(values) => ImageBuffer::F32(convert_chw_values_to_hwc(
+            values,
+            width as usize,
+            height as usize,
+            channels as usize,
+        )?),
+    };
+
+    Ok(DecodedSample {
+        image: out,
+        width,
+        height,
+        channels,
+        label,
+        layout: ImageLayout::Hwc,
+    })
+}
+
+fn convert_hwc_values_to_chw<T: Copy>(
+    values: Vec<T>,
+    width: usize,
+    height: usize,
+    channels: usize,
+) -> PyResult<Vec<T>> {
+    let expected = width * height * channels;
+
+    if values.len() != expected {
+        return Err(value_err("image buffer length does not match HWC shape"));
     }
 
-    let mut out = vec![0u8; sample.image.len()];
-
+    let mut out = Vec::with_capacity(values.len());
     for c in 0..channels {
         for h in 0..height {
             for w in 0..width {
-                let src = (c * height * width + h * width + w) * bytes_per_value;
-                let dst = ((h * width + w) * channels + c) * bytes_per_value;
-                out[dst..dst + bytes_per_value]
-                    .copy_from_slice(&sample.image[src..src + bytes_per_value]);
+                out.push(values[(h * width + w) * channels + c]);
             }
         }
     }
 
-    Ok(with_layout(sample, out, ImageLayout::Hwc))
+    Ok(out)
 }
 
-fn with_layout(mut sample: DecodedSample, image: Vec<u8>, layout: ImageLayout) -> DecodedSample {
-    sample.image = image;
-    sample.layout = layout;
-    sample
+fn convert_chw_values_to_hwc<T: Copy>(
+    values: Vec<T>,
+    width: usize,
+    height: usize,
+    channels: usize,
+) -> PyResult<Vec<T>> {
+    let expected = width * height * channels;
+
+    if values.len() != expected {
+        return Err(value_err("image buffer length does not match CHW shape"));
+    }
+
+    let mut out = Vec::with_capacity(values.len());
+    for h in 0..height {
+        for w in 0..width {
+            for c in 0..channels {
+                out.push(values[c * height * width + h * width + w]);
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LayoutConfig;
+    use crate::sample::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
+
+    #[test]
+    fn converts_hwc_to_chw() {
+        let sample = ImageSample::Decoded(DecodedSample {
+            image: ImageBuffer::U8(vec![1, 2, 3, 4, 5, 6]),
+            width: 2,
+            height: 1,
+            channels: 3,
+            label: 0,
+            layout: ImageLayout::Hwc,
+        });
+        let out = LayoutConfig {
+            layout: ImageLayout::Chw,
+        }
+        .apply(sample)
+        .unwrap()
+        .into_decoded()
+        .unwrap();
+
+        match out.image {
+            ImageBuffer::U8(values) => assert_eq!(values, vec![1, 4, 2, 5, 3, 6]),
+            ImageBuffer::F32(_) => panic!("expected u8 output"),
+        }
+    }
 }

@@ -8,15 +8,15 @@ use pyo3::prelude::*;
 use std::fs::File;
 use std::path::PathBuf;
 
-#[derive(Clone, Copy)]
-struct RowLocation {
-    batch_index: usize,
-    row: usize,
+struct BatchMeta {
+    row_start: usize,
+    row_count: usize,
 }
 
 pub(crate) struct ArrowImageDatasetCore {
     batches: Vec<RecordBatch>,
-    row_locations: Vec<RowLocation>,
+    batch_meta: Vec<BatchMeta>,
+    len: usize,
     image_column: String,
     label_column: String,
 }
@@ -32,7 +32,8 @@ impl ArrowImageDatasetCore {
         }
 
         let mut batches = Vec::new();
-        let mut row_locations = Vec::new();
+        let mut batch_meta = Vec::new();
+        let mut len = 0usize;
 
         for path in arrow_files {
             let file = File::open(&path).map_err(io_err)?;
@@ -42,19 +43,41 @@ impl ArrowImageDatasetCore {
                 let batch = batch.map_err(runtime_err)?;
                 validate_image_batch(&batch, &image_column, &label_column)?;
 
-                let batch_index = batches.len();
-                row_locations
-                    .extend((0..batch.num_rows()).map(|row| RowLocation { batch_index, row }));
+                let row_count = batch.num_rows();
+                batch_meta.push(BatchMeta {
+                    row_start: len,
+                    row_count,
+                });
+                len += row_count;
                 batches.push(batch);
             }
         }
 
         Ok(Self {
             batches,
-            row_locations,
+            batch_meta,
+            len,
             image_column,
             label_column,
         })
+    }
+
+    fn locate_row(&self, index: usize) -> PyResult<(usize, usize)> {
+        if index >= self.len {
+            return Err(value_err(format!("index {index} is out of range")));
+        }
+
+        let batch_index = self
+            .batch_meta
+            .partition_point(|meta| meta.row_start <= index)
+            .saturating_sub(1);
+        let meta = &self.batch_meta[batch_index];
+
+        if index >= meta.row_start + meta.row_count {
+            return Err(value_err(format!("index {index} is out of range")));
+        }
+
+        Ok((batch_index, index - meta.row_start))
     }
 }
 
@@ -62,19 +85,16 @@ impl Dataset for ArrowImageDatasetCore {
     type Item = EncodedImageSample;
 
     fn len(&self) -> usize {
-        self.row_locations.len()
+        self.len
     }
 
     fn get(&self, index: usize) -> PyResult<Self::Item> {
-        let location = self
-            .row_locations
-            .get(index)
-            .ok_or_else(|| value_err(format!("index {index} is out of range")))?;
-        let batch = &self.batches[location.batch_index];
+        let (batch_index, row) = self.locate_row(index)?;
+        let batch = &self.batches[batch_index];
 
         Ok(EncodedImageSample {
-            image: image_bytes_at(batch, &self.image_column, location.row)?.to_vec(),
-            label: label_at(batch, &self.label_column, location.row)?,
+            image: image_bytes_at(batch, &self.image_column, row)?.to_vec(),
+            label: label_at(batch, &self.label_column, row)?,
         })
     }
 }

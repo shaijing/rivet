@@ -1,3 +1,3 @@
 mod sequential;
 
-pub(crate) use sequential::IndexSampler;
+pub(crate) use sequential::{IndexSampler, SamplerPlan};

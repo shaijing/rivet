@@ -45,26 +45,49 @@ impl ImageLayout {
     }
 }
 
+pub(crate) enum ImageBuffer {
+    U8(Vec<u8>),
+    F32(Vec<f32>),
+}
+
+impl ImageBuffer {
+    pub(crate) fn dtype(&self) -> ImageDType {
+        match self {
+            Self::U8(_) => ImageDType::U8,
+            Self::F32(_) => ImageDType::F32,
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::U8(values) => values.len(),
+            Self::F32(values) => values.len(),
+        }
+    }
+
+    pub(crate) fn byte_len(&self) -> usize {
+        self.len() * self.dtype().bytes_per_value()
+    }
+}
+
 pub(crate) struct EncodedImageSample {
     pub(crate) image: Vec<u8>,
     pub(crate) label: i64,
 }
 
 pub(crate) struct DecodedSample {
-    pub(crate) image: Vec<u8>,
+    pub(crate) image: ImageBuffer,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) channels: u8,
     pub(crate) label: i64,
-    pub(crate) dtype: ImageDType,
     pub(crate) layout: ImageLayout,
 }
 
 pub(crate) struct ImageBatch {
-    pub(crate) images: Vec<u8>,
+    pub(crate) images: ImageBuffer,
     pub(crate) labels: Vec<i64>,
     pub(crate) shape: (usize, usize, usize, usize),
-    pub(crate) dtype: ImageDType,
     pub(crate) layout: ImageLayout,
 }
 

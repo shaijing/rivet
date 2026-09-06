@@ -2,7 +2,9 @@ pub(crate) mod op;
 
 use crate::dataset::ArrowImageDatasetCore;
 use crate::errors::value_err;
-use crate::pipeline::op::{BatchConfig, ExecutionPlan, IndexOp, SampleOp, SourceOp};
+use crate::pipeline::op::{
+    BatchConfig, ExecutionPlan, IndexOp, SampleOp, SourceOp, compile_sampler,
+};
 use crate::runtime::ImageDataLoader;
 use crate::sampler::IndexSampler;
 use pyo3::prelude::*;
@@ -109,16 +111,16 @@ impl ImagePipeline {
             .batch
             .ok_or_else(|| value_err("pipeline requires .batch(size)"))?;
         let len = self.source.len();
+        let sampler = compile_sampler(len, &self.index_ops);
         let plan = ExecutionPlan {
             source: self.source,
-            index_ops: self.index_ops,
+            sampler,
             sample_ops: self.sample_ops,
             batch,
         };
-        let indices = plan.indices(len);
 
         Ok(ImageDataLoader {
-            sampler: IndexSampler::new(indices, start),
+            sampler: IndexSampler::new(plan.sampler.clone(), start),
             plan,
         })
     }
