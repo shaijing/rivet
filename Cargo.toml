@@ -16,3 +16,4 @@ image = "0.25.10"
 numpy = "0.29.0"
 pyo3 = "0.29.0"
 rivet-core = { path = "crates/rivet-core" }
+thiserror = "2.0.17"

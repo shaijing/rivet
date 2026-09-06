@@ -1,4 +1,4 @@
-use crate::errors::{RivetError, RivetResult, invalid_argument};
+use crate::errors::{RivetResult, invalid_argument};
 use crate::image::from_rgb_image;
 use crate::sample::{DecodedSample, ImageSample};
 
@@ -9,9 +9,7 @@ impl DecodeImageConfig {
     pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
         match sample {
             ImageSample::Encoded(sample) => {
-                let image = image::load_from_memory(&sample.image)
-                    .map_err(|err| RivetError::Decode(err.to_string()))?
-                    .to_rgb8();
+                let image = image::load_from_memory(&sample.image)?.to_rgb8();
                 Ok(ImageSample::Decoded(from_rgb_image(image, sample.label)))
             }
             ImageSample::Decoded(_) => {
@@ -22,8 +20,6 @@ impl DecodeImageConfig {
 }
 
 pub fn decode_rgb(encoded: &[u8], label: i64) -> RivetResult<DecodedSample> {
-    let image = image::load_from_memory(encoded)
-        .map_err(|err| RivetError::Decode(err.to_string()))?
-        .to_rgb8();
+    let image = image::load_from_memory(encoded)?.to_rgb8();
     Ok(from_rgb_image(image, label))
 }

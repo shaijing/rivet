@@ -63,7 +63,7 @@ impl ArrowImageDatasetCore {
 
     fn locate_row(&self, index: usize) -> RivetResult<(usize, usize)> {
         if index >= self.len {
-            return Err(RivetError::OutOfBounds {
+            return Err(RivetError::IndexOutOfRange {
                 index,
                 len: self.len,
             });
@@ -76,7 +76,7 @@ impl ArrowImageDatasetCore {
         let meta = &self.batch_meta[batch_index];
 
         if index >= meta.row_start + meta.row_count {
-            return Err(RivetError::OutOfBounds {
+            return Err(RivetError::IndexOutOfRange {
                 index,
                 len: self.len,
             });

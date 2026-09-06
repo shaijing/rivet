@@ -1,55 +1,30 @@
-use std::error::Error;
 use std::fmt;
+use thiserror::Error;
 
 pub type RivetResult<T> = Result<T, RivetError>;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum RivetError {
-    Io(std::io::Error),
-    Arrow(arrow::error::ArrowError),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Arrow error: {0}")]
+    Arrow(#[from] arrow::error::ArrowError),
+
+    #[error("image error: {0}")]
+    Image(#[from] image::ImageError),
+
+    #[error("invalid argument: {0}")]
     InvalidArgument(String),
+
+    #[error("invalid pipeline: {0}")]
     InvalidPipeline(String),
+
+    #[error("invalid shape: {0}")]
     InvalidShape(String),
-    Decode(String),
-    OutOfBounds { index: usize, len: usize },
-}
 
-impl fmt::Display for RivetError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(err) => write!(f, "{err}"),
-            Self::Arrow(err) => write!(f, "{err}"),
-            Self::InvalidArgument(message) => write!(f, "{message}"),
-            Self::InvalidPipeline(message) => write!(f, "{message}"),
-            Self::InvalidShape(message) => write!(f, "{message}"),
-            Self::Decode(message) => write!(f, "{message}"),
-            Self::OutOfBounds { index, len } => {
-                write!(f, "index {index} is out of range for length {len}")
-            }
-        }
-    }
-}
-
-impl Error for RivetError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Io(err) => Some(err),
-            Self::Arrow(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-
-impl From<std::io::Error> for RivetError {
-    fn from(err: std::io::Error) -> Self {
-        Self::Io(err)
-    }
-}
-
-impl From<arrow::error::ArrowError> for RivetError {
-    fn from(err: arrow::error::ArrowError) -> Self {
-        Self::Arrow(err)
-    }
+    #[error("index {index} is out of range for length {len}")]
+    IndexOutOfRange { index: usize, len: usize },
 }
 
 pub fn invalid_argument(message: impl fmt::Display) -> RivetError {

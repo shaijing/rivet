@@ -7,3 +7,4 @@ edition.workspace = true
 arrow.workspace = true
 arrow-ipc.workspace = true
 image.workspace = true
+thiserror.workspace = true
