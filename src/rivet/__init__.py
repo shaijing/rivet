@@ -34,7 +34,8 @@ def _maybe_numpy_batch(batch: dict[str, Any], as_numpy: bool) -> dict[str, Any]:
     except ImportError:
         batch["images"] = memoryview(batch["images"])
     else:
-        batch["images"] = np.frombuffer(batch["images"], dtype=np.uint8).reshape(
+        dtype = np.float32 if batch["dtype"] == "float32" else np.uint8
+        batch["images"] = np.frombuffer(batch["images"], dtype=dtype).reshape(
             batch["shape"]
         )
 
@@ -95,8 +96,47 @@ class Pipeline:
     def decode_image(self) -> "Pipeline":
         return Pipeline(self._inner.decode_image(), as_numpy=self.as_numpy)
 
-    def batch(self, size: int) -> "Pipeline":
-        return Pipeline(self._inner.batch(size), as_numpy=self.as_numpy)
+    def resize(self, width: int, height: int) -> "Pipeline":
+        return Pipeline(self._inner.resize(width, height), as_numpy=self.as_numpy)
+
+    def crop(self, x: int, y: int, width: int, height: int) -> "Pipeline":
+        return Pipeline(self._inner.crop(x, y, width, height), as_numpy=self.as_numpy)
+
+    def center_crop(self, width: int, height: int) -> "Pipeline":
+        return Pipeline(self._inner.center_crop(width, height), as_numpy=self.as_numpy)
+
+    def horizontal_flip(self) -> "Pipeline":
+        return Pipeline(self._inner.horizontal_flip(), as_numpy=self.as_numpy)
+
+    def vertical_flip(self) -> "Pipeline":
+        return Pipeline(self._inner.vertical_flip(), as_numpy=self.as_numpy)
+
+    def brightness(self, value: int) -> "Pipeline":
+        return Pipeline(self._inner.brightness(value), as_numpy=self.as_numpy)
+
+    def contrast(self, value: float) -> "Pipeline":
+        return Pipeline(self._inner.contrast(value), as_numpy=self.as_numpy)
+
+    def normalize(self, mean: list[float], std: list[float]) -> "Pipeline":
+        return Pipeline(self._inner.normalize(mean, std), as_numpy=self.as_numpy)
+
+    def hwc_to_chw(self) -> "Pipeline":
+        return Pipeline(self._inner.hwc_to_chw(), as_numpy=self.as_numpy)
+
+    def chw_to_hwc(self) -> "Pipeline":
+        return Pipeline(self._inner.chw_to_hwc(), as_numpy=self.as_numpy)
+
+    def skip(self, count: int) -> "Pipeline":
+        return Pipeline(self._inner.skip(count), as_numpy=self.as_numpy)
+
+    def take(self, count: int) -> "Pipeline":
+        return Pipeline(self._inner.take(count), as_numpy=self.as_numpy)
+
+    def batch(self, size: int, *, drop_last: bool = False) -> "Pipeline":
+        return Pipeline(
+            self._inner.batch(size, drop_last),
+            as_numpy=self.as_numpy,
+        )
 
     def with_numpy(self, enabled: bool = True) -> "Pipeline":
         return Pipeline(self._inner, as_numpy=enabled)

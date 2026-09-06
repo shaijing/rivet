@@ -1,5 +1,9 @@
 use pyo3::prelude::*;
 
+mod arrow;
+
+pub(crate) use arrow::ArrowImageDatasetCore;
+
 pub(crate) trait Dataset: Send + Sync {
     type Item;
 

@@ -1,13 +1,12 @@
 use pyo3::prelude::*;
 
-mod arrow_dataset;
 mod batch;
-mod dataloader;
 mod dataset;
-mod decoder;
 mod errors;
+mod image;
 mod pipeline;
 mod python;
+mod runtime;
 mod sample;
 mod sampler;
 
