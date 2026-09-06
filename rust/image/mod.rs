@@ -6,14 +6,13 @@ pub(crate) mod layout;
 pub(crate) mod normalize;
 pub(crate) mod resize;
 
-use crate::errors::value_err;
+use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::{DecodedSample, ImageBuffer, ImageDType, ImageLayout};
 use image::RgbImage;
-use pyo3::prelude::*;
 
-pub(crate) fn require_u8_hwc(sample: DecodedSample, op_name: &str) -> PyResult<DecodedSample> {
+pub(crate) fn require_u8_hwc(sample: DecodedSample, op_name: &str) -> RivetResult<DecodedSample> {
     if sample.image.dtype() != ImageDType::U8 || sample.layout != ImageLayout::Hwc {
-        return Err(value_err(format!(
+        return Err(invalid_argument(format!(
             "{op_name} requires uint8 HWC input, got {} {}",
             sample.image.dtype().as_str(),
             sample.layout.as_str()
@@ -23,14 +22,14 @@ pub(crate) fn require_u8_hwc(sample: DecodedSample, op_name: &str) -> PyResult<D
     Ok(sample)
 }
 
-pub(crate) fn into_rgb_image(sample: DecodedSample, op_name: &str) -> PyResult<(RgbImage, i64)> {
+pub(crate) fn into_rgb_image(sample: DecodedSample, op_name: &str) -> RivetResult<(RgbImage, i64)> {
     let sample = require_u8_hwc(sample, op_name)?;
     let label = sample.label;
     let ImageBuffer::U8(values) = sample.image else {
-        return Err(value_err(format!("{op_name} requires uint8 input")));
+        return Err(invalid_argument(format!("{op_name} requires uint8 input")));
     };
     let image = RgbImage::from_raw(sample.width, sample.height, values).ok_or_else(|| {
-        value_err(format!(
+        invalid_shape(format!(
             "{op_name} received invalid image buffer for shape {}x{}x{}",
             sample.width, sample.height, sample.channels
         ))

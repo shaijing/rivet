@@ -1,6 +1,6 @@
 use crate::batch::ImageBatchBuilder;
 use crate::dataset::ArrowImageDatasetCore;
-use crate::errors::value_err;
+use crate::errors::invalid_argument;
 use crate::pipeline::ImagePipeline;
 use crate::python::dataset::PyArrowDataset;
 use crate::runtime::ImageDataLoader;
@@ -52,7 +52,7 @@ pub(crate) fn read_image_batch(
     label_column: &str,
 ) -> PyResult<Py<PyDict>> {
     if arrow_files.is_empty() {
-        return Err(value_err("arrow_files must not be empty"));
+        return Err(invalid_argument("arrow_files must not be empty").into());
     }
 
     let dataset = Arc::new(ArrowImageDatasetCore::new(
@@ -72,25 +72,38 @@ pub(crate) fn read_image_batch(
 }
 
 pub(super) fn image_batch_to_py(py: Python<'_>, batch: ImageBatch) -> PyResult<Py<PyDict>> {
+    let ImageBatch {
+        images,
+        labels,
+        shape,
+        layout,
+    } = batch;
+    let dtype = images.dtype();
+    let images = image_array_to_py(py, images, shape)?;
+    let labels = PyArray1::from_vec(py, labels);
+
     let out = PyDict::new(py);
-    let _image_nbytes = batch.images.byte_len();
-    out.set_item("images", image_array_to_py(py, &batch)?)?;
-    out.set_item("labels", PyArray1::from_vec(py, batch.labels))?;
-    out.set_item("shape", batch.shape)?;
-    out.set_item("dtype", batch.images.dtype().as_str())?;
-    out.set_item("layout", batch.layout.batch_as_str())?;
+    out.set_item("images", images)?;
+    out.set_item("labels", labels)?;
+    out.set_item("shape", shape)?;
+    out.set_item("dtype", dtype.as_str())?;
+    out.set_item("layout", layout.batch_as_str())?;
 
     Ok(out.into())
 }
 
-fn image_array_to_py(py: Python<'_>, batch: &ImageBatch) -> PyResult<Py<PyAny>> {
-    match &batch.images {
-        ImageBuffer::U8(values) => Ok(PyArray1::from_vec(py, values.clone())
-            .reshape(batch.shape)?
+fn image_array_to_py(
+    py: Python<'_>,
+    images: ImageBuffer,
+    shape: (usize, usize, usize, usize),
+) -> PyResult<Py<PyAny>> {
+    match images {
+        ImageBuffer::U8(values) => Ok(PyArray1::from_vec(py, values)
+            .reshape(shape)?
             .into_any()
             .unbind()),
-        ImageBuffer::F32(values) => Ok(PyArray1::from_vec(py, values.clone())
-            .reshape(batch.shape)?
+        ImageBuffer::F32(values) => Ok(PyArray1::from_vec(py, values)
+            .reshape(shape)?
             .into_any()
             .unbind()),
     }

@@ -1,6 +1,5 @@
-use crate::errors::value_err;
+use crate::errors::{RivetResult, invalid_argument};
 use crate::sample::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
-use pyo3::prelude::*;
 
 #[derive(Clone)]
 pub(crate) struct NormalizeConfig {
@@ -9,28 +8,28 @@ pub(crate) struct NormalizeConfig {
 }
 
 impl NormalizeConfig {
-    pub(crate) fn new(mean: Vec<f32>, std: Vec<f32>) -> PyResult<Self> {
+    pub(crate) fn new(mean: Vec<f32>, std: Vec<f32>) -> RivetResult<Self> {
         if mean.is_empty() || std.is_empty() {
-            return Err(value_err("normalize mean and std must not be empty"));
+            return Err(invalid_argument("normalize mean and std must not be empty"));
         }
         if mean.len() != std.len() {
-            return Err(value_err(
+            return Err(invalid_argument(
                 "normalize mean and std must have the same length",
             ));
         }
         if std.iter().any(|value| *value == 0.0) {
-            return Err(value_err("normalize std values must be non-zero"));
+            return Err(invalid_argument("normalize std values must be non-zero"));
         }
 
         Ok(Self { mean, std })
     }
 
-    pub(crate) fn apply(&self, sample: ImageSample) -> PyResult<ImageSample> {
+    pub(crate) fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
         let channel_count = sample.channels as usize;
 
         if self.mean.len() != 1 && self.mean.len() != channel_count {
-            return Err(value_err(format!(
+            return Err(invalid_argument(format!(
                 "normalize mean/std length must be 1 or channel count {}, got {}",
                 channel_count,
                 self.mean.len()

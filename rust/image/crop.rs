@@ -1,8 +1,7 @@
-use crate::errors::value_err;
+use crate::errors::{RivetResult, invalid_shape};
 use crate::image::{from_rgb_image, into_rgb_image};
 use crate::sample::ImageSample;
 use image::imageops::crop_imm;
-use pyo3::prelude::*;
 
 #[derive(Clone, Copy)]
 pub(crate) struct CropConfig {
@@ -13,11 +12,11 @@ pub(crate) struct CropConfig {
 }
 
 impl CropConfig {
-    pub(crate) fn apply(&self, sample: ImageSample) -> PyResult<ImageSample> {
+    pub(crate) fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
 
         if self.x + self.width > sample.width || self.y + self.height > sample.height {
-            return Err(value_err(format!(
+            return Err(invalid_shape(format!(
                 "crop rectangle ({}, {}, {}, {}) exceeds image shape {}x{}",
                 self.x, self.y, self.width, self.height, sample.width, sample.height
             )));
@@ -36,11 +35,11 @@ pub(crate) struct CenterCropConfig {
 }
 
 impl CenterCropConfig {
-    pub(crate) fn apply(&self, sample: ImageSample) -> PyResult<ImageSample> {
+    pub(crate) fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
 
         if self.width > sample.width || self.height > sample.height {
-            return Err(value_err(format!(
+            return Err(invalid_shape(format!(
                 "center_crop size {}x{} exceeds image shape {}x{}",
                 self.width, self.height, sample.width, sample.height
             )));

@@ -1,5 +1,4 @@
-use crate::errors::value_err;
-use pyo3::prelude::*;
+use crate::errors::{RivetResult, invalid_argument};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ImageDType {
@@ -12,13 +11,6 @@ impl ImageDType {
         match self {
             Self::U8 => "uint8",
             Self::F32 => "float32",
-        }
-    }
-
-    pub(crate) fn bytes_per_value(self) -> usize {
-        match self {
-            Self::U8 => 1,
-            Self::F32 => 4,
         }
     }
 }
@@ -57,17 +49,6 @@ impl ImageBuffer {
             Self::F32(_) => ImageDType::F32,
         }
     }
-
-    pub(crate) fn len(&self) -> usize {
-        match self {
-            Self::U8(values) => values.len(),
-            Self::F32(values) => values.len(),
-        }
-    }
-
-    pub(crate) fn byte_len(&self) -> usize {
-        self.len() * self.dtype().bytes_per_value()
-    }
 }
 
 pub(crate) struct EncodedImageSample {
@@ -97,10 +78,10 @@ pub(crate) enum ImageSample {
 }
 
 impl ImageSample {
-    pub(crate) fn into_decoded(self) -> PyResult<DecodedSample> {
+    pub(crate) fn into_decoded(self) -> RivetResult<DecodedSample> {
         match self {
             Self::Decoded(sample) => Ok(sample),
-            Self::Encoded(_) => Err(value_err("image must be decoded before batching")),
+            Self::Encoded(_) => Err(invalid_argument("image must be decoded before batching")),
         }
     }
 }

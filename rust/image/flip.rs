@@ -1,7 +1,7 @@
+use crate::errors::RivetResult;
 use crate::image::{from_rgb_image, into_rgb_image};
 use crate::sample::ImageSample;
 use image::imageops::{flip_horizontal, flip_vertical};
-use pyo3::prelude::*;
 
 #[derive(Clone, Copy)]
 pub(crate) enum FlipDirection {
@@ -15,7 +15,7 @@ pub(crate) struct FlipConfig {
 }
 
 impl FlipConfig {
-    pub(crate) fn apply(&self, sample: ImageSample) -> PyResult<ImageSample> {
+    pub(crate) fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
         let (image, label) = into_rgb_image(sample, "flip")?;
         let flipped = match self.direction {

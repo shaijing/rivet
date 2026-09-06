@@ -1,6 +1,5 @@
-use crate::errors::value_err;
+use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::{DecodedSample, ImageBatch, ImageBuffer, ImageDType, ImageLayout};
-use pyo3::prelude::*;
 
 enum ImageBatchBufferBuilder {
     Empty,
@@ -17,7 +16,7 @@ impl ImageBatchBufferBuilder {
         }
     }
 
-    fn push(&mut self, image: ImageBuffer) -> PyResult<()> {
+    fn push(&mut self, image: ImageBuffer) -> RivetResult<()> {
         match (std::mem::replace(self, Self::Empty), image) {
             (Self::Empty, ImageBuffer::U8(values)) => {
                 *self = Self::U8(values);
@@ -39,7 +38,9 @@ impl ImageBatchBufferBuilder {
             }
             (current, _) => {
                 *self = current;
-                Err(value_err("all images in a batch must have the same dtype"))
+                Err(invalid_argument(
+                    "all images in a batch must have the same dtype",
+                ))
             }
         }
     }
@@ -70,12 +71,12 @@ impl ImageBatchBuilder {
         }
     }
 
-    pub(crate) fn push(&mut self, sample: DecodedSample) -> PyResult<()> {
+    pub(crate) fn push(&mut self, sample: DecodedSample) -> RivetResult<()> {
         let shape = (sample.height, sample.width, sample.channels);
 
         if let Some(expected) = self.expected_shape {
             if expected != shape {
-                return Err(value_err(format!(
+                return Err(invalid_shape(format!(
                     "all images in a batch must have the same shape; expected {:?}, got {:?}",
                     expected, shape
                 )));
@@ -86,13 +87,17 @@ impl ImageBatchBuilder {
 
         if let Some(dtype) = self.images.dtype() {
             if dtype != sample.image.dtype() {
-                return Err(value_err("all images in a batch must have the same dtype"));
+                return Err(invalid_argument(
+                    "all images in a batch must have the same dtype",
+                ));
             }
         }
 
         if let Some(layout) = self.layout {
             if layout != sample.layout {
-                return Err(value_err("all images in a batch must have the same layout"));
+                return Err(invalid_argument(
+                    "all images in a batch must have the same layout",
+                ));
             }
         } else {
             self.layout = Some(sample.layout);

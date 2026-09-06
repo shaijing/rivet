@@ -1,6 +1,5 @@
-use crate::errors::value_err;
+use crate::errors::{RivetResult, invalid_shape};
 use crate::sample::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
-use pyo3::prelude::*;
 
 #[derive(Clone, Copy)]
 pub(crate) struct LayoutConfig {
@@ -8,7 +7,7 @@ pub(crate) struct LayoutConfig {
 }
 
 impl LayoutConfig {
-    pub(crate) fn apply(&self, sample: ImageSample) -> PyResult<ImageSample> {
+    pub(crate) fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
 
         if sample.layout == self.layout {
@@ -25,7 +24,7 @@ impl LayoutConfig {
     }
 }
 
-fn convert_hwc_to_chw(sample: DecodedSample) -> PyResult<DecodedSample> {
+fn convert_hwc_to_chw(sample: DecodedSample) -> RivetResult<DecodedSample> {
     let DecodedSample {
         image,
         width,
@@ -60,7 +59,7 @@ fn convert_hwc_to_chw(sample: DecodedSample) -> PyResult<DecodedSample> {
     })
 }
 
-fn convert_chw_to_hwc(sample: DecodedSample) -> PyResult<DecodedSample> {
+fn convert_chw_to_hwc(sample: DecodedSample) -> RivetResult<DecodedSample> {
     let DecodedSample {
         image,
         width,
@@ -100,11 +99,13 @@ fn convert_hwc_values_to_chw<T: Copy>(
     width: usize,
     height: usize,
     channels: usize,
-) -> PyResult<Vec<T>> {
+) -> RivetResult<Vec<T>> {
     let expected = width * height * channels;
 
     if values.len() != expected {
-        return Err(value_err("image buffer length does not match HWC shape"));
+        return Err(invalid_shape(
+            "image buffer length does not match HWC shape",
+        ));
     }
 
     let mut out = Vec::with_capacity(values.len());
@@ -124,11 +125,13 @@ fn convert_chw_values_to_hwc<T: Copy>(
     width: usize,
     height: usize,
     channels: usize,
-) -> PyResult<Vec<T>> {
+) -> RivetResult<Vec<T>> {
     let expected = width * height * channels;
 
     if values.len() != expected {
-        return Err(value_err("image buffer length does not match CHW shape"));
+        return Err(invalid_shape(
+            "image buffer length does not match CHW shape",
+        ));
     }
 
     let mut out = Vec::with_capacity(values.len());

@@ -1,8 +1,8 @@
 use crate::batch::ImageBatchBuilder;
+use crate::errors::RivetResult;
 use crate::pipeline::op::ExecutionPlan;
 use crate::sample::ImageBatch;
 use crate::sampler::IndexSampler;
-use pyo3::prelude::*;
 
 pub(crate) struct ImageDataLoader {
     pub(crate) plan: ExecutionPlan,
@@ -10,7 +10,7 @@ pub(crate) struct ImageDataLoader {
 }
 
 impl ImageDataLoader {
-    pub(crate) fn next_batch(&mut self) -> PyResult<Option<ImageBatch>> {
+    pub(crate) fn next_batch(&mut self) -> RivetResult<Option<ImageBatch>> {
         let Some(indices) = self.sampler.next_indices(self.plan.batch.size) else {
             return Ok(None);
         };

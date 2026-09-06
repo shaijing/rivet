@@ -1,13 +1,12 @@
 pub(crate) mod op;
 
 use crate::dataset::ArrowImageDatasetCore;
-use crate::errors::value_err;
+use crate::errors::{RivetResult, invalid_pipeline};
 use crate::pipeline::op::{
     BatchConfig, ExecutionPlan, IndexOp, SampleOp, SourceOp, compile_sampler,
 };
 use crate::runtime::ImageDataLoader;
 use crate::sampler::IndexSampler;
-use pyo3::prelude::*;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -33,17 +32,17 @@ impl ImagePipeline {
         self
     }
 
-    pub(crate) fn resize(mut self, width: u32, height: u32) -> PyResult<Self> {
+    pub(crate) fn resize(mut self, width: u32, height: u32) -> RivetResult<Self> {
         self.sample_ops.push(SampleOp::resize(width, height)?);
         Ok(self)
     }
 
-    pub(crate) fn crop(mut self, x: u32, y: u32, width: u32, height: u32) -> PyResult<Self> {
+    pub(crate) fn crop(mut self, x: u32, y: u32, width: u32, height: u32) -> RivetResult<Self> {
         self.sample_ops.push(SampleOp::crop(x, y, width, height)?);
         Ok(self)
     }
 
-    pub(crate) fn center_crop(mut self, width: u32, height: u32) -> PyResult<Self> {
+    pub(crate) fn center_crop(mut self, width: u32, height: u32) -> RivetResult<Self> {
         self.sample_ops.push(SampleOp::center_crop(width, height)?);
         Ok(self)
     }
@@ -68,7 +67,7 @@ impl ImagePipeline {
         self
     }
 
-    pub(crate) fn normalize(mut self, mean: Vec<f32>, std: Vec<f32>) -> PyResult<Self> {
+    pub(crate) fn normalize(mut self, mean: Vec<f32>, std: Vec<f32>) -> RivetResult<Self> {
         self.sample_ops.push(SampleOp::normalize(mean, std)?);
         Ok(self)
     }
@@ -93,23 +92,23 @@ impl ImagePipeline {
         self
     }
 
-    pub(crate) fn batch(mut self, size: usize, drop_last: bool) -> PyResult<Self> {
+    pub(crate) fn batch(mut self, size: usize, drop_last: bool) -> RivetResult<Self> {
         self.batch = Some(BatchConfig::new(size, drop_last)?);
         Ok(self)
     }
 
-    pub(crate) fn compile(self) -> PyResult<ImageDataLoader> {
+    pub(crate) fn compile(self) -> RivetResult<ImageDataLoader> {
         self.compile_from(0)
     }
 
-    pub(crate) fn compile_from(self, start: usize) -> PyResult<ImageDataLoader> {
+    pub(crate) fn compile_from(self, start: usize) -> RivetResult<ImageDataLoader> {
         if self.sample_ops.is_empty() {
-            return Err(value_err("pipeline requires at least one sample op"));
+            return Err(invalid_pipeline("pipeline requires at least one sample op"));
         }
 
         let batch = self
             .batch
-            .ok_or_else(|| value_err("pipeline requires .batch(size)"))?;
+            .ok_or_else(|| invalid_pipeline("pipeline requires .batch(size)"))?;
         let len = self.source.len();
         let sampler = compile_sampler(len, &self.index_ops);
         let plan = ExecutionPlan {

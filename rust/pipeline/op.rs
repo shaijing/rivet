@@ -1,5 +1,5 @@
 use crate::dataset::{ArrowImageDatasetCore, Dataset};
-use crate::errors::value_err;
+use crate::errors::{RivetResult, invalid_argument};
 use crate::image::color::{BrightnessConfig, ContrastConfig};
 use crate::image::crop::{CenterCropConfig, CropConfig};
 use crate::image::decode::DecodeImageConfig;
@@ -10,7 +10,6 @@ use crate::image::resize::ResizeConfig;
 use crate::sample::ImageLayout;
 use crate::sample::{DecodedSample, EncodedImageSample, ImageSample};
 use crate::sampler::SamplerPlan;
-use pyo3::prelude::*;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -25,7 +24,7 @@ impl SourceOp {
         }
     }
 
-    pub(crate) fn get(&self, index: usize) -> PyResult<EncodedImageSample> {
+    pub(crate) fn get(&self, index: usize) -> RivetResult<EncodedImageSample> {
         match self {
             Self::Arrow(dataset) => dataset.get(index),
         }
@@ -69,7 +68,7 @@ impl SampleOp {
         &self,
         sample: ImageSample,
         ctx: &mut SampleContext,
-    ) -> PyResult<ImageSample> {
+    ) -> RivetResult<ImageSample> {
         let _sample_index = ctx.sample_index;
         let _sample_seed = ctx.sample_seed();
 
@@ -94,9 +93,9 @@ pub(crate) struct BatchConfig {
 }
 
 impl BatchConfig {
-    pub(crate) fn new(size: usize, drop_last: bool) -> PyResult<Self> {
+    pub(crate) fn new(size: usize, drop_last: bool) -> RivetResult<Self> {
         if size == 0 {
-            return Err(value_err("batch size must be greater than 0"));
+            return Err(invalid_argument("batch size must be greater than 0"));
         }
 
         Ok(Self { size, drop_last })
@@ -138,7 +137,7 @@ impl ExecutionPlan {
         &self,
         sample: EncodedImageSample,
         sample_index: usize,
-    ) -> PyResult<DecodedSample> {
+    ) -> RivetResult<DecodedSample> {
         let mut ctx = SampleContext::new(sample_index);
         let mut sample = ImageSample::Encoded(sample);
 
@@ -172,16 +171,20 @@ impl SampleOp {
         Self::DecodeImage(DecodeImageConfig)
     }
 
-    pub(crate) fn resize(width: u32, height: u32) -> PyResult<Self> {
+    pub(crate) fn resize(width: u32, height: u32) -> RivetResult<Self> {
         if width == 0 || height == 0 {
-            return Err(value_err("resize width and height must be greater than 0"));
+            return Err(invalid_argument(
+                "resize width and height must be greater than 0",
+            ));
         }
         Ok(Self::Resize(ResizeConfig { width, height }))
     }
 
-    pub(crate) fn crop(x: u32, y: u32, width: u32, height: u32) -> PyResult<Self> {
+    pub(crate) fn crop(x: u32, y: u32, width: u32, height: u32) -> RivetResult<Self> {
         if width == 0 || height == 0 {
-            return Err(value_err("crop width and height must be greater than 0"));
+            return Err(invalid_argument(
+                "crop width and height must be greater than 0",
+            ));
         }
         Ok(Self::Crop(CropConfig {
             x,
@@ -191,9 +194,9 @@ impl SampleOp {
         }))
     }
 
-    pub(crate) fn center_crop(width: u32, height: u32) -> PyResult<Self> {
+    pub(crate) fn center_crop(width: u32, height: u32) -> RivetResult<Self> {
         if width == 0 || height == 0 {
-            return Err(value_err(
+            return Err(invalid_argument(
                 "center_crop width and height must be greater than 0",
             ));
         }
@@ -220,7 +223,7 @@ impl SampleOp {
         Self::Contrast(ContrastConfig { value })
     }
 
-    pub(crate) fn normalize(mean: Vec<f32>, std: Vec<f32>) -> PyResult<Self> {
+    pub(crate) fn normalize(mean: Vec<f32>, std: Vec<f32>) -> RivetResult<Self> {
         Ok(Self::Normalize(NormalizeConfig::new(mean, std)?))
     }
 

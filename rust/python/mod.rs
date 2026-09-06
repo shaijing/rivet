@@ -1,4 +1,5 @@
 pub(crate) mod dataset;
+mod error;
 pub(crate) mod loader;
 pub(crate) mod pipeline;
 
