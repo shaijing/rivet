@@ -26,18 +26,16 @@ def _normalize_arrow_files(arrow_files: Iterable[str | Path]) -> list[str]:
 
 
 def _maybe_numpy_batch(batch: dict[str, Any], as_numpy: bool) -> dict[str, Any]:
-    if not as_numpy:
+    if as_numpy:
         return batch
 
-    try:
-        import numpy as np
-    except ImportError:
-        batch["images"] = memoryview(batch["images"])
-    else:
-        dtype = np.float32 if batch["dtype"] == "float32" else np.uint8
-        batch["images"] = np.frombuffer(batch["images"], dtype=dtype).reshape(
-            batch["shape"]
-        )
+    images = batch["images"]
+    labels = batch["labels"]
+
+    if hasattr(images, "tobytes"):
+        batch["images"] = images.tobytes()
+    if hasattr(labels, "tolist"):
+        batch["labels"] = labels.tolist()
 
     return batch
 

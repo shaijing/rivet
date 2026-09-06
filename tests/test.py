@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import numpy as np
+
 import rivet
 
 
@@ -44,6 +46,13 @@ def main() -> None:
     assert image_ops_batch["dtype"] == "float32"
     assert image_ops_batch["layout"] == "NCHW"
     assert len(image_ops_batch["images"]) == 2 * 3 * 20 * 20 * 4
+
+    numpy_batch = next(rivet.scan_arrow([arrow_file]).decode_image().batch(2).execute())
+    assert isinstance(numpy_batch["images"], np.ndarray)
+    assert isinstance(numpy_batch["labels"], np.ndarray)
+    assert numpy_batch["images"].shape == (2, 32, 32, 3)
+    assert numpy_batch["images"].dtype == np.uint8
+    assert numpy_batch["labels"].dtype == np.int64
 
 
 if __name__ == "__main__":

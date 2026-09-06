@@ -876,10 +876,14 @@ name = "rivet"
 source = { editable = "." }
 dependencies = [
     { name = "datasets" },
+    { name = "numpy" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "datasets", specifier = ">=5.0.1" }]
+requires-dist = [
+    { name = "datasets", specifier = ">=5.0.1" },
+    { name = "numpy", specifier = ">=2.5.2" },
+]
 
 [[package]]
 name = "six"
