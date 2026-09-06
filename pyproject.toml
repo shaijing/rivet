@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.12,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rivet"
+requires-python = ">=3.13"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+]
+dynamic = ["version"]
+dependencies = [
+    "datasets>=5.0.1",
+]
+
+[tool.maturin]
+python-source = "src"
+module-name = "rivet._rivet"
