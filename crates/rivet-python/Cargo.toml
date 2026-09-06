@@ -1,0 +1,14 @@
+[package]
+name = "rivet-python"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "_rivet"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+numpy.workspace = true
+pyo3.workspace = true
+rivet-core.workspace = true

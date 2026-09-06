@@ -1,0 +1,9 @@
+[package]
+name = "rivet-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+arrow.workspace = true
+arrow-ipc.workspace = true
+image.workspace = true

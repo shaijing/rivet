@@ -19,6 +19,7 @@ dependencies = [
 [tool.maturin]
 python-source = "src"
 module-name = "rivet._rivet"
+manifest-path = "crates/rivet-python/Cargo.toml"
 
 [dependency-groups]
 dev = [

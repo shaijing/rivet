@@ -1,17 +1,18 @@
-[package]
-name = "rivet"
+[workspace]
+members = [
+    "crates/rivet-core",
+    "crates/rivet-python",
+]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-[lib]
-name = "_rivet"
-crate-type = ["cdylib"]
-path = "rust/lib.rs"
-
-[dependencies]
+[workspace.dependencies]
 arrow = "59.3.0"
 arrow-ipc = "59.3.0"
 image = "0.25.10"
 numpy = "0.29.0"
 pyo3 = "0.29.0"
+rivet-core = { path = "crates/rivet-core" }
