@@ -8,20 +8,26 @@ pub struct NormalizeConfig {
 }
 
 impl NormalizeConfig {
-    pub fn new(mean: Vec<f32>, std: Vec<f32>) -> RivetResult<Self> {
-        if mean.is_empty() || std.is_empty() {
+    /// Raw configuration; parameter validation happens at pipeline compile
+    /// time via [`NormalizeConfig::validate`].
+    pub fn new(mean: Vec<f32>, std: Vec<f32>) -> Self {
+        Self { mean, std }
+    }
+
+    pub fn validate(&self) -> RivetResult<()> {
+        if self.mean.is_empty() || self.std.is_empty() {
             return Err(invalid_argument("normalize mean and std must not be empty"));
         }
-        if mean.len() != std.len() {
+        if self.mean.len() != self.std.len() {
             return Err(invalid_argument(
                 "normalize mean and std must have the same length",
             ));
         }
-        if std.iter().any(|value| *value == 0.0) {
+        if self.std.iter().any(|value| *value == 0.0) {
             return Err(invalid_argument("normalize std values must be non-zero"));
         }
 
-        Ok(Self { mean, std })
+        Ok(())
     }
 
     pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
@@ -115,7 +121,6 @@ mod tests {
             layout: ImageLayout::Hwc,
         });
         let out = NormalizeConfig::new(vec![0.5], vec![0.5])
-            .unwrap()
             .apply(sample)
             .unwrap()
             .into_decoded()

@@ -109,8 +109,9 @@ def test_skip_larger_than_dataset(arrow_file: Path) -> None:
 
 
 def test_batch_zero_rejected(arrow_file: Path) -> None:
+    # Builders are infallible; validation surfaces at execute/compile.
     with pytest.raises(ValueError, match="batch size"):
-        scan(arrow_file).decode_image().batch(0)
+        scan(arrow_file).decode_image().batch(0).execute()
 
 
 def test_resize_before_decode_rejected(arrow_file: Path) -> None:

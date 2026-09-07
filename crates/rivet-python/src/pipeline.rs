@@ -16,34 +16,22 @@ impl PyImagePipeline {
         }
     }
 
-    fn resize(&self, width: u32, height: u32) -> PyResult<Self> {
-        Ok(Self {
-            inner: self
-                .inner
-                .clone()
-                .resize(width, height)
-                .map_err(to_py_err)?,
-        })
+    fn resize(&self, width: u32, height: u32) -> Self {
+        Self {
+            inner: self.inner.clone().resize(width, height),
+        }
     }
 
-    fn crop(&self, x: u32, y: u32, width: u32, height: u32) -> PyResult<Self> {
-        Ok(Self {
-            inner: self
-                .inner
-                .clone()
-                .crop(x, y, width, height)
-                .map_err(to_py_err)?,
-        })
+    fn crop(&self, x: u32, y: u32, width: u32, height: u32) -> Self {
+        Self {
+            inner: self.inner.clone().crop(x, y, width, height),
+        }
     }
 
-    fn center_crop(&self, width: u32, height: u32) -> PyResult<Self> {
-        Ok(Self {
-            inner: self
-                .inner
-                .clone()
-                .center_crop(width, height)
-                .map_err(to_py_err)?,
-        })
+    fn center_crop(&self, width: u32, height: u32) -> Self {
+        Self {
+            inner: self.inner.clone().center_crop(width, height),
+        }
     }
 
     fn horizontal_flip(&self) -> Self {
@@ -70,10 +58,10 @@ impl PyImagePipeline {
         }
     }
 
-    fn normalize(&self, mean: Vec<f32>, std: Vec<f32>) -> PyResult<Self> {
-        Ok(Self {
-            inner: self.inner.clone().normalize(mean, std).map_err(to_py_err)?,
-        })
+    fn normalize(&self, mean: Vec<f32>, std: Vec<f32>) -> Self {
+        Self {
+            inner: self.inner.clone().normalize(mean, std),
+        }
     }
 
     fn hwc_to_chw(&self) -> Self {
@@ -101,14 +89,10 @@ impl PyImagePipeline {
     }
 
     #[pyo3(signature = (size, drop_last=false))]
-    fn batch(&self, size: usize, drop_last: bool) -> PyResult<Self> {
-        Ok(Self {
-            inner: self
-                .inner
-                .clone()
-                .batch(size, drop_last)
-                .map_err(to_py_err)?,
-        })
+    fn batch(&self, size: usize, drop_last: bool) -> Self {
+        Self {
+            inner: self.inner.clone().batch(size, drop_last),
+        }
     }
 
     fn execute(&self) -> PyResult<PyDataLoader> {

@@ -25,7 +25,6 @@ impl PyDataLoader {
             inner: ImagePipeline::new(Arc::clone(&dataset.inner))
                 .decode_image()
                 .batch(batch_size, false)
-                .map_err(to_py_err)?
                 .compile()
                 .map_err(to_py_err)?,
         })
@@ -70,7 +69,6 @@ pub(crate) fn read_image_batch(
     let mut loader = ImagePipeline::new(dataset)
         .decode_image()
         .batch(batch_size, false)
-        .map_err(to_py_err)?
         .compile_from(start)
         .map_err(to_py_err)?;
     let batch = loader

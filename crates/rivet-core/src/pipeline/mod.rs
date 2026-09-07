@@ -40,19 +40,19 @@ impl ImagePipeline {
         self
     }
 
-    pub fn resize(mut self, width: u32, height: u32) -> RivetResult<Self> {
-        self.ops.push(ImageOp::resize(width, height)?);
-        Ok(self)
+    pub fn resize(mut self, width: u32, height: u32) -> Self {
+        self.ops.push(ImageOp::resize(width, height));
+        self
     }
 
-    pub fn crop(mut self, x: u32, y: u32, width: u32, height: u32) -> RivetResult<Self> {
-        self.ops.push(ImageOp::crop(x, y, width, height)?);
-        Ok(self)
+    pub fn crop(mut self, x: u32, y: u32, width: u32, height: u32) -> Self {
+        self.ops.push(ImageOp::crop(x, y, width, height));
+        self
     }
 
-    pub fn center_crop(mut self, width: u32, height: u32) -> RivetResult<Self> {
-        self.ops.push(ImageOp::center_crop(width, height)?);
-        Ok(self)
+    pub fn center_crop(mut self, width: u32, height: u32) -> Self {
+        self.ops.push(ImageOp::center_crop(width, height));
+        self
     }
 
     pub fn horizontal_flip(mut self) -> Self {
@@ -75,9 +75,9 @@ impl ImagePipeline {
         self
     }
 
-    pub fn normalize(mut self, mean: Vec<f32>, std: Vec<f32>) -> RivetResult<Self> {
-        self.ops.push(ImageOp::normalize(mean, std)?);
-        Ok(self)
+    pub fn normalize(mut self, mean: Vec<f32>, std: Vec<f32>) -> Self {
+        self.ops.push(ImageOp::normalize(mean, std));
+        self
     }
 
     pub fn hwc_to_chw(mut self) -> Self {
@@ -100,9 +100,9 @@ impl ImagePipeline {
         self
     }
 
-    pub fn batch(mut self, size: usize, drop_last: bool) -> RivetResult<Self> {
-        self.batch = Some(BatchConfig::new(size, drop_last)?);
-        Ok(self)
+    pub fn batch(mut self, size: usize, drop_last: bool) -> Self {
+        self.batch = Some(BatchConfig::new(size, drop_last));
+        self
     }
 
     pub fn compile(self) -> RivetResult<ImageDataLoader> {
@@ -115,6 +115,8 @@ impl ImagePipeline {
         let batch = self
             .batch
             .ok_or_else(|| invalid_pipeline("pipeline requires .batch(size)"))?;
+        batch.validate()?;
+
         let len = self.source.len();
         let sampler = compile_sampler(len, &self.index_ops);
         let plan = ExecutionPlan {
@@ -136,6 +138,7 @@ fn validate_image_ops(ops: &[ImageOp]) -> RivetResult<PipelineImageState> {
     let mut state = PipelineImageState::Encoded;
 
     for op in ops {
+        op.validate()?;
         state = op.transition(state)?;
     }
 
@@ -186,26 +189,47 @@ mod tests {
 
     #[test]
     fn resize_before_decode_rejected_at_compile() {
-        let err = compile_err(stub(10).resize(8, 8).unwrap().batch(4, false).unwrap());
+        let err = compile_err(stub(10).resize(8, 8).batch(4, false));
         assert!(err.contains("Resize requires a decoded image"), "got: {err}");
     }
 
     #[test]
     fn normalize_before_decode_rejected_at_compile() {
-        let err = compile_err(stub(10).normalize(vec![0.5; 3], vec![0.5; 3]).unwrap().batch(4, false).unwrap());
+        let err = compile_err(stub(10).normalize(vec![0.5; 3], vec![0.5; 3]).batch(4, false));
         assert!(err.contains("Normalize requires a decoded image"), "got: {err}");
     }
 
     #[test]
     fn double_decode_rejected_at_compile() {
-        let err = compile_err(stub(10).decode_image().decode_image().batch(4, false).unwrap());
+        let err = compile_err(stub(10).decode_image().decode_image().batch(4, false));
         assert!(err.contains("Decode requires an encoded image"), "got: {err}");
     }
 
     #[test]
     fn batching_while_encoded_rejected_at_compile() {
-        let err = compile_err(stub(10).batch(4, false).unwrap());
+        let err = compile_err(stub(10).batch(4, false));
         assert!(err.contains("must decode images before batching"), "got: {err}");
+    }
+
+    #[test]
+    fn invalid_resize_rejected_at_compile() {
+        let err = compile_err(stub(10).decode_image().resize(0, 8).batch(4, false));
+        assert!(
+            err.contains("resize width and height must be greater than 0"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_normalize_rejected_at_compile() {
+        let err = compile_err(stub(10).decode_image().normalize(vec![0.5; 3], vec![0.5; 2]).batch(4, false));
+        assert!(err.contains("same length"), "got: {err}");
+    }
+
+    #[test]
+    fn zero_batch_size_rejected_at_compile() {
+        let err = compile_err(stub(10).decode_image().batch(0, false));
+        assert!(err.contains("batch size must be greater than 0"), "got: {err}");
     }
 
     #[test]
@@ -213,12 +237,9 @@ mod tests {
         let loader = stub(10)
             .decode_image()
             .resize(8, 8)
-            .unwrap()
             .normalize(vec![0.5; 3], vec![0.5; 3])
-            .unwrap()
             .hwc_to_chw()
             .batch(4, false)
-            .unwrap()
             .compile()
             .unwrap();
 

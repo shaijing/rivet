@@ -154,12 +154,17 @@ pub struct BatchConfig {
 }
 
 impl BatchConfig {
-    pub fn new(size: usize, drop_last: bool) -> RivetResult<Self> {
-        if size == 0 {
+    /// Raw configuration; pipeline compilation validates it.
+    pub fn new(size: usize, drop_last: bool) -> Self {
+        Self { size, drop_last }
+    }
+
+    pub fn validate(&self) -> RivetResult<()> {
+        if self.size == 0 {
             return Err(invalid_argument("batch size must be greater than 0"));
         }
 
-        Ok(Self { size, drop_last })
+        Ok(())
     }
 }
 
@@ -235,36 +240,21 @@ impl ImageOp {
         Self::Decode(DecodeImageConfig)
     }
 
-    pub fn resize(width: u32, height: u32) -> RivetResult<Self> {
-        if width == 0 || height == 0 {
-            return Err(invalid_argument(
-                "resize width and height must be greater than 0",
-            ));
-        }
-        Ok(Self::Resize(ResizeConfig { width, height }))
+    pub fn resize(width: u32, height: u32) -> Self {
+        Self::Resize(ResizeConfig { width, height })
     }
 
-    pub fn crop(x: u32, y: u32, width: u32, height: u32) -> RivetResult<Self> {
-        if width == 0 || height == 0 {
-            return Err(invalid_argument(
-                "crop width and height must be greater than 0",
-            ));
-        }
-        Ok(Self::Crop(CropConfig {
+    pub fn crop(x: u32, y: u32, width: u32, height: u32) -> Self {
+        Self::Crop(CropConfig {
             x,
             y,
             width,
             height,
-        }))
+        })
     }
 
-    pub fn center_crop(width: u32, height: u32) -> RivetResult<Self> {
-        if width == 0 || height == 0 {
-            return Err(invalid_argument(
-                "center_crop width and height must be greater than 0",
-            ));
-        }
-        Ok(Self::CenterCrop(CenterCropConfig { width, height }))
+    pub fn center_crop(width: u32, height: u32) -> Self {
+        Self::CenterCrop(CenterCropConfig { width, height })
     }
 
     pub fn horizontal_flip() -> Self {
@@ -287,8 +277,8 @@ impl ImageOp {
         Self::Contrast(ContrastConfig { value })
     }
 
-    pub fn normalize(mean: Vec<f32>, std: Vec<f32>) -> RivetResult<Self> {
-        Ok(Self::Normalize(NormalizeConfig::new(mean, std)?))
+    pub fn normalize(mean: Vec<f32>, std: Vec<f32>) -> Self {
+        Self::Normalize(NormalizeConfig::new(mean, std))
     }
 
     pub fn hwc_to_chw() -> Self {
@@ -301,5 +291,42 @@ impl ImageOp {
         Self::Layout(LayoutConfig {
             layout: ImageLayout::Hwc,
         })
+    }
+
+    /// Validate the op's own configuration (not its position in the
+    /// pipeline; that is `transition`'s job).
+    pub fn validate(&self) -> RivetResult<()> {
+        match self {
+            Self::Decode(_)
+            | Self::Flip(_)
+            | Self::Brightness(_)
+            | Self::Contrast(_)
+            | Self::Layout(_) => Ok(()),
+            Self::Resize(op) => {
+                if op.width == 0 || op.height == 0 {
+                    return Err(invalid_argument(
+                        "resize width and height must be greater than 0",
+                    ));
+                }
+                Ok(())
+            }
+            Self::Crop(op) => {
+                if op.width == 0 || op.height == 0 {
+                    return Err(invalid_argument(
+                        "crop width and height must be greater than 0",
+                    ));
+                }
+                Ok(())
+            }
+            Self::CenterCrop(op) => {
+                if op.width == 0 || op.height == 0 {
+                    return Err(invalid_argument(
+                        "center_crop width and height must be greater than 0",
+                    ));
+                }
+                Ok(())
+            }
+            Self::Normalize(op) => op.validate(),
+        }
     }
 }

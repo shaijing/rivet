@@ -20,12 +20,9 @@ fn main() {
     let pipeline = rivet_core::pipeline::ImagePipeline::new(std::sync::Arc::new(dataset))
         .decode_image()
         .resize(8, 8)
-        .unwrap()
         .normalize(vec![0.5; 3], vec![0.5; 3])
-        .unwrap()
         .hwc_to_chw()
-        .batch(64, false)
-        .unwrap();
+        .batch(128, false);
     let mut loader = pipeline.compile().unwrap();
     let batch = loader.next_batch().unwrap().unwrap();
     println!("batch size: {:?}", batch.shape);
