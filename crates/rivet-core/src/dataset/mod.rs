@@ -5,6 +5,6 @@ pub mod arrow;
 pub mod filesystem;
 pub mod source;
 
-pub use arrow::ArrowImageDataset;
+pub use arrow::{ArrowImageDataset, ArrowTextDataset};
 pub use filesystem::{ImageFolderDatasetCore, ImageFolderSample};
 pub use source::{Dataset, Source};

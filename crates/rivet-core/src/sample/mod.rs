@@ -3,3 +3,4 @@
 //! owns its sample types and state.
 
 pub mod image;
+pub mod text;

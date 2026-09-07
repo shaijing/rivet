@@ -1,4 +1,6 @@
 mod mmap;
+mod row;
 mod table;
 
-pub use table::{ArrowImageDataset, ArrowRow, MmapArrowTable};
+pub use row::ArrowRow;
+pub use table::{ArrowImageDataset, ArrowTextDataset, MmapArrowTable};

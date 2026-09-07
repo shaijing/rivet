@@ -1,60 +1,87 @@
 use crate::dataset::source::Dataset;
 use crate::errors::{RivetError, RivetResult, invalid_argument};
 use crate::sample::image::EncodedImageSample;
-use arrow::array::{Array, BinaryArray, Int32Array, Int64Array, LargeBinaryArray, StructArray};
+use crate::sample::text::RawTextSample;
+use arrow::datatypes::{DataType, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
-use arrow_buffer::Buffer;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::mmap::decode_mmap_arrow;
-
-struct BatchMeta {
-    row_start: usize,
-    row_count: usize,
-}
+use super::mmap::{ArrowOpenOptions, decode_mmap_arrow};
+use super::row::ArrowRow;
 
 /// mmap-backed Arrow IPC stream. Batches are decoded once into structured
 /// views whose data buffers stay file-backed (see the `mmap` module); this
-/// layer handles storage, row location, and typed extraction only and knows
+/// layer handles storage, row location, and schema exposure only and knows
 /// nothing about any modality.
+///
+/// Invariants:
+/// - the table always has a schema (every input file shares it)
+/// - `offsets[0] == 0`, `offsets.last() == len`
+/// - batch `i` spans rows `[offsets[i], offsets[i + 1])`
 pub struct MmapArrowTable {
+    schema: SchemaRef,
     batches: Vec<RecordBatch>,
-    batch_meta: Vec<BatchMeta>,
+    offsets: Vec<usize>,
     len: usize,
 }
 
 impl MmapArrowTable {
-    pub fn from_files(arrow_files: &[PathBuf]) -> RivetResult<Self> {
-        if arrow_files.is_empty() {
+    pub fn from_files<I, P>(paths: I) -> RivetResult<Self>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let files: Vec<_> = paths
+            .into_iter()
+            .map(|path| path.as_ref().to_path_buf())
+            .collect();
+        if files.is_empty() {
             return Err(invalid_argument("arrow_files must not be empty"));
         }
 
+        let mut schema: Option<SchemaRef> = None;
         let mut batches = Vec::new();
-        let mut batch_meta = Vec::new();
+        let mut offsets = vec![0usize];
         let mut len = 0usize;
 
-        for path in arrow_files {
-            for batch in decode_mmap_arrow(path, false)? {
-                let row_count = batch.num_rows();
-                batch_meta.push(BatchMeta {
-                    row_start: len,
-                    row_count,
-                });
-                len += row_count;
+        for path in &files {
+            let decoded = decode_mmap_arrow(path, &ArrowOpenOptions::default())?;
+
+            match &schema {
+                None => schema = Some(decoded.schema.clone()),
+                Some(expected) if expected.as_ref() != decoded.schema.as_ref() => {
+                    return Err(invalid_argument(format!(
+                        "Arrow schema mismatch in {}",
+                        path.display()
+                    )));
+                }
+                Some(_) => {}
+            }
+
+            for batch in decoded.batches {
+                len += batch.num_rows();
                 batches.push(batch);
+                offsets.push(len);
             }
         }
 
         Ok(Self {
+            schema: schema.expect("at least one input file was checked above"),
             batches,
-            batch_meta,
+            offsets,
             len,
         })
     }
 
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    /// The shared stream schema; adapters validate it once at construction
+    /// instead of walking every batch. Every input file must match it.
+    pub fn schema(&self) -> &SchemaRef {
+        &self.schema
     }
 
     /// Resolve a global row index to its (batch, local row).
@@ -67,126 +94,16 @@ impl MmapArrowTable {
         }
 
         let batch_index = self
-            .batch_meta
-            .partition_point(|meta| meta.row_start <= index)
+            .offsets
+            .partition_point(|&offset| offset <= index)
             .saturating_sub(1);
-        let meta = &self.batch_meta[batch_index];
 
-        if index >= meta.row_start + meta.row_count {
-            return Err(RivetError::IndexOutOfRange {
-                index,
-                len: self.len,
-            });
-        }
-
-        Ok((&self.batches[batch_index], index - meta.row_start))
+        Ok((&self.batches[batch_index], index - self.offsets[batch_index]))
     }
 
     pub fn row(&self, index: usize) -> RivetResult<ArrowRow<'_>> {
         let (batch, row) = self.locate_row(index)?;
         Ok(ArrowRow::new(batch, row))
-    }
-
-    /// Borrowed batches for constructor-time schema validation by adapters.
-    pub(crate) fn batches(&self) -> &[RecordBatch] {
-        &self.batches
-    }
-}
-
-/// A single row view over an Arrow table with typed, zero-copy column
-/// extraction. Extraction understands Arrow types, not modalities.
-pub struct ArrowRow<'a> {
-    batch: &'a RecordBatch,
-    row: usize,
-}
-
-impl<'a> ArrowRow<'a> {
-    fn new(batch: &'a RecordBatch, row: usize) -> Self {
-        Self { batch, row }
-    }
-
-    /// Zero-copy slice of a struct column's binary field (e.g. the Hugging
-    /// Face `img: struct<bytes: binary>` layout).
-    pub fn struct_binary(&self, struct_column: &str, field: &str) -> RivetResult<Buffer> {
-        let struct_col = self.batch.column_by_name(struct_column).ok_or_else(|| {
-            invalid_argument(format!("missing column {struct_column}"))
-        })?;
-        let image = struct_col
-            .as_any()
-            .downcast_ref::<StructArray>()
-            .ok_or_else(|| {
-                invalid_argument(format!(
-                    "{struct_column} must be a struct column, got {:?}",
-                    struct_col.data_type()
-                ))
-            })?;
-        let bytes = image
-            .column_by_name(field)
-            .ok_or_else(|| invalid_argument(format!("{struct_column}.{field} field is missing")))?;
-
-        if let Some(bytes) = bytes.as_any().downcast_ref::<BinaryArray>() {
-            if bytes.is_null(self.row) {
-                return Err(invalid_argument(format!(
-                    "{struct_column}.{field} is null at row {}",
-                    self.row
-                )));
-            }
-            let offsets = bytes.value_offsets();
-            let start = offsets[self.row] as usize;
-            let end = offsets[self.row + 1] as usize;
-            return Ok(bytes.values().slice_with_length(start, end - start));
-        }
-
-        if let Some(bytes) = bytes.as_any().downcast_ref::<LargeBinaryArray>() {
-            if bytes.is_null(self.row) {
-                return Err(invalid_argument(format!(
-                    "{struct_column}.{field} is null at row {}",
-                    self.row
-                )));
-            }
-            let offsets = bytes.value_offsets();
-            let start = offsets[self.row] as usize;
-            let end = offsets[self.row + 1] as usize;
-            return Ok(bytes.values().slice_with_length(start, end - start));
-        }
-
-        Err(invalid_argument(format!(
-            "{struct_column}.{field} must be binary or large_binary, got {:?}",
-            bytes.data_type()
-        )))
-    }
-
-    /// Read an integer column as `i64`; accepts int64 or int32 columns.
-    pub fn i64(&self, column: &str) -> RivetResult<i64> {
-        let labels = self
-            .batch
-            .column_by_name(column)
-            .ok_or_else(|| invalid_argument(format!("missing column {column}")))?;
-
-        if let Some(labels) = labels.as_any().downcast_ref::<Int64Array>() {
-            if labels.is_null(self.row) {
-                return Err(invalid_argument(format!(
-                    "{column} is null at row {}",
-                    self.row
-                )));
-            }
-            return Ok(labels.value(self.row));
-        }
-
-        if let Some(labels) = labels.as_any().downcast_ref::<Int32Array>() {
-            if labels.is_null(self.row) {
-                return Err(invalid_argument(format!(
-                    "{column} is null at row {}",
-                    self.row
-                )));
-            }
-            return Ok(i64::from(labels.value(self.row)));
-        }
-
-        Err(invalid_argument(format!(
-            "{column} must be int64 or int32, got {:?}",
-            labels.data_type()
-        )))
     }
 }
 
@@ -206,9 +123,7 @@ impl ArrowImageDataset {
         label_column: String,
     ) -> RivetResult<Self> {
         let table = Arc::new(MmapArrowTable::from_files(&arrow_files)?);
-        for batch in table.batches() {
-            validate_image_batch(batch, &image_column, &label_column)?;
-        }
+        validate_image_schema(table.schema(), &image_column, &label_column)?;
 
         Ok(Self {
             table,
@@ -235,56 +150,126 @@ impl Dataset for ArrowImageDataset {
     }
 }
 
-fn validate_image_batch(
-    batch: &RecordBatch,
+/// Text-modality adapter over an [`MmapArrowTable`]: maps a UTF-8 column
+/// (and an optional int label column) onto [`RawTextSample`].
+pub struct ArrowTextDataset {
+    table: Arc<MmapArrowTable>,
+    text_column: String,
+    label_column: Option<String>,
+}
+
+impl ArrowTextDataset {
+    pub fn new(
+        arrow_files: Vec<PathBuf>,
+        text_column: String,
+        label_column: Option<String>,
+    ) -> RivetResult<Self> {
+        let table = Arc::new(MmapArrowTable::from_files(&arrow_files)?);
+        validate_text_schema(
+            table.schema(),
+            &text_column,
+            label_column.as_deref(),
+        )?;
+
+        Ok(Self {
+            table,
+            text_column,
+            label_column,
+        })
+    }
+}
+
+impl Dataset for ArrowTextDataset {
+    type Item = RawTextSample;
+
+    fn len(&self) -> usize {
+        self.table.len()
+    }
+
+    fn get(&self, index: usize) -> RivetResult<Self::Item> {
+        let row = self.table.row(index)?;
+
+        Ok(RawTextSample {
+            text: row.utf8(&self.text_column)?,
+            label: match &self.label_column {
+                Some(column) => Some(row.i64(column)?),
+                None => None,
+            },
+        })
+    }
+}
+
+fn validate_image_schema(
+    schema: &Schema,
     image_column: &str,
     label_column: &str,
 ) -> RivetResult<()> {
-    let image_index = batch
-        .schema()
-        .index_of(image_column)
+    let image = schema
+        .field_with_name(image_column)
         .map_err(invalid_argument)?;
-    let image = batch.column(image_index);
-    let image = image
-        .as_any()
-        .downcast_ref::<StructArray>()
-        .ok_or_else(|| {
-            invalid_argument(format!(
-                "{image_column} must be a struct column with a bytes field, got {:?}",
-                image.data_type()
-            ))
-        })?;
-    let bytes = image
-        .column_by_name("bytes")
-        .ok_or_else(|| invalid_argument(format!("{image_column}.bytes field is missing")))?;
 
-    if !bytes.as_any().is::<BinaryArray>() && !bytes.as_any().is::<LargeBinaryArray>() {
+    match image.data_type() {
+        DataType::Struct(fields) => {
+            let bytes = fields.iter().find(|field| field.name() == "bytes").ok_or_else(
+                || invalid_argument(format!("{image_column}.bytes field is missing")),
+            )?;
+            if !matches!(bytes.data_type(), DataType::Binary | DataType::LargeBinary) {
+                return Err(invalid_argument(format!(
+                    "{image_column}.bytes must be binary or large_binary, got {:?}",
+                    bytes.data_type()
+                )));
+            }
+        }
+        other => {
+            return Err(invalid_argument(format!(
+                "{image_column} must be a struct column with a bytes field, got {other:?}"
+            )));
+        }
+    }
+
+    require_int_label(schema, label_column, "label")
+}
+
+fn validate_text_schema(
+    schema: &Schema,
+    text_column: &str,
+    label_column: Option<&str>,
+) -> RivetResult<()> {
+    let text = schema
+        .field_with_name(text_column)
+        .map_err(invalid_argument)?;
+    if !matches!(text.data_type(), DataType::Utf8 | DataType::LargeUtf8) {
         return Err(invalid_argument(format!(
-            "{image_column}.bytes must be binary or large_binary, got {:?}",
-            bytes.data_type()
+            "{text_column} must be utf8 or large_utf8, got {:?}",
+            text.data_type()
         )));
     }
 
-    let label_index = batch
-        .schema()
-        .index_of(label_column)
+    if let Some(label_column) = label_column {
+        require_int_label(schema, label_column, "label")?;
+    }
+    Ok(())
+}
+
+fn require_int_label(schema: &Schema, label_column: &str, role: &str) -> RivetResult<()> {
+    let label = schema
+        .field_with_name(label_column)
         .map_err(invalid_argument)?;
-    let labels = batch.column(label_index);
-    if !labels.as_any().is::<Int64Array>() && !labels.as_any().is::<Int32Array>() {
+    if !matches!(label.data_type(), DataType::Int64 | DataType::Int32) {
         return Err(invalid_argument(format!(
-            "{label_column} must be int64 or int32, got {:?}",
-            labels.data_type()
+            "{label_column} must be int64 or int32 for {role}, got {:?}",
+            label.data_type()
         )));
     }
-
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dataset::arrow::mmap::decode_mmap_arrow;
-    use arrow::array::ArrayRef;
+    use crate::dataset::arrow::mmap::{ArrowOpenOptions, decode_mmap_arrow};
+    use arrow::array::{ArrayRef, BinaryArray, Int64Array, StringArray, StructArray};
+    use arrow_buffer::Buffer;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow_ipc::reader::StreamDecoder;
     use arrow_ipc::writer::StreamWriter;
@@ -333,59 +318,6 @@ mod tests {
         writer.finish().unwrap();
         std::fs::write(&path, sink).unwrap();
         path
-    }
-
-    fn values_bounds(batch: &RecordBatch) -> (usize, usize) {
-        let image = batch
-            .column_by_name("img")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StructArray>()
-            .unwrap();
-        let bytes = image
-            .column_by_name("bytes")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<BinaryArray>()
-            .unwrap();
-        let values = bytes.values();
-        let start = values.as_ptr() as usize;
-        (start, start + values.len())
-    }
-
-    /// `struct_binary` must return a slice of the column's values buffer:
-    /// same content, address inside the parent buffer, no payload copy.
-    #[test]
-    fn image_buffer_slices_values_without_copy() {
-        let row0: &[u8] = &[1, 2, 3, 4];
-        let row1: &[u8] = &[];
-        let row2: &[u8] = &[5, 6];
-        let batch = encoded_batch(&[(Some(row0), 10), (Some(row1), 20), (Some(row2), 30)]);
-        let (values_start, values_end) = values_bounds(&batch);
-
-        for (row, expected) in [row0, row1, row2].iter().enumerate() {
-            let row_view = ArrowRow::new(&batch, row);
-            let image = row_view.struct_binary("img", "bytes").unwrap();
-            assert_eq!(image.as_slice(), *expected, "row {row} content");
-            assert_eq!(row_view.i64("label").unwrap(), (row as i64 + 1) * 10);
-
-            if !expected.is_empty() {
-                let ptr = image.as_ptr() as usize;
-                assert!(
-                    ptr >= values_start && ptr + image.len() <= values_end,
-                    "row {row} buffer must point inside the parent values buffer"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn image_buffer_at_rejects_null_bytes() {
-        let row: &[u8] = &[1, 2];
-        let batch = encoded_batch(&[(Some(row), 1), (None, 2)]);
-        assert!(ArrowRow::new(&batch, 0).struct_binary("img", "bytes").is_ok());
-        let err = ArrowRow::new(&batch, 1).struct_binary("img", "bytes").unwrap_err();
-        assert!(err.to_string().contains("null"), "got: {err}");
     }
 
     /// Full chain: IPC file -> mmap -> Buffer -> StreamDecoder -> batches ->
@@ -513,10 +445,10 @@ mod tests {
         let batch = encoded_batch(&[(Some(row), 1), (Some(row), 2), (Some(row), 3)]);
         let path = write_stream(&dir, "aligned.arrow", &[&batch]);
 
-        let decoded = decode_mmap_arrow(&path, true).unwrap();
-        assert_eq!(decoded.len(), 1);
-        for index in 0..decoded[0].num_rows() {
-            let image = ArrowRow::new(&decoded[0], index)
+        let decoded = decode_mmap_arrow(&path, &ArrowOpenOptions { require_alignment: true }).unwrap();
+        assert_eq!(decoded.batches.len(), 1);
+        for index in 0..decoded.batches[0].num_rows() {
+            let image = ArrowRow::new(&decoded.batches[0], index)
                 .struct_binary("img", "bytes")
                 .unwrap();
             assert_eq!(image.as_slice(), &[0; 64]);
@@ -524,5 +456,185 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
-}
 
+    /// ArrowTextDataset serves UTF-8 rows zero-copy, with and without an
+    /// optional label column, across the same mmap table used for images.
+    #[test]
+    fn text_dataset_reads_utf8_with_optional_labels() {
+        let dir = tmp_dir("text");
+
+        let text_schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, false),
+            Field::new("label", DataType::Int64, false),
+        ]));
+        let text: StringArray = ["hello", "", "wörld", "🐇"].into_iter().map(Some).collect();
+        let labels: Int64Array = [Some(1), Some(2), Some(3), Some(4)].into_iter().collect();
+        let batch = RecordBatch::try_new(
+            text_schema,
+            vec![Arc::new(text), Arc::new(labels)],
+        )
+        .unwrap();
+        let with_label = write_stream(&dir, "text.arrow", &[&batch]);
+
+        let dataset = ArrowTextDataset::new(
+            vec![with_label],
+            "text".to_string(),
+            Some("label".to_string()),
+        )
+        .unwrap();
+        assert_eq!(dataset.len(), 4);
+        for (index, (expected, label)) in ["hello", "", "wörld", "🐇"]
+            .iter()
+            .zip([1, 2, 3, 4])
+            .enumerate()
+        {
+            let sample = dataset.get(index).unwrap();
+            assert_eq!(
+                std::str::from_utf8(sample.text.as_slice()).unwrap(),
+                *expected,
+                "row {index} text"
+            );
+            assert_eq!(sample.label, Some(label), "row {index} label");
+        }
+
+        let bare_schema = Arc::new(Schema::new(vec![Field::new(
+            "text",
+            DataType::Utf8,
+            false,
+        )]));
+        let bare: StringArray = ["only text"].into_iter().map(Some).collect();
+        let bare_batch =
+            RecordBatch::try_new(bare_schema, vec![Arc::new(bare)]).unwrap();
+        let bare_file = write_stream(&dir, "bare.arrow", &[&bare_batch]);
+        let bare_dataset = ArrowTextDataset::new(
+            vec![bare_file],
+            "text".to_string(),
+            None,
+        )
+        .unwrap();
+        let sample = bare_dataset.get(0).unwrap();
+        assert_eq!(sample.text.as_slice(), b"only text");
+        assert_eq!(sample.label, None);
+
+        // Schema validation is constructor-time and per-table.
+        assert!(ArrowTextDataset::new(
+            vec![],
+            "text".to_string(),
+            None,
+        )
+        .is_err());
+        assert!(ArrowTextDataset::new(
+            vec![write_stream(&dir, "bare2.arrow", &[&bare_batch])],
+            "missing".to_string(),
+            None,
+        )
+        .is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn write_empty_stream(dir: &Path, name: &str, schema: &SchemaRef) -> PathBuf {
+        let path = dir.join(name);
+        let mut sink = Vec::new();
+        let mut writer = StreamWriter::try_new(&mut sink, schema).unwrap();
+        writer.finish().unwrap();
+        std::fs::write(&path, sink).unwrap();
+        path
+    }
+
+    /// IPC streams with conflicting schemas must fail at construction, not
+    /// when rows from the second file are first accessed.
+    #[test]
+    fn mismatched_schemas_rejected_across_files() {
+        let dir = tmp_dir("mismatch");
+
+        let utf8_schema = Arc::new(Schema::new(vec![Field::new(
+            "text",
+            DataType::Utf8,
+            false,
+        )]));
+        let utf8: StringArray = ["a"].into_iter().map(Some).collect();
+        let utf8_batch =
+            RecordBatch::try_new(utf8_schema, vec![Arc::new(utf8)]).unwrap();
+
+        let binary_schema = Arc::new(Schema::new(vec![Field::new(
+            "text",
+            DataType::Binary,
+            false,
+        )]));
+        let binary: BinaryArray = [Some(&b"b"[..])].into_iter().collect();
+        let binary_batch =
+            RecordBatch::try_new(binary_schema, vec![Arc::new(binary)]).unwrap();
+
+        let file_a = write_stream(&dir, "utf8.arrow", &[&utf8_batch]);
+        let file_b = write_stream(&dir, "binary.arrow", &[&binary_batch]);
+
+        let err = match MmapArrowTable::from_files(vec![file_a, file_b]) {
+            Err(err) => err,
+            Ok(_) => panic!("expected schema mismatch error"),
+        };
+        assert!(err.to_string().contains("schema mismatch"), "got: {err}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A stream with a schema but zero batches is still a valid typed
+    /// dataset (len 0, schema retained); empty and non-empty files mix.
+    #[test]
+    fn empty_streams_keep_schema_and_mix_with_data() {
+        let dir = tmp_dir("empty");
+        let text_schema = Arc::new(Schema::new(vec![Field::new(
+            "text",
+            DataType::Utf8,
+            false,
+        )]));
+        let empty = write_empty_stream(&dir, "empty.arrow", &text_schema);
+
+        let table = MmapArrowTable::from_files(vec![empty.clone()]).unwrap();
+        assert_eq!(table.len(), 0);
+        assert!(table.schema().field_with_name("text").is_ok());
+
+        let dataset =
+            ArrowTextDataset::new(vec![empty.clone()], "text".to_string(), None).unwrap();
+        assert_eq!(dataset.len(), 0);
+        assert!(dataset.is_empty());
+
+        let bare: StringArray = ["only text"].into_iter().map(Some).collect();
+        let bare_batch =
+            RecordBatch::try_new(text_schema.clone(), vec![Arc::new(bare)]).unwrap();
+        let data = write_stream(&dir, "data.arrow", &[&bare_batch]);
+        let empty2 = write_empty_stream(&dir, "empty2.arrow", &text_schema);
+
+        let mixed = ArrowTextDataset::new(
+            vec![empty, data, empty2],
+            "text".to_string(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(mixed.len(), 1);
+        let sample = mixed.get(0).unwrap();
+        assert_eq!(sample.text.as_slice(), b"only text");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// offsets spans batches: starts at 0, ends at len, one entry per batch.
+    #[test]
+    fn offsets_track_batch_boundaries() {
+        let dir = tmp_dir("offsets");
+        let a: &[u8] = &[1];
+        let b: &[u8] = &[2];
+        let c: &[u8] = &[3];
+        let batch_a = encoded_batch(&[(Some(a), 0), (Some(b), 1)]);
+        let batch_b = encoded_batch(&[(Some(c), 2)]);
+        let file_a = write_stream(&dir, "a.arrow", &[&batch_a]);
+        let file_b = write_stream(&dir, "b.arrow", &[&batch_b]);
+
+        let table = MmapArrowTable::from_files(vec![file_a, file_b]).unwrap();
+        assert_eq!(table.offsets, vec![0, 2, 3]);
+        assert_eq!(table.offsets.len(), table.batches.len() + 1);
+        assert_eq!(*table.offsets.last().unwrap(), table.len);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
