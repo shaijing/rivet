@@ -10,25 +10,6 @@ pub trait Dataset: Send + Sync {
     fn get(&self, index: usize) -> RivetResult<Self::Item>;
 }
 
-/// Type-erased view of a [`Dataset`] with a concrete item type.
-pub trait DynDataset<T>: Send + Sync {
-    fn len(&self) -> usize;
-    fn get(&self, index: usize) -> RivetResult<T>;
-}
-
-impl<D, T> DynDataset<T> for D
-where
-    D: Dataset<Item = T> + Send + Sync,
-{
-    fn len(&self) -> usize {
-        Dataset::len(self)
-    }
-
-    fn get(&self, index: usize) -> RivetResult<T> {
-        Dataset::get(self, index)
-    }
-}
-
 /// Shared handle to any [`Dataset`] yielding `T`. Modality aliases the item
 /// type, so the source layer itself stays modality-free:
 ///
@@ -37,7 +18,7 @@ where
 /// TextSource  = Source<RawTextSample>
 /// ```
 pub struct Source<T> {
-    inner: Arc<dyn DynDataset<T>>,
+    inner: Arc<dyn Dataset<Item = T>>,
 }
 
 impl<T> Clone for Source<T> {

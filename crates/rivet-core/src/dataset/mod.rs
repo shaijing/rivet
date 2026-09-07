@@ -7,4 +7,4 @@ pub mod source;
 
 pub use arrow::ArrowImageDataset;
 pub use filesystem::{ImageFolderDatasetCore, ImageFolderSample};
-pub use source::{Dataset, DynDataset, Source};
+pub use source::{Dataset, Source};
