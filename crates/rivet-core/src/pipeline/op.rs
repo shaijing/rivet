@@ -1,5 +1,5 @@
-use crate::dataset::{ArrowImageDatasetCore, Dataset};
-use crate::errors::{RivetResult, invalid_argument};
+use crate::dataset::ImageSource;
+use crate::errors::{RivetResult, invalid_argument, invalid_pipeline};
 use crate::image::color::{BrightnessConfig, ContrastConfig};
 use crate::image::crop::{CenterCropConfig, CropConfig};
 use crate::image::decode::DecodeImageConfig;
@@ -7,27 +7,26 @@ use crate::image::flip::{FlipConfig, FlipDirection};
 use crate::image::layout::LayoutConfig;
 use crate::image::normalize::NormalizeConfig;
 use crate::image::resize::ResizeConfig;
-use crate::sample::ImageLayout;
 use crate::sample::{DecodedSample, EncodedImageSample, ImageSample};
+use crate::sample::{ImageDType, ImageLayout};
 use crate::sampler::SamplerPlan;
-use std::sync::Arc;
 
 #[derive(Clone)]
-pub enum SourceOp {
-    Arrow(Arc<ArrowImageDatasetCore>),
+pub struct SourceOp {
+    source: ImageSource,
 }
 
 impl SourceOp {
+    pub fn new(source: ImageSource) -> Self {
+        Self { source }
+    }
+
     pub fn len(&self) -> usize {
-        match self {
-            Self::Arrow(dataset) => dataset.len(),
-        }
+        self.source.len()
     }
 
     pub fn get(&self, index: usize) -> RivetResult<EncodedImageSample> {
-        match self {
-            Self::Arrow(dataset) => dataset.get(index),
-        }
+        self.source.get(index)
     }
 }
 
@@ -63,7 +62,56 @@ pub enum SampleOp {
     Layout(LayoutConfig),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipelineImageState {
+    Encoded,
+    Decoded {
+        dtype: ImageDType,
+        layout: ImageLayout,
+    },
+}
+
 impl SampleOp {
+    pub fn transition(&self, input: PipelineImageState) -> RivetResult<PipelineImageState> {
+        use PipelineImageState::{Decoded, Encoded};
+
+        match self {
+            Self::DecodeImage(_) => match input {
+                Encoded => Ok(Decoded {
+                    dtype: ImageDType::U8,
+                    layout: ImageLayout::Hwc,
+                }),
+                Decoded { .. } => Err(invalid_pipeline(
+                    "DecodeImage requires an encoded image, current state is decoded",
+                )),
+            },
+            Self::Resize(_) => require_u8_hwc(input, "Resize"),
+            Self::Crop(_) => require_u8_hwc(input, "Crop"),
+            Self::CenterCrop(_) => require_u8_hwc(input, "CenterCrop"),
+            Self::Flip(_) => require_u8_hwc(input, "Flip"),
+            Self::Brightness(_) => require_u8_hwc(input, "Brightness"),
+            Self::Contrast(_) => require_u8_hwc(input, "Contrast"),
+            Self::Normalize(_) => match input {
+                Encoded => Err(invalid_pipeline(
+                    "Normalize requires a decoded image, current state is encoded",
+                )),
+                Decoded { layout, .. } => Ok(Decoded {
+                    dtype: ImageDType::F32,
+                    layout,
+                }),
+            },
+            Self::Layout(op) => match input {
+                Encoded => Err(invalid_pipeline(
+                    "Layout requires a decoded image, current state is encoded",
+                )),
+                Decoded { dtype, .. } => Ok(Decoded {
+                    dtype,
+                    layout: op.layout,
+                }),
+            },
+        }
+    }
+
     pub fn apply(&self, sample: ImageSample, ctx: &mut SampleContext) -> RivetResult<ImageSample> {
         let _sample_index = ctx.sample_index;
         let _sample_seed = ctx.sample_seed();
@@ -79,6 +127,23 @@ impl SampleOp {
             Self::Normalize(op) => op.apply(sample),
             Self::Layout(op) => op.apply(sample),
         }
+    }
+}
+
+fn require_u8_hwc(input: PipelineImageState, op_name: &str) -> RivetResult<PipelineImageState> {
+    match input {
+        PipelineImageState::Encoded => Err(invalid_pipeline(format!(
+            "{op_name} requires a decoded image, current state is encoded"
+        ))),
+        PipelineImageState::Decoded {
+            dtype: ImageDType::U8,
+            layout: ImageLayout::Hwc,
+        } => Ok(input),
+        PipelineImageState::Decoded { dtype, layout } => Err(invalid_pipeline(format!(
+            "{op_name} requires uint8 HWC input, current state is {} {}",
+            dtype.as_str(),
+            layout.as_str()
+        ))),
     }
 }
 

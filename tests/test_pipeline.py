@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import binascii
 import os
+import struct
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +11,18 @@ import numpy as np
 import pytest
 
 import rivet
+
+PNG_1X1 = (
+    b"\x89PNG\r\n\x1a\n"
+    + struct.pack(">I", 13)
+    + b"IHDR"
+    + struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+)
+PNG_1X1 += struct.pack(">I", binascii.crc32(PNG_1X1[12:]) & 0xFFFFFFFF)
+_IDAT = b"IDAT" + zlib.compress(b"\x00\xff\x00\x00")
+PNG_1X1 += struct.pack(">I", len(_IDAT) - 4) + _IDAT
+PNG_1X1 += struct.pack(">I", binascii.crc32(_IDAT) & 0xFFFFFFFF)
+PNG_1X1 += b"\x00\x00\x00\x00IEND\xaeB`\x82"
 
 
 def _candidate_arrow_files() -> list[Path]:
@@ -145,10 +160,25 @@ def test_batch_zero_rejected(arrow_file: Path) -> None:
 
 
 def test_resize_before_decode_rejected(arrow_file: Path) -> None:
-    loader = scan(arrow_file).resize(16, 16).batch(1).execute()
-
     with pytest.raises(ValueError, match="decoded"):
-        next(loader)
+        scan(arrow_file).resize(16, 16).batch(1).execute()
+
+
+def test_decode_twice_rejected(arrow_file: Path) -> None:
+    with pytest.raises(ValueError, match="encoded"):
+        scan(arrow_file).decode_image().decode_image().batch(1).execute()
+
+
+def test_resize_after_normalize_rejected(arrow_file: Path) -> None:
+    with pytest.raises(ValueError, match="uint8 HWC"):
+        (
+            scan(arrow_file)
+            .decode_image()
+            .normalize([0.5], [0.5])
+            .resize(16, 16)
+            .batch(1)
+            .execute()
+        )
 
 
 def test_normalize_channel_mismatch(arrow_file: Path) -> None:
@@ -163,7 +193,7 @@ def test_hf_indices_rejected() -> None:
 
     try:
         ds = datasets.load_dataset("uoft-cs/cifar10", split="train[:8]")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         pytest.skip(f"could not load cached CIFAR-10 dataset: {exc}")
 
     shuffled = ds.shuffle(seed=42)
@@ -175,3 +205,29 @@ def test_rust_numpy_export_does_not_clone_image_batch() -> None:
     loader_rs = Path(__file__).parents[1] / "crates" / "rivet-python" / "src" / "loader.rs"
 
     assert "values.clone()" not in loader_rs.read_text()
+
+
+def test_image_folder_metadata_is_stable(tmp_path: Path) -> None:
+    (tmp_path / "zebra").mkdir()
+    (tmp_path / "ant" / "nested").mkdir(parents=True)
+    (tmp_path / "zebra" / "b.PNG").write_bytes(PNG_1X1)
+    (tmp_path / "ant" / "nested" / "a.jpg").write_bytes(PNG_1X1)
+    (tmp_path / "ant" / "ignore.txt").write_text("not an image")
+
+    dataset = rivet.ImageFolder(tmp_path)
+
+    assert dataset.classes == ["ant", "zebra"]
+    assert dataset.class_to_idx == {"ant": 0, "zebra": 1}
+    assert len(dataset) == 2
+    assert [sample["label"] for sample in dataset.samples] == [0, 1]
+    assert [Path(sample["path"]).name for sample in dataset.samples] == ["a.jpg", "b.PNG"]
+
+
+def test_image_folder_pipeline(tmp_path: Path) -> None:
+    (tmp_path / "cat").mkdir()
+    (tmp_path / "cat" / "one.png").write_bytes(PNG_1X1)
+
+    batch = next(rivet.scan_image_folder(tmp_path).decode_image().batch(1).execute())
+
+    assert batch["images"].shape == (1, 1, 1, 3)
+    assert labels(batch) == [0]

@@ -1,9 +1,9 @@
 pub mod op;
 
-use crate::dataset::ArrowImageDatasetCore;
+use crate::dataset::{ImageDataset, ImageSource};
 use crate::errors::{RivetResult, invalid_pipeline};
 use crate::pipeline::op::{
-    BatchConfig, ExecutionPlan, IndexOp, SampleOp, SourceOp, compile_sampler,
+    BatchConfig, ExecutionPlan, IndexOp, PipelineImageState, SampleOp, SourceOp, compile_sampler,
 };
 use crate::runtime::ImageDataLoader;
 use crate::sampler::IndexSampler;
@@ -18,9 +18,16 @@ pub struct ImagePipeline {
 }
 
 impl ImagePipeline {
-    pub fn new(dataset: Arc<ArrowImageDatasetCore>) -> Self {
+    pub fn new<T>(dataset: Arc<T>) -> Self
+    where
+        T: ImageDataset + 'static,
+    {
+        Self::from_source(ImageSource::new(dataset))
+    }
+
+    pub fn from_source(source: ImageSource) -> Self {
         Self {
-            source: SourceOp::Arrow(dataset),
+            source: SourceOp::new(source),
             index_ops: Vec::new(),
             sample_ops: Vec::new(),
             batch: None,
@@ -106,6 +113,8 @@ impl ImagePipeline {
             return Err(invalid_pipeline("pipeline requires at least one sample op"));
         }
 
+        validate_sample_ops(&self.sample_ops)?;
+
         let batch = self
             .batch
             .ok_or_else(|| invalid_pipeline("pipeline requires .batch(size)"))?;
@@ -122,5 +131,20 @@ impl ImagePipeline {
             sampler: IndexSampler::new(plan.sampler.clone(), start),
             plan,
         })
+    }
+}
+
+fn validate_sample_ops(sample_ops: &[SampleOp]) -> RivetResult<PipelineImageState> {
+    let mut state = PipelineImageState::Encoded;
+
+    for op in sample_ops {
+        state = op.transition(state)?;
+    }
+
+    match state {
+        PipelineImageState::Encoded => Err(invalid_pipeline(
+            "pipeline must decode images before batching",
+        )),
+        PipelineImageState::Decoded { .. } => Ok(state),
     }
 }

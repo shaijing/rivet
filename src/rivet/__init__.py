@@ -4,12 +4,13 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from ._rivet import _ArrowDataset, _DataLoader, _ImagePipeline
+from ._rivet import _ArrowDataset, _ImageFolderDataset, _ImagePipeline
 from ._rivet import read_image_batch as _read_image_batch
 
 __all__ = [
     "ArrowDataset",
     "DataLoader",
+    "ImageFolder",
     "Pipeline",
     "hf_arrow_files",
     "load_hf_arrow_files",
@@ -18,6 +19,7 @@ __all__ = [
     "read_image_batch",
     "scan_arrow",
     "scan_hf",
+    "scan_image_folder",
 ]
 
 
@@ -71,7 +73,7 @@ class ArrowDataset:
         *,
         image_column: str = "img",
         label_column: str = "label",
-    ) -> "ArrowDataset":
+    ) -> ArrowDataset:
         """Build an ArrowDataset from a loaded Hugging Face dataset split."""
         _validate_hf_dataset(dataset)
         return cls(
@@ -89,7 +91,38 @@ class ArrowDataset:
     def get_decoded(self, index: int, *, as_numpy: bool = True) -> dict[str, Any]:
         return _maybe_numpy_batch(self._inner.get_decoded(index), as_numpy)
 
-    def pipeline(self) -> "Pipeline":
+    def pipeline(self) -> Pipeline:
+        return Pipeline(self._inner.pipeline())
+
+
+class ImageFolder:
+    """Directory-backed encoded image dataset."""
+
+    def __init__(self, root: str | Path) -> None:
+        self._inner = _ImageFolderDataset(str(Path(root)))
+
+    def __len__(self) -> int:
+        return len(self._inner)
+
+    @property
+    def classes(self) -> list[str]:
+        return self._inner.classes
+
+    @property
+    def class_to_idx(self) -> dict[str, int]:
+        return self._inner.class_to_idx
+
+    @property
+    def samples(self) -> list[dict[str, Any]]:
+        return self._inner.samples
+
+    def get_encoded(self, index: int) -> dict[str, Any]:
+        return self._inner.get_encoded(index)
+
+    def get_decoded(self, index: int, *, as_numpy: bool = True) -> dict[str, Any]:
+        return _maybe_numpy_batch(self._inner.get_decoded(index), as_numpy)
+
+    def pipeline(self) -> Pipeline:
         return Pipeline(self._inner.pipeline())
 
 
@@ -100,55 +133,55 @@ class Pipeline:
         self._inner = inner
         self.as_numpy = as_numpy
 
-    def decode_image(self) -> "Pipeline":
+    def decode_image(self) -> Pipeline:
         return Pipeline(self._inner.decode_image(), as_numpy=self.as_numpy)
 
-    def resize(self, width: int, height: int) -> "Pipeline":
+    def resize(self, width: int, height: int) -> Pipeline:
         return Pipeline(self._inner.resize(width, height), as_numpy=self.as_numpy)
 
-    def crop(self, x: int, y: int, width: int, height: int) -> "Pipeline":
+    def crop(self, x: int, y: int, width: int, height: int) -> Pipeline:
         return Pipeline(self._inner.crop(x, y, width, height), as_numpy=self.as_numpy)
 
-    def center_crop(self, width: int, height: int) -> "Pipeline":
+    def center_crop(self, width: int, height: int) -> Pipeline:
         return Pipeline(self._inner.center_crop(width, height), as_numpy=self.as_numpy)
 
-    def horizontal_flip(self) -> "Pipeline":
+    def horizontal_flip(self) -> Pipeline:
         return Pipeline(self._inner.horizontal_flip(), as_numpy=self.as_numpy)
 
-    def vertical_flip(self) -> "Pipeline":
+    def vertical_flip(self) -> Pipeline:
         return Pipeline(self._inner.vertical_flip(), as_numpy=self.as_numpy)
 
-    def brightness(self, value: int) -> "Pipeline":
+    def brightness(self, value: int) -> Pipeline:
         return Pipeline(self._inner.brightness(value), as_numpy=self.as_numpy)
 
-    def contrast(self, value: float) -> "Pipeline":
+    def contrast(self, value: float) -> Pipeline:
         return Pipeline(self._inner.contrast(value), as_numpy=self.as_numpy)
 
-    def normalize(self, mean: list[float], std: list[float]) -> "Pipeline":
+    def normalize(self, mean: list[float], std: list[float]) -> Pipeline:
         return Pipeline(self._inner.normalize(mean, std), as_numpy=self.as_numpy)
 
-    def hwc_to_chw(self) -> "Pipeline":
+    def hwc_to_chw(self) -> Pipeline:
         return Pipeline(self._inner.hwc_to_chw(), as_numpy=self.as_numpy)
 
-    def chw_to_hwc(self) -> "Pipeline":
+    def chw_to_hwc(self) -> Pipeline:
         return Pipeline(self._inner.chw_to_hwc(), as_numpy=self.as_numpy)
 
-    def skip(self, count: int) -> "Pipeline":
+    def skip(self, count: int) -> Pipeline:
         return Pipeline(self._inner.skip(count), as_numpy=self.as_numpy)
 
-    def take(self, count: int) -> "Pipeline":
+    def take(self, count: int) -> Pipeline:
         return Pipeline(self._inner.take(count), as_numpy=self.as_numpy)
 
-    def batch(self, size: int, *, drop_last: bool = False) -> "Pipeline":
+    def batch(self, size: int, *, drop_last: bool = False) -> Pipeline:
         return Pipeline(
             self._inner.batch(size, drop_last),
             as_numpy=self.as_numpy,
         )
 
-    def with_numpy(self, enabled: bool = True) -> "Pipeline":
+    def with_numpy(self, enabled: bool = True) -> Pipeline:
         return Pipeline(self._inner, as_numpy=enabled)
 
-    def execute(self, *, as_numpy: bool | None = None) -> "DataLoader":
+    def execute(self, *, as_numpy: bool | None = None) -> DataLoader:
         return DataLoader(
             self,
             as_numpy=self.as_numpy if as_numpy is None else as_numpy,
@@ -183,12 +216,16 @@ def scan_hf(
     ).pipeline()
 
 
+def scan_image_folder(root: str | Path) -> Pipeline:
+    return ImageFolder(root).pipeline()
+
+
 class DataLoader:
     """Sequential decoded image batch loader."""
 
     def __init__(
         self,
-        source: ArrowDataset | Pipeline,
+        source: ArrowDataset | ImageFolder | Pipeline,
         *,
         batch_size: int | None = None,
         as_numpy: bool = True,
@@ -199,12 +236,12 @@ class DataLoader:
             self._inner = source._inner.execute()
         else:
             if batch_size is None:
-                raise ValueError("batch_size is required when source is an ArrowDataset")
-            self._inner = _DataLoader(source._inner, batch_size)
+                raise ValueError("batch_size is required when source is a dataset")
+            self._inner = source.pipeline().decode_image().batch(batch_size)._inner.execute()
 
         self.as_numpy = as_numpy
 
-    def __iter__(self) -> "DataLoader":
+    def __iter__(self) -> DataLoader:
         return self
 
     def __next__(self) -> dict[str, Any]:

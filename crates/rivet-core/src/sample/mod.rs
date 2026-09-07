@@ -1,6 +1,6 @@
 use crate::errors::{RivetResult, invalid_argument};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageDType {
     U8,
     F32,
@@ -15,7 +15,7 @@ impl ImageDType {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageLayout {
     Hwc,
     Chw,
