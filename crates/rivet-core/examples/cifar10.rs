@@ -102,17 +102,13 @@ fn run(loader: &mut ImageDataLoader, max_batches: usize) -> Result<(), Box<dyn s
     let mut last_label: Option<i64> = None;
     let start = Instant::now();
 
-    while batches < max_batches {
-        match loader.next_batch()? {
-            Some(batch) => {
-                batches += 1;
-                images += batch.shape.0;
-                last_label = batch.labels.last().copied();
-                first_label.get_or_insert_with(|| batch.labels[0]);
-                train_step(batches, batch);
-            }
-            None => break,
-        }
+    for (index, batch) in loader.into_iter().take(max_batches).enumerate() {
+        let batch = batch?;
+        batches += 1;
+        images += batch.shape.0;
+        last_label = batch.labels.last().copied();
+        first_label.get_or_insert_with(|| batch.labels[0]);
+        train_step(batches, batch);
     }
 
     let elapsed = start.elapsed();
