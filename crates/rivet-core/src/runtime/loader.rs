@@ -5,13 +5,14 @@ use crate::runtime::pool::WorkerPool;
 use crate::runtime::worker::WorkItem;
 use crate::sample::image::{DecodedSample, ImageBatch};
 use crate::sampler::IndexSampler;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 enum LoaderExecutor {
     /// `num_workers = 0`: direct synchronous execution, no channel overhead.
     Inline,
-    /// Persistent worker pool executing samples in parallel.
-    Workers(WorkerPool),
+    /// Persistent worker pool with bounded cross-batch prefetch.
+    Workers(WorkerPool, PrefetchCoordinator),
 }
 
 pub struct ImageDataLoader {
@@ -25,15 +26,18 @@ impl ImageDataLoader {
         plan: Arc<ExecutionPlan>,
         sampler: IndexSampler,
         num_workers: usize,
+        prefetch_batches: usize,
     ) -> RivetResult<Self> {
         let executor = if num_workers == 0 {
             LoaderExecutor::Inline
         } else {
-            LoaderExecutor::Workers(WorkerPool::new(
+            let prefetch = prefetch_batches.max(1);
+            let pool = WorkerPool::new(
                 Arc::clone(&plan),
                 num_workers,
-                plan.batch.size,
-            )?)
+                plan.batch.size * prefetch,
+            )?;
+            LoaderExecutor::Workers(pool, PrefetchCoordinator::new(prefetch))
         };
 
         Ok(Self {
@@ -52,7 +56,9 @@ impl ImageDataLoader {
 
         match executor {
             LoaderExecutor::Inline => next_batch_inline(plan, sampler),
-            LoaderExecutor::Workers(pool) => next_batch_workers(plan, sampler, pool),
+            LoaderExecutor::Workers(pool, coordinator) => {
+                next_batch_workers(plan, sampler, pool, coordinator)
+            }
         }
     }
 }
@@ -92,48 +98,135 @@ fn next_batch_inline(
     Ok(Some(batch.finish()))
 }
 
+/// One in-flight logical batch being filled by workers.
+struct PendingBatch {
+    samples: Vec<Option<DecodedSample>>,
+    remaining: usize,
+}
+
+/// Tracks submitted-but-not-yet-delivered batches so `prefetch_batches`
+/// batches can run concurrently while delivery stays strictly in sampler
+/// order.
+struct PrefetchCoordinator {
+    prefetch: usize,
+    /// Number of submitted batches not yet delivered to the caller.
+    in_flight: usize,
+    /// Sampler produced its last batch (or its tail was dropped).
+    closed: bool,
+    next_batch_id: u64,
+    pending: BTreeMap<u64, PendingBatch>,
+}
+
+impl PrefetchCoordinator {
+    fn new(prefetch: usize) -> Self {
+        Self {
+            prefetch,
+            in_flight: 0,
+            closed: false,
+            next_batch_id: 0,
+            pending: BTreeMap::new(),
+        }
+    }
+
+    fn submit(
+        &mut self,
+        indices: Vec<usize>,
+        pool: &WorkerPool,
+    ) -> RivetResult<()> {
+        let batch_id = self.next_batch_id;
+        self.next_batch_id += 1;
+
+        let batch = PendingBatch {
+            samples: std::iter::repeat_with(|| None).take(indices.len()).collect(),
+            remaining: indices.len(),
+        };
+        self.pending.insert(batch_id, batch);
+        self.in_flight += 1;
+
+        for (position, index) in indices.into_iter().enumerate() {
+            pool.submit(WorkItem {
+                batch_id,
+                position,
+                index,
+            })?;
+        }
+        Ok(())
+    }
+
+    fn record(&mut self, batch_id: u64, position: usize, sample: DecodedSample) -> RivetResult<()> {
+        let batch = self
+            .pending
+            .get_mut(&batch_id)
+            .ok_or_else(|| RivetError::Worker(format!("result for unknown batch {batch_id}")))?;
+        if batch.samples[position].is_some() {
+            return Err(RivetError::Worker(format!(
+                "duplicate result for batch {batch_id} position {position}"
+            )));
+        }
+        batch.samples[position] = Some(sample);
+        batch.remaining -= 1;
+        Ok(())
+    }
+
+    /// Deliver the next batch when it is complete; delivery order is
+    /// strictly the submission order regardless of completion order.
+    fn deliver_ready(&mut self, batch_id: u64) -> RivetResult<Option<ImageBatch>> {
+        let Some(batch) = self.pending.get(&batch_id) else {
+            return Ok(None);
+        };
+        if batch.remaining != 0 {
+            return Ok(None);
+        }
+        let batch = match self.pending.remove(&batch_id) {
+            Some(batch) => batch,
+            None => {
+                return Err(RivetError::Worker(format!(
+                    "deliverable batch {batch_id} vanished"
+                )));
+            }
+        };
+        self.in_flight -= 1;
+
+        let mut builder = ImageBatchBuilder::with_capacity(batch.samples.len());
+        for sample in batch.samples.into_iter().flatten() {
+            builder.push(sample)?;
+        }
+        Ok(Some(builder.finish()))
+    }
+}
+
 fn next_batch_workers(
     plan: &ExecutionPlan,
     sampler: &mut IndexSampler,
     pool: &WorkerPool,
+    coordinator: &mut PrefetchCoordinator,
 ) -> RivetResult<Option<ImageBatch>> {
-    let Some(indices) = take_indices(plan, sampler)? else {
-        return Ok(None);
-    };
+    loop {
+        // Top up the in-flight window from the sampler.
+        while coordinator.in_flight < coordinator.prefetch && !coordinator.closed {
+            match take_indices(plan, sampler)? {
+                Some(indices) => coordinator.submit(indices, pool)?,
+                None => coordinator.closed = true,
+            }
+        }
 
-    for (sequence, index) in indices.iter().copied().enumerate() {
-        pool.submit(WorkItem { sequence, index })?;
-    }
+        if let Some(batch) =
+            coordinator.deliver_ready(coordinator.next_batch_id - coordinator.in_flight as u64)?
+        {
+            return Ok(Some(batch));
+        }
 
-    // Reconstruct sampler order: results may arrive in any completion
-    // order, so store by sequence and refuse to continue until every
-    // submitted sample answered (or the pool died).
-    let mut samples: Vec<Option<DecodedSample>> =
-        std::iter::repeat_with(|| None).take(indices.len()).collect();
-    let mut completed = 0usize;
+        if coordinator.closed && coordinator.in_flight == 0 {
+            return Ok(None);
+        }
 
-    while completed < samples.len() {
+        // Nothing deliverable yet: wait for the next worker result.
         let result = pool.recv()?;
         match result.result {
-            Ok(sample) => {
-                samples[result.sequence] = Some(sample);
-                completed += 1;
-            }
+            Ok(sample) => coordinator.record(result.batch_id, result.position, sample)?,
             Err(err) => return Err(err),
         }
     }
-
-    let mut batch = ImageBatchBuilder::with_capacity(samples.len());
-    for (sequence, sample) in samples.into_iter().enumerate() {
-        let sample = sample.ok_or_else(|| {
-            RivetError::Worker(format!(
-                "no result received for sample at sequence {sequence}"
-            ))
-        })?;
-        batch.push(sample)?;
-    }
-
-    Ok(Some(batch.finish()))
 }
 
 #[cfg(test)]
@@ -279,6 +372,48 @@ mod tests {
             Ok(_) => panic!("expected a worker panic error"),
         };
         assert!(err.to_string().contains("panicked"), "got: {err}");
+    }
+
+    #[test]
+    fn prefetch_configs_preserve_sampler_order() {
+        let mut baseline = pipeline(101, 0)
+            .skip(3)
+            .take(93)
+            .batch(10, true)
+            .compile()
+            .unwrap();
+        let baseline = drain(&mut baseline);
+
+        for (workers, prefetch) in [(1, 0), (2, 1), (2, 3), (4, 4), (8, 2)] {
+            let mut loader = pipeline(101, workers)
+                .skip(3)
+                .take(93)
+                .batch(10, true)
+                .prefetch_batches(prefetch)
+                .compile()
+                .unwrap();
+            let pooled = drain(&mut loader);
+            assert_batches_equal(&baseline, &pooled);
+        }
+    }
+
+    #[test]
+    fn prefetch_stops_after_dropped_tail() {
+        // 30..43 spans 13 taken rows; drop_last with size 5 yields 5+5 and
+        // silently discards the 3-row tail even when batches run ahead.
+        for (workers, prefetch) in [(2, 3), (4, 1)] {
+            let mut loader = pipeline(50, workers)
+                .skip(30)
+                .take(13)
+                .batch(5, true)
+                .prefetch_batches(prefetch)
+                .compile()
+                .unwrap();
+            let batches = drain(&mut loader);
+            assert_eq!(batches.len(), 2, "workers={workers} prefetch={prefetch}");
+            assert_eq!(batches[0].labels, vec![30, 31, 32, 33, 34]);
+            assert_eq!(batches[1].labels, vec![35, 36, 37, 38, 39]);
+        }
     }
 
     #[test]

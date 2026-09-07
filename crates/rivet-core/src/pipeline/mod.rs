@@ -115,6 +115,13 @@ impl ImagePipeline {
         self
     }
 
+    /// Prepare up to `prefetch_batches` batches while the caller consumes
+    /// one at a time (worker pools only). Delivery stays in sampler order.
+    pub fn prefetch_batches(mut self, prefetch_batches: usize) -> Self {
+        self.runtime.prefetch_batches = prefetch_batches;
+        self
+    }
+
     pub fn compile(self) -> RivetResult<ImageDataLoader> {
         self.compile_from(0)
     }
@@ -137,12 +144,14 @@ impl ImagePipeline {
             output_state,
         };
         let num_workers = self.runtime.num_workers;
+        let prefetch_batches = self.runtime.prefetch_batches;
         let plan = Arc::new(plan);
 
         ImageDataLoader::new(
             Arc::clone(&plan),
             IndexSampler::new(plan.sampler.clone(), start),
             num_workers,
+            prefetch_batches,
         )
     }
 }

@@ -101,6 +101,12 @@ impl PyImagePipeline {
         }
     }
 
+    fn prefetch_batches(&self, prefetch: usize) -> Self {
+        Self {
+            inner: self.inner.clone().prefetch_batches(prefetch),
+        }
+    }
+
     fn execute(&self) -> PyResult<PyDataLoader> {
         Ok(PyDataLoader {
             inner: self.inner.clone().compile().map_err(to_py_err)?,

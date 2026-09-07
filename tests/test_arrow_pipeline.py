@@ -174,3 +174,37 @@ def test_workers_match_inline(arrow_file: Path) -> None:
     for serial_batch, pooled_batch in zip(serial, pooled):
         assert np.array_equal(serial_batch["images"], pooled_batch["images"])
         assert serial_batch["labels"].tolist() == pooled_batch["labels"].tolist()
+
+
+def test_prefetch_matches_inline(arrow_file: Path) -> None:
+    def collect(loader: object) -> list[dict[str, object]]:
+        out = []
+        while True:
+            try:
+                out.append(next(loader))  # type: ignore[arg-type]
+            except StopIteration:
+                return out
+
+    serial = collect(
+        scan(arrow_file)
+        .take(64)
+        .decode_image()
+        .resize(16, 16)
+        .batch(8)
+        .execute()
+    )
+    prefetched = collect(
+        scan(arrow_file)
+        .take(64)
+        .decode_image()
+        .resize(16, 16)
+        .workers(3)
+        .prefetch_batches(4)
+        .batch(8)
+        .execute()
+    )
+
+    assert len(serial) == len(prefetched) == 8
+    for a, b in zip(serial, prefetched):
+        assert np.array_equal(a["images"], b["images"])
+        assert a["labels"].tolist() == b["labels"].tolist()

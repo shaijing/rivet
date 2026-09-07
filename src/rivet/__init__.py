@@ -189,6 +189,13 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def prefetch_batches(self, prefetch: int) -> Pipeline:
+        """Prepare up to `prefetch` batches ahead (worker pools only)."""
+        return Pipeline(
+            self._inner.prefetch_batches(prefetch),
+            as_numpy=self.as_numpy,
+        )
+
     def with_numpy(self, enabled: bool = True) -> Pipeline:
         return Pipeline(self._inner, as_numpy=enabled)
 

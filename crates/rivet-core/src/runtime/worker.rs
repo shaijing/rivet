@@ -2,12 +2,15 @@ use crate::errors::{RivetError, RivetResult};
 use crate::pipeline::op::ExecutionPlan;
 use crate::sample::image::DecodedSample;
 
-/// One sample-level unit of work. `sequence` is the position inside the
-/// batch the coordinator requested; workers finish out of order and the
-/// coordinator restores sampler order via this field.
+/// One sample-level unit of work.
+///
+/// `batch_id` identifies the logical batch and `position` the slot inside
+/// it, so the coordinator can prefetch several batches while workers finish
+/// out of order and still rebuild each batch in sampler order.
 #[derive(Clone, Copy, Debug)]
 pub struct WorkItem {
-    pub sequence: usize,
+    pub batch_id: u64,
+    pub position: usize,
     pub index: usize,
 }
 
@@ -17,7 +20,8 @@ pub enum WorkerCommand {
 }
 
 pub struct WorkResult {
-    pub sequence: usize,
+    pub batch_id: u64,
+    pub position: usize,
     pub result: RivetResult<DecodedSample>,
 }
 
@@ -54,7 +58,8 @@ pub fn worker_loop(
                 });
 
                 let delivered = result_tx.send(WorkResult {
-                    sequence: item.sequence,
+                    batch_id: item.batch_id,
+                    position: item.position,
                     result: outcome,
                 });
                 if delivered.is_err() {
