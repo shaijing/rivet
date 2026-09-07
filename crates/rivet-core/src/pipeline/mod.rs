@@ -5,7 +5,7 @@ use crate::errors::{RivetResult, invalid_pipeline};
 use crate::pipeline::op::{
     BatchConfig, ExecutionPlan, IndexOp, PipelineImageState, ImageOp, SourceOp, compile_sampler,
 };
-use crate::runtime::ImageDataLoader;
+use crate::runtime::{ImageDataLoader, RuntimeConfig};
 use crate::sample::image::EncodedImageSample;
 use crate::sampler::IndexSampler;
 use std::sync::Arc;
@@ -16,6 +16,7 @@ pub struct ImagePipeline {
     pub index_ops: Vec<IndexOp>,
     pub ops: Vec<ImageOp>,
     pub batch: Option<BatchConfig>,
+    pub runtime: RuntimeConfig,
 }
 
 impl ImagePipeline {
@@ -32,6 +33,7 @@ impl ImagePipeline {
             index_ops: Vec::new(),
             ops: Vec::new(),
             batch: None,
+            runtime: RuntimeConfig::default(),
         }
     }
 
@@ -105,6 +107,14 @@ impl ImagePipeline {
         self
     }
 
+    /// Execute sample loading on a persistent pool of `num_workers` threads
+    /// (`0` keeps the synchronous inline path). Ordering, batching and
+    /// sampling semantics are unaffected by the worker count.
+    pub fn workers(mut self, num_workers: usize) -> Self {
+        self.runtime.num_workers = num_workers;
+        self
+    }
+
     pub fn compile(self) -> RivetResult<ImageDataLoader> {
         self.compile_from(0)
     }
@@ -126,11 +136,14 @@ impl ImagePipeline {
             batch,
             output_state,
         };
+        let num_workers = self.runtime.num_workers;
+        let plan = Arc::new(plan);
 
-        Ok(ImageDataLoader {
-            sampler: IndexSampler::new(plan.sampler.clone(), start),
-            plan,
-        })
+        ImageDataLoader::new(
+            Arc::clone(&plan),
+            IndexSampler::new(plan.sampler.clone(), start),
+            num_workers,
+        )
     }
 }
 

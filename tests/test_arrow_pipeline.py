@@ -141,3 +141,36 @@ def test_normalize_channel_mismatch(arrow_file: Path) -> None:
 
     with pytest.raises(ValueError, match="channel count"):
         next(loader)
+
+
+def test_workers_match_inline(arrow_file: Path) -> None:
+    def collect(loader: object) -> list[dict[str, object]]:
+        out = []
+        while True:
+            try:
+                out.append(next(loader))  # type: ignore[arg-type]
+            except StopIteration:
+                return out
+
+    serial = collect(
+        scan(arrow_file)
+        .take(64)
+        .decode_image()
+        .resize(16, 16)
+        .batch(8)
+        .execute()
+    )
+    pooled = collect(
+        scan(arrow_file)
+        .take(64)
+        .decode_image()
+        .resize(16, 16)
+        .workers(4)
+        .batch(8)
+        .execute()
+    )
+
+    assert len(serial) == len(pooled) == 8
+    for serial_batch, pooled_batch in zip(serial, pooled):
+        assert np.array_equal(serial_batch["images"], pooled_batch["images"])
+        assert serial_batch["labels"].tolist() == pooled_batch["labels"].tolist()

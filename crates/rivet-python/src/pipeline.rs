@@ -95,6 +95,12 @@ impl PyImagePipeline {
         }
     }
 
+    fn workers(&self, num_workers: usize) -> Self {
+        Self {
+            inner: self.inner.clone().workers(num_workers),
+        }
+    }
+
     fn execute(&self) -> PyResult<PyDataLoader> {
         Ok(PyDataLoader {
             inner: self.inner.clone().compile().map_err(to_py_err)?,

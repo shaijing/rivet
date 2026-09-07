@@ -35,9 +35,13 @@ impl PyDataLoader {
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
-        self.inner
-            .next_batch()
-            .map_err(to_py_err)?
+        // Release the GIL while the rust workers load/decode/transform;
+        // no python objects are touched on worker threads.
+        let batch = py
+            .detach(|| self.inner.next_batch())
+            .map_err(to_py_err)?;
+
+        batch
             .map(|batch| image_batch_to_py(py, batch))
             .transpose()
     }

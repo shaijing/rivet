@@ -10,6 +10,7 @@ pub(crate) fn to_py_err(err: RivetError) -> PyErr {
         | RivetError::InvalidPipeline(message)
         | RivetError::InvalidShape(message) => PyValueError::new_err(message),
         RivetError::Image(err) => PyRuntimeError::new_err(err.to_string()),
+        RivetError::Worker(message) => PyRuntimeError::new_err(message),
         RivetError::IndexOutOfRange { index, len } => {
             PyIndexError::new_err(format!("index {index} is out of range for length {len}"))
         }

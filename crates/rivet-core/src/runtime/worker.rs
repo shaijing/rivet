@@ -1,0 +1,67 @@
+use crate::errors::{RivetError, RivetResult};
+use crate::pipeline::op::ExecutionPlan;
+use crate::sample::image::DecodedSample;
+
+/// One sample-level unit of work. `sequence` is the position inside the
+/// batch the coordinator requested; workers finish out of order and the
+/// coordinator restores sampler order via this field.
+#[derive(Clone, Copy, Debug)]
+pub struct WorkItem {
+    pub sequence: usize,
+    pub index: usize,
+}
+
+pub enum WorkerCommand {
+    Run(WorkItem),
+    Shutdown,
+}
+
+pub struct WorkResult {
+    pub sequence: usize,
+    pub result: RivetResult<DecodedSample>,
+}
+
+/// The per-sample hot path, identical to the inline loader: fetch encoded
+/// bytes from the shared source, then run the sample ops.
+pub fn execute_sample(plan: &ExecutionPlan, index: usize) -> RivetResult<DecodedSample> {
+    let encoded = plan.source.get(index)?;
+    plan.apply_ops(encoded, index)
+}
+
+/// Persistent worker loop. Workers never sample on their own: they only
+/// execute already-resolved indices handed to them by the coordinator.
+///
+/// A panicking sample is caught and reported as a worker error so the
+/// coordinator never waits on a dead worker forever.
+pub fn worker_loop(
+    plan: std::sync::Arc<ExecutionPlan>,
+    worker_id: usize,
+    work_rx: crossbeam_channel::Receiver<WorkerCommand>,
+    result_tx: crossbeam_channel::Sender<WorkResult>,
+) {
+    while let Ok(command) = work_rx.recv() {
+        match command {
+            WorkerCommand::Shutdown => break,
+            WorkerCommand::Run(item) => {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    execute_sample(&plan, item.index)
+                }))
+                .unwrap_or_else(|_| {
+                    Err(RivetError::Worker(format!(
+                        "worker {worker_id} panicked while processing sample {}",
+                        item.index
+                    )))
+                });
+
+                let delivered = result_tx.send(WorkResult {
+                    sequence: item.sequence,
+                    result: outcome,
+                });
+                if delivered.is_err() {
+                    // Coordinator is gone; stop consuming.
+                    break;
+                }
+            }
+        }
+    }
+}

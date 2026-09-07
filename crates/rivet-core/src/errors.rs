@@ -23,6 +23,9 @@ pub enum RivetError {
     #[error("invalid shape: {0}")]
     InvalidShape(String),
 
+    #[error("worker error: {0}")]
+    Worker(String),
+
     #[error("index {index} is out of range for length {len}")]
     IndexOutOfRange { index: usize, len: usize },
 }

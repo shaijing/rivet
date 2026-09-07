@@ -178,6 +178,17 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def workers(self, num_workers: int) -> Pipeline:
+        """Load samples on a persistent pool of `num_workers` threads.
+
+        Zero (the default) keeps synchronous loading; ordering and batch
+        contents are identical for any worker count.
+        """
+        return Pipeline(
+            self._inner.workers(num_workers),
+            as_numpy=self.as_numpy,
+        )
+
     def with_numpy(self, enabled: bool = True) -> Pipeline:
         return Pipeline(self._inner, as_numpy=enabled)
 

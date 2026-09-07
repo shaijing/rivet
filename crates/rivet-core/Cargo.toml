@@ -8,6 +8,7 @@ arrow.workspace = true
 arrow-buffer.workspace = true
 arrow-ipc.workspace = true
 bytes.workspace = true
+crossbeam-channel.workspace = true
 image.workspace = true
 thiserror.workspace = true
 walkdir.workspace = true
