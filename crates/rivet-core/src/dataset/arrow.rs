@@ -92,7 +92,18 @@ impl ArrowImageDatasetCore {
 /// batch buffer sliced out by [`StreamDecoder`] shares that `Buffer`'s
 /// allocation, so the batches keep the mmap alive via refcount without the
 /// dataset having to store the `Mmap` itself.
+///
+/// `require_alignment: true` makes the decoder fail on misaligned IPC
+/// buffers instead of silently copying them to an aligned heap buffer;
+/// tests use it to prove the mmap path stays zero-copy.
 fn decode_arrow_file(path: &Path) -> RivetResult<Vec<RecordBatch>> {
+    decode_arrow_file_with_alignment(path, false)
+}
+
+fn decode_arrow_file_with_alignment(
+    path: &Path,
+    require_alignment: bool,
+) -> RivetResult<Vec<RecordBatch>> {
     let file = File::open(path)?;
 
     // SAFETY: the mapping is read-only. The mapped file must not be truncated
@@ -101,7 +112,7 @@ fn decode_arrow_file(path: &Path) -> RivetResult<Vec<RecordBatch>> {
 
     let bytes = Bytes::from_owner(mmap);
     let mut buffer = Buffer::from(bytes);
-    let mut decoder = StreamDecoder::new();
+    let mut decoder = StreamDecoder::new().with_require_alignment(require_alignment);
     let mut batches = Vec::new();
 
     while !buffer.is_empty() {
@@ -303,11 +314,13 @@ mod tests {
         RecordBatch::try_new(schema, vec![Arc::new(img), Arc::new(labels)]).unwrap()
     }
 
-    fn write_stream(dir: &Path, name: &str, batch: &RecordBatch) -> PathBuf {
+    fn write_stream(dir: &Path, name: &str, batches: &[&RecordBatch]) -> PathBuf {
         let path = dir.join(name);
         let mut sink = Vec::new();
-        let mut writer = StreamWriter::try_new(&mut sink, &batch.schema()).unwrap();
-        writer.write(batch).unwrap();
+        let mut writer = StreamWriter::try_new(&mut sink, &batches[0].schema()).unwrap();
+        for batch in batches {
+            writer.write(batch).unwrap();
+        }
         writer.finish().unwrap();
         std::fs::write(&path, sink).unwrap();
         path
@@ -377,7 +390,7 @@ mod tests {
 
         let dir = tmp_dir("mmap");
         let batch = encoded_batch(&rows);
-        let path = write_stream(&dir, "data.arrow", &batch);
+        let path = write_stream(&dir, "data.arrow", &[&batch]);
 
         // Reproduce the source-side decode while holding the mapping, so the
         // mmap bounds are known.
@@ -428,4 +441,76 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// Rows across multiple arrow shards keep one global index. Boundaries
+    /// between batches inside a file and between files must resolve to the
+    /// right (batch, row); out-of-range indices must be rejected.
+    #[test]
+    fn multi_file_dataset_indexes_across_shards() {
+        let a: &[u8] = &[1];
+        let b: &[u8] = &[2];
+        let c: &[u8] = &[3];
+        let d: &[u8] = &[4];
+        let e: &[u8] = &[5];
+        let expected: [&[u8]; 5] = [a, b, c, d, e];
+
+        let dir = tmp_dir("multifile");
+        // file0: two batches (2 + 1 rows); file1: one batch (2 rows).
+        let batch0 = encoded_batch(&[(Some(a), 0), (Some(b), 1)]);
+        let batch1 = encoded_batch(&[(Some(c), 2)]);
+        let batch2 = encoded_batch(&[(Some(d), 3), (Some(e), 4)]);
+        let file0 = write_stream(&dir, "shard0.arrow", &[&batch0, &batch1]);
+        let file1 = write_stream(&dir, "shard1.arrow", &[&batch2]);
+
+        let dataset = ArrowImageDatasetCore::new(
+            vec![file0, file1],
+            "img".to_string(),
+            "label".to_string(),
+        )
+        .unwrap();
+        assert_eq!(dataset.len(), expected.len());
+
+        // Row-level boundaries: first row, last row of a batch, first row of
+        // the next batch, first row of the second file, and the last row.
+        for index in [0usize, 1, 2, 3, 4] {
+            let sample = dataset.get(index).unwrap();
+            assert_eq!(sample.image.as_slice(), expected[index], "row {index}");
+            assert_eq!(sample.label, index as i64, "row {index} label");
+        }
+
+        // The dataset keeps its mmaps alive after the constructor returns:
+        // repeat reads must still resolve after all decode locals are gone.
+        let again = dataset.get(3).unwrap();
+        assert_eq!(again.image.as_slice(), expected[3]);
+
+        let err = match dataset.get(5) {
+            Err(err) => err,
+            Ok(_) => panic!("expected out-of-range error"),
+        };
+        assert!(err.to_string().contains("out of range"), "got: {err}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Strict-alignment decoding must accept arrow-writer output without the
+    /// heap-copy fallback: any misaligned buffer would surface as an error
+    /// instead of a silent copy, so success proves the buffers are aligned
+    /// and the mmap stays zero-copy.
+    #[test]
+    fn decoded_batches_satisfy_strict_alignment() {
+        let row: &[u8] = &[0; 64];
+        let dir = tmp_dir("alignment");
+        let batch = encoded_batch(&[(Some(row), 1), (Some(row), 2), (Some(row), 3)]);
+        let path = write_stream(&dir, "aligned.arrow", &[&batch]);
+
+        let decoded = decode_arrow_file_with_alignment(&path, true).unwrap();
+        assert_eq!(decoded.len(), 1);
+        for index in 0..decoded[0].num_rows() {
+            let image = image_buffer_at(&decoded[0], "img", index).unwrap();
+            assert_eq!(image.as_slice(), &[0; 64]);
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
+
