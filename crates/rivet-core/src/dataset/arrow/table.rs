@@ -66,8 +66,11 @@ impl MmapArrowTable {
             }
         }
 
+        let schema =
+            schema.ok_or_else(|| invalid_argument("no Arrow schema found"))?;
+
         Ok(Self {
-            schema: schema.expect("at least one input file was checked above"),
+            schema,
             batches,
             offsets,
             len,
@@ -634,6 +637,43 @@ mod tests {
         assert_eq!(table.offsets, vec![0, 2, 3]);
         assert_eq!(table.offsets.len(), table.batches.len() + 1);
         assert_eq!(*table.offsets.last().unwrap(), table.len);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Zero-row batches create repeated offsets ([2, 2]); lookup must skip
+    /// them and resolve rows into the following batch.
+    #[test]
+    fn zero_row_batches_do_not_break_row_lookup() {
+        let dir = tmp_dir("zerorow");
+        let a: &[u8] = &[1];
+        let b: &[u8] = &[2];
+        let c: &[u8] = &[3];
+        let batch_a = encoded_batch(&[(Some(a), 0), (Some(b), 1)]);
+        let batch_b = encoded_batch(&[]); // zero rows
+        let batch_c = encoded_batch(&[(Some(c), 2)]);
+        let file = write_stream(&dir, "data.arrow", &[&batch_a, &batch_b, &batch_c]);
+
+        let dataset = ArrowImageDataset::new(
+            vec![file],
+            "img".to_string(),
+            "label".to_string(),
+        )
+        .unwrap();
+        assert_eq!(dataset.len(), 3);
+        assert_eq!(dataset.table.offsets, vec![0, 2, 2, 3]);
+
+        for (index, expected) in [([1u8], 0i64), ([2], 1), ([3], 2)].iter().enumerate() {
+            let sample = dataset.get(index).unwrap();
+            assert_eq!(sample.image.as_slice(), expected.0.as_slice(), "row {index}");
+            assert_eq!(sample.label, expected.1, "row {index} label");
+        }
+
+        let err = match dataset.get(3) {
+            Err(err) => err,
+            Ok(_) => panic!("expected out-of-range error"),
+        };
+        assert!(err.to_string().contains("out of range"), "got: {err}");
 
         std::fs::remove_dir_all(&dir).ok();
     }
