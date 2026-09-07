@@ -23,7 +23,7 @@ impl ImageDataLoader {
 
         for index in indices {
             let encoded = self.plan.source.get(index)?;
-            let decoded = self.plan.apply_sample_ops(encoded, index)?;
+            let decoded = self.plan.apply_ops(encoded, index)?;
             batch.push(decoded)?;
         }
 

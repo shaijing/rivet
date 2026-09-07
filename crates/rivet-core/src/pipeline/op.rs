@@ -50,8 +50,8 @@ impl IndexOp {
 }
 
 #[derive(Clone)]
-pub enum SampleOp {
-    DecodeImage(DecodeImageConfig),
+pub enum ImageOp {
+    Decode(DecodeImageConfig),
     Resize(ResizeConfig),
     Crop(CropConfig),
     CenterCrop(CenterCropConfig),
@@ -71,18 +71,18 @@ pub enum PipelineImageState {
     },
 }
 
-impl SampleOp {
+impl ImageOp {
     pub fn transition(&self, input: PipelineImageState) -> RivetResult<PipelineImageState> {
         use PipelineImageState::{Decoded, Encoded};
 
         match self {
-            Self::DecodeImage(_) => match input {
+            Self::Decode(_) => match input {
                 Encoded => Ok(Decoded {
                     dtype: ImageDType::U8,
                     layout: ImageLayout::Hwc,
                 }),
                 Decoded { .. } => Err(invalid_pipeline(
-                    "DecodeImage requires an encoded image, current state is decoded",
+                    "Decode requires an encoded image, current state is decoded",
                 )),
             },
             Self::Resize(_) => require_u8_hwc(input, "Resize"),
@@ -117,7 +117,7 @@ impl SampleOp {
         let _sample_seed = ctx.sample_seed();
 
         match self {
-            Self::DecodeImage(op) => op.apply(sample),
+            Self::Decode(op) => op.apply(sample),
             Self::Resize(op) => op.apply(sample),
             Self::Crop(op) => op.apply(sample),
             Self::CenterCrop(op) => op.apply(sample),
@@ -189,12 +189,15 @@ impl SampleContext {
 pub struct ExecutionPlan {
     pub source: SourceOp,
     pub sampler: SamplerPlan,
-    pub sample_ops: Vec<SampleOp>,
+    pub ops: Vec<ImageOp>,
     pub batch: BatchConfig,
+    /// Compile-time image state after `ops`, so batch builders and bindings
+    /// know the output dtype and layout before any sample is processed.
+    pub output_state: PipelineImageState,
 }
 
 impl ExecutionPlan {
-    pub fn apply_sample_ops(
+    pub fn apply_ops(
         &self,
         sample: EncodedImageSample,
         sample_index: usize,
@@ -202,7 +205,7 @@ impl ExecutionPlan {
         let mut ctx = SampleContext::new(sample_index);
         let mut sample = ImageSample::Encoded(sample);
 
-        for op in &self.sample_ops {
+        for op in &self.ops {
             sample = op.apply(sample, &mut ctx)?;
         }
 
@@ -227,9 +230,9 @@ fn mix_seed(mut value: u64) -> u64 {
     value ^ (value >> 31)
 }
 
-impl SampleOp {
-    pub fn decode_image() -> Self {
-        Self::DecodeImage(DecodeImageConfig)
+impl ImageOp {
+    pub fn decode() -> Self {
+        Self::Decode(DecodeImageConfig)
     }
 
     pub fn resize(width: u32, height: u32) -> RivetResult<Self> {

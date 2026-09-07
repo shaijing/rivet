@@ -3,7 +3,7 @@ pub mod op;
 use crate::dataset::{ImageDataset, ImageSource};
 use crate::errors::{RivetResult, invalid_pipeline};
 use crate::pipeline::op::{
-    BatchConfig, ExecutionPlan, IndexOp, PipelineImageState, SampleOp, SourceOp, compile_sampler,
+    BatchConfig, ExecutionPlan, IndexOp, PipelineImageState, ImageOp, SourceOp, compile_sampler,
 };
 use crate::runtime::ImageDataLoader;
 use crate::sampler::IndexSampler;
@@ -13,7 +13,7 @@ use std::sync::Arc;
 pub struct ImagePipeline {
     pub source: SourceOp,
     pub index_ops: Vec<IndexOp>,
-    pub sample_ops: Vec<SampleOp>,
+    pub ops: Vec<ImageOp>,
     pub batch: Option<BatchConfig>,
 }
 
@@ -29,63 +29,63 @@ impl ImagePipeline {
         Self {
             source: SourceOp::new(source),
             index_ops: Vec::new(),
-            sample_ops: Vec::new(),
+            ops: Vec::new(),
             batch: None,
         }
     }
 
     pub fn decode_image(mut self) -> Self {
-        self.sample_ops.push(SampleOp::decode_image());
+        self.ops.push(ImageOp::decode());
         self
     }
 
     pub fn resize(mut self, width: u32, height: u32) -> RivetResult<Self> {
-        self.sample_ops.push(SampleOp::resize(width, height)?);
+        self.ops.push(ImageOp::resize(width, height)?);
         Ok(self)
     }
 
     pub fn crop(mut self, x: u32, y: u32, width: u32, height: u32) -> RivetResult<Self> {
-        self.sample_ops.push(SampleOp::crop(x, y, width, height)?);
+        self.ops.push(ImageOp::crop(x, y, width, height)?);
         Ok(self)
     }
 
     pub fn center_crop(mut self, width: u32, height: u32) -> RivetResult<Self> {
-        self.sample_ops.push(SampleOp::center_crop(width, height)?);
+        self.ops.push(ImageOp::center_crop(width, height)?);
         Ok(self)
     }
 
     pub fn horizontal_flip(mut self) -> Self {
-        self.sample_ops.push(SampleOp::horizontal_flip());
+        self.ops.push(ImageOp::horizontal_flip());
         self
     }
 
     pub fn vertical_flip(mut self) -> Self {
-        self.sample_ops.push(SampleOp::vertical_flip());
+        self.ops.push(ImageOp::vertical_flip());
         self
     }
 
     pub fn brightness(mut self, value: i32) -> Self {
-        self.sample_ops.push(SampleOp::brightness(value));
+        self.ops.push(ImageOp::brightness(value));
         self
     }
 
     pub fn contrast(mut self, value: f32) -> Self {
-        self.sample_ops.push(SampleOp::contrast(value));
+        self.ops.push(ImageOp::contrast(value));
         self
     }
 
     pub fn normalize(mut self, mean: Vec<f32>, std: Vec<f32>) -> RivetResult<Self> {
-        self.sample_ops.push(SampleOp::normalize(mean, std)?);
+        self.ops.push(ImageOp::normalize(mean, std)?);
         Ok(self)
     }
 
     pub fn hwc_to_chw(mut self) -> Self {
-        self.sample_ops.push(SampleOp::hwc_to_chw());
+        self.ops.push(ImageOp::hwc_to_chw());
         self
     }
 
     pub fn chw_to_hwc(mut self) -> Self {
-        self.sample_ops.push(SampleOp::chw_to_hwc());
+        self.ops.push(ImageOp::chw_to_hwc());
         self
     }
 
@@ -109,11 +109,7 @@ impl ImagePipeline {
     }
 
     pub fn compile_from(self, start: usize) -> RivetResult<ImageDataLoader> {
-        if self.sample_ops.is_empty() {
-            return Err(invalid_pipeline("pipeline requires at least one sample op"));
-        }
-
-        validate_sample_ops(&self.sample_ops)?;
+        let output_state = validate_image_ops(&self.ops)?;
 
         let batch = self
             .batch
@@ -123,8 +119,9 @@ impl ImagePipeline {
         let plan = ExecutionPlan {
             source: self.source,
             sampler,
-            sample_ops: self.sample_ops,
+            ops: self.ops,
             batch,
+            output_state,
         };
 
         Ok(ImageDataLoader {
@@ -134,10 +131,10 @@ impl ImagePipeline {
     }
 }
 
-fn validate_sample_ops(sample_ops: &[SampleOp]) -> RivetResult<PipelineImageState> {
+fn validate_image_ops(ops: &[ImageOp]) -> RivetResult<PipelineImageState> {
     let mut state = PipelineImageState::Encoded;
 
-    for op in sample_ops {
+    for op in ops {
         state = op.transition(state)?;
     }
 
@@ -146,5 +143,90 @@ fn validate_sample_ops(sample_ops: &[SampleOp]) -> RivetResult<PipelineImageStat
             "pipeline must decode images before batching",
         )),
         PipelineImageState::Decoded { .. } => Ok(state),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dataset::Dataset;
+    use crate::sample::{EncodedImageSample, ImageDType, ImageLayout};
+    use arrow_buffer::Buffer;
+
+    struct StubDataset {
+        len: usize,
+    }
+
+    impl Dataset for StubDataset {
+        type Item = EncodedImageSample;
+
+        fn len(&self) -> usize {
+            self.len
+        }
+
+        fn get(&self, _index: usize) -> RivetResult<Self::Item> {
+            Ok(EncodedImageSample {
+                image: Buffer::from(Vec::<u8>::new()),
+                label: 0,
+            })
+        }
+    }
+
+    fn stub(len: usize) -> ImagePipeline {
+        ImagePipeline::new(Arc::new(StubDataset { len }))
+    }
+
+    fn compile_err(pipeline: ImagePipeline) -> String {
+        match pipeline.compile() {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("expected a compile error"),
+        }
+    }
+
+    #[test]
+    fn resize_before_decode_rejected_at_compile() {
+        let err = compile_err(stub(10).resize(8, 8).unwrap().batch(4, false).unwrap());
+        assert!(err.contains("Resize requires a decoded image"), "got: {err}");
+    }
+
+    #[test]
+    fn normalize_before_decode_rejected_at_compile() {
+        let err = compile_err(stub(10).normalize(vec![0.5; 3], vec![0.5; 3]).unwrap().batch(4, false).unwrap());
+        assert!(err.contains("Normalize requires a decoded image"), "got: {err}");
+    }
+
+    #[test]
+    fn double_decode_rejected_at_compile() {
+        let err = compile_err(stub(10).decode_image().decode_image().batch(4, false).unwrap());
+        assert!(err.contains("Decode requires an encoded image"), "got: {err}");
+    }
+
+    #[test]
+    fn batching_while_encoded_rejected_at_compile() {
+        let err = compile_err(stub(10).batch(4, false).unwrap());
+        assert!(err.contains("must decode images before batching"), "got: {err}");
+    }
+
+    #[test]
+    fn compile_reports_output_state() {
+        let loader = stub(10)
+            .decode_image()
+            .resize(8, 8)
+            .unwrap()
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .unwrap()
+            .hwc_to_chw()
+            .batch(4, false)
+            .unwrap()
+            .compile()
+            .unwrap();
+
+        assert_eq!(
+            loader.plan.output_state,
+            PipelineImageState::Decoded {
+                dtype: ImageDType::F32,
+                layout: ImageLayout::Chw,
+            }
+        );
     }
 }
