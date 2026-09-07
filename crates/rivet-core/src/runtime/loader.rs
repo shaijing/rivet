@@ -1,5 +1,5 @@
 use crate::batch::ImageBatchBuilder;
-use crate::errors::{RivetError, RivetResult};
+use crate::errors::{RivetError, RivetResult, invalid_argument};
 use crate::pipeline::op::ExecutionPlan;
 use crate::runtime::pool::WorkerPool;
 use crate::runtime::worker::WorkItem;
@@ -13,6 +13,8 @@ enum LoaderExecutor {
     Inline,
     /// Persistent worker pool with bounded cross-batch prefetch.
     Workers(WorkerPool, PrefetchCoordinator),
+    /// A sample/worker error terminated the loader; iteration is over.
+    Failed,
 }
 
 pub struct ImageDataLoader {
@@ -31,13 +33,20 @@ impl ImageDataLoader {
         let executor = if num_workers == 0 {
             LoaderExecutor::Inline
         } else {
-            let prefetch = prefetch_batches.max(1);
+            // prefetch_batches counts *future* batches: the current batch
+            // plus that many prepared ahead are in flight.
+            let max_in_flight = prefetch_batches.saturating_add(1);
+            // Reject absurd sizes before constructing any channel: a wrap
+            // here would silently produce a broken bounded queue.
+            let max_in_flight_samples = plan.batch.size.checked_mul(max_in_flight).ok_or_else(
+                || invalid_argument("worker queue capacity overflow"),
+            )?;
             let pool = WorkerPool::new(
                 Arc::clone(&plan),
                 num_workers,
-                plan.batch.size * prefetch,
+                max_in_flight_samples,
             )?;
-            LoaderExecutor::Workers(pool, PrefetchCoordinator::new(prefetch))
+            LoaderExecutor::Workers(pool, PrefetchCoordinator::new(max_in_flight))
         };
 
         Ok(Self {
@@ -55,10 +64,30 @@ impl ImageDataLoader {
         } = self;
 
         match executor {
-            LoaderExecutor::Inline => next_batch_inline(plan, sampler),
+            LoaderExecutor::Inline => match next_batch_inline(plan, sampler) {
+                Ok(batch) => Ok(batch),
+                Err(err) => {
+                    *executor = LoaderExecutor::Failed;
+                    Err(err)
+                }
+            },
             LoaderExecutor::Workers(pool, coordinator) => {
-                next_batch_workers(plan, sampler, pool, coordinator)
+                match next_batch_workers(plan, sampler, pool, coordinator) {
+                    Ok(batch) => Ok(batch),
+                    Err(err) => {
+                        // Terminal: a failed sample leaves its pending slot
+                        // unfilled forever (and inline has already advanced
+                        // the sampler), so the loader must not be used
+                        // again instead of waiting for results that will
+                        // never come or silently skipping a failed batch.
+                        *executor = LoaderExecutor::Failed;
+                        Err(err)
+                    }
+                }
             }
+            LoaderExecutor::Failed => Err(RivetError::Worker(
+                "loader is in failed state after a previous iteration error".to_string(),
+            )),
         }
     }
 }
@@ -104,26 +133,30 @@ struct PendingBatch {
     remaining: usize,
 }
 
-/// Tracks submitted-but-not-yet-delivered batches so `prefetch_batches`
-/// batches can run concurrently while delivery stays strictly in sampler
-/// order.
+/// Tracks submitted-but-not-yet-delivered batches so several batches can
+/// run concurrently while delivery stays strictly in sampler order.
 struct PrefetchCoordinator {
-    prefetch: usize,
+    /// Maximum batches in flight (window control only).
+    max_in_flight: usize,
     /// Number of submitted batches not yet delivered to the caller.
     in_flight: usize,
     /// Sampler produced its last batch (or its tail was dropped).
     closed: bool,
+    /// Next id handed out when submitting a batch.
     next_batch_id: u64,
+    /// Next batch that must be returned to the caller, in order.
+    next_deliver_id: u64,
     pending: BTreeMap<u64, PendingBatch>,
 }
 
 impl PrefetchCoordinator {
-    fn new(prefetch: usize) -> Self {
+    fn new(max_in_flight: usize) -> Self {
         Self {
-            prefetch,
+            max_in_flight,
             in_flight: 0,
             closed: false,
             next_batch_id: 0,
+            next_deliver_id: 0,
             pending: BTreeMap::new(),
         }
     }
@@ -158,19 +191,25 @@ impl PrefetchCoordinator {
             .pending
             .get_mut(&batch_id)
             .ok_or_else(|| RivetError::Worker(format!("result for unknown batch {batch_id}")))?;
-        if batch.samples[position].is_some() {
+        let slot = batch.samples.get_mut(position).ok_or_else(|| {
+            RivetError::Worker(format!(
+                "invalid result position {position} for batch {batch_id}"
+            ))
+        })?;
+        if slot.is_some() {
             return Err(RivetError::Worker(format!(
                 "duplicate result for batch {batch_id} position {position}"
             )));
         }
-        batch.samples[position] = Some(sample);
+        *slot = Some(sample);
         batch.remaining -= 1;
         Ok(())
     }
 
     /// Deliver the next batch when it is complete; delivery order is
     /// strictly the submission order regardless of completion order.
-    fn deliver_ready(&mut self, batch_id: u64) -> RivetResult<Option<ImageBatch>> {
+    fn deliver_ready(&mut self) -> RivetResult<Option<ImageBatch>> {
+        let batch_id = self.next_deliver_id;
         let Some(batch) = self.pending.get(&batch_id) else {
             return Ok(None);
         };
@@ -186,6 +225,7 @@ impl PrefetchCoordinator {
             }
         };
         self.in_flight -= 1;
+        self.next_deliver_id += 1;
 
         let mut builder = ImageBatchBuilder::with_capacity(batch.samples.len());
         for sample in batch.samples.into_iter().flatten() {
@@ -203,16 +243,14 @@ fn next_batch_workers(
 ) -> RivetResult<Option<ImageBatch>> {
     loop {
         // Top up the in-flight window from the sampler.
-        while coordinator.in_flight < coordinator.prefetch && !coordinator.closed {
+        while coordinator.in_flight < coordinator.max_in_flight && !coordinator.closed {
             match take_indices(plan, sampler)? {
                 Some(indices) => coordinator.submit(indices, pool)?,
                 None => coordinator.closed = true,
             }
         }
 
-        if let Some(batch) =
-            coordinator.deliver_ready(coordinator.next_batch_id - coordinator.in_flight as u64)?
-        {
+        if let Some(batch) = coordinator.deliver_ready()? {
             return Ok(Some(batch));
         }
 
@@ -244,6 +282,8 @@ mod tests {
         len: usize,
         err_at: Option<usize>,
         panic_at: Option<usize>,
+        /// Simulated per-sample latency for rows 0..8.
+        slow_first_batch_ms: u64,
     }
 
     impl Dataset for SampleDataset {
@@ -260,6 +300,11 @@ mod tests {
             if self.panic_at == Some(index) {
                 panic!("sample {index} panics");
             }
+            if self.slow_first_batch_ms > 0 && index < 8 {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    self.slow_first_batch_ms,
+                ));
+            }
             Ok(EncodedImageSample {
                 image: Buffer::from(PNG_1X1.to_vec()),
                 label: index as i64,
@@ -272,6 +317,7 @@ mod tests {
             len,
             err_at: None,
             panic_at: None,
+            slow_first_batch_ms: 0,
         }))
         .decode_image()
         .workers(workers)
@@ -338,6 +384,7 @@ mod tests {
             len: 20,
             err_at: Some(1),
             panic_at: None,
+            slow_first_batch_ms: 0,
         });
         let mut loader = ImagePipeline::new(dataset)
             .decode_image()
@@ -359,6 +406,7 @@ mod tests {
             len: 20,
             err_at: None,
             panic_at: Some(3),
+            slow_first_batch_ms: 0,
         });
         let mut loader = ImagePipeline::new(dataset)
             .decode_image()
@@ -421,5 +469,168 @@ mod tests {
         let mut loader = pipeline(10, 4).batch(4, false).compile().unwrap();
         assert!(loader.next_batch().unwrap().is_some());
         // Dropping the loader joins every worker; nothing should hang.
+    }
+
+    /// A sample error must put the loader into a terminal failed state:
+    /// the next call errors immediately instead of waiting forever for the
+    /// result that will never arrive.
+    #[test]
+    fn next_batch_after_worker_error_returns_terminal_error() {
+        let dataset = Arc::new(SampleDataset {
+            len: 20,
+            err_at: Some(1),
+            panic_at: None,
+            slow_first_batch_ms: 0,
+        });
+        let mut loader = ImagePipeline::new(dataset)
+            .decode_image()
+            .workers(2)
+            .prefetch_batches(2)
+            .batch(4, false)
+            .compile()
+            .unwrap();
+
+        let first = match loader.next_batch() {
+            Err(err) => err,
+            Ok(_) => panic!("expected the sample error"),
+        };
+        assert!(first.to_string().contains("boom"), "got: {first}");
+
+        let second = match loader.next_batch() {
+            Err(err) => err,
+            Ok(_) => panic!("expected the terminal failed-state error"),
+        };
+        assert!(
+            second.to_string().contains("failed state"),
+            "got: {second}"
+        );
+    }
+
+    /// Deep prefetch with early drop must not deadlock: workers blocked on
+    /// a full result queue are released by the result-receiver disconnect.
+    #[test]
+    fn drop_with_full_prefetch_does_not_hang() {
+        let mut loader = pipeline(1000, 4)
+            .batch(8, false)
+            .prefetch_batches(8)
+            .compile()
+            .unwrap();
+        let _ = loader.next_batch().unwrap();
+        drop(loader);
+    }
+
+    /// Even when batch 1 completes before the slower batch 0, delivery must
+    /// return batch 0 first.
+    #[test]
+    fn slow_earlier_batch_preserves_cross_batch_order() {
+        let dataset = Arc::new(SampleDataset {
+            len: 20,
+            err_at: None,
+            panic_at: None,
+            slow_first_batch_ms: 30,
+        });
+        let mut loader = ImagePipeline::new(dataset)
+            .decode_image()
+            .workers(3)
+            .prefetch_batches(2)
+            .batch(4, false)
+            .compile()
+            .unwrap();
+
+        let mut seen = Vec::new();
+        while let Some(batch) = loader.next_batch().unwrap() {
+            seen.extend(batch.labels);
+        }
+        assert_eq!(seen, (0..20).collect::<Vec<i64>>());
+    }
+
+    /// Protocol violations must surface as worker errors, not panics.
+    #[test]
+    fn record_rejects_out_of_range_and_duplicate_positions() {
+        let mut coordinator = PrefetchCoordinator::new(2);
+        coordinator.pending.insert(
+            0,
+            PendingBatch {
+                samples: std::iter::repeat_with(|| None).take(2).collect(),
+                remaining: 2,
+            },
+        );
+        let make_sample = |label: i64| DecodedSample {
+            image: ImageBuffer::U8(vec![0; 3]),
+            width: 1,
+            height: 1,
+            channels: 3,
+            label,
+            layout: crate::sample::image::ImageLayout::Hwc,
+        };
+
+        let err = match coordinator.record(0, 5, make_sample(0)) {
+            Err(err) => err,
+            Ok(()) => panic!("expected an out-of-range error"),
+        };
+        assert!(err.to_string().contains("invalid result position"), "got: {err}");
+
+        coordinator.record(0, 1, make_sample(1)).unwrap();
+        let err = match coordinator.record(0, 1, make_sample(2)) {
+            Err(err) => err,
+            Ok(()) => panic!("expected a duplicate error"),
+        };
+        assert!(err.to_string().contains("duplicate"), "got: {err}");
+    }
+
+    /// Extreme batch/prefetch sizes must fail at compile with an argument
+    /// error before any channel is constructed (no panic, no allocation).
+    #[test]
+    fn worker_queue_capacity_overflow_is_rejected() {
+        let dataset = Arc::new(SampleDataset {
+            len: 10,
+            err_at: None,
+            panic_at: None,
+            slow_first_batch_ms: 0,
+        });
+        let result = ImagePipeline::new(dataset)
+            .decode_image()
+            .workers(4)
+            .prefetch_batches(usize::MAX)
+            .batch(usize::MAX, false)
+            .compile();
+        let err = match result {
+            Err(err) => err,
+            Ok(_) => panic!("expected a capacity overflow error"),
+        };
+        assert!(err.to_string().contains("overflow"), "got: {err}");
+    }
+
+    /// Inline errors must be terminal too: worker count must not change the
+    /// loader's error semantics.
+    #[test]
+    fn inline_error_is_terminal_too() {
+        let dataset = Arc::new(SampleDataset {
+            len: 20,
+            err_at: Some(1),
+            panic_at: None,
+            slow_first_batch_ms: 0,
+        });
+        let mut loader = ImagePipeline::new(dataset)
+            .decode_image()
+            .workers(0)
+            .batch(4, false)
+            .compile()
+            .unwrap();
+
+        let first = match loader.next_batch() {
+            Err(err) => err,
+            Ok(_) => panic!("expected the sample error"),
+        };
+        assert!(first.to_string().contains("boom"), "got: {first}");
+
+        let second = match loader.next_batch() {
+            Err(err) => err,
+            Ok(_) => panic!("expected the terminal failed-state error"),
+        };
+        assert!(
+            second.to_string().contains("failed state"),
+            "got: {second}"
+        );
     }
 }

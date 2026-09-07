@@ -10,9 +10,9 @@ pub struct RuntimeConfig {
     /// `0` keeps the synchronous inline path; `> 0` runs a persistent worker
     /// pool of that many threads. Worker count never changes sampling order.
     pub num_workers: usize,
-    /// Maximum batches prepared ahead while the caller consumes one at a
-    /// time (only used when `num_workers > 0`). `0` means one batch in
-    /// flight: samples run in parallel, batches are synchronized per call.
+    /// Number of *future* batches prepared ahead while the caller consumes
+    /// one at a time (worker pools only); the current batch plus that many
+    /// are in flight, so `0` keeps only the current batch ahead of nothing.
     pub prefetch_batches: usize,
 }
 

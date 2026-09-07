@@ -190,7 +190,11 @@ class Pipeline:
         )
 
     def prefetch_batches(self, prefetch: int) -> Pipeline:
-        """Prepare up to `prefetch` batches ahead (worker pools only)."""
+        """Prepare `prefetch` future batches ahead (worker pools only).
+
+        The current batch plus `prefetch` more are in flight; ``0`` keeps
+        only the current batch running.
+        """
         return Pipeline(
             self._inner.prefetch_batches(prefetch),
             as_numpy=self.as_numpy,

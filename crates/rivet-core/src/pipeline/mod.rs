@@ -115,8 +115,10 @@ impl ImagePipeline {
         self
     }
 
-    /// Prepare up to `prefetch_batches` batches while the caller consumes
-    /// one at a time (worker pools only). Delivery stays in sampler order.
+    /// Prepare up to `prefetch_batches` future batches while the caller
+    /// consumes the current one (worker pools only; the current batch is
+    /// always in flight, so total in-flight = `prefetch_batches + 1`).
+    /// Delivery stays in sampler order.
     pub fn prefetch_batches(mut self, prefetch_batches: usize) -> Self {
         self.runtime.prefetch_batches = prefetch_batches;
         self
