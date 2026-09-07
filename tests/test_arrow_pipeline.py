@@ -208,3 +208,57 @@ def test_prefetch_matches_inline(arrow_file: Path) -> None:
     for a, b in zip(serial, prefetched):
         assert np.array_equal(a["images"], b["images"])
         assert a["labels"].tolist() == b["labels"].tolist()
+
+
+def test_loader_for_loop_matches_manual_next(arrow_file: Path) -> None:
+    loader = (
+        scan(arrow_file)
+        .take(24)
+        .decode_image()
+        .resize(16, 16)
+        .workers(3)
+        .prefetch_batches(2)
+        .batch(8)
+        .execute()
+    )
+
+    manual: list[dict[str, object]] = []
+    while True:
+        try:
+            manual.append(next(loader))
+        except StopIteration:
+            break
+
+    loader = (
+        scan(arrow_file)
+        .take(24)
+        .decode_image()
+        .resize(16, 16)
+        .workers(3)
+        .prefetch_batches(2)
+        .batch(8)
+        .execute()
+    )
+    looped: list[dict[str, object]] = [batch for batch in loader]
+
+    assert len(looped) == len(manual) == 3
+    for a, b in zip(looped, manual):
+        assert np.array_equal(a["images"], b["images"])
+        assert a["labels"].tolist() == b["labels"].tolist()
+
+
+def test_loader_iterator_protocol(arrow_file: Path) -> None:
+    loader = (
+        scan(arrow_file)
+        .take(8)
+        .decode_image()
+        .batch(8)
+        .execute()
+    )
+
+    # Standard iterator protocol: iter() is idempotent, exhaustion is
+    # sticky and surfaces as StopIteration.
+    assert iter(loader) is loader
+    batches = list(loader)
+    assert len(batches) == 1
+    assert list(loader) == []

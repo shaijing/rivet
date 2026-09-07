@@ -243,7 +243,22 @@ def scan_image_folder(root: str | Path) -> Pipeline:
 
 
 class DataLoader:
-    """Sequential decoded image batch loader."""
+    """Sequential decoded image batch loader, usable as a python iterator.
+
+    The standard protocol applies:
+
+    .. code-block:: python
+
+        for batch in loader:
+            x = batch["images"]      # numpy array (or bytes when
+            y = batch["labels"]      # as_numpy=False)
+
+    ``iter(loader)`` returns the loader itself and exhaustion is sticky
+    (StopIteration). Loading always happens inside Rust on the pipeline's
+    persistent worker pool (``pipeline.workers(n)``) with the GIL released
+    while a batch is prepared, so this iterator stays a thin control-flow
+    wrapper and python threads are not blocked by data preparation.
+    """
 
     def __init__(
         self,
