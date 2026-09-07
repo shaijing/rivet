@@ -1,5 +1,5 @@
 use crate::errors::{RivetResult, invalid_shape};
-use crate::sample::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
+use crate::sample::image::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
 
 #[derive(Clone, Copy)]
 pub struct LayoutConfig {
@@ -149,7 +149,7 @@ fn convert_chw_values_to_hwc<T: Copy>(
 #[cfg(test)]
 mod tests {
     use super::LayoutConfig;
-    use crate::sample::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
+    use crate::sample::image::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
 
     #[test]
     fn converts_hwc_to_chw() {

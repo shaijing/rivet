@@ -1,34 +1,31 @@
-use crate::dataset::Dataset;
+use crate::dataset::source::Dataset;
 use crate::errors::{RivetError, RivetResult, invalid_argument};
-use crate::sample::EncodedImageSample;
+use crate::sample::image::EncodedImageSample;
 use arrow::array::{Array, BinaryArray, Int32Array, Int64Array, LargeBinaryArray, StructArray};
 use arrow::record_batch::RecordBatch;
 use arrow_buffer::Buffer;
-use arrow_ipc::reader::StreamDecoder;
-use bytes::Bytes;
-use memmap2::Mmap;
-use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use super::mmap::decode_mmap_arrow;
 
 struct BatchMeta {
     row_start: usize,
     row_count: usize,
 }
 
-pub struct ArrowImageDatasetCore {
+/// mmap-backed Arrow IPC stream. Batches are decoded once into structured
+/// views whose data buffers stay file-backed (see the `mmap` module); this
+/// layer handles storage, row location, and typed extraction only and knows
+/// nothing about any modality.
+pub struct MmapArrowTable {
     batches: Vec<RecordBatch>,
     batch_meta: Vec<BatchMeta>,
     len: usize,
-    image_column: String,
-    label_column: String,
 }
 
-impl ArrowImageDatasetCore {
-    pub fn new(
-        arrow_files: Vec<PathBuf>,
-        image_column: String,
-        label_column: String,
-    ) -> RivetResult<Self> {
+impl MmapArrowTable {
+    pub fn from_files(arrow_files: &[PathBuf]) -> RivetResult<Self> {
         if arrow_files.is_empty() {
             return Err(invalid_argument("arrow_files must not be empty"));
         }
@@ -38,9 +35,7 @@ impl ArrowImageDatasetCore {
         let mut len = 0usize;
 
         for path in arrow_files {
-            for batch in decode_arrow_file(&path)? {
-                validate_image_batch(&batch, &image_column, &label_column)?;
-
+            for batch in decode_mmap_arrow(path, false)? {
                 let row_count = batch.num_rows();
                 batch_meta.push(BatchMeta {
                     row_start: len,
@@ -55,12 +50,15 @@ impl ArrowImageDatasetCore {
             batches,
             batch_meta,
             len,
-            image_column,
-            label_column,
         })
     }
 
-    fn locate_row(&self, index: usize) -> RivetResult<(usize, usize)> {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Resolve a global row index to its (batch, local row).
+    pub fn locate_row(&self, index: usize) -> RivetResult<(&RecordBatch, usize)> {
         if index >= self.len {
             return Err(RivetError::IndexOutOfRange {
                 index,
@@ -81,64 +79,158 @@ impl ArrowImageDatasetCore {
             });
         }
 
-        Ok((batch_index, index - meta.row_start))
+        Ok((&self.batches[batch_index], index - meta.row_start))
+    }
+
+    pub fn row(&self, index: usize) -> RivetResult<ArrowRow<'_>> {
+        let (batch, row) = self.locate_row(index)?;
+        Ok(ArrowRow::new(batch, row))
+    }
+
+    /// Borrowed batches for constructor-time schema validation by adapters.
+    pub(crate) fn batches(&self) -> &[RecordBatch] {
+        &self.batches
     }
 }
 
-/// Decode an Arrow IPC stream file into record batches whose array buffers
-/// stay backed by a read-only mmap of the file.
-///
-/// Ownership chain: `Mmap` -> `Bytes::from_owner` -> `Buffer`. Every record
-/// batch buffer sliced out by [`StreamDecoder`] shares that `Buffer`'s
-/// allocation, so the batches keep the mmap alive via refcount without the
-/// dataset having to store the `Mmap` itself.
-///
-/// `require_alignment: true` makes the decoder fail on misaligned IPC
-/// buffers instead of silently copying them to an aligned heap buffer;
-/// tests use it to prove the mmap path stays zero-copy.
-fn decode_arrow_file(path: &Path) -> RivetResult<Vec<RecordBatch>> {
-    decode_arrow_file_with_alignment(path, false)
+/// A single row view over an Arrow table with typed, zero-copy column
+/// extraction. Extraction understands Arrow types, not modalities.
+pub struct ArrowRow<'a> {
+    batch: &'a RecordBatch,
+    row: usize,
 }
 
-fn decode_arrow_file_with_alignment(
-    path: &Path,
-    require_alignment: bool,
-) -> RivetResult<Vec<RecordBatch>> {
-    let file = File::open(path)?;
+impl<'a> ArrowRow<'a> {
+    fn new(batch: &'a RecordBatch, row: usize) -> Self {
+        Self { batch, row }
+    }
 
-    // SAFETY: the mapping is read-only. The mapped file must not be truncated
-    // or written by others while the returned batches keep the mapping alive.
-    let mmap = unsafe { Mmap::map(&file)? };
+    /// Zero-copy slice of a struct column's binary field (e.g. the Hugging
+    /// Face `img: struct<bytes: binary>` layout).
+    pub fn struct_binary(&self, struct_column: &str, field: &str) -> RivetResult<Buffer> {
+        let struct_col = self.batch.column_by_name(struct_column).ok_or_else(|| {
+            invalid_argument(format!("missing column {struct_column}"))
+        })?;
+        let image = struct_col
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .ok_or_else(|| {
+                invalid_argument(format!(
+                    "{struct_column} must be a struct column, got {:?}",
+                    struct_col.data_type()
+                ))
+            })?;
+        let bytes = image
+            .column_by_name(field)
+            .ok_or_else(|| invalid_argument(format!("{struct_column}.{field} field is missing")))?;
 
-    let bytes = Bytes::from_owner(mmap);
-    let mut buffer = Buffer::from(bytes);
-    let mut decoder = StreamDecoder::new().with_require_alignment(require_alignment);
-    let mut batches = Vec::new();
-
-    while !buffer.is_empty() {
-        if let Some(batch) = decoder.decode(&mut buffer)? {
-            batches.push(batch);
+        if let Some(bytes) = bytes.as_any().downcast_ref::<BinaryArray>() {
+            if bytes.is_null(self.row) {
+                return Err(invalid_argument(format!(
+                    "{struct_column}.{field} is null at row {}",
+                    self.row
+                )));
+            }
+            let offsets = bytes.value_offsets();
+            let start = offsets[self.row] as usize;
+            let end = offsets[self.row + 1] as usize;
+            return Ok(bytes.values().slice_with_length(start, end - start));
         }
-    }
-    decoder.finish()?;
 
-    Ok(batches)
+        if let Some(bytes) = bytes.as_any().downcast_ref::<LargeBinaryArray>() {
+            if bytes.is_null(self.row) {
+                return Err(invalid_argument(format!(
+                    "{struct_column}.{field} is null at row {}",
+                    self.row
+                )));
+            }
+            let offsets = bytes.value_offsets();
+            let start = offsets[self.row] as usize;
+            let end = offsets[self.row + 1] as usize;
+            return Ok(bytes.values().slice_with_length(start, end - start));
+        }
+
+        Err(invalid_argument(format!(
+            "{struct_column}.{field} must be binary or large_binary, got {:?}",
+            bytes.data_type()
+        )))
+    }
+
+    /// Read an integer column as `i64`; accepts int64 or int32 columns.
+    pub fn i64(&self, column: &str) -> RivetResult<i64> {
+        let labels = self
+            .batch
+            .column_by_name(column)
+            .ok_or_else(|| invalid_argument(format!("missing column {column}")))?;
+
+        if let Some(labels) = labels.as_any().downcast_ref::<Int64Array>() {
+            if labels.is_null(self.row) {
+                return Err(invalid_argument(format!(
+                    "{column} is null at row {}",
+                    self.row
+                )));
+            }
+            return Ok(labels.value(self.row));
+        }
+
+        if let Some(labels) = labels.as_any().downcast_ref::<Int32Array>() {
+            if labels.is_null(self.row) {
+                return Err(invalid_argument(format!(
+                    "{column} is null at row {}",
+                    self.row
+                )));
+            }
+            return Ok(i64::from(labels.value(self.row)));
+        }
+
+        Err(invalid_argument(format!(
+            "{column} must be int64 or int32, got {:?}",
+            labels.data_type()
+        )))
+    }
 }
 
-impl Dataset for ArrowImageDatasetCore {
+/// Image-modality adapter over an [`MmapArrowTable`]: maps a
+/// `struct<bytes: binary>` image column and an int label column onto
+/// [`EncodedImageSample`]. The table layer itself stays modality-free.
+pub struct ArrowImageDataset {
+    table: Arc<MmapArrowTable>,
+    image_column: String,
+    label_column: String,
+}
+
+impl ArrowImageDataset {
+    pub fn new(
+        arrow_files: Vec<PathBuf>,
+        image_column: String,
+        label_column: String,
+    ) -> RivetResult<Self> {
+        let table = Arc::new(MmapArrowTable::from_files(&arrow_files)?);
+        for batch in table.batches() {
+            validate_image_batch(batch, &image_column, &label_column)?;
+        }
+
+        Ok(Self {
+            table,
+            image_column,
+            label_column,
+        })
+    }
+}
+
+impl Dataset for ArrowImageDataset {
     type Item = EncodedImageSample;
 
     fn len(&self) -> usize {
-        self.len
+        self.table.len()
     }
 
     fn get(&self, index: usize) -> RivetResult<Self::Item> {
-        let (batch_index, row) = self.locate_row(index)?;
-        let batch = &self.batches[batch_index];
+        let row = self.table.row(index)?;
 
         Ok(EncodedImageSample {
-            image: image_buffer_at(batch, &self.image_column, row)?,
-            label: label_at(batch, &self.label_column, row)?,
+            image: row.struct_binary(&self.image_column, "bytes")?,
+            label: row.i64(&self.label_column)?,
         })
     }
 }
@@ -188,101 +280,18 @@ fn validate_image_batch(
     Ok(())
 }
 
-fn label_at(batch: &RecordBatch, label_column: &str, row: usize) -> RivetResult<i64> {
-    let label_index = batch
-        .schema()
-        .index_of(label_column)
-        .map_err(invalid_argument)?;
-    let labels = batch.column(label_index);
-
-    if let Some(labels) = labels.as_any().downcast_ref::<Int64Array>() {
-        if labels.is_null(row) {
-            return Err(invalid_argument(format!(
-                "{label_column} is null at row {row}"
-            )));
-        }
-        return Ok(labels.value(row));
-    }
-
-    if let Some(labels) = labels.as_any().downcast_ref::<Int32Array>() {
-        if labels.is_null(row) {
-            return Err(invalid_argument(format!(
-                "{label_column} is null at row {row}"
-            )));
-        }
-        return Ok(i64::from(labels.value(row)));
-    }
-
-    Err(invalid_argument(format!(
-        "{label_column} must be int64 or int32, got {:?}",
-        labels.data_type()
-    )))
-}
-
-/// Return row's encoded bytes as a zero-copy slice of the column's values
-/// buffer: only offsets/length metadata is produced, the payload bytes are
-/// shared with whatever backs the record batch (mmap, heap, network).
-fn image_buffer_at(
-    batch: &RecordBatch,
-    image_column: &str,
-    row: usize,
-) -> RivetResult<Buffer> {
-    let image_index = batch
-        .schema()
-        .index_of(image_column)
-        .map_err(invalid_argument)?;
-    let image = batch.column(image_index);
-
-    let image = image
-        .as_any()
-        .downcast_ref::<StructArray>()
-        .ok_or_else(|| {
-            invalid_argument(format!(
-                "{image_column} must be a struct column with a bytes field, got {:?}",
-                image.data_type()
-            ))
-        })?;
-
-    let bytes = image
-        .column_by_name("bytes")
-        .ok_or_else(|| invalid_argument(format!("{image_column}.bytes field is missing")))?;
-
-    if let Some(bytes) = bytes.as_any().downcast_ref::<BinaryArray>() {
-        if bytes.is_null(row) {
-            return Err(invalid_argument(format!(
-                "{image_column}.bytes is null at row {row}"
-            )));
-        }
-        let offsets = bytes.value_offsets();
-        let start = offsets[row] as usize;
-        let end = offsets[row + 1] as usize;
-        return Ok(bytes.values().slice_with_length(start, end - start));
-    }
-
-    if let Some(bytes) = bytes.as_any().downcast_ref::<LargeBinaryArray>() {
-        if bytes.is_null(row) {
-            return Err(invalid_argument(format!(
-                "{image_column}.bytes is null at row {row}"
-            )));
-        }
-        let offsets = bytes.value_offsets();
-        let start = offsets[row] as usize;
-        let end = offsets[row + 1] as usize;
-        return Ok(bytes.values().slice_with_length(start, end - start));
-    }
-
-    Err(invalid_argument(format!(
-        "{image_column}.bytes must be binary or large_binary, got {:?}",
-        bytes.data_type()
-    )))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dataset::arrow::mmap::decode_mmap_arrow;
     use arrow::array::ArrayRef;
     use arrow::datatypes::{DataType, Field, Schema};
+    use arrow_ipc::reader::StreamDecoder;
     use arrow_ipc::writer::StreamWriter;
+    use bytes::Bytes;
+    use memmap2::Mmap;
+    use std::fs::File;
+    use std::path::Path;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -344,7 +353,7 @@ mod tests {
         (start, start + values.len())
     }
 
-    /// `image_buffer_at` must return a slice of the column's values buffer:
+    /// `struct_binary` must return a slice of the column's values buffer:
     /// same content, address inside the parent buffer, no payload copy.
     #[test]
     fn image_buffer_slices_values_without_copy() {
@@ -355,9 +364,10 @@ mod tests {
         let (values_start, values_end) = values_bounds(&batch);
 
         for (row, expected) in [row0, row1, row2].iter().enumerate() {
-            let image = image_buffer_at(&batch, "img", row).unwrap();
+            let row_view = ArrowRow::new(&batch, row);
+            let image = row_view.struct_binary("img", "bytes").unwrap();
             assert_eq!(image.as_slice(), *expected, "row {row} content");
-            assert_eq!(label_at(&batch, "label", row).unwrap(), (row as i64 + 1) * 10);
+            assert_eq!(row_view.i64("label").unwrap(), (row as i64 + 1) * 10);
 
             if !expected.is_empty() {
                 let ptr = image.as_ptr() as usize;
@@ -373,8 +383,8 @@ mod tests {
     fn image_buffer_at_rejects_null_bytes() {
         let row: &[u8] = &[1, 2];
         let batch = encoded_batch(&[(Some(row), 1), (None, 2)]);
-        assert!(image_buffer_at(&batch, "img", 0).is_ok());
-        let err = image_buffer_at(&batch, "img", 1).unwrap_err();
+        assert!(ArrowRow::new(&batch, 0).struct_binary("img", "bytes").is_ok());
+        let err = ArrowRow::new(&batch, 1).struct_binary("img", "bytes").unwrap_err();
         assert!(err.to_string().contains("null"), "got: {err}");
     }
 
@@ -412,7 +422,7 @@ mod tests {
         for batch in &decoded {
             assert_eq!(batch.num_rows(), rows.len());
             for (row, (expected, _)) in rows.iter().enumerate() {
-                let image = image_buffer_at(batch, "img", row).unwrap();
+                let image = ArrowRow::new(batch, row).struct_binary("img", "bytes").unwrap();
                 assert_eq!(image.as_slice(), expected.unwrap(), "row {row} content");
                 if image.len() > 0 {
                     let ptr = image.as_ptr() as usize;
@@ -426,7 +436,7 @@ mod tests {
         drop(decoded);
 
         // End-to-end through the dataset constructor (its own mmap).
-        let dataset = ArrowImageDatasetCore::new(
+        let dataset = ArrowImageDataset::new(
             vec![path.clone()],
             "img".to_string(),
             "label".to_string(),
@@ -462,7 +472,7 @@ mod tests {
         let file0 = write_stream(&dir, "shard0.arrow", &[&batch0, &batch1]);
         let file1 = write_stream(&dir, "shard1.arrow", &[&batch2]);
 
-        let dataset = ArrowImageDatasetCore::new(
+        let dataset = ArrowImageDataset::new(
             vec![file0, file1],
             "img".to_string(),
             "label".to_string(),
@@ -503,10 +513,12 @@ mod tests {
         let batch = encoded_batch(&[(Some(row), 1), (Some(row), 2), (Some(row), 3)]);
         let path = write_stream(&dir, "aligned.arrow", &[&batch]);
 
-        let decoded = decode_arrow_file_with_alignment(&path, true).unwrap();
+        let decoded = decode_mmap_arrow(&path, true).unwrap();
         assert_eq!(decoded.len(), 1);
         for index in 0..decoded[0].num_rows() {
-            let image = image_buffer_at(&decoded[0], "img", index).unwrap();
+            let image = ArrowRow::new(&decoded[0], index)
+                .struct_binary("img", "bytes")
+                .unwrap();
             assert_eq!(image.as_slice(), &[0; 64]);
         }
 

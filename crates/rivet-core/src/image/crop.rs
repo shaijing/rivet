@@ -1,6 +1,6 @@
 use crate::errors::{RivetResult, invalid_shape};
 use crate::image::{from_rgb_image, into_rgb_image};
-use crate::sample::ImageSample;
+use crate::sample::image::ImageSample;
 use image::imageops::crop_imm;
 
 #[derive(Clone, Copy)]

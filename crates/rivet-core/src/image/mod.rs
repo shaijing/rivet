@@ -7,7 +7,7 @@ pub mod normalize;
 pub mod resize;
 
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
-use crate::sample::{DecodedSample, ImageBuffer, ImageDType, ImageLayout};
+use crate::sample::image::{DecodedSample, ImageBuffer, ImageDType, ImageLayout};
 use image::RgbImage;
 
 pub fn require_u8_hwc(sample: DecodedSample, op_name: &str) -> RivetResult<DecodedSample> {

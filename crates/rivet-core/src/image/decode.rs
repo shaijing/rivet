@@ -1,6 +1,6 @@
 use crate::errors::{RivetResult, invalid_argument};
 use crate::image::from_rgb_image;
-use crate::sample::{DecodedSample, ImageSample};
+use crate::sample::image::{DecodedSample, ImageSample};
 
 #[derive(Clone, Copy)]
 pub struct DecodeImageConfig;
@@ -27,7 +27,7 @@ pub fn decode_rgb(encoded: &[u8], label: i64) -> RivetResult<DecodedSample> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sample::{EncodedImageSample, ImageBuffer, ImageDType, ImageLayout};
+    use crate::sample::image::{EncodedImageSample, ImageBuffer, ImageDType, ImageLayout};
     use arrow_buffer::Buffer;
     use std::io::Cursor;
 

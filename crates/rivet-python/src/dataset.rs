@@ -5,7 +5,7 @@ use arrow_buffer::Buffer;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use rivet_core::batch::ImageBatchBuilder;
-use rivet_core::dataset::{ArrowImageDatasetCore, Dataset, ImageFolderDatasetCore};
+use rivet_core::dataset::{ArrowImageDataset, Dataset, ImageFolderDatasetCore};
 use rivet_core::image::decode::decode_rgb;
 use rivet_core::pipeline::ImagePipeline;
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 #[pyclass(name = "_ArrowDataset")]
 pub(crate) struct PyArrowDataset {
-    pub(crate) inner: Arc<ArrowImageDatasetCore>,
+    pub(crate) inner: Arc<ArrowImageDataset>,
 }
 
 #[pymethods]
@@ -23,7 +23,7 @@ impl PyArrowDataset {
     fn new(arrow_files: Vec<PathBuf>, image_column: &str, label_column: &str) -> PyResult<Self> {
         Ok(Self {
             inner: Arc::new(
-                ArrowImageDatasetCore::new(
+                ArrowImageDataset::new(
                     arrow_files,
                     image_column.to_string(),
                     label_column.to_string(),
@@ -124,7 +124,7 @@ fn encoded_sample_to_py(py: Python<'_>, image: Buffer, label: i64) -> PyResult<P
 
 fn decoded_sample_to_py(
     py: Python<'_>,
-    sample: rivet_core::sample::EncodedImageSample,
+    sample: rivet_core::sample::image::EncodedImageSample,
 ) -> PyResult<Py<PyDict>> {
     let decoded = decode_rgb(sample.image.as_slice(), sample.label).map_err(to_py_err)?;
     let mut batch = ImageBatchBuilder::with_capacity(1);

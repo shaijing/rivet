@@ -1,6 +1,6 @@
 use crate::errors::RivetResult;
 use crate::image::{from_rgb_image, into_rgb_image};
-use crate::sample::ImageSample;
+use crate::sample::image::ImageSample;
 use image::imageops::{flip_horizontal, flip_vertical};
 
 #[derive(Clone, Copy)]

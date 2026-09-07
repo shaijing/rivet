@@ -1,5 +1,5 @@
 use crate::errors::{RivetResult, invalid_argument};
-use crate::sample::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
+use crate::sample::image::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
 
 #[derive(Clone)]
 pub struct NormalizeConfig {
@@ -102,7 +102,7 @@ fn normalize_chw(
 #[cfg(test)]
 mod tests {
     use super::NormalizeConfig;
-    use crate::sample::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
+    use crate::sample::image::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
 
     #[test]
     fn normalize_u8_to_f32() {

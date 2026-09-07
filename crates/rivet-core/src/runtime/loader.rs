@@ -1,7 +1,7 @@
 use crate::batch::ImageBatchBuilder;
 use crate::errors::RivetResult;
 use crate::pipeline::op::ExecutionPlan;
-use crate::sample::ImageBatch;
+use crate::sample::image::ImageBatch;
 use crate::sampler::IndexSampler;
 
 pub struct ImageDataLoader {

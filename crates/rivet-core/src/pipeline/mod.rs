@@ -1,11 +1,12 @@
 pub mod op;
 
-use crate::dataset::{ImageDataset, ImageSource};
+use crate::dataset::source::{Dataset, Source};
 use crate::errors::{RivetResult, invalid_pipeline};
 use crate::pipeline::op::{
     BatchConfig, ExecutionPlan, IndexOp, PipelineImageState, ImageOp, SourceOp, compile_sampler,
 };
 use crate::runtime::ImageDataLoader;
+use crate::sample::image::EncodedImageSample;
 use crate::sampler::IndexSampler;
 use std::sync::Arc;
 
@@ -20,12 +21,12 @@ pub struct ImagePipeline {
 impl ImagePipeline {
     pub fn new<T>(dataset: Arc<T>) -> Self
     where
-        T: ImageDataset + 'static,
+        T: Dataset<Item = EncodedImageSample> + 'static,
     {
-        Self::from_source(ImageSource::new(dataset))
+        Self::from_source(Source::new(dataset))
     }
 
-    pub fn from_source(source: ImageSource) -> Self {
+    pub fn from_source(source: Source<EncodedImageSample>) -> Self {
         Self {
             source: SourceOp::new(source),
             index_ops: Vec::new(),
@@ -150,7 +151,7 @@ fn validate_image_ops(ops: &[ImageOp]) -> RivetResult<PipelineImageState> {
 mod tests {
     use super::*;
     use crate::dataset::Dataset;
-    use crate::sample::{EncodedImageSample, ImageDType, ImageLayout};
+    use crate::sample::image::{EncodedImageSample, ImageDType, ImageLayout};
     use arrow_buffer::Buffer;
 
     struct StubDataset {

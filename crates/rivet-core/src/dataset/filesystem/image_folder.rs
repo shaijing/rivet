@@ -1,6 +1,6 @@
-use crate::dataset::Dataset;
+use crate::dataset::source::Dataset;
 use crate::errors::{RivetError, RivetResult, invalid_argument};
-use crate::sample::EncodedImageSample;
+use crate::sample::image::EncodedImageSample;
 use arrow_buffer::Buffer;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

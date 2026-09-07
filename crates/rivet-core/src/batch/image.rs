@@ -1,5 +1,5 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
-use crate::sample::{DecodedSample, ImageBatch, ImageBuffer, ImageDType, ImageLayout};
+use crate::sample::image::{DecodedSample, ImageBatch, ImageBuffer, ImageDType, ImageLayout};
 
 enum ImageBatchBufferBuilder {
     Empty,
@@ -140,7 +140,7 @@ impl ImageBatchBuilder {
 #[cfg(test)]
 mod tests {
     use super::ImageBatchBuilder;
-    use crate::sample::{DecodedSample, ImageBuffer, ImageLayout};
+    use crate::sample::image::{DecodedSample, ImageBuffer, ImageLayout};
 
     fn sample(values: Vec<f32>) -> DecodedSample {
         DecodedSample {
