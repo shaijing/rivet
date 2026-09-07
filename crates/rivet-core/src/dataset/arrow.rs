@@ -3,9 +3,12 @@ use crate::errors::{RivetError, RivetResult, invalid_argument};
 use crate::sample::EncodedImageSample;
 use arrow::array::{Array, BinaryArray, Int32Array, Int64Array, LargeBinaryArray, StructArray};
 use arrow::record_batch::RecordBatch;
-use arrow_ipc::reader::StreamReader;
+use arrow_buffer::Buffer;
+use arrow_ipc::reader::StreamDecoder;
+use bytes::Bytes;
+use memmap2::Mmap;
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 struct BatchMeta {
     row_start: usize,
@@ -35,11 +38,7 @@ impl ArrowImageDatasetCore {
         let mut len = 0usize;
 
         for path in arrow_files {
-            let file = File::open(&path)?;
-            let reader = StreamReader::try_new(file, None)?;
-
-            for batch in reader {
-                let batch = batch?;
+            for batch in decode_arrow_file(&path)? {
                 validate_image_batch(&batch, &image_column, &label_column)?;
 
                 let row_count = batch.num_rows();
@@ -86,6 +85,35 @@ impl ArrowImageDatasetCore {
     }
 }
 
+/// Decode an Arrow IPC stream file into record batches whose array buffers
+/// stay backed by a read-only mmap of the file.
+///
+/// Ownership chain: `Mmap` -> `Bytes::from_owner` -> `Buffer`. Every record
+/// batch buffer sliced out by [`StreamDecoder`] shares that `Buffer`'s
+/// allocation, so the batches keep the mmap alive via refcount without the
+/// dataset having to store the `Mmap` itself.
+fn decode_arrow_file(path: &Path) -> RivetResult<Vec<RecordBatch>> {
+    let file = File::open(path)?;
+
+    // SAFETY: the mapping is read-only. The mapped file must not be truncated
+    // or written by others while the returned batches keep the mapping alive.
+    let mmap = unsafe { Mmap::map(&file)? };
+
+    let bytes = Bytes::from_owner(mmap);
+    let mut buffer = Buffer::from(bytes);
+    let mut decoder = StreamDecoder::new();
+    let mut batches = Vec::new();
+
+    while !buffer.is_empty() {
+        if let Some(batch) = decoder.decode(&mut buffer)? {
+            batches.push(batch);
+        }
+    }
+    decoder.finish()?;
+
+    Ok(batches)
+}
+
 impl Dataset for ArrowImageDatasetCore {
     type Item = EncodedImageSample;
 
@@ -98,7 +126,7 @@ impl Dataset for ArrowImageDatasetCore {
         let batch = &self.batches[batch_index];
 
         Ok(EncodedImageSample {
-            image: image_bytes_at(batch, &self.image_column, row)?.to_vec(),
+            image: image_buffer_at(batch, &self.image_column, row)?,
             label: label_at(batch, &self.label_column, row)?,
         })
     }
@@ -180,11 +208,14 @@ fn label_at(batch: &RecordBatch, label_column: &str, row: usize) -> RivetResult<
     )))
 }
 
-fn image_bytes_at<'a>(
-    batch: &'a RecordBatch,
+/// Return row's encoded bytes as a zero-copy slice of the column's values
+/// buffer: only offsets/length metadata is produced, the payload bytes are
+/// shared with whatever backs the record batch (mmap, heap, network).
+fn image_buffer_at(
+    batch: &RecordBatch,
     image_column: &str,
     row: usize,
-) -> RivetResult<&'a [u8]> {
+) -> RivetResult<Buffer> {
     let image_index = batch
         .schema()
         .index_of(image_column)
@@ -211,7 +242,10 @@ fn image_bytes_at<'a>(
                 "{image_column}.bytes is null at row {row}"
             )));
         }
-        return Ok(bytes.value(row));
+        let offsets = bytes.value_offsets();
+        let start = offsets[row] as usize;
+        let end = offsets[row + 1] as usize;
+        return Ok(bytes.values().slice_with_length(start, end - start));
     }
 
     if let Some(bytes) = bytes.as_any().downcast_ref::<LargeBinaryArray>() {
@@ -220,11 +254,178 @@ fn image_bytes_at<'a>(
                 "{image_column}.bytes is null at row {row}"
             )));
         }
-        return Ok(bytes.value(row));
+        let offsets = bytes.value_offsets();
+        let start = offsets[row] as usize;
+        let end = offsets[row + 1] as usize;
+        return Ok(bytes.values().slice_with_length(start, end - start));
     }
 
     Err(invalid_argument(format!(
         "{image_column}.bytes must be binary or large_binary, got {:?}",
         bytes.data_type()
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::ArrayRef;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow_ipc::writer::StreamWriter;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_TMP: AtomicUsize = AtomicUsize::new(0);
+
+    fn tmp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "rivet-buffer-{}-{name}-{}",
+            std::process::id(),
+            NEXT_TMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn encoded_batch(rows: &[(Option<&[u8]>, i64)]) -> RecordBatch {
+        // bytes is nullable so fixtures can carry null rows; the field
+        // nullability must mirror the struct child's so StructArray::from
+        // accepts unmasked child nulls.
+        let bytes_field = Arc::new(Field::new("bytes", DataType::Binary, true));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("img", DataType::Struct(vec![bytes_field.clone()].into()), true),
+            Field::new("label", DataType::Int64, false),
+        ]));
+        let bytes: BinaryArray = rows.iter().map(|(image, _)| *image).collect();
+        let labels: Int64Array = rows.iter().map(|(_, label)| Some(*label)).collect();
+        let bytes_ref: ArrayRef = Arc::new(bytes);
+        let img = StructArray::from(vec![(bytes_field, bytes_ref)]);
+        RecordBatch::try_new(schema, vec![Arc::new(img), Arc::new(labels)]).unwrap()
+    }
+
+    fn write_stream(dir: &Path, name: &str, batch: &RecordBatch) -> PathBuf {
+        let path = dir.join(name);
+        let mut sink = Vec::new();
+        let mut writer = StreamWriter::try_new(&mut sink, &batch.schema()).unwrap();
+        writer.write(batch).unwrap();
+        writer.finish().unwrap();
+        std::fs::write(&path, sink).unwrap();
+        path
+    }
+
+    fn values_bounds(batch: &RecordBatch) -> (usize, usize) {
+        let image = batch
+            .column_by_name("img")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap();
+        let bytes = image
+            .column_by_name("bytes")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap();
+        let values = bytes.values();
+        let start = values.as_ptr() as usize;
+        (start, start + values.len())
+    }
+
+    /// `image_buffer_at` must return a slice of the column's values buffer:
+    /// same content, address inside the parent buffer, no payload copy.
+    #[test]
+    fn image_buffer_slices_values_without_copy() {
+        let row0: &[u8] = &[1, 2, 3, 4];
+        let row1: &[u8] = &[];
+        let row2: &[u8] = &[5, 6];
+        let batch = encoded_batch(&[(Some(row0), 10), (Some(row1), 20), (Some(row2), 30)]);
+        let (values_start, values_end) = values_bounds(&batch);
+
+        for (row, expected) in [row0, row1, row2].iter().enumerate() {
+            let image = image_buffer_at(&batch, "img", row).unwrap();
+            assert_eq!(image.as_slice(), *expected, "row {row} content");
+            assert_eq!(label_at(&batch, "label", row).unwrap(), (row as i64 + 1) * 10);
+
+            if !expected.is_empty() {
+                let ptr = image.as_ptr() as usize;
+                assert!(
+                    ptr >= values_start && ptr + image.len() <= values_end,
+                    "row {row} buffer must point inside the parent values buffer"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn image_buffer_at_rejects_null_bytes() {
+        let row: &[u8] = &[1, 2];
+        let batch = encoded_batch(&[(Some(row), 1), (None, 2)]);
+        assert!(image_buffer_at(&batch, "img", 0).is_ok());
+        let err = image_buffer_at(&batch, "img", 1).unwrap_err();
+        assert!(err.to_string().contains("null"), "got: {err}");
+    }
+
+    /// Full chain: IPC file -> mmap -> Buffer -> StreamDecoder -> batches ->
+    /// sample slices. Sample byte ranges must stay inside the mmap, and the
+    /// dataset constructor must serve identical rows.
+    #[test]
+    fn arrow_samples_stay_mmap_backed() {
+        let row0: &[u8] = &[1, 2, 3];
+        let row1: &[u8] = &[];
+        let row2: &[u8] = &[9; 64];
+        let rows = [(Some(row0), 7i64), (Some(row1), 8), (Some(row2), 9)];
+
+        let dir = tmp_dir("mmap");
+        let batch = encoded_batch(&rows);
+        let path = write_stream(&dir, "data.arrow", &batch);
+
+        // Reproduce the source-side decode while holding the mapping, so the
+        // mmap bounds are known.
+        let file = File::open(&path).unwrap();
+        let mmap = unsafe { Mmap::map(&file).unwrap() };
+        let map_start = mmap.as_ptr() as usize;
+        let map_end = map_start + mmap.len();
+
+        let mut buffer = Buffer::from(Bytes::from_owner(mmap));
+        let mut decoder = StreamDecoder::new();
+        let mut decoded = Vec::new();
+        while !buffer.is_empty() {
+            if let Some(batch) = decoder.decode(&mut buffer).unwrap() {
+                decoded.push(batch);
+            }
+        }
+        decoder.finish().unwrap();
+
+        for batch in &decoded {
+            assert_eq!(batch.num_rows(), rows.len());
+            for (row, (expected, _)) in rows.iter().enumerate() {
+                let image = image_buffer_at(batch, "img", row).unwrap();
+                assert_eq!(image.as_slice(), expected.unwrap(), "row {row} content");
+                if image.len() > 0 {
+                    let ptr = image.as_ptr() as usize;
+                    assert!(
+                        ptr >= map_start && ptr + image.len() <= map_end,
+                        "row {row} sample bytes must stay inside the mmap"
+                    );
+                }
+            }
+        }
+        drop(decoded);
+
+        // End-to-end through the dataset constructor (its own mmap).
+        let dataset = ArrowImageDatasetCore::new(
+            vec![path.clone()],
+            "img".to_string(),
+            "label".to_string(),
+        )
+        .unwrap();
+        assert_eq!(dataset.len(), rows.len());
+        for (index, (expected, label)) in rows.iter().enumerate() {
+            let sample = dataset.get(index).unwrap();
+            assert_eq!(sample.image.as_slice(), expected.unwrap());
+            assert_eq!(sample.label, *label);
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 path = "src/lib.rs"
 
 [dependencies]
+arrow-buffer.workspace = true
 numpy.workspace = true
 pyo3.workspace = true
 rivet-core.workspace = true

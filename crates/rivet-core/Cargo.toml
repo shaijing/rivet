@@ -5,7 +5,10 @@ edition.workspace = true
 
 [dependencies]
 arrow.workspace = true
+arrow-buffer.workspace = true
 arrow-ipc.workspace = true
+bytes.workspace = true
 image.workspace = true
 thiserror.workspace = true
 walkdir.workspace = true
+memmap2.workspace = true

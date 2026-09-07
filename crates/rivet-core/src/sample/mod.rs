@@ -1,3 +1,5 @@
+use arrow_buffer::Buffer;
+
 use crate::errors::{RivetResult, invalid_argument};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,8 +53,15 @@ impl ImageBuffer {
     }
 }
 
+/// An encoded (still compressed) image sample.
+///
+/// `image` is an immutable binary payload that sources may back with an mmap,
+/// a `Vec<u8>`, network `Bytes`, or any other shared allocation. The pipeline
+/// only borrows it as `&[u8]` for decoding; no encoded-byte copy happens
+/// inside the source boundary, and `Buffer::clone()` is a cheap shared
+/// refcount bump.
 pub struct EncodedImageSample {
-    pub image: Vec<u8>,
+    pub image: Buffer,
     pub label: i64,
 }
 

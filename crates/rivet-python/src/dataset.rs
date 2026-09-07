@@ -1,6 +1,7 @@
 use crate::error::to_py_err;
 use crate::loader::image_batch_to_py;
 use crate::pipeline::PyImagePipeline;
+use arrow_buffer::Buffer;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use rivet_core::batch::ImageBatchBuilder;
@@ -112,9 +113,11 @@ impl PyImageFolderDataset {
     }
 }
 
-fn encoded_sample_to_py(py: Python<'_>, image: Vec<u8>, label: i64) -> PyResult<Py<PyDict>> {
+fn encoded_sample_to_py(py: Python<'_>, image: Buffer, label: i64) -> PyResult<Py<PyDict>> {
     let out = PyDict::new(py);
-    out.set_item("image", PyBytes::new(py, &image))?;
+    // PyBytes::new copies the payload; this is the Python API boundary, not
+    // the training runtime hot path.
+    out.set_item("image", PyBytes::new(py, image.as_slice()))?;
     out.set_item("label", label)?;
     Ok(out.into())
 }
@@ -123,7 +126,7 @@ fn decoded_sample_to_py(
     py: Python<'_>,
     sample: rivet_core::sample::EncodedImageSample,
 ) -> PyResult<Py<PyDict>> {
-    let decoded = decode_rgb(&sample.image, sample.label).map_err(to_py_err)?;
+    let decoded = decode_rgb(sample.image.as_slice(), sample.label).map_err(to_py_err)?;
     let mut batch = ImageBatchBuilder::with_capacity(1);
     batch.push(decoded).map_err(to_py_err)?;
     image_batch_to_py(py, batch.finish())

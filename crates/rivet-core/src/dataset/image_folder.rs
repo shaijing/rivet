@@ -1,6 +1,7 @@
 use crate::dataset::Dataset;
 use crate::errors::{RivetError, RivetResult, invalid_argument};
 use crate::sample::EncodedImageSample;
+use arrow_buffer::Buffer;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -89,8 +90,11 @@ impl Dataset for ImageFolderDatasetCore {
             len: self.samples.len(),
         })?;
 
+        // The read is the one unavoidable materialization for plain files;
+        // moving the Vec into a Buffer shares the allocation instead of
+        // copying it again.
         Ok(EncodedImageSample {
-            image: std::fs::read(&sample.path)?,
+            image: Buffer::from(std::fs::read(&sample.path)?),
             label: sample.label,
         })
     }
@@ -132,4 +136,34 @@ fn is_image_path(path: &Path) -> bool {
             IMAGE_EXTENSIONS.contains(&extension.as_str())
         })
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_reads_file_bytes_into_buffer() {
+        let root = std::env::temp_dir().join(format!(
+            "rivet-imagefolder-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let class = root.join("class_a");
+        std::fs::create_dir_all(&class).unwrap();
+
+        let payload: Vec<u8> = (0..257u16).map(|value| (value % 251) as u8).collect();
+        std::fs::write(class.join("1.png"), &payload).unwrap();
+
+        let dataset = ImageFolderDatasetCore::new(root.clone()).unwrap();
+        assert_eq!(dataset.len(), 1);
+        let sample = dataset.get(0).unwrap();
+        assert_eq!(sample.label, 0);
+        assert_eq!(sample.image.as_slice(), payload.as_slice());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 }
