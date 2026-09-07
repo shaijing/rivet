@@ -90,6 +90,13 @@ impl ImageDataLoader {
             )),
         }
     }
+    /// Convenience wrapper for `(&mut self).into_iter()`.
+    pub fn iter(&mut self) -> ImageDataLoaderIter<'_> {
+        ImageDataLoaderIter {
+            loader: self,
+            done: false,
+        }
+    }
 }
 
 /// Coordinator-side index selection shared by both executors.
@@ -267,6 +274,51 @@ fn next_batch_workers(
     }
 }
 
+/// Fallible iterator over an [`ImageDataLoader`]'s batches.
+///
+/// Item is `RivetResult<ImageBatch>` so errors are reported once and then
+/// the iterator terminates: after EOF or a single error, every further
+/// `next()` returns `None`. This matches the loader's terminal failed-state
+/// model instead of yielding endless error items.
+pub struct ImageDataLoaderIter<'a> {
+    loader: &'a mut ImageDataLoader,
+    done: bool,
+}
+
+impl Iterator for ImageDataLoaderIter<'_> {
+    type Item = RivetResult<ImageBatch>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        match self.loader.next_batch() {
+            Ok(Some(batch)) => Some(Ok(batch)),
+            Ok(None) => {
+                self.done = true;
+                None
+            }
+            Err(err) => {
+                self.done = true;
+                Some(Err(err))
+            }
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a mut ImageDataLoader {
+    type Item = RivetResult<ImageBatch>;
+    type IntoIter = ImageDataLoaderIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        ImageDataLoaderIter {
+            loader: self,
+            done: false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,11 +376,10 @@ mod tests {
     }
 
     fn drain(loader: &mut ImageDataLoader) -> Vec<ImageBatch> {
-        let mut out = Vec::new();
-        while let Some(batch) = loader.next_batch().unwrap() {
-            out.push(batch);
-        }
-        out
+        loader
+            .into_iter()
+            .collect::<RivetResult<Vec<_>>>()
+            .unwrap()
     }
 
     fn assert_batches_equal(left: &[ImageBatch], right: &[ImageBatch]) {
@@ -632,5 +683,88 @@ mod tests {
             second.to_string().contains("failed state"),
             "got: {second}"
         );
+    }
+
+    #[test]
+    fn iterator_stops_at_eof() {
+        let mut loader = pipeline(10, 0).batch(4, false).compile().unwrap();
+
+        let batches = (&mut loader)
+            .into_iter()
+            .collect::<RivetResult<Vec<_>>>()
+            .unwrap();
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0].labels, vec![0, 1, 2, 3]);
+
+        let mut iter = (&mut loader).into_iter();
+        assert!(iter.next().is_none());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn iterator_yields_error_once_then_stops() {
+        for workers in [0, 3] {
+            let dataset = Arc::new(SampleDataset {
+                len: 20,
+                err_at: Some(1),
+                panic_at: None,
+                slow_first_batch_ms: 0,
+            });
+            let mut loader = ImagePipeline::new(dataset)
+                .decode_image()
+                .workers(workers)
+                .batch(4, false)
+                .compile()
+                .unwrap();
+
+            let mut iter = (&mut loader).into_iter();
+            let first = iter.next().expect("must yield the failure");
+            let err = match first {
+                Err(err) => err,
+                Ok(_) => panic!("expected an error item"),
+            };
+            assert!(err.to_string().contains("boom"), "got: {err}");
+
+            // The error is reported exactly once; the iterator then ends.
+            assert!(iter.next().is_none());
+            assert!(iter.next().is_none());
+        }
+    }
+
+    #[test]
+    fn iterator_matches_inline_and_workers() {
+        let mut inline = pipeline(37, 0)
+            .skip(2)
+            .take(30)
+            .batch(8, true)
+            .compile()
+            .unwrap();
+        let mut workers = pipeline(37, 3)
+            .skip(2)
+            .take(30)
+            .batch(8, true)
+            .prefetch_batches(2)
+            .compile()
+            .unwrap();
+
+        let inline = drain(&mut inline);
+        let workers = drain(&mut workers);
+        assert_batches_equal(&inline, &workers);
+    }
+
+    #[test]
+    fn iter_method_equals_into_iter() {
+        let mut via_iter_loader = pipeline(10, 2).batch(4, false).compile().unwrap();
+        let mut via_into_loader = pipeline(10, 2).batch(4, false).compile().unwrap();
+
+        let via_iter = via_iter_loader
+            .iter()
+            .collect::<RivetResult<Vec<_>>>()
+            .unwrap();
+        let via_into = (&mut via_into_loader)
+            .into_iter()
+            .collect::<RivetResult<Vec<_>>>()
+            .unwrap();
+        assert_batches_equal(&via_iter, &via_into);
     }
 }
