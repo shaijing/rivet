@@ -5,7 +5,9 @@ use arrow_buffer::Buffer;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use rivet_dataset::batch::ImageBatchBuilder;
-use rivet_dataset::dataset::{ArrowImageDataset, Dataset, ImageFolderDatasetCore};
+use rivet_dataset::dataset::{
+    ArrowImageDataset, Dataset, ImageFolderDatasetCore, LanceImageDataset,
+};
 use rivet_dataset::image::decode::decode_rgb;
 use rivet_dataset::pipeline::ImagePipeline;
 use std::path::PathBuf;
@@ -29,6 +31,43 @@ impl PyArrowDataset {
                     label_column.to_string(),
                 )
                 .map_err(to_py_err)?,
+            ),
+        })
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn get_encoded(&self, py: Python<'_>, index: usize) -> PyResult<Py<PyDict>> {
+        let sample = self.inner.get(index).map_err(to_py_err)?;
+        encoded_sample_to_py(py, sample.image, sample.label)
+    }
+
+    fn get_decoded(&self, py: Python<'_>, index: usize) -> PyResult<Py<PyDict>> {
+        decoded_sample_to_py(py, self.inner.get(index).map_err(to_py_err)?)
+    }
+
+    fn pipeline(&self) -> PyImagePipeline {
+        PyImagePipeline {
+            inner: ImagePipeline::new(Arc::clone(&self.inner)),
+        }
+    }
+}
+
+#[pyclass(name = "_LanceDataset")]
+pub(crate) struct PyLanceDataset {
+    pub(crate) inner: Arc<LanceImageDataset>,
+}
+
+#[pymethods]
+impl PyLanceDataset {
+    #[new]
+    #[pyo3(signature = (path, image_column="image", label_column="label"))]
+    fn new(path: PathBuf, image_column: &str, label_column: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: Arc::new(
+                LanceImageDataset::open(path, image_column, label_column).map_err(to_py_err)?,
             ),
         })
     }

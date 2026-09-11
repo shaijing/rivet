@@ -28,17 +28,27 @@ impl SourceOp {
     pub fn get(&self, index: usize) -> RivetResult<EncodedImageSample> {
         self.source.get(index)
     }
+
+    pub fn get_many(&self, indices: &[usize]) -> RivetResult<Vec<EncodedImageSample>> {
+        self.source.get_many(indices)
+    }
 }
 
 #[derive(Clone)]
 pub enum IndexOp {
-    Skip { count: usize },
-    Take { count: usize },
+    Skip {
+        count: usize,
+    },
+    Take {
+        count: usize,
+    },
     /// Deterministically shuffle the selected index window with a seed.
     /// Skip/Take apply first, then the window is permuted, so a fixed
     /// `(seed, epoch)` always reproduces the same order regardless of
     /// worker count.
-    Shuffle { seed: u64 },
+    Shuffle {
+        seed: u64,
+    },
 }
 
 impl IndexOp {
@@ -98,9 +108,7 @@ impl ImageOp {
             Self::CenterCrop(_) => require_u8_hwc(input, "CenterCrop"),
             Self::Flip(_) => require_u8_hwc(input, "Flip"),
             Self::RandomCrop(_) => require_u8_hwc(input, "RandomCrop"),
-            Self::RandomHorizontalFlip(_) => {
-                require_u8_hwc(input, "RandomHorizontalFlip")
-            }
+            Self::RandomHorizontalFlip(_) => require_u8_hwc(input, "RandomHorizontalFlip"),
             Self::Brightness(_) => require_u8_hwc(input, "Brightness"),
             Self::Contrast(_) => require_u8_hwc(input, "Contrast"),
             Self::Normalize(_) => match input {

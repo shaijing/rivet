@@ -11,7 +11,18 @@ pub trait Dataset: Send + Sync {
 
     fn len(&self) -> usize;
 
-    fn get(&self, index: usize) -> RivetResult<Self::Item>;
+    /// Fetch one logical batch of rows.
+    ///
+    /// Implementations must preserve the input order and multiplicity. An
+    /// empty request is valid and must not perform storage I/O.
+    fn get_many(&self, indices: &[usize]) -> RivetResult<Vec<Self::Item>>;
+
+    /// Convenience wrapper around the batch primitive.
+    fn get(&self, index: usize) -> RivetResult<Self::Item> {
+        let mut items = self.get_many(&[index])?;
+        debug_assert_eq!(items.len(), 1);
+        Ok(items.remove(0))
+    }
 
     fn is_empty(&self) -> bool {
         self.len() == 0
@@ -42,9 +53,7 @@ impl<T: Send> Source<T> {
     where
         D: Dataset<Item = T> + 'static,
     {
-        Self {
-            inner: dataset,
-        }
+        Self { inner: dataset }
     }
 
     /// Build a source from an already type-erased dataset handle.
@@ -64,4 +73,20 @@ impl<T: Send> Source<T> {
     pub fn get(&self, index: usize) -> RivetResult<T> {
         self.inner.get(index)
     }
+
+    pub fn get_many(&self, indices: &[usize]) -> RivetResult<Vec<T>> {
+        self.inner.get_many(indices)
+    }
+}
+
+/// Validate all indices before a backend starts reading storage. Keeping this
+/// check shared makes empty requests, bounds errors, and cardinality
+/// guarantees consistent across all dataset implementations.
+pub(crate) fn validate_indices(indices: &[usize], len: usize) -> RivetResult<()> {
+    for &index in indices {
+        if index >= len {
+            return Err(crate::errors::RivetError::IndexOutOfRange { index, len });
+        }
+    }
+    Ok(())
 }

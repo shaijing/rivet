@@ -4,14 +4,16 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from ._rivet import _ArrowDataset, _ImageFolderDataset, _ImagePipeline
+from ._rivet import _ArrowDataset, _ImageFolderDataset, _ImagePipeline, _LanceDataset
 from ._rivet import read_image_batch as _read_image_batch
 
 __all__ = [
     "ArrowDataset",
     "DataLoader",
     "ImageFolder",
+    "LanceDataset",
     "Pipeline",
+    "dataset",
     "hf_arrow_files",
     "load_hf_arrow_files",
     "load_hf_image_batch",
@@ -20,6 +22,7 @@ __all__ = [
     "scan_arrow",
     "scan_hf",
     "scan_image_folder",
+    "scan_lance",
 ]
 
 
@@ -115,6 +118,40 @@ class ImageFolder:
     @property
     def samples(self) -> list[dict[str, Any]]:
         return self._inner.samples
+
+    def get_encoded(self, index: int) -> dict[str, Any]:
+        return self._inner.get_encoded(index)
+
+    def get_decoded(self, index: int, *, as_numpy: bool = True) -> dict[str, Any]:
+        return _maybe_numpy_batch(self._inner.get_decoded(index), as_numpy)
+
+    def pipeline(self) -> Pipeline:
+        return Pipeline(self._inner.pipeline())
+
+
+class LanceDataset:
+    """Lance-backed encoded image dataset.
+
+    The native Rivet schema is ``image: binary`` and ``label: int32`` or
+    ``int64``. Only the configured image and label columns are projected from
+    Lance during training.
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        image_column: str = "image",
+        label_column: str = "label",
+    ) -> None:
+        self._inner = _LanceDataset(
+            str(path),
+            image_column,
+            label_column,
+        )
+
+    def __len__(self) -> int:
+        return len(self._inner)
 
     def get_encoded(self, index: int) -> dict[str, Any]:
         return self._inner.get_encoded(index)
@@ -287,6 +324,33 @@ def scan_image_folder(root: str | Path) -> Pipeline:
     return ImageFolder(root).pipeline()
 
 
+def scan_lance(
+    path: str | Path,
+    *,
+    image_column: str = "image",
+    label_column: str = "label",
+) -> Pipeline:
+    return LanceDataset(
+        path,
+        image_column=image_column,
+        label_column=label_column,
+    ).pipeline()
+
+
+def dataset(
+    path: str | Path,
+    *,
+    image_column: str = "image",
+    label_column: str = "label",
+) -> LanceDataset:
+    """Open a native Lance image dataset."""
+    return LanceDataset(
+        path,
+        image_column=image_column,
+        label_column=label_column,
+    )
+
+
 class DataLoader:
     """Sequential decoded image batch loader, usable as a python iterator.
 
@@ -307,7 +371,7 @@ class DataLoader:
 
     def __init__(
         self,
-        source: ArrowDataset | ImageFolder | Pipeline,
+        source: ArrowDataset | LanceDataset | ImageFolder | Pipeline,
         *,
         batch_size: int | None = None,
         as_numpy: bool = True,

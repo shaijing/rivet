@@ -6,6 +6,7 @@ pub(crate) fn to_py_err(err: RivetError) -> PyErr {
     match err {
         RivetError::Io(err) => PyIOError::new_err(err.to_string()),
         RivetError::Arrow(err) => PyRuntimeError::new_err(err.to_string()),
+        RivetError::Lance(err) => PyRuntimeError::new_err(err.to_string()),
         RivetError::InvalidArgument(message)
         | RivetError::InvalidPipeline(message)
         | RivetError::InvalidShape(message) => PyValueError::new_err(message),

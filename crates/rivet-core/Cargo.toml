@@ -1,19 +1,16 @@
 [package]
-name = "rivet-dataset"
+name = "rivet-core"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 arrow.workspace = true
-arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-ipc.workspace = true
 bytes.workspace = true
 crossbeam-channel.workspace = true
 futures.workspace = true
 image.workspace = true
-lance.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
 walkdir.workspace = true
 memmap2.workspace = true

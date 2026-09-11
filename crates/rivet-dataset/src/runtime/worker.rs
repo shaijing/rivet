@@ -1,17 +1,18 @@
 use crate::errors::{RivetError, RivetResult};
 use crate::pipeline::op::ExecutionPlan;
-use crate::sample::image::DecodedSample;
+use crate::sample::image::{DecodedSample, EncodedImageSample};
 
 /// One sample-level unit of work.
 ///
 /// `batch_id` identifies the logical batch and `position` the slot inside
 /// it, so the coordinator can prefetch several batches while workers finish
 /// out of order and still rebuild each batch in sampler order.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct WorkItem {
     pub batch_id: u64,
     pub position: usize,
     pub index: usize,
+    pub sample: EncodedImageSample,
 }
 
 pub struct WorkResult {
@@ -20,11 +21,14 @@ pub struct WorkResult {
     pub result: RivetResult<DecodedSample>,
 }
 
-/// The per-sample hot path, identical to the inline loader: fetch encoded
-/// bytes from the shared source, then run the sample ops.
-pub fn execute_sample(plan: &ExecutionPlan, index: usize) -> RivetResult<DecodedSample> {
-    let encoded = plan.source.get(index)?;
-    plan.apply_ops(encoded, index)
+/// The per-sample hot path. Storage has already been fetched as a logical
+/// batch by the coordinator; workers only run image transformations.
+pub fn execute_sample(
+    plan: &ExecutionPlan,
+    sample: EncodedImageSample,
+    index: usize,
+) -> RivetResult<DecodedSample> {
+    plan.apply_ops(sample, index)
 }
 
 /// Persistent worker loop. Workers never sample on their own: they only
@@ -46,7 +50,7 @@ pub fn worker_loop(
 ) {
     while let Ok(item) = work_rx.recv() {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            execute_sample(&plan, item.index)
+            execute_sample(&plan, item.sample, item.index)
         }))
         .unwrap_or_else(|_| {
             Err(RivetError::Worker(format!(

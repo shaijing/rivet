@@ -3,7 +3,7 @@ pub mod op;
 use crate::dataset::source::{Dataset, Source};
 use crate::errors::{RivetResult, invalid_pipeline};
 use crate::pipeline::op::{
-    BatchConfig, ExecutionPlan, IndexOp, PipelineImageState, ImageOp, SourceOp, compile_sampler,
+    BatchConfig, ExecutionPlan, ImageOp, IndexOp, PipelineImageState, SourceOp, compile_sampler,
 };
 use crate::runtime::{ImageDataLoader, RuntimeConfig};
 use crate::sample::image::EncodedImageSample;
@@ -231,11 +231,14 @@ mod tests {
             self.len
         }
 
-        fn get(&self, _index: usize) -> RivetResult<Self::Item> {
-            Ok(EncodedImageSample {
-                image: Buffer::from(Vec::<u8>::new()),
-                label: 0,
-            })
+        fn get_many(&self, indices: &[usize]) -> RivetResult<Vec<Self::Item>> {
+            Ok(indices
+                .iter()
+                .map(|_| EncodedImageSample {
+                    image: Buffer::from(Vec::<u8>::new()),
+                    label: 0,
+                })
+                .collect())
         }
     }
 
@@ -253,25 +256,41 @@ mod tests {
     #[test]
     fn resize_before_decode_rejected_at_compile() {
         let err = compile_err(stub(10).resize(8, 8).batch(4, false));
-        assert!(err.contains("Resize requires a decoded image"), "got: {err}");
+        assert!(
+            err.contains("Resize requires a decoded image"),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn normalize_before_decode_rejected_at_compile() {
-        let err = compile_err(stub(10).normalize(vec![0.5; 3], vec![0.5; 3]).batch(4, false));
-        assert!(err.contains("Normalize requires a decoded image"), "got: {err}");
+        let err = compile_err(
+            stub(10)
+                .normalize(vec![0.5; 3], vec![0.5; 3])
+                .batch(4, false),
+        );
+        assert!(
+            err.contains("Normalize requires a decoded image"),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn double_decode_rejected_at_compile() {
         let err = compile_err(stub(10).decode_image().decode_image().batch(4, false));
-        assert!(err.contains("Decode requires an encoded image"), "got: {err}");
+        assert!(
+            err.contains("Decode requires an encoded image"),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn batching_while_encoded_rejected_at_compile() {
         let err = compile_err(stub(10).batch(4, false));
-        assert!(err.contains("must decode images before batching"), "got: {err}");
+        assert!(
+            err.contains("must decode images before batching"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -300,25 +319,39 @@ mod tests {
                 .random_horizontal_flip(1.5)
                 .batch(4, false),
         );
-        assert!(err.contains("probability must be in [0.0, 1.0]"), "got: {err}");
+        assert!(
+            err.contains("probability must be in [0.0, 1.0]"),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn invalid_random_crop_size_rejected_at_compile() {
         let err = compile_err(stub(10).decode_image().random_crop(0, 8, 4).batch(4, false));
-        assert!(err.contains("width and height must be greater than 0"), "got: {err}");
+        assert!(
+            err.contains("width and height must be greater than 0"),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn invalid_normalize_rejected_at_compile() {
-        let err = compile_err(stub(10).decode_image().normalize(vec![0.5; 3], vec![0.5; 2]).batch(4, false));
+        let err = compile_err(
+            stub(10)
+                .decode_image()
+                .normalize(vec![0.5; 3], vec![0.5; 2])
+                .batch(4, false),
+        );
         assert!(err.contains("same length"), "got: {err}");
     }
 
     #[test]
     fn zero_batch_size_rejected_at_compile() {
         let err = compile_err(stub(10).decode_image().batch(0, false));
-        assert!(err.contains("batch size must be greater than 0"), "got: {err}");
+        assert!(
+            err.contains("batch size must be greater than 0"),
+            "got: {err}"
+        );
     }
 
     #[test]

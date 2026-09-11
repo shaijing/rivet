@@ -1,4 +1,4 @@
-use crate::dataset::source::Dataset;
+use crate::dataset::source::{Dataset, validate_indices};
 use crate::errors::{RivetError, RivetResult, invalid_argument};
 use crate::sample::image::EncodedImageSample;
 use arrow_buffer::Buffer;
@@ -84,7 +84,17 @@ impl Dataset for ImageFolderDatasetCore {
         self.samples.len()
     }
 
-    fn get(&self, index: usize) -> RivetResult<Self::Item> {
+    fn get_many(&self, indices: &[usize]) -> RivetResult<Vec<Self::Item>> {
+        if indices.is_empty() {
+            return Ok(Vec::new());
+        }
+        validate_indices(indices, self.len())?;
+        indices.iter().map(|&index| self.get_one(index)).collect()
+    }
+}
+
+impl ImageFolderDatasetCore {
+    fn get_one(&self, index: usize) -> RivetResult<EncodedImageSample> {
         let sample = self.samples.get(index).ok_or(RivetError::IndexOutOfRange {
             index,
             len: self.samples.len(),

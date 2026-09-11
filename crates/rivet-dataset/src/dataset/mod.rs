@@ -3,8 +3,10 @@
 
 pub mod arrow;
 pub mod filesystem;
+pub mod lance;
 pub mod source;
 
 pub use arrow::{ArrowImageDataset, ArrowTextDataset};
 pub use filesystem::{ImageFolderDatasetCore, ImageFolderSample};
+pub use lance::{LanceImageDataset, LanceTable};
 pub use source::{Dataset, Source};

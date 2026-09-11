@@ -3,7 +3,7 @@ use crate::errors::{RivetError, RivetResult, invalid_argument};
 use crate::pipeline::op::ExecutionPlan;
 use crate::runtime::pool::WorkerPool;
 use crate::runtime::worker::WorkItem;
-use crate::sample::image::{DecodedSample, ImageBatch};
+use crate::sample::image::{DecodedSample, EncodedImageSample, ImageBatch};
 use crate::sampler::IndexSampler;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -38,14 +38,12 @@ impl ImageDataLoader {
             let max_in_flight = prefetch_batches.saturating_add(1);
             // Reject absurd sizes before constructing any channel: a wrap
             // here would silently produce a broken bounded queue.
-            let max_in_flight_samples = plan.batch.size.checked_mul(max_in_flight).ok_or_else(
-                || invalid_argument("worker queue capacity overflow"),
-            )?;
-            let pool = WorkerPool::new(
-                Arc::clone(&plan),
-                num_workers,
-                max_in_flight_samples,
-            )?;
+            let max_in_flight_samples = plan
+                .batch
+                .size
+                .checked_mul(max_in_flight)
+                .ok_or_else(|| invalid_argument("worker queue capacity overflow"))?;
+            let pool = WorkerPool::new(Arc::clone(&plan), num_workers, max_in_flight_samples)?;
             LoaderExecutor::Workers(pool, PrefetchCoordinator::new(max_in_flight))
         };
 
@@ -125,13 +123,36 @@ fn next_batch_inline(
 
     let mut batch = ImageBatchBuilder::with_capacity(indices.len());
 
-    for index in indices {
-        let encoded = plan.source.get(index)?;
+    let samples = fetch_samples(plan, &indices)?;
+    for (index, encoded) in indices.into_iter().zip(samples) {
         let decoded = plan.apply_ops(encoded, index)?;
         batch.push(decoded)?;
     }
 
     Ok(Some(batch.finish()))
+}
+
+/// Source access runs on the coordinator so persistent backends can perform
+/// one batch read. Keep the same terminal panic-to-error behavior as the
+/// worker path for custom dataset implementations.
+fn fetch_samples(plan: &ExecutionPlan, indices: &[usize]) -> RivetResult<Vec<EncodedImageSample>> {
+    let samples = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        plan.source.get_many(indices)
+    }))
+    .unwrap_or_else(|_| {
+        Err(RivetError::Worker(
+            "dataset get_many panicked while fetching a batch".to_string(),
+        ))
+    })?;
+
+    if samples.len() != indices.len() {
+        return Err(RivetError::Worker(format!(
+            "source returned {} samples for {} indices",
+            samples.len(),
+            indices.len()
+        )));
+    }
+    Ok(samples)
 }
 
 /// One in-flight logical batch being filled by workers.
@@ -171,23 +192,34 @@ impl PrefetchCoordinator {
     fn submit(
         &mut self,
         indices: Vec<usize>,
+        samples: Vec<EncodedImageSample>,
         pool: &WorkerPool,
     ) -> RivetResult<()> {
+        if indices.len() != samples.len() {
+            return Err(RivetError::Worker(format!(
+                "source returned {} samples for {} indices",
+                samples.len(),
+                indices.len()
+            )));
+        }
         let batch_id = self.next_batch_id;
         self.next_batch_id += 1;
 
         let batch = PendingBatch {
-            samples: std::iter::repeat_with(|| None).take(indices.len()).collect(),
+            samples: std::iter::repeat_with(|| None)
+                .take(indices.len())
+                .collect(),
             remaining: indices.len(),
         };
         self.pending.insert(batch_id, batch);
         self.in_flight += 1;
 
-        for (position, index) in indices.into_iter().enumerate() {
+        for (position, (index, sample)) in indices.into_iter().zip(samples).enumerate() {
             pool.submit(WorkItem {
                 batch_id,
                 position,
                 index,
+                sample,
             })?;
         }
         Ok(())
@@ -252,7 +284,10 @@ fn next_batch_workers(
         // Top up the in-flight window from the sampler.
         while coordinator.in_flight < coordinator.max_in_flight && !coordinator.closed {
             match take_indices(plan, sampler)? {
-                Some(indices) => coordinator.submit(indices, pool)?,
+                Some(indices) => {
+                    let samples = fetch_samples(plan, &indices)?;
+                    coordinator.submit(indices, samples, pool)?;
+                }
                 None => coordinator.closed = true,
             }
         }
@@ -326,6 +361,7 @@ mod tests {
     use crate::pipeline::ImagePipeline;
     use crate::sample::image::{EncodedImageSample, ImageBuffer};
     use arrow_buffer::Buffer;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // 1x1 RGB PNG (red pixel), valid input for decode_image.
     const PNG_1X1: &[u8] = b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90\x77\x53\xde\x00\x00\x00\x0c\x49\x44\x41\x54\x78\x9c\x63\xf8\xcf\xc0\x00\x00\x03\x01\x01\x00\xc9\xfe\x92\xef\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
@@ -345,7 +381,13 @@ mod tests {
             self.len
         }
 
-        fn get(&self, index: usize) -> RivetResult<Self::Item> {
+        fn get_many(&self, indices: &[usize]) -> RivetResult<Vec<Self::Item>> {
+            indices.iter().map(|&index| self.get_one(index)).collect()
+        }
+    }
+
+    impl SampleDataset {
+        fn get_one(&self, index: usize) -> RivetResult<EncodedImageSample> {
             if self.err_at == Some(index) {
                 return Err(crate::errors::invalid_argument("boom"));
             }
@@ -353,14 +395,38 @@ mod tests {
                 panic!("sample {index} panics");
             }
             if self.slow_first_batch_ms > 0 && index < 8 {
-                std::thread::sleep(std::time::Duration::from_millis(
-                    self.slow_first_batch_ms,
-                ));
+                std::thread::sleep(std::time::Duration::from_millis(self.slow_first_batch_ms));
             }
             Ok(EncodedImageSample {
                 image: Buffer::from(PNG_1X1.to_vec()),
                 label: index as i64,
             })
+        }
+    }
+
+    struct CountingDataset {
+        len: usize,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Dataset for CountingDataset {
+        type Item = EncodedImageSample;
+
+        fn len(&self) -> usize {
+            self.len
+        }
+
+        fn get_many(&self, indices: &[usize]) -> RivetResult<Vec<Self::Item>> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            indices
+                .iter()
+                .map(|&index| {
+                    Ok(EncodedImageSample {
+                        image: Buffer::from(PNG_1X1.to_vec()),
+                        label: index as i64,
+                    })
+                })
+                .collect()
         }
     }
 
@@ -375,11 +441,29 @@ mod tests {
         .workers(workers)
     }
 
+    #[test]
+    fn source_fetch_scales_with_logical_batches() {
+        for workers in [0, 3] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let dataset = Arc::new(CountingDataset {
+                len: 32,
+                calls: Arc::clone(&calls),
+            });
+            let mut loader = ImagePipeline::new(dataset)
+                .decode_image()
+                .workers(workers)
+                .batch(8, false)
+                .compile()
+                .unwrap();
+
+            let batches = drain(&mut loader);
+            assert_eq!(batches.len(), 4);
+            assert_eq!(calls.load(Ordering::Relaxed), 4, "workers={workers}");
+        }
+    }
+
     fn drain(loader: &mut ImageDataLoader) -> Vec<ImageBatch> {
-        loader
-            .into_iter()
-            .collect::<RivetResult<Vec<_>>>()
-            .unwrap()
+        loader.into_iter().collect::<RivetResult<Vec<_>>>().unwrap()
     }
 
     fn assert_batches_equal(left: &[ImageBatch], right: &[ImageBatch]) {
@@ -551,10 +635,7 @@ mod tests {
             Err(err) => err,
             Ok(_) => panic!("expected the terminal failed-state error"),
         };
-        assert!(
-            second.to_string().contains("failed state"),
-            "got: {second}"
-        );
+        assert!(second.to_string().contains("failed state"), "got: {second}");
     }
 
     /// Deep prefetch with early drop must not deadlock: workers blocked on
@@ -619,7 +700,10 @@ mod tests {
             Err(err) => err,
             Ok(()) => panic!("expected an out-of-range error"),
         };
-        assert!(err.to_string().contains("invalid result position"), "got: {err}");
+        assert!(
+            err.to_string().contains("invalid result position"),
+            "got: {err}"
+        );
 
         coordinator.record(0, 1, make_sample(1)).unwrap();
         let err = match coordinator.record(0, 1, make_sample(2)) {
@@ -679,10 +763,7 @@ mod tests {
             Err(err) => err,
             Ok(_) => panic!("expected the terminal failed-state error"),
         };
-        assert!(
-            second.to_string().contains("failed state"),
-            "got: {second}"
-        );
+        assert!(second.to_string().contains("failed state"), "got: {second}");
     }
 
     #[test]
@@ -790,7 +871,13 @@ mod tests {
         for batch in &a {
             seen.extend(batch.labels.iter().copied());
         }
-        assert_eq!(seen.iter().copied().collect::<std::collections::HashSet<_>>().len(), 50);
+        assert_eq!(
+            seen.iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            50
+        );
 
         // A different seed changes the order.
         let mut loader_c = pipeline(50, 0)
@@ -815,7 +902,10 @@ mod tests {
             .compile()
             .unwrap();
         let batches = drain(&mut loader);
-        let mut seen: Vec<i64> = batches.iter().flat_map(|b| b.labels.iter().copied()).collect();
+        let mut seen: Vec<i64> = batches
+            .iter()
+            .flat_map(|b| b.labels.iter().copied())
+            .collect();
         seen.sort_unstable();
         assert_eq!(seen, (10..30).collect::<Vec<i64>>(), "window preserved");
     }
