@@ -1,19 +1,21 @@
-"""Simple CIFAR-10 example: load the dataset and iterate numpy batches.
+"""Simple CIFAR-10 Lance example: load the dataset and iterate numpy batches.
 
 A tiny self-test in the ``__main__`` block: every batch from the ``for``
 loop must be plain numpy (``dtype=uint8``, ``NHWC`` images plus labels),
 the loader must reach a sticky ``StopIteration``, and worker mode must
 agree with the inline path.
 
-Prerequisites (one of):
+The input directory should contain Rivet-native Lance splits:
 
-* ``pip install datasets`` then::
+    /data/datasets/rivet/cifar10/
+    ├── train.lance/
+    └── test.lance/
 
-    from datasets import load_dataset
-    load_dataset("uoft-cs/cifar10", split="train")   # fills the HF cache
-
-* or point ``RIVET_TEST_ARROW_FILE`` at any CIFAR-10 Arrow IPC file.
+Convert Hugging Face-style Lance data first with
+examples/convert_hf_lance.py when necessary. Set
+RIVET_CIFAR10_ROOT to use another dataset root.
 """
+
 from __future__ import annotations
 
 import os
@@ -26,29 +28,7 @@ import rivet
 
 BATCH_SIZE = 64
 N_BATCHES = 4  # keep the demo quick; set to None to drain everything
-
-
-def _arrow_file() -> Path:
-    explicit = os.environ.get("RIVET_TEST_ARROW_FILE")
-    if explicit:
-        return Path(explicit)
-
-    roots = [
-        Path(os.environ.get("HF_DATASETS_CACHE", "")),
-        Path(os.environ.get("HF_HOME", "")) / "datasets",
-        Path.home() / ".cache" / "huggingface" / "datasets",
-    ]
-    for root in roots:
-        if not root.is_dir():
-            continue
-        matches = sorted(root.glob("uoft-cs___cifar10/**/cifar10-train.arrow"))
-        if matches:
-            return matches[0]
-
-    raise SystemExit(
-        "no CIFAR-10 Arrow file found: load 'uoft-cs/cifar10' with the "
-        "datasets library or set RIVET_TEST_ARROW_FILE"
-    )
+DEFAULT_LANCE_ROOT = Path("/data/datasets/rivet/cifar10")
 
 
 def run(loader: object, max_batches: int | None) -> list[dict[str, object]]:
@@ -81,15 +61,14 @@ def run(loader: object, max_batches: int | None) -> list[dict[str, object]]:
 
 
 def main() -> int:
-    arrow_file = _arrow_file()
-    print(f"arrow file: {arrow_file}")
+    lance_root = Path(os.environ.get("RIVET_CIFAR10_ROOT", DEFAULT_LANCE_ROOT))
+    dataset = rivet.load_dataset(lance_root)
+    print(f"lance dataset: {lance_root}")
+    print(f"splits: {dataset.keys()}")
+    train = dataset["train"]
+    print(f"train rows: {len(train)}")
 
-    pipeline = (
-        rivet.scan_arrow([arrow_file])
-        .take(512)
-        .decode_image()
-        .batch(BATCH_SIZE)
-    )
+    pipeline = train.pipeline().take(512).decode_image().batch(BATCH_SIZE)
 
     inline = run(
         pipeline.execute(),
