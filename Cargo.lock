@@ -4521,6 +4521,8 @@ dependencies = [
  "image",
  "lance",
  "memmap2",
+ "serde",
+ "serde_json",
  "thiserror",
  "tokio",
  "walkdir",

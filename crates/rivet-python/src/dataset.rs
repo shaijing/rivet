@@ -2,11 +2,13 @@ use crate::error::to_py_err;
 use crate::loader::image_batch_to_py;
 use crate::pipeline::PyImagePipeline;
 use arrow_buffer::Buffer;
+use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use rivet_dataset::batch::ImageBatchBuilder;
 use rivet_dataset::dataset::{
-    ArrowImageDataset, Dataset, ImageFolderDatasetCore, LanceImageDataset,
+    ArrowImageDataset, Dataset, DatasetBundle, DatasetLoadResult, ImageFolderDatasetCore,
+    LanceImageDataset, load_lance_image_dataset,
 };
 use rivet_dataset::image::decode::decode_rgb;
 use rivet_dataset::pipeline::ImagePipeline;
@@ -60,6 +62,12 @@ pub(crate) struct PyLanceDataset {
     pub(crate) inner: Arc<LanceImageDataset>,
 }
 
+impl PyLanceDataset {
+    pub(crate) fn from_inner(inner: Arc<LanceImageDataset>) -> Self {
+        Self { inner }
+    }
+}
+
 #[pymethods]
 impl PyLanceDataset {
     #[new]
@@ -88,6 +96,81 @@ impl PyLanceDataset {
     fn pipeline(&self) -> PyImagePipeline {
         PyImagePipeline {
             inner: ImagePipeline::new(Arc::clone(&self.inner)),
+        }
+    }
+}
+
+#[pyclass(name = "_LanceDatasetDict")]
+pub(crate) struct PyLanceDatasetDict {
+    inner: DatasetBundle<LanceImageDataset>,
+}
+
+#[pymethods]
+impl PyLanceDatasetDict {
+    #[new]
+    #[pyo3(signature = (path, image_column="image", label_column="label"))]
+    fn new(path: PathBuf, image_column: &str, label_column: &str) -> PyResult<Self> {
+        match load_lance_image_dataset(path, image_column, label_column).map_err(to_py_err)? {
+            DatasetLoadResult::Bundle(bundle) => Ok(Self { inner: bundle }),
+            DatasetLoadResult::Single(_) => Err(pyo3::exceptions::PyValueError::new_err(
+                "a .lance path is a single dataset; use LanceDataset for physical datasets",
+            )),
+        }
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn __contains__(&self, name: &str) -> bool {
+        self.inner.split(name).is_some()
+    }
+
+    fn keys(&self) -> Vec<String> {
+        self.inner.split_names().map(str::to_owned).collect()
+    }
+
+    fn __getitem__(&self, name: &str) -> PyResult<PyLanceDataset> {
+        let Some(dataset) = self.inner.split(name) else {
+            let available = self.inner.split_names().collect::<Vec<_>>().join(", ");
+            return Err(PyKeyError::new_err(format!(
+                "split '{name}' not found; available splits: {available}"
+            )));
+        };
+        Ok(PyLanceDataset::from_inner(dataset))
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (path, image_column="image", label_column="label", split=None))]
+pub(crate) fn load_lance_split(
+    path: PathBuf,
+    image_column: &str,
+    label_column: &str,
+    split: Option<&str>,
+) -> PyResult<PyLanceDataset> {
+    match load_lance_image_dataset(path, image_column, label_column).map_err(to_py_err)? {
+        DatasetLoadResult::Single(dataset) => {
+            if split.is_some() {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "split cannot be specified when loading a single .lance dataset path",
+                ));
+            }
+            Ok(PyLanceDataset::from_inner(dataset))
+        }
+        DatasetLoadResult::Bundle(bundle) => {
+            let split = split.ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "dataset root contains multiple splits; specify split",
+                )
+            })?;
+            let Some(dataset) = bundle.split(split) else {
+                let available = bundle.split_names().collect::<Vec<_>>().join(", ");
+                return Err(PyKeyError::new_err(format!(
+                    "split '{split}' not found; available splits: {available}"
+                )));
+            };
+            Ok(PyLanceDataset::from_inner(dataset))
         }
     }
 }

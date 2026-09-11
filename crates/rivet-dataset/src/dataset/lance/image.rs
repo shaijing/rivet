@@ -9,9 +9,11 @@ use std::sync::Arc;
 
 /// Rivet's native Lance image classification dataset.
 ///
-/// The hot-path schema is intentionally small:
-/// `image: binary | large_binary` and `label: int32 | int64`.
-/// Additional Lance columns are ignored through projection.
+/// The hot-path schema is intentionally small: image binary or large_binary,
+/// and label int32 or int64. Additional Lance columns are ignored through
+/// projection.
+/// A configured Hugging Face-compatible struct<bytes: binary> image column is
+/// accepted as a compatibility input, but is not Rivet's native schema.
 pub struct LanceImageDataset {
     table: Arc<LanceTable>,
     image_column: String,
@@ -56,16 +58,36 @@ impl LanceImageDataset {
         &self.label_column
     }
 
+    pub fn schema(&self) -> &arrow::datatypes::SchemaRef {
+        self.table.schema()
+    }
+
     fn get_one(
         &self,
         batch: &arrow_array::RecordBatch,
         row: usize,
     ) -> RivetResult<EncodedImageSample> {
         let row = ArrowRow::new(batch, row);
+        let image = match self
+            .table
+            .schema()
+            .field_with_name(&self.image_column)
+            .map_err(invalid_argument)?
+            .data_type()
+        {
+            DataType::Binary | DataType::LargeBinary => row.binary(&self.image_column)?,
+            DataType::Struct(_) => row.struct_binary(&self.image_column, "bytes")?,
+            data_type => {
+                return Err(invalid_argument(format!(
+                    "{} must be binary, large_binary, or a struct with a bytes field, got {:?}",
+                    self.image_column, data_type
+                )));
+            }
+        };
         Ok(EncodedImageSample {
             // ArrowRow slices the BinaryArray values buffer, so this keeps
             // Lance's encoded payload allocation alive without copying bytes.
-            image: row.binary(&self.image_column)?,
+            image,
             label: row.i64(&self.label_column)?,
         })
     }
@@ -105,9 +127,19 @@ fn validate_schema(schema: &Schema, image_column: &str, label_column: &str) -> R
     let image = schema
         .field_with_name(image_column)
         .map_err(invalid_argument)?;
-    if !matches!(image.data_type(), DataType::Binary | DataType::LargeBinary) {
+    let valid_image = match image.data_type() {
+        DataType::Binary | DataType::LargeBinary => true,
+        DataType::Struct(fields) => fields
+            .iter()
+            .find(|field| field.name() == "bytes")
+            .is_some_and(|field| {
+                matches!(field.data_type(), DataType::Binary | DataType::LargeBinary)
+            }),
+        _ => false,
+    };
+    if !valid_image {
         return Err(invalid_argument(format!(
-            "{image_column} must be binary or large_binary, got {:?}",
+            "{image_column} must be binary, large_binary, or a struct with a binary bytes field, got {:?}",
             image.data_type()
         )));
     }
@@ -204,5 +236,20 @@ mod tests {
         ]);
         let error = validate_schema(&schema, "image", "label").unwrap_err();
         assert!(error.to_string().contains("binary"));
+    }
+
+    #[test]
+    fn accepts_huggingface_struct_image_as_compatibility_input() {
+        let schema = Schema::new(vec![
+            Field::new(
+                "img",
+                DataType::Struct(
+                    vec![Arc::new(Field::new("bytes", DataType::Binary, true))].into(),
+                ),
+                true,
+            ),
+            Field::new("label", DataType::Int64, false),
+        ]);
+        validate_schema(&schema, "img", "label").unwrap();
     }
 }

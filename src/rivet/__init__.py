@@ -4,17 +4,26 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from ._rivet import _ArrowDataset, _ImageFolderDataset, _ImagePipeline, _LanceDataset
+from ._rivet import (
+    _ArrowDataset,
+    _ImageFolderDataset,
+    _ImagePipeline,
+    _LanceDataset,
+    _LanceDatasetDict,
+)
+from ._rivet import load_lance_split as _load_lance_split
 from ._rivet import read_image_batch as _read_image_batch
 
 __all__ = [
     "ArrowDataset",
     "DataLoader",
+    "DatasetDict",
     "ImageFolder",
     "LanceDataset",
     "Pipeline",
     "dataset",
     "hf_arrow_files",
+    "load_dataset",
     "load_hf_arrow_files",
     "load_hf_image_batch",
     "read_hf_image_batch",
@@ -129,12 +138,48 @@ class ImageFolder:
         return Pipeline(self._inner.pipeline())
 
 
+class DatasetDict:
+    """Lightweight collection of named Lance dataset splits."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def __len__(self) -> int:
+        return len(self._inner)
+
+    def __getitem__(self, split: str) -> LanceDataset:
+        return LanceDataset._from_inner(self._inner[split])
+
+    def __contains__(self, split: object) -> bool:
+        return isinstance(split, str) and split in self._inner
+
+    def keys(self) -> list[str]:
+        return self._inner.keys()
+
+    def values(self) -> list[LanceDataset]:
+        return [self[split] for split in self.keys()]
+
+    def items(self) -> list[tuple[str, LanceDataset]]:
+        return [(split, self[split]) for split in self.keys()]
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __repr__(self) -> str:
+        entries = ", ".join(
+            f"{split}: Dataset(num_rows={len(dataset)})"
+            for split, dataset in self.items()
+        )
+        return f"DatasetDict({{{entries}}})"
+
+
 class LanceDataset:
     """Lance-backed encoded image dataset.
 
     The native Rivet schema is ``image: binary`` and ``label: int32`` or
-    ``int64``. Only the configured image and label columns are projected from
-    Lance during training.
+    ``int64``. A configured Hugging Face-compatible ``img.bytes`` struct is
+    also accepted for compatibility. Only the configured image and label
+    columns are projected from Lance during training.
     """
 
     def __init__(
@@ -149,6 +194,12 @@ class LanceDataset:
             image_column,
             label_column,
         )
+
+    @classmethod
+    def _from_inner(cls, inner: Any) -> LanceDataset:
+        dataset = cls.__new__(cls)
+        dataset._inner = inner
+        return dataset
 
     def __len__(self) -> int:
         return len(self._inner)
@@ -335,6 +386,52 @@ def scan_lance(
         image_column=image_column,
         label_column=label_column,
     ).pipeline()
+
+
+def load_dataset(
+    path: str | Path,
+    *,
+    split: str | None = None,
+    image_column: str = "image",
+    label_column: str = "label",
+) -> LanceDataset | DatasetDict:
+    """Load one physical Lance dataset or a logical multi-split dataset.
+
+    A path ending in .lance is one physical dataset. A directory is resolved
+    as a split collection using dataset.rivet.json when present, or immediate
+    *.lance child directories otherwise.
+    """
+    path = Path(path)
+    is_physical = path.name.endswith(".lance")
+
+    if split is None:
+        if is_physical:
+            return LanceDataset(
+                path,
+                image_column=image_column,
+                label_column=label_column,
+            )
+        return DatasetDict(
+            _LanceDatasetDict(
+                str(path),
+                image_column,
+                label_column,
+            )
+        )
+
+    if is_physical:
+        raise ValueError(
+            "split cannot be specified when loading a single .lance dataset path"
+        )
+
+    return LanceDataset._from_inner(
+        _load_lance_split(
+            str(path),
+            image_column,
+            label_column,
+            split,
+        )
+    )
 
 
 def dataset(
