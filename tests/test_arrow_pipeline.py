@@ -262,3 +262,105 @@ def test_loader_iterator_protocol(arrow_file: Path) -> None:
     batches = list(loader)
     assert len(batches) == 1
     assert list(loader) == []
+
+
+def test_random_crop_shape_and_dtype(arrow_file: Path) -> None:
+    batch = next(
+        scan(arrow_file)
+        .take(4)
+        .decode_image()
+        .random_crop(32, 32, padding=4)
+        .shuffle(11)
+        .batch(4)
+        .execute()
+    )
+
+    assert batch["images"].shape == (4, 32, 32, 3)
+    assert batch["images"].dtype == np.uint8
+
+
+def test_random_crop_varies_with_seed(arrow_file: Path) -> None:
+    def first_images(seed: int) -> np.ndarray:
+        batch = next(
+            scan(arrow_file)
+            .take(4)
+            .decode_image()
+            .random_crop(32, 32, padding=4)
+            .shuffle(seed)
+            .batch(4)
+            .execute()
+        )
+        return batch["images"]
+
+    outputs = [first_images(seed) for seed in range(8)]
+    assert any(
+        not np.array_equal(outputs[0], other) for other in outputs[1:]
+    ), "different seeds must produce different crops"
+
+
+def test_random_horizontal_flip_extremes(arrow_file: Path) -> None:
+    base = next(scan(arrow_file).take(4).decode_image().batch(4).execute())
+
+    flipped = next(
+        scan(arrow_file)
+        .take(4)
+        .decode_image()
+        .random_horizontal_flip(1.0)
+        .batch(4)
+        .execute()
+    )
+    assert np.array_equal(flipped["images"], base["images"][:, :, ::-1, :])
+
+    unchanged = next(
+        scan(arrow_file)
+        .take(4)
+        .decode_image()
+        .random_horizontal_flip(0.0)
+        .batch(4)
+        .execute()
+    )
+    assert np.array_equal(unchanged["images"], base["images"])
+
+
+def test_random_ops_deterministic_across_workers(arrow_file: Path) -> None:
+    def collect(loader: object) -> list[dict[str, object]]:
+        out = []
+        while True:
+            try:
+                out.append(next(loader))  # type: ignore[arg-type]
+            except StopIteration:
+                return out
+
+    def build(workers: int, prefetch: int) -> object:
+        return (
+            scan(arrow_file)
+            .take(64)
+            .decode_image()
+            .random_crop(32, 32, padding=4)
+            .random_horizontal_flip(0.5)
+            .shuffle(13)
+            .workers(workers)
+            .prefetch_batches(prefetch)
+            .batch(8)
+            .execute()
+        )
+
+    serial = collect(build(0, 0))
+    pooled = collect(build(4, 2))
+
+    assert len(serial) == len(pooled) == 8
+    for serial_batch, pooled_batch in zip(serial, pooled):
+        assert np.array_equal(serial_batch["images"], pooled_batch["images"])
+        assert serial_batch["labels"].tolist() == pooled_batch["labels"].tolist()
+
+
+def test_random_horizontal_flip_probability_range(arrow_file: Path) -> None:
+    # Builders are infallible; validation surfaces at execute/compile.
+    with pytest.raises(ValueError, match="probability"):
+        (
+            scan(arrow_file)
+            .decode_image()
+            .random_horizontal_flip(1.5)
+            .batch(1)
+            .execute()
+        )

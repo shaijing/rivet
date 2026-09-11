@@ -1,0 +1,104 @@
+{
+  layout: grid; columns: repeat(3); gap: 30; padding: 28; fill: --bg; routing: natural; clearance: 18; font-size: 13;
+
+  |group| {
+    direction: column; gap: 16; padding: 18; radius: 10; stroke-style: dashed; routing: orthogonal;
+  }
+
+  |box| { max-width: 220; padding: 13; radius: 7; }
+
+  |cyl| { max-width: 220; padding: 12; }
+
+  |-| { stroke: --gray-deep; stroke-width: 1.5; }
+
+  .hero {
+    fill: gradient(--sky, --teal); stroke: none; color: white; font-size: 20; font-weight: bold;
+  }
+
+  .entry { fill: --sky-wash; stroke: --sky-ink; color: --sky-ink; }
+
+  .binding { fill: --purple-wash; stroke: --purple-ink; color: --purple-ink; }
+
+  .storage { fill: --orange-wash; stroke: --orange-ink; color: --orange-ink; }
+
+  .core { fill: --teal-wash; stroke: --teal-ink; color: --teal-ink; }
+
+  .runtime { fill: --green-wash; stroke: --green-ink; color: --green-ink; }
+
+  .contract { fill: --rose-wash; stroke: --rose-ink; color: --rose-ink; }
+
+  .test { fill: --amber-wash; stroke: --amber-ink; color: --amber-ink; }
+
+  .boundary { stroke: --purple-deep; stroke-style: dashed; }
+
+  .support { stroke: --gray-deep; stroke-style: dotted; }
+}
+
+|box#title| "Rivet project framework\nRust core + Python bindings" .hero {
+  cell: 1 1; span: 3 1;
+}
+
+|group#public| "Public Python API" { cell: 1 2; } [
+  |box#api| "src/rivet/__init__.py\nscan_* / Dataset / ImageFolder" .entry
+  |box#helpers| "HF helpers\nresolve local Arrow cache files" .entry
+  |box#pipeline| "Pipeline\nfluent image ops + batch + execute" .entry
+  |box#loader| "DataLoader\nPython iterator over batches" .entry
+
+  api -> helpers "load / scan"
+  api -> pipeline "pipeline()"
+  pipeline -> loader "execute()"
+]
+
+|group#bridge| "PyO3 extension" { cell: 2 2; } [
+  |box#module| "crates/rivet-python\n_rivet module exports" .binding
+  |box#datasets| "PyArrowDataset\nPyImageFolderDataset" .binding
+  |box#py_pipeline| "PyImagePipeline\nclone-on-write fluent wrapper" .binding
+  |box#convert| "PyDataLoader + converters\nRust errors -> PyErr" .binding
+
+  module -> datasets "register classes"
+  module -> py_pipeline "register pipeline"
+  datasets -> convert "get / decode"
+]
+
+|group#storage| "Data sources" { cell: 3 2; } [
+  |cyl#arrow| "Hugging Face / Arrow IPC" .storage
+  |cyl#folder| "ImageFolder\nclass directories" .storage
+  |box#table| "MmapArrowTable + ArrowRow\nschema checks, zero-copy views" .storage
+  |box#encoded| "EncodedImageSample\nshared bytes + label" .storage
+
+  arrow -> table "mmap + IPC decode"
+  table -> encoded "typed row"
+  folder -> encoded "read file bytes"
+]
+
+|group#core| "Rust core: crates/rivet-dataset" { cell: 1 3; span: 2 1; } [
+  |box#dataset| "dataset::Source + Dataset\nArrowImageDataset / ImageFolderDatasetCore" .core
+  |box#sampler| "sampler::IndexSampler\nsequential / skip / take / shuffle" .core
+  |box#compile| "pipeline::ImagePipeline::compile\nvalidate ops + build ExecutionPlan" .core
+  |box#ops| "image ops\ndecode / resize / crop / flip / normalize / layout" .core
+  |box#runtime| "runtime::ImageDataLoader\ninline path or WorkerPool + prefetch" .runtime
+  |box#batch| "batch::ImageBatchBuilder\nshape / dtype / layout checks" .runtime
+
+  dataset -> sampler "len / indexed samples"
+  dataset -> compile "SourceOp"
+  sampler -> compile "SamplerPlan"
+  compile -> runtime
+  runtime -> ops
+  ops -> batch
+]
+
+|group#contracts| "Contracts, outputs & verification" { cell: 3 3; } [
+  |box#batch_contract| "ImageBatch\nNHWC / NCHW, uint8 / float32" .contract
+  |box#python_contract| "Python dict\nimages + labels, NumPy or bytes" .contract
+  |box#coverage| "tests/ + Rust unit tests\nexamples/ + bench/" .test
+
+  batch_contract -> python_contract "conversion boundary"
+  coverage --- python_contract "asserts behavior" .support
+]
+
+public -> bridge .boundary
+storage -> core "encoded samples" .boundary
+bridge <-> core "Rust calls / batches" .boundary
+bridge --> public .boundary
+core -> contracts "typed batch contract" .boundary
+contracts --- core "regression coverage" .support

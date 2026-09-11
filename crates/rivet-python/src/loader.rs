@@ -3,12 +3,12 @@ use crate::error::to_py_err;
 use numpy::{PyArray1, PyArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use rivet_core::batch::ImageBatchBuilder;
-use rivet_core::dataset::ArrowImageDataset;
-use rivet_core::errors::invalid_argument;
-use rivet_core::pipeline::ImagePipeline;
-use rivet_core::runtime::ImageDataLoader;
-use rivet_core::sample::image::{ImageBatch, ImageBuffer};
+use rivet_dataset::batch::ImageBatchBuilder;
+use rivet_dataset::dataset::ArrowImageDataset;
+use rivet_dataset::errors::invalid_argument;
+use rivet_dataset::pipeline::ImagePipeline;
+use rivet_dataset::runtime::ImageDataLoader;
+use rivet_dataset::sample::image::{ImageBatch, ImageBuffer};
 use std::path::PathBuf;
 use std::sync::Arc;
 

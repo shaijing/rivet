@@ -1,5 +1,5 @@
 [package]
-name = "rivet-core"
+name = "rivet-dataset"
 version.workspace = true
 edition.workspace = true
 

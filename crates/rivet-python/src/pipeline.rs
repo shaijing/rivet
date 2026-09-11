@@ -1,7 +1,7 @@
 use crate::error::to_py_err;
 use crate::loader::PyDataLoader;
 use pyo3::prelude::*;
-use rivet_core::pipeline::ImagePipeline;
+use rivet_dataset::pipeline::ImagePipeline;
 
 #[pyclass(name = "_ImagePipeline")]
 pub(crate) struct PyImagePipeline {
@@ -43,6 +43,20 @@ impl PyImagePipeline {
     fn vertical_flip(&self) -> Self {
         Self {
             inner: self.inner.clone().vertical_flip(),
+        }
+    }
+
+    #[pyo3(signature = (width, height, padding=0))]
+    fn random_crop(&self, width: u32, height: u32, padding: u32) -> Self {
+        Self {
+            inner: self.inner.clone().random_crop(width, height, padding),
+        }
+    }
+
+    #[pyo3(signature = (probability=0.5))]
+    fn random_horizontal_flip(&self, probability: f64) -> Self {
+        Self {
+            inner: self.inner.clone().random_horizontal_flip(probability),
         }
     }
 
@@ -92,6 +106,12 @@ impl PyImagePipeline {
     fn batch(&self, size: usize, drop_last: bool) -> Self {
         Self {
             inner: self.inner.clone().batch(size, drop_last),
+        }
+    }
+
+    fn shuffle(&self, seed: u64) -> Self {
+        Self {
+            inner: self.inner.clone().shuffle(seed),
         }
     }
 

@@ -67,6 +67,24 @@ impl ImagePipeline {
         self
     }
 
+    /// Zero-pad every decoded image by `padding` pixels on each side, then
+    /// crop a `width`x`height` window at a per-sample random offset.
+    ///
+    /// Draws come from the pipeline's stochastic seed (the shuffle seed
+    /// when the pipeline shuffles), so the same `(seed, epoch)` reproduces
+    /// the same augmentations at any worker count.
+    pub fn random_crop(mut self, width: u32, height: u32, padding: u32) -> Self {
+        self.ops.push(ImageOp::random_crop(width, height, padding));
+        self
+    }
+
+    /// Randomly flip each decoded image horizontally with `probability`,
+    /// per sample, from the pipeline's stochastic seed.
+    pub fn random_horizontal_flip(mut self, probability: f64) -> Self {
+        self.ops.push(ImageOp::random_horizontal_flip(probability));
+        self
+    }
+
     pub fn brightness(mut self, value: i32) -> Self {
         self.ops.push(ImageOp::brightness(value));
         self
@@ -99,6 +117,15 @@ impl ImagePipeline {
 
     pub fn take(mut self, count: usize) -> Self {
         self.index_ops.push(IndexOp::Take { count });
+        self
+    }
+
+    /// Deterministically shuffle the sampled window with `seed`; the same
+    /// seed reproduces the same order at any worker count. Use per-epoch
+    /// seeds (e.g. `base_seed + epoch`) for reproducible shuffling across
+    /// epochs.
+    pub fn shuffle(mut self, seed: u64) -> Self {
+        self.index_ops.push(IndexOp::Shuffle { seed });
         self
     }
 
@@ -137,12 +164,24 @@ impl ImagePipeline {
         batch.validate()?;
 
         let len = self.source.len();
-        let sampler = compile_sampler(len, &self.index_ops);
+        let sampler = compile_sampler(len, &self.index_ops)?;
+        // Stochastic image ops share the shuffle seed when the pipeline
+        // shuffles, so one seed reproduces order and augmentations; without
+        // a shuffle the ops stay deterministic with a fixed seed.
+        let random_seed = self
+            .index_ops
+            .iter()
+            .find_map(|op| match op {
+                IndexOp::Shuffle { seed } => Some(*seed),
+                _ => None,
+            })
+            .unwrap_or(0);
         let plan = ExecutionPlan {
             source: self.source,
             sampler,
             ops: self.ops,
             batch,
+            random_seed,
             output_state,
         };
         let num_workers = self.runtime.num_workers;
@@ -242,6 +281,32 @@ mod tests {
             err.contains("resize width and height must be greater than 0"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn random_crop_before_decode_rejected_at_compile() {
+        let err = compile_err(stub(10).random_crop(8, 8, 4).batch(4, false));
+        assert!(
+            err.contains("RandomCrop requires a decoded image"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_random_flip_probability_rejected_at_compile() {
+        let err = compile_err(
+            stub(10)
+                .decode_image()
+                .random_horizontal_flip(1.5)
+                .batch(4, false),
+        );
+        assert!(err.contains("probability must be in [0.0, 1.0]"), "got: {err}");
+    }
+
+    #[test]
+    fn invalid_random_crop_size_rejected_at_compile() {
+        let err = compile_err(stub(10).decode_image().random_crop(0, 8, 4).batch(4, false));
+        assert!(err.contains("width and height must be greater than 0"), "got: {err}");
     }
 
     #[test]

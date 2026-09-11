@@ -4,10 +4,10 @@ use crate::pipeline::PyImagePipeline;
 use arrow_buffer::Buffer;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
-use rivet_core::batch::ImageBatchBuilder;
-use rivet_core::dataset::{ArrowImageDataset, Dataset, ImageFolderDatasetCore};
-use rivet_core::image::decode::decode_rgb;
-use rivet_core::pipeline::ImagePipeline;
+use rivet_dataset::batch::ImageBatchBuilder;
+use rivet_dataset::dataset::{ArrowImageDataset, Dataset, ImageFolderDatasetCore};
+use rivet_dataset::image::decode::decode_rgb;
+use rivet_dataset::pipeline::ImagePipeline;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -124,7 +124,7 @@ fn encoded_sample_to_py(py: Python<'_>, image: Buffer, label: i64) -> PyResult<P
 
 fn decoded_sample_to_py(
     py: Python<'_>,
-    sample: rivet_core::sample::image::EncodedImageSample,
+    sample: rivet_dataset::sample::image::EncodedImageSample,
 ) -> PyResult<Py<PyDict>> {
     let decoded = decode_rgb(sample.image.as_slice(), sample.label).map_err(to_py_err)?;
     let mut batch = ImageBatchBuilder::with_capacity(1);

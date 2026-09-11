@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/rivet-core",
+    "crates/rivet-dataset",
     "crates/rivet-python",
 ]
 resolver = "3"
@@ -19,6 +19,6 @@ image = "0.25.10"
 memmap2 = "0.9.11"
 numpy = "0.29.0"
 pyo3 = "0.29.0"
-rivet-core = { path = "crates/rivet-core" }
+rivet-dataset = { path = "crates/rivet-dataset" }
 thiserror = "2.0.17"
 walkdir = "2.5.0"

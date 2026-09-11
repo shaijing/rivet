@@ -767,4 +767,56 @@ mod tests {
             .unwrap();
         assert_batches_equal(&via_iter, &via_into);
     }
+
+    #[test]
+    fn shuffle_is_deterministic_across_workers() {
+        let mut loader_a = pipeline(50, 0)
+            .shuffle(7)
+            .batch(8, false)
+            .compile()
+            .unwrap();
+        let mut loader_b = pipeline(50, 4)
+            .shuffle(7)
+            .batch(8, false)
+            .prefetch_batches(2)
+            .compile()
+            .unwrap();
+
+        let a = drain(&mut loader_a);
+        let b = drain(&mut loader_b);
+        assert_batches_equal(&a, &b);
+
+        let mut seen = Vec::new();
+        for batch in &a {
+            seen.extend(batch.labels.iter().copied());
+        }
+        assert_eq!(seen.iter().copied().collect::<std::collections::HashSet<_>>().len(), 50);
+
+        // A different seed changes the order.
+        let mut loader_c = pipeline(50, 0)
+            .shuffle(8)
+            .batch(8, false)
+            .compile()
+            .unwrap();
+        let c = drain(&mut loader_c);
+        let c_labels: Vec<i64> = c.iter().flat_map(|b| b.labels.iter().copied()).collect();
+        assert_ne!(c_labels, seen, "different seeds must reorder");
+    }
+
+    #[test]
+    fn shuffle_applies_after_skip_and_take() {
+        // Window is rows 10..=29 after skip/take; the seed only permutes
+        // that window.
+        let mut loader = pipeline(40, 0)
+            .skip(10)
+            .take(20)
+            .shuffle(3)
+            .batch(5, false)
+            .compile()
+            .unwrap();
+        let batches = drain(&mut loader);
+        let mut seen: Vec<i64> = batches.iter().flat_map(|b| b.labels.iter().copied()).collect();
+        seen.sort_unstable();
+        assert_eq!(seen, (10..30).collect::<Vec<i64>>(), "window preserved");
+    }
 }

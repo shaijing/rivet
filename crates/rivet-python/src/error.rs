@@ -1,6 +1,6 @@
 use pyo3::exceptions::{PyIOError, PyIndexError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use rivet_core::errors::RivetError;
+use rivet_dataset::errors::RivetError;
 
 pub(crate) fn to_py_err(err: RivetError) -> PyErr {
     match err {

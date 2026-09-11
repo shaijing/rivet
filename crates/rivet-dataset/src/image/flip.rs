@@ -1,0 +1,127 @@
+use crate::errors::RivetResult;
+use crate::image::{from_rgb_image, into_rgb_image};
+use crate::pipeline::op::SampleContext;
+use crate::sample::image::ImageSample;
+use image::imageops::{flip_horizontal, flip_vertical};
+
+#[derive(Clone, Copy)]
+pub enum FlipDirection {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Clone, Copy)]
+pub struct FlipConfig {
+    pub direction: FlipDirection,
+}
+
+impl FlipConfig {
+    pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
+        let sample = sample.into_decoded()?;
+        let (image, label) = into_rgb_image(sample, "flip")?;
+        let flipped = match self.direction {
+            FlipDirection::Horizontal => flip_horizontal(&image),
+            FlipDirection::Vertical => flip_vertical(&image),
+        };
+        Ok(ImageSample::Decoded(from_rgb_image(flipped, label)))
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct RandomHorizontalFlipConfig {
+    /// Probability of flipping a sample; one draw from the pipeline RNG
+    /// stream is compared against it per image.
+    pub probability: f64,
+}
+
+impl RandomHorizontalFlipConfig {
+    pub fn apply(&self, sample: ImageSample, ctx: &mut SampleContext) -> RivetResult<ImageSample> {
+        let sample = sample.into_decoded()?;
+        let draw = ctx.next_rng_u64();
+        // Uniform [0, 1) over the full 53-bit mantissa.
+        let value = (draw >> 11) as f64 * (1.0 / (1u64 << 53) as f64);
+        if value >= self.probability {
+            return Ok(ImageSample::Decoded(sample));
+        }
+
+        let (image, label) = into_rgb_image(sample, "random_horizontal_flip")?;
+        let flipped = flip_horizontal(&image);
+        Ok(ImageSample::Decoded(from_rgb_image(flipped, label)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RandomHorizontalFlipConfig, SampleContext};
+    use crate::image::flip::{FlipConfig, FlipDirection};
+    use crate::sample::image::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
+    use crate::sample::image::ImageSample::Decoded;
+
+    /// 2x2 RGB image with asymmetric content so a flip is observable.
+    fn asymmetric_image() -> DecodedSample {
+        DecodedSample {
+            image: ImageBuffer::U8(vec![
+                1, 2, 3, 4, 5, 6, //
+                7, 8, 9, 10, 11, 12,
+            ]),
+            width: 2,
+            height: 2,
+            channels: 3,
+            label: 3,
+            layout: ImageLayout::Hwc,
+        }
+    }
+
+    fn raw_pixels(sample: ImageSample) -> Vec<u8> {
+        let sample = sample.into_decoded().unwrap();
+        match sample.image {
+            ImageBuffer::U8(values) => values,
+            ImageBuffer::F32(_) => panic!("expected u8 output"),
+        }
+    }
+
+    fn apply_with(probability: f64, seed: u64, index: usize) -> Vec<u8> {
+        let mut ctx = SampleContext::new(index);
+        ctx.global_seed = seed;
+        let out = RandomHorizontalFlipConfig { probability }
+            .apply(Decoded(asymmetric_image()), &mut ctx)
+            .unwrap();
+        raw_pixels(out)
+    }
+
+    #[test]
+    fn flip_probability_zero_never_flips() {
+        assert_eq!(apply_with(0.0, 0, 0), raw_pixels(Decoded(asymmetric_image())));
+    }
+
+    #[test]
+    fn flip_probability_one_always_flips() {
+        let expected = raw_pixels(
+            FlipConfig {
+                direction: FlipDirection::Horizontal,
+            }
+            .apply(Decoded(asymmetric_image()))
+            .unwrap(),
+        );
+
+        for seed in 0..32u64 {
+            assert_eq!(apply_with(1.0, seed, seed as usize), expected);
+        }
+    }
+
+    #[test]
+    fn flip_is_deterministic_per_seed_and_sample() {
+        assert_eq!(apply_with(0.5, 42, 0), apply_with(0.5, 42, 0));
+        assert_eq!(apply_with(0.5, 7, 9), apply_with(0.5, 7, 9));
+    }
+
+    #[test]
+    fn flip_mixes_flipped_and_original_samples() {
+        // Across a fixed spread of seeds both outcomes must occur,
+        // otherwise the "random" flip is degenerate.
+        let mut distinct: Vec<Vec<u8>> = (0..64).map(|seed| apply_with(0.5, seed, 0)).collect();
+        distinct.sort();
+        distinct.dedup();
+        assert!(distinct.len() > 1, "both flip outcomes must occur");
+    }
+}

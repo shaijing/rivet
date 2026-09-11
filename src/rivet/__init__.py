@@ -151,6 +151,37 @@ class Pipeline:
     def vertical_flip(self) -> Pipeline:
         return Pipeline(self._inner.vertical_flip(), as_numpy=self.as_numpy)
 
+    def random_crop(
+        self,
+        width: int,
+        height: int,
+        padding: int = 0,
+    ) -> Pipeline:
+        """Zero-pad each image by `padding` pixels on every side, then crop
+        a `width`x`height` window at a per-sample random offset.
+
+        Stochastic ops are seeded by the pipeline seed: when the pipeline
+        shuffles (``.shuffle(seed)``), the same seed reproduces the same
+        sample order *and* the same augmentations at any worker count; use
+        per-epoch seeds (``seed + epoch``) for fresh augmentations per
+        epoch. Without a shuffle the augmentations are deterministic too.
+        Requires decoded uint8 HWC input.
+        """
+        return Pipeline(
+            self._inner.random_crop(width, height, padding),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_horizontal_flip(self, probability: float = 0.5) -> Pipeline:
+        """Randomly flip each image horizontally with `probability`
+        (one draw per sample from the pipeline seed, see `random_crop`).
+        Requires decoded uint8 HWC input.
+        """
+        return Pipeline(
+            self._inner.random_horizontal_flip(probability),
+            as_numpy=self.as_numpy,
+        )
+
     def brightness(self, value: int) -> Pipeline:
         return Pipeline(self._inner.brightness(value), as_numpy=self.as_numpy)
 
@@ -175,6 +206,20 @@ class Pipeline:
     def batch(self, size: int, *, drop_last: bool = False) -> Pipeline:
         return Pipeline(
             self._inner.batch(size, drop_last),
+            as_numpy=self.as_numpy,
+        )
+
+    def shuffle(self, seed: int) -> Pipeline:
+        """Deterministically shuffle the sampled window with `seed`.
+
+        The same seed reproduces the same order at any worker count; use
+        per-epoch seeds (``seed + epoch``) for reproducible shuffling.
+        Stochastic ops (``random_crop``, ``random_horizontal_flip``) draw
+        from this seed as well, so one ``(seed, epoch)`` reproduces both
+        order and augmentations.
+        """
+        return Pipeline(
+            self._inner.shuffle(seed),
             as_numpy=self.as_numpy,
         )
 

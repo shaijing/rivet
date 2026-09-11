@@ -2,18 +2,18 @@
 //! pipeline -> training-style batch loop over (x, y).
 //!
 //! ```text
-//! cargo run -p rivet-core --example cifar10            # all batches
-//! cargo run -p rivet-core --example cifar10 -- 10      # first 10 batches
+//! cargo run -p rivet-dataset --example cifar10            # all batches
+//! cargo run -p rivet-dataset --example cifar10 -- 10      # first 10 batches
 //! ```
 //!
 //! The Arrow file comes from `RIVET_TEST_ARROW_FILE` or the local Hugging
 //! Face CIFAR-10 cache (populated by `load_dataset("uoft-cs/cifar10")`);
 //! the optional argument caps the number of batches.
 
-use rivet_core::dataset::{ArrowImageDataset, Dataset};
-use rivet_core::pipeline::ImagePipeline;
-use rivet_core::runtime::ImageDataLoader;
-use rivet_core::sample::image::{ImageBatch, ImageBuffer};
+use rivet_dataset::dataset::{ArrowImageDataset, Dataset};
+use rivet_dataset::pipeline::ImagePipeline;
+use rivet_dataset::runtime::ImageDataLoader;
+use rivet_dataset::sample::image::{ImageBatch, ImageBuffer};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
