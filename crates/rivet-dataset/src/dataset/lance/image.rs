@@ -227,6 +227,38 @@ mod tests {
     }
 
     #[test]
+    fn encoded_cache_matches_the_lazy_source() {
+        let path = temp_lance_path();
+        write_fixture(&path);
+
+        let source =
+            crate::dataset::Source::new(Arc::new(LanceImageDataset::open_default(&path).unwrap()));
+        let expected = source.get_many(&[2, 0, 2]).unwrap();
+        let cached = source.cache_encoded(2).unwrap();
+        let actual = cached.get_many(&[2, 0, 2]).unwrap();
+
+        assert_eq!(
+            actual.iter().map(|sample| sample.label).collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|sample| sample.label)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            actual
+                .iter()
+                .map(|sample| sample.image.as_slice())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|sample| sample.image.as_slice())
+                .collect::<Vec<_>>()
+        );
+
+        std::fs::remove_dir_all(path).ok();
+    }
+
+    #[test]
     fn rejects_non_native_image_or_label_schema() {
         // Schema validation is intentionally kept in a small helper test so
         // invalid datasets fail during construction, before get_many.

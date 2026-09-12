@@ -7,8 +7,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use rivet_dataset::batch::ImageBatchBuilder;
 use rivet_dataset::dataset::{
-    ArrowImageDataset, Dataset, DatasetBundle, DatasetLoadResult, ImageFolderDatasetCore,
-    LanceImageDataset, load_lance_image_dataset,
+    ArrowImageDataset, DEFAULT_ENCODED_CHUNK_SIZE, Dataset, DatasetBundle, DatasetLoadResult,
+    ImageFolderDatasetCore, LanceImageDataset, Source, load_lance_image_dataset,
 };
 use rivet_dataset::image::decode::decode_rgb;
 use rivet_dataset::pipeline::ImagePipeline;
@@ -59,11 +59,13 @@ impl PyArrowDataset {
 
 #[pyclass(name = "_LanceDataset")]
 pub(crate) struct PyLanceDataset {
-    pub(crate) inner: Arc<LanceImageDataset>,
+    pub(crate) inner: Source<rivet_dataset::sample::image::EncodedImageSample>,
 }
 
 impl PyLanceDataset {
-    pub(crate) fn from_inner(inner: Arc<LanceImageDataset>) -> Self {
+    pub(crate) fn from_inner(
+        inner: Source<rivet_dataset::sample::image::EncodedImageSample>,
+    ) -> Self {
         Self { inner }
     }
 }
@@ -74,9 +76,9 @@ impl PyLanceDataset {
     #[pyo3(signature = (path, image_column="image", label_column="label"))]
     fn new(path: PathBuf, image_column: &str, label_column: &str) -> PyResult<Self> {
         Ok(Self {
-            inner: Arc::new(
+            inner: Source::new(Arc::new(
                 LanceImageDataset::open(path, image_column, label_column).map_err(to_py_err)?,
-            ),
+            )),
         })
     }
 
@@ -93,16 +95,27 @@ impl PyLanceDataset {
         decoded_sample_to_py(py, self.inner.get(index).map_err(to_py_err)?)
     }
 
+    /// Materialize compressed image payloads into a shared in-memory cache.
+    /// Image decoding remains a pipeline operation.
+    #[pyo3(signature = (chunk_size=DEFAULT_ENCODED_CHUNK_SIZE))]
+    fn cache_encoded(&self, py: Python<'_>, chunk_size: usize) -> PyResult<Self> {
+        let source = self.inner.clone();
+        let cached = py
+            .detach(|| source.cache_encoded(chunk_size))
+            .map_err(to_py_err)?;
+        Ok(Self::from_inner(cached))
+    }
+
     fn pipeline(&self) -> PyImagePipeline {
         PyImagePipeline {
-            inner: ImagePipeline::new(Arc::clone(&self.inner)),
+            inner: ImagePipeline::from_source(self.inner.clone()),
         }
     }
 }
 
 #[pyclass(name = "_LanceDatasetDict")]
 pub(crate) struct PyLanceDatasetDict {
-    inner: DatasetBundle<LanceImageDataset>,
+    inner: DatasetBundle<rivet_dataset::sample::image::EncodedImageSample>,
 }
 
 #[pymethods]

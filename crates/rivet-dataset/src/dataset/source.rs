@@ -1,4 +1,5 @@
-use crate::errors::RivetResult;
+use crate::dataset::cache::{CachePolicy, materialize_to_memory};
+use crate::errors::{RivetResult, invalid_argument};
 use std::sync::Arc;
 
 /// A modality-agnostic dataset: storage backends implement this once per
@@ -19,9 +20,14 @@ pub trait Dataset: Send + Sync {
 
     /// Convenience wrapper around the batch primitive.
     fn get(&self, index: usize) -> RivetResult<Self::Item> {
-        let mut items = self.get_many(&[index])?;
-        debug_assert_eq!(items.len(), 1);
-        Ok(items.remove(0))
+        let items = self.get_many(&[index])?;
+        if items.len() != 1 {
+            return Err(invalid_argument(format!(
+                "dataset returned {} rows for one requested index",
+                items.len()
+            )));
+        }
+        Ok(items.into_iter().next().expect("validated one row"))
     }
 
     fn is_empty(&self) -> bool {
@@ -79,6 +85,34 @@ impl<T: Send> Source<T> {
     }
 }
 
+impl<T> Source<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    /// Materialize this source according to `policy` and return a new source.
+    /// The original source is not changed, so it remains useful for creating
+    /// a differently configured pipeline or cache.
+    pub fn with_cache(&self, policy: CachePolicy) -> RivetResult<Self> {
+        match policy {
+            CachePolicy::None => Ok(self.clone()),
+            CachePolicy::Encoded { chunk_size } => {
+                let cached = materialize_to_memory(self.as_dataset(), chunk_size)?;
+                Ok(Self::new(Arc::new(cached)))
+            }
+        }
+    }
+
+    /// Alias for [`Source::with_cache`] using cache-oriented terminology.
+    pub fn cache(&self, policy: CachePolicy) -> RivetResult<Self> {
+        self.with_cache(policy)
+    }
+
+    /// Materialize encoded samples using the requested chunk size.
+    pub fn cache_encoded(&self, chunk_size: usize) -> RivetResult<Self> {
+        self.with_cache(CachePolicy::Encoded { chunk_size })
+    }
+}
+
 /// Validate all indices before a backend starts reading storage. Keeping this
 /// check shared makes empty requests, bounds errors, and cardinality
 /// guarantees consistent across all dataset implementations.
@@ -89,4 +123,28 @@ pub(crate) fn validate_indices(indices: &[usize], len: usize) -> RivetResult<()>
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dataset::memory::MemoryDataset;
+    use std::sync::Arc;
+
+    #[test]
+    fn get_wrapper_uses_get_many_semantics() {
+        let dataset = MemoryDataset::new(vec![10, 20, 30]);
+
+        assert_eq!(dataset.get(1).unwrap(), 20);
+        assert!(dataset.get(3).is_err());
+    }
+
+    #[test]
+    fn source_clones_share_the_same_backend_handle() {
+        let source = Source::new(Arc::new(MemoryDataset::new(vec![1, 2, 3])));
+        let clone = source.clone();
+
+        assert_eq!(source.len(), clone.len());
+        assert_eq!(clone.get_many(&[2, 0]).unwrap(), [3, 1]);
+    }
 }

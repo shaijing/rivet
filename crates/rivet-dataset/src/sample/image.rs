@@ -60,7 +60,7 @@ impl ImageBuffer {
 /// only borrows it as `&[u8]` for decoding; no encoded-byte copy happens
 /// inside the source boundary, and `Buffer::clone()` is a cheap shared
 /// refcount bump.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct EncodedImageSample {
     pub image: Buffer,
     pub label: i64,

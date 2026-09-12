@@ -176,6 +176,10 @@ class DatasetDict:
 class LanceDataset:
     """Lance-backed encoded image dataset.
 
+    Dataset access is lazy by default. Use :meth:`cache` to explicitly
+    materialize compressed image payloads in memory; caching does not decode
+    images.
+
     The native Rivet schema is ``image: binary`` and ``label: int32`` or
     ``int64``. A configured Hugging Face-compatible ``img.bytes`` struct is
     also accepted for compatibility. Only the configured image and label
@@ -209,6 +213,27 @@ class LanceDataset:
 
     def get_decoded(self, index: int, *, as_numpy: bool = True) -> dict[str, Any]:
         return _maybe_numpy_batch(self._inner.get_decoded(index), as_numpy)
+
+    def cache(
+        self,
+        level: str = "encoded",
+        *,
+        chunk_size: int = 4096,
+    ) -> LanceDataset:
+        """Return a new dataset materialized at the requested cache level.
+
+        Only the ``encoded`` cache is currently supported. It stores the
+        compressed image bytes in memory and leaves decoding to the pipeline.
+        The original lazy dataset is unchanged.
+        """
+        if level != "encoded":
+            raise ValueError(
+                "only the 'encoded' cache is currently supported; "
+                "decoded caching will be added after Tensor integration"
+            )
+        if chunk_size <= 0:
+            raise ValueError("cache chunk_size must be greater than 0")
+        return LanceDataset._from_inner(self._inner.cache_encoded(chunk_size))
 
     def pipeline(self) -> Pipeline:
         return Pipeline(self._inner.pipeline())

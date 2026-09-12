@@ -10,8 +10,9 @@ mod table;
 
 use super::bundle::{DatasetBundle, DatasetLoadResult};
 use super::manifest::{DatasetManifest, MANIFEST_FILE_NAME};
-use crate::dataset::source::Dataset;
+use crate::dataset::source::{Dataset, Source};
 use crate::errors::{RivetResult, invalid_argument};
+use crate::sample::image::EncodedImageSample;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -29,15 +30,14 @@ pub fn load_lance_image_dataset(
     path: impl AsRef<Path>,
     image_column: impl Into<String>,
     label_column: impl Into<String>,
-) -> RivetResult<DatasetLoadResult<LanceImageDataset>> {
+) -> RivetResult<DatasetLoadResult<EncodedImageSample>> {
     let path = path.as_ref();
     let image_column = image_column.into();
     let label_column = label_column.into();
 
     if is_lance_path(path) {
-        return Ok(DatasetLoadResult::Single(Arc::new(
-            LanceImageDataset::open(path, image_column, label_column)?,
-        )));
+        let dataset = Arc::new(LanceImageDataset::open(path, image_column, label_column)?);
+        return Ok(DatasetLoadResult::Single(Source::new(dataset)));
     }
     if !path.exists() {
         return Err(invalid_argument(format!(
@@ -73,7 +73,7 @@ pub fn load_lance_image_dataset(
                 )));
             }
         }
-        splits.insert(name, dataset);
+        splits.insert(name, Source::new(dataset));
     }
 
     Ok(DatasetLoadResult::Bundle(DatasetBundle::from_splits(
@@ -128,7 +128,6 @@ fn discover_split_paths(root: &Path) -> RivetResult<Vec<(String, PathBuf, Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dataset::Dataset;
     use arrow::array::{BinaryArray, Int32Array, RecordBatch};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatchIterator;

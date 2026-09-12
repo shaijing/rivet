@@ -11,14 +11,12 @@
 //!   RIVET_LANCE_ROOT=/data/datasets/rivet cargo run -j 16 \
 //!     -p rivet-dataset --example lance_cifar
 
-use rivet_dataset::dataset::{
-    Dataset, DatasetLoadResult, LanceImageDataset, load_lance_image_dataset,
-};
+use rivet_dataset::dataset::{Dataset, DatasetLoadResult, Source, load_lance_image_dataset};
+use rivet_dataset::sample::image::EncodedImageSample;
 use std::env;
 use std::error::Error;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Instant;
 
 const DEFAULT_DATASET_ROOT: &str = "/data/datasets/rivet";
@@ -98,7 +96,11 @@ fn dataset_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_DATASET_ROOT))
 }
 
-fn open_split(root: &Path, spec: &CifarSpec, split: &str) -> ExampleResult<Arc<LanceImageDataset>> {
+fn open_split(
+    root: &Path,
+    spec: &CifarSpec,
+    split: &str,
+) -> ExampleResult<Source<EncodedImageSample>> {
     let path = root.join(spec.name);
     let loaded = load_lance_image_dataset(&path, spec.image_column, spec.label_column)?;
 
@@ -123,7 +125,7 @@ fn open_split(root: &Path, spec: &CifarSpec, split: &str) -> ExampleResult<Arc<L
 }
 
 fn read_batches(
-    dataset: &LanceImageDataset,
+    dataset: &Source<EncodedImageSample>,
     max_batches: usize,
     batch_size: usize,
 ) -> ExampleResult<()> {
@@ -189,7 +191,6 @@ fn main() -> ExampleResult<()> {
         "columns: image={}, label={}",
         spec.image_column, spec.label_column
     );
-    println!("schema: {}", dataset.schema());
     println!(
         "rows: {}, batch_size: {}, max_batches: {}",
         dataset.len(),

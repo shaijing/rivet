@@ -30,3 +30,7 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.16.6",
 ]
+torch = [
+    "torch>=2.14.0",
+    "torchvision>=0.29.0",
+]

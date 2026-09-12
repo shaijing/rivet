@@ -38,6 +38,8 @@ def test_load_dataset_discovers_and_selects_splits(tmp_path: Path) -> None:
     assert "train" in dataset
     assert len(dataset["train"]) == 2
     assert dataset["train"].get_encoded(1)["label"] == 1
+    cached_train = dataset["train"].cache("encoded", chunk_size=1)
+    assert [cached_train.get_encoded(index)["label"] for index in [1, 0]] == [1, 0]
     assert isinstance(rivet.load_dataset(tmp_path, split="test"), rivet.LanceDataset)
 
     with pytest.raises(KeyError, match="available splits: test, train"):
@@ -67,3 +69,22 @@ def test_manifest_is_authoritative_and_physical_paths_stay_single(
 
     with pytest.raises(ValueError, match="single .lance"):
         rivet.load_dataset(tmp_path / "train.lance", split="train")
+
+
+def test_encoded_cache_is_explicit_and_keeps_original_lazy_dataset(
+    tmp_path: Path,
+) -> None:
+    _write_split(tmp_path / "train.lance", [0, 1, 2])
+
+    lazy = rivet.load_dataset(tmp_path / "train.lance")
+    cached = lazy.cache("encoded", chunk_size=1)
+
+    assert cached is not lazy
+    assert len(cached) == len(lazy) == 3
+    assert [cached.get_encoded(index)["label"] for index in [2, 0, 2]] == [2, 0, 2]
+    assert [lazy.get_encoded(index)["label"] for index in [2, 0, 2]] == [2, 0, 2]
+
+    with pytest.raises(ValueError, match="only the 'encoded' cache"):
+        lazy.cache("decoded")
+    with pytest.raises(ValueError, match="chunk_size"):
+        lazy.cache(chunk_size=0)
