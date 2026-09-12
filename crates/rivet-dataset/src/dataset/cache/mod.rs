@@ -2,11 +2,16 @@
 
 mod policy;
 
-use crate::dataset::memory::MemoryDataset;
+use crate::dataset::memory::{DecodedImageMemoryDataset, MemoryDataset};
 use crate::dataset::source::Dataset;
 use crate::errors::{RivetResult, invalid_argument};
+use crate::image::decode::decode_rgb;
+use crate::sample::image::{DecodedSample, ImageBuffer};
+use std::sync::Arc;
 
-pub use policy::{CachePolicy, DEFAULT_ENCODED_CHUNK_SIZE};
+pub use policy::{
+    CacheConfig, CacheLevel, CachePolicy, DEFAULT_DECODED_CHUNK_SIZE, DEFAULT_ENCODED_CHUNK_SIZE,
+};
 
 /// Materialize a dataset into an in-memory dataset in bounded chunks.
 ///
@@ -44,6 +49,86 @@ where
     }
 
     Ok(MemoryDataset::new(items))
+}
+
+/// Decode an encoded image dataset into a shared-backing in-memory dataset.
+///
+/// Decoding is deliberately performed after the source batch is fetched and
+/// before any pipeline operations run. The returned samples use shared U8
+/// backing, so retrieving them from the memory dataset does not copy pixels.
+pub fn materialize_decoded_to_memory(
+    dataset: &dyn Dataset<Item = crate::sample::image::EncodedImageSample>,
+    chunk_size: usize,
+    max_bytes: Option<usize>,
+) -> RivetResult<DecodedImageMemoryDataset> {
+    if chunk_size == 0 {
+        return Err(invalid_argument("cache chunk_size must be greater than 0"));
+    }
+
+    let len = dataset.len();
+    let mut items = Vec::with_capacity(len);
+    let mut total_bytes = 0usize;
+
+    for start in (0..len).step_by(chunk_size) {
+        let end = start.saturating_add(chunk_size).min(len);
+        let indices = (start..end).collect::<Vec<_>>();
+        let encoded = dataset.get_many(&indices)?;
+
+        if encoded.len() != indices.len() {
+            return Err(invalid_argument(format!(
+                "dataset returned {} rows for cache chunk of {} indices",
+                encoded.len(),
+                indices.len()
+            )));
+        }
+
+        for (index, sample) in indices.into_iter().zip(encoded) {
+            let decoded = decode_rgb(sample.image.as_slice(), sample.label).map_err(|error| {
+                invalid_argument(format!("failed to decode image at index {index}: {error}"))
+            })?;
+            let bytes = decoded.image.as_u8_slice().map_or(0, |values| values.len());
+            total_bytes = total_bytes
+                .checked_add(bytes)
+                .ok_or_else(|| invalid_argument("decoded cache byte count overflow"))?;
+
+            if let Some(max_bytes) = max_bytes {
+                if total_bytes > max_bytes {
+                    return Err(invalid_argument(format!(
+                        "decoded cache requires at least {total_bytes} bytes, exceeding max_bytes {max_bytes} at index {index}"
+                    )));
+                }
+            }
+
+            items.push(shared_u8_sample(decoded)?);
+        }
+    }
+
+    Ok(DecodedImageMemoryDataset::new(items))
+}
+
+fn shared_u8_sample(sample: DecodedSample) -> RivetResult<DecodedSample> {
+    let DecodedSample {
+        image,
+        width,
+        height,
+        channels,
+        label,
+        layout,
+    } = sample;
+    let ImageBuffer::U8(values) = image else {
+        return Err(invalid_argument(
+            "decoded image cache requires uint8 image samples",
+        ));
+    };
+
+    Ok(DecodedSample {
+        image: ImageBuffer::SharedU8(Arc::from(values.into_boxed_slice())),
+        width,
+        height,
+        channels,
+        label,
+        layout,
+    })
 }
 
 #[cfg(test)]
@@ -142,4 +227,30 @@ mod tests {
 
         assert!(error.to_string().contains("synthetic source failure"));
     }
+
+    #[test]
+    fn decoded_materialization_reports_decode_errors_with_index() {
+        let dataset = MemoryDataset::new(vec![crate::sample::image::EncodedImageSample {
+            image: arrow_buffer::Buffer::from(b"not an image".to_vec()),
+            label: 9,
+        }]);
+
+        let error = materialize_decoded_to_memory(&dataset, 1, None).unwrap_err();
+
+        assert!(error.to_string().contains("index 0"));
+    }
+
+    #[test]
+    fn decoded_materialization_enforces_memory_budget() {
+        let dataset = MemoryDataset::new(vec![crate::sample::image::EncodedImageSample {
+            image: arrow_buffer::Buffer::from(PNG_1X1.to_vec()),
+            label: 9,
+        }]);
+
+        let error = materialize_decoded_to_memory(&dataset, 1, Some(2)).unwrap_err();
+
+        assert!(error.to_string().contains("max_bytes 2"));
+    }
+
+    const PNG_1X1: &[u8] = b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90\x77\x53\xde\x00\x00\x00\x0c\x49\x44\x41\x54\x78\x9c\x63\xf8\xcf\xc0\x00\x00\x03\x01\x01\x00\xc9\xfe\x92\xef\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
 }

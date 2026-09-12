@@ -25,7 +25,7 @@ pub fn require_u8_hwc(sample: DecodedSample, op_name: &str) -> RivetResult<Decod
 pub fn into_rgb_image(sample: DecodedSample, op_name: &str) -> RivetResult<(RgbImage, i64)> {
     let sample = require_u8_hwc(sample, op_name)?;
     let label = sample.label;
-    let ImageBuffer::U8(values) = sample.image else {
+    let Some(values) = sample.image.into_owned_u8() else {
         return Err(invalid_argument(format!("{op_name} requires uint8 input")));
     };
     let image = RgbImage::from_raw(sample.width, sample.height, values).ok_or_else(|| {

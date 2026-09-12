@@ -6,6 +6,7 @@ from .rivet_backend import (
     _rivet_checks,
     _rivet_pipeline,
     bench_rivet,
+    bench_rivet_cache,
     bench_rivet_encoded_cache,
 )
 from .torch_backend import TorchLanceDataset, bench_torch
@@ -18,6 +19,7 @@ __all__ = [
     "_rivet_pipeline",
     "_train_path",
     "bench_rivet",
+    "bench_rivet_cache",
     "bench_rivet_encoded_cache",
     "bench_torch",
     "detect_encoding",

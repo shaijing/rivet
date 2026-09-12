@@ -177,8 +177,7 @@ class LanceDataset:
     """Lance-backed encoded image dataset.
 
     Dataset access is lazy by default. Use :meth:`cache` to explicitly
-    materialize compressed image payloads in memory; caching does not decode
-    images.
+    materialize encoded or decoded image payloads in memory.
 
     The native Rivet schema is ``image: binary`` and ``label: int32`` or
     ``int64``. A configured Hugging Face-compatible ``img.bytes`` struct is
@@ -219,21 +218,26 @@ class LanceDataset:
         level: str = "encoded",
         *,
         chunk_size: int = 4096,
+        max_bytes: int | None = None,
     ) -> LanceDataset:
         """Return a new dataset materialized at the requested cache level.
 
-        Only the ``encoded`` cache is currently supported. It stores the
-        compressed image bytes in memory and leaves decoding to the pipeline.
-        The original lazy dataset is unchanged.
+        ``encoded`` stores compressed image bytes and still decodes in the
+        pipeline. ``decoded`` stores shared uint8 HWC pixels, so the pipeline
+        starts after decoding and should omit ``decode_image()``. The original
+        dataset is unchanged. ``max_bytes`` applies to decoded caching.
         """
-        if level != "encoded":
+        if level not in {"encoded", "decoded"}:
             raise ValueError(
-                "only the 'encoded' cache is currently supported; "
-                "decoded caching will be added after Tensor integration"
+                "cache level must be 'encoded' or 'decoded'"
             )
         if chunk_size <= 0:
             raise ValueError("cache chunk_size must be greater than 0")
-        return LanceDataset._from_inner(self._inner.cache_encoded(chunk_size))
+        if max_bytes is not None and max_bytes < 0:
+            raise ValueError("cache max_bytes must not be negative")
+        return LanceDataset._from_inner(
+            self._inner.cache(level, chunk_size, max_bytes)
+        )
 
     def pipeline(self) -> Pipeline:
         return Pipeline(self._inner.pipeline())

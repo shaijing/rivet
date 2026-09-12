@@ -11,8 +11,8 @@
 //!   RIVET_LANCE_ROOT=/data/datasets/rivet cargo run -j 16 \
 //!     -p rivet-dataset --example lance_cifar
 
-use rivet_dataset::dataset::{Dataset, DatasetLoadResult, Source, load_lance_image_dataset};
-use rivet_dataset::sample::image::EncodedImageSample;
+use rivet_dataset::dataset::{DatasetLoadResult, ImageSource, load_lance_image_dataset};
+use rivet_dataset::sample::image::ImageSample;
 use std::env;
 use std::error::Error;
 use std::io;
@@ -96,11 +96,7 @@ fn dataset_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_DATASET_ROOT))
 }
 
-fn open_split(
-    root: &Path,
-    spec: &CifarSpec,
-    split: &str,
-) -> ExampleResult<Source<EncodedImageSample>> {
+fn open_split(root: &Path, spec: &CifarSpec, split: &str) -> ExampleResult<ImageSource> {
     let path = root.join(spec.name);
     let loaded = load_lance_image_dataset(&path, spec.image_column, spec.label_column)?;
 
@@ -124,11 +120,7 @@ fn open_split(
     }
 }
 
-fn read_batches(
-    dataset: &Source<EncodedImageSample>,
-    max_batches: usize,
-    batch_size: usize,
-) -> ExampleResult<()> {
+fn read_batches(dataset: &ImageSource, max_batches: usize, batch_size: usize) -> ExampleResult<()> {
     let row_count = dataset.len();
     let start = Instant::now();
     let mut rows_read = 0usize;
@@ -151,9 +143,15 @@ fn read_batches(
             .into());
         }
 
-        let first = samples
+        let first = match samples
             .first()
-            .ok_or_else(|| io::Error::other("Rivet returned an empty batch"))?;
+            .ok_or_else(|| io::Error::other("Rivet returned an empty batch"))?
+        {
+            ImageSample::Encoded(sample) => sample,
+            ImageSample::Decoded(_) => {
+                return Err(io::Error::other("expected an encoded Lance source").into());
+            }
+        };
         let image = image::load_from_memory(first.image.as_slice())?;
         rows_read += samples.len();
 

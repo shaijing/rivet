@@ -36,10 +36,10 @@ pub trait Dataset: Send + Sync {
 }
 
 /// Shared runtime handle to any [`Dataset`] yielding `T`. Modality aliases
-/// the item type, so the source layer itself stays modality-free:
+/// the item type, so the source layer itself stays modality-free. Image
+/// pipelines use the state-aware [`crate::dataset::ImageSource`] wrapper:
 ///
 /// ```text
-/// ImageSource = Source<EncodedImageSample>
 /// TextSource  = Source<RawTextSample>
 /// ```
 pub struct Source<T> {
@@ -99,6 +99,9 @@ where
                 let cached = materialize_to_memory(self.as_dataset(), chunk_size)?;
                 Ok(Self::new(Arc::new(cached)))
             }
+            CachePolicy::Decoded { .. } => Err(crate::errors::invalid_argument(
+                "decoded image caching requires an ImageSource",
+            )),
         }
     }
 

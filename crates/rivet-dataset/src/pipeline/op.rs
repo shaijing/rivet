@@ -1,4 +1,4 @@
-use crate::dataset::Source;
+use crate::dataset::ImageSource;
 use crate::errors::{RivetResult, invalid_argument, invalid_pipeline};
 use crate::image::color::{BrightnessConfig, ContrastConfig};
 use crate::image::crop::{CenterCropConfig, CropConfig, RandomCropConfig};
@@ -7,17 +7,17 @@ use crate::image::flip::{FlipConfig, FlipDirection, RandomHorizontalFlipConfig};
 use crate::image::layout::LayoutConfig;
 use crate::image::normalize::NormalizeConfig;
 use crate::image::resize::ResizeConfig;
-use crate::sample::image::{DecodedSample, EncodedImageSample, ImageSample};
+use crate::sample::image::{DecodedSample, ImageSample};
 use crate::sample::image::{ImageDType, ImageLayout};
 use crate::sampler::{SamplerPlan, permute};
 
 #[derive(Clone)]
 pub struct SourceOp {
-    source: Source<EncodedImageSample>,
+    source: ImageSource,
 }
 
 impl SourceOp {
-    pub fn new(source: Source<EncodedImageSample>) -> Self {
+    pub fn new(source: ImageSource) -> Self {
         Self { source }
     }
 
@@ -25,11 +25,15 @@ impl SourceOp {
         self.source.len()
     }
 
-    pub fn get(&self, index: usize) -> RivetResult<EncodedImageSample> {
+    pub fn state(&self) -> PipelineImageState {
+        self.source.state()
+    }
+
+    pub fn get(&self, index: usize) -> RivetResult<ImageSample> {
         self.source.get(index)
     }
 
-    pub fn get_many(&self, indices: &[usize]) -> RivetResult<Vec<EncodedImageSample>> {
+    pub fn get_many(&self, indices: &[usize]) -> RivetResult<Vec<ImageSample>> {
         self.source.get_many(indices)
     }
 }
@@ -251,13 +255,11 @@ pub struct ExecutionPlan {
 impl ExecutionPlan {
     pub fn apply_ops(
         &self,
-        sample: EncodedImageSample,
+        mut sample: ImageSample,
         sample_index: usize,
     ) -> RivetResult<DecodedSample> {
         let mut ctx = SampleContext::new(sample_index);
         ctx.global_seed = self.random_seed;
-        let mut sample = ImageSample::Encoded(sample);
-
         for op in &self.ops {
             sample = op.apply(sample, &mut ctx)?;
         }

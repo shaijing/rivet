@@ -10,8 +10,9 @@ Usage, after building the release extension:
         --batch 64 --batches 0 --resize 64
         --rivet-workers 4 --torch-workers 4 --epochs 2
 
-Add ``--cache-compare`` to report Lance lazy versus encoded in-memory Rivet
-performance, including cache construction and per-epoch timings.
+Add ``--cache-compare`` to report Lance lazy versus an in-memory Rivet cache
+(decoded by default), including cache construction and per-epoch timings. Use
+``--cache-level encoded`` to benchmark the compressed representation instead.
 
 Use ``--lance-root`` to select another converted CIFAR-10 root. The default is
 ``/data/datasets/rivet/cifar10``. Add ``--sweep`` for a Rivet worker scaling
@@ -32,6 +33,7 @@ if __package__:
         _rivet_pipeline,
         _train_path,
         bench_rivet,
+        bench_rivet_cache,
         bench_rivet_encoded_cache,
         bench_torch,
         detect_encoding,
@@ -50,6 +52,7 @@ else:
         _rivet_pipeline,
         _train_path,
         bench_rivet,
+        bench_rivet_cache,
         bench_rivet_encoded_cache,
         bench_torch,
         detect_encoding,
@@ -65,6 +68,7 @@ __all__ = [
     "_rivet_pipeline",
     "_train_path",
     "bench_rivet",
+    "bench_rivet_cache",
     "bench_rivet_encoded_cache",
     "bench_torch",
     "detect_encoding",

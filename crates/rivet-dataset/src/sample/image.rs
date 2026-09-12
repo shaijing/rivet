@@ -1,4 +1,5 @@
 use arrow_buffer::Buffer;
+use std::sync::Arc;
 
 use crate::errors::{RivetResult, invalid_argument};
 
@@ -39,16 +40,36 @@ impl ImageLayout {
     }
 }
 
+#[derive(Clone, Debug)]
 pub enum ImageBuffer {
     U8(Vec<u8>),
+    /// Shared U8 storage used by decoded caches. Cloning this variant only
+    /// increments the backing allocation's reference count.
+    SharedU8(Arc<[u8]>),
     F32(Vec<f32>),
 }
 
 impl ImageBuffer {
     pub fn dtype(&self) -> ImageDType {
         match self {
-            Self::U8(_) => ImageDType::U8,
+            Self::U8(_) | Self::SharedU8(_) => ImageDType::U8,
             Self::F32(_) => ImageDType::F32,
+        }
+    }
+
+    pub fn as_u8_slice(&self) -> Option<&[u8]> {
+        match self {
+            Self::U8(values) => Some(values),
+            Self::SharedU8(values) => Some(values),
+            Self::F32(_) => None,
+        }
+    }
+
+    pub(crate) fn into_owned_u8(self) -> Option<Vec<u8>> {
+        match self {
+            Self::U8(values) => Some(values),
+            Self::SharedU8(values) => Some(values.as_ref().to_vec()),
+            Self::F32(_) => None,
         }
     }
 }
@@ -66,6 +87,7 @@ pub struct EncodedImageSample {
     pub label: i64,
 }
 
+#[derive(Clone, Debug)]
 pub struct DecodedSample {
     pub image: ImageBuffer,
     pub width: u32,
@@ -82,6 +104,7 @@ pub struct ImageBatch {
     pub layout: ImageLayout,
 }
 
+#[derive(Clone, Debug)]
 pub enum ImageSample {
     Encoded(EncodedImageSample),
     Decoded(DecodedSample),

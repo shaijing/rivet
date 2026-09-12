@@ -54,8 +54,8 @@ impl RandomHorizontalFlipConfig {
 mod tests {
     use super::{RandomHorizontalFlipConfig, SampleContext};
     use crate::image::flip::{FlipConfig, FlipDirection};
-    use crate::sample::image::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
     use crate::sample::image::ImageSample::Decoded;
+    use crate::sample::image::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
 
     /// 2x2 RGB image with asymmetric content so a flip is observable.
     fn asymmetric_image() -> DecodedSample {
@@ -76,6 +76,7 @@ mod tests {
         let sample = sample.into_decoded().unwrap();
         match sample.image {
             ImageBuffer::U8(values) => values,
+            ImageBuffer::SharedU8(values) => values.to_vec(),
             ImageBuffer::F32(_) => panic!("expected u8 output"),
         }
     }
@@ -91,7 +92,10 @@ mod tests {
 
     #[test]
     fn flip_probability_zero_never_flips() {
-        assert_eq!(apply_with(0.0, 0, 0), raw_pixels(Decoded(asymmetric_image())));
+        assert_eq!(
+            apply_with(0.0, 0, 0),
+            raw_pixels(Decoded(asymmetric_image()))
+        );
     }
 
     #[test]

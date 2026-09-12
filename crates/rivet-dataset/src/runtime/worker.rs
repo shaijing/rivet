@@ -1,6 +1,6 @@
 use crate::errors::{RivetError, RivetResult};
 use crate::pipeline::op::ExecutionPlan;
-use crate::sample::image::{DecodedSample, EncodedImageSample};
+use crate::sample::image::{DecodedSample, ImageSample};
 
 /// One sample-level unit of work.
 ///
@@ -12,7 +12,7 @@ pub struct WorkItem {
     pub batch_id: u64,
     pub position: usize,
     pub index: usize,
-    pub sample: EncodedImageSample,
+    pub sample: ImageSample,
 }
 
 pub struct WorkResult {
@@ -25,7 +25,7 @@ pub struct WorkResult {
 /// batch by the coordinator; workers only run image transformations.
 pub fn execute_sample(
     plan: &ExecutionPlan,
-    sample: EncodedImageSample,
+    sample: ImageSample,
     index: usize,
 ) -> RivetResult<DecodedSample> {
     plan.apply_ops(sample, index)

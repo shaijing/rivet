@@ -42,12 +42,16 @@ impl NormalizeConfig {
             )));
         }
 
-        let values = match sample.image {
+        let values = match &sample.image {
             ImageBuffer::U8(values) => values
                 .iter()
                 .map(|value| f32::from(*value) / 255.0)
                 .collect::<Vec<_>>(),
-            ImageBuffer::F32(values) => values,
+            ImageBuffer::SharedU8(values) => values
+                .iter()
+                .map(|value| f32::from(*value) / 255.0)
+                .collect::<Vec<_>>(),
+            ImageBuffer::F32(values) => values.clone(),
         };
         let normalized = match sample.layout {
             ImageLayout::Hwc => normalize_hwc(&values, &self.mean, &self.std, channel_count),
@@ -131,7 +135,7 @@ mod tests {
                 assert_eq!(values[0], -1.0);
                 assert_eq!(values[1], 1.0);
             }
-            ImageBuffer::U8(_) => panic!("expected f32 output"),
+            ImageBuffer::U8(_) | ImageBuffer::SharedU8(_) => panic!("expected f32 output"),
         }
     }
 }

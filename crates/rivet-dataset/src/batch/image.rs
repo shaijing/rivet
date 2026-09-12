@@ -31,6 +31,15 @@ impl ImageBatchBufferBuilder {
                 *self = Self::U8(buffer);
                 Ok(())
             }
+            (Self::Empty, ImageBuffer::SharedU8(values)) => {
+                *self = Self::U8(values.as_ref().to_vec());
+                Ok(())
+            }
+            (Self::U8(mut buffer), ImageBuffer::SharedU8(values)) => {
+                buffer.extend_from_slice(values.as_ref());
+                *self = Self::U8(buffer);
+                Ok(())
+            }
             (Self::F32(mut buffer), ImageBuffer::F32(values)) => {
                 buffer.extend(values);
                 *self = Self::F32(buffer);
@@ -165,7 +174,7 @@ mod tests {
         assert_eq!(batch.images.dtype().as_str(), "float32");
         match batch.images {
             ImageBuffer::F32(values) => assert_eq!(values, vec![1.0, 2.0]),
-            ImageBuffer::U8(_) => panic!("expected f32 batch"),
+            ImageBuffer::U8(_) | ImageBuffer::SharedU8(_) => panic!("expected f32 batch"),
         }
     }
 }

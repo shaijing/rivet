@@ -37,13 +37,9 @@ impl PyDataLoader {
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
         // Release the GIL while the rust workers load/decode/transform;
         // no python objects are touched on worker threads.
-        let batch = py
-            .detach(|| self.inner.next_batch())
-            .map_err(to_py_err)?;
+        let batch = py.detach(|| self.inner.next_batch()).map_err(to_py_err)?;
 
-        batch
-            .map(|batch| image_batch_to_py(py, batch))
-            .transpose()
+        batch.map(|batch| image_batch_to_py(py, batch)).transpose()
     }
 }
 
@@ -111,6 +107,10 @@ fn image_array_to_py(
 ) -> PyResult<Py<PyAny>> {
     match images {
         ImageBuffer::U8(values) => Ok(PyArray1::from_vec(py, values)
+            .reshape(shape)?
+            .into_any()
+            .unbind()),
+        ImageBuffer::SharedU8(values) => Ok(PyArray1::from_vec(py, values.to_vec())
             .reshape(shape)?
             .into_any()
             .unbind()),

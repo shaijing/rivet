@@ -3,7 +3,7 @@ use crate::errors::{RivetError, RivetResult, invalid_argument};
 use crate::pipeline::op::ExecutionPlan;
 use crate::runtime::pool::WorkerPool;
 use crate::runtime::worker::WorkItem;
-use crate::sample::image::{DecodedSample, EncodedImageSample, ImageBatch};
+use crate::sample::image::{DecodedSample, ImageBatch, ImageSample};
 use crate::sampler::IndexSampler;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -124,8 +124,8 @@ fn next_batch_inline(
     let mut batch = ImageBatchBuilder::with_capacity(indices.len());
 
     let samples = fetch_samples(plan, &indices)?;
-    for (index, encoded) in indices.into_iter().zip(samples) {
-        let decoded = plan.apply_ops(encoded, index)?;
+    for (index, sample) in indices.into_iter().zip(samples) {
+        let decoded = plan.apply_ops(sample, index)?;
         batch.push(decoded)?;
     }
 
@@ -135,7 +135,7 @@ fn next_batch_inline(
 /// Source access runs on the coordinator so persistent backends can perform
 /// one batch read. Keep the same terminal panic-to-error behavior as the
 /// worker path for custom dataset implementations.
-fn fetch_samples(plan: &ExecutionPlan, indices: &[usize]) -> RivetResult<Vec<EncodedImageSample>> {
+fn fetch_samples(plan: &ExecutionPlan, indices: &[usize]) -> RivetResult<Vec<ImageSample>> {
     let samples = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         plan.source.get_many(indices)
     }))
@@ -192,7 +192,7 @@ impl PrefetchCoordinator {
     fn submit(
         &mut self,
         indices: Vec<usize>,
-        samples: Vec<EncodedImageSample>,
+        samples: Vec<ImageSample>,
         pool: &WorkerPool,
     ) -> RivetResult<()> {
         if indices.len() != samples.len() {

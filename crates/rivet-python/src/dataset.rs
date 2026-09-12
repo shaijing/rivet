@@ -7,11 +7,13 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use rivet_dataset::batch::ImageBatchBuilder;
 use rivet_dataset::dataset::{
-    ArrowImageDataset, DEFAULT_ENCODED_CHUNK_SIZE, Dataset, DatasetBundle, DatasetLoadResult,
-    ImageFolderDatasetCore, LanceImageDataset, Source, load_lance_image_dataset,
+    ArrowImageDataset, CachePolicy, DEFAULT_ENCODED_CHUNK_SIZE, Dataset, DatasetBundle,
+    DatasetLoadResult, ImageFolderDatasetCore, ImageSource, LanceImageDataset,
+    load_lance_image_dataset,
 };
 use rivet_dataset::image::decode::decode_rgb;
 use rivet_dataset::pipeline::ImagePipeline;
+use rivet_dataset::sample::image::{DecodedSample, ImageSample};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -47,7 +49,11 @@ impl PyArrowDataset {
     }
 
     fn get_decoded(&self, py: Python<'_>, index: usize) -> PyResult<Py<PyDict>> {
-        decoded_sample_to_py(py, self.inner.get(index).map_err(to_py_err)?)
+        let sample = self.inner.get(index).map_err(to_py_err)?;
+        decoded_sample_to_py(
+            py,
+            decode_rgb(sample.image.as_slice(), sample.label).map_err(to_py_err)?,
+        )
     }
 
     fn pipeline(&self) -> PyImagePipeline {
@@ -59,13 +65,11 @@ impl PyArrowDataset {
 
 #[pyclass(name = "_LanceDataset")]
 pub(crate) struct PyLanceDataset {
-    pub(crate) inner: Source<rivet_dataset::sample::image::EncodedImageSample>,
+    pub(crate) inner: ImageSource,
 }
 
 impl PyLanceDataset {
-    pub(crate) fn from_inner(
-        inner: Source<rivet_dataset::sample::image::EncodedImageSample>,
-    ) -> Self {
+    pub(crate) fn from_inner(inner: ImageSource) -> Self {
         Self { inner }
     }
 }
@@ -76,7 +80,7 @@ impl PyLanceDataset {
     #[pyo3(signature = (path, image_column="image", label_column="label"))]
     fn new(path: PathBuf, image_column: &str, label_column: &str) -> PyResult<Self> {
         Ok(Self {
-            inner: Source::new(Arc::new(
+            inner: ImageSource::from_encoded(Arc::new(
                 LanceImageDataset::open(path, image_column, label_column).map_err(to_py_err)?,
             )),
         })
@@ -88,21 +92,55 @@ impl PyLanceDataset {
 
     fn get_encoded(&self, py: Python<'_>, index: usize) -> PyResult<Py<PyDict>> {
         let sample = self.inner.get(index).map_err(to_py_err)?;
-        encoded_sample_to_py(py, sample.image, sample.label)
+        match sample {
+            ImageSample::Encoded(sample) => encoded_sample_to_py(py, sample.image, sample.label),
+            ImageSample::Decoded(_) => Err(pyo3::exceptions::PyValueError::new_err(
+                "encoded samples are unavailable after decoded caching",
+            )),
+        }
     }
 
     fn get_decoded(&self, py: Python<'_>, index: usize) -> PyResult<Py<PyDict>> {
-        decoded_sample_to_py(py, self.inner.get(index).map_err(to_py_err)?)
+        match self.inner.get(index).map_err(to_py_err)? {
+            ImageSample::Encoded(sample) => decoded_sample_to_py(
+                py,
+                decode_rgb(sample.image.as_slice(), sample.label).map_err(to_py_err)?,
+            ),
+            ImageSample::Decoded(sample) => decoded_sample_to_py(py, sample),
+        }
     }
 
-    /// Materialize compressed image payloads into a shared in-memory cache.
-    /// Image decoding remains a pipeline operation.
-    #[pyo3(signature = (chunk_size=DEFAULT_ENCODED_CHUNK_SIZE))]
-    fn cache_encoded(&self, py: Python<'_>, chunk_size: usize) -> PyResult<Self> {
+    /// Materialize encoded or decoded image payloads into a shared in-memory
+    /// cache. Decoded caching moves the pipeline boundary past image decode.
+    #[pyo3(signature = (level="encoded", chunk_size=DEFAULT_ENCODED_CHUNK_SIZE, max_bytes=None))]
+    fn cache(
+        &self,
+        py: Python<'_>,
+        level: &str,
+        chunk_size: usize,
+        max_bytes: Option<usize>,
+    ) -> PyResult<Self> {
+        let policy = match level {
+            "encoded" => {
+                if max_bytes.is_some() {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "max_bytes is only supported for decoded caching",
+                    ));
+                }
+                CachePolicy::Encoded { chunk_size }
+            }
+            "decoded" => CachePolicy::Decoded {
+                chunk_size,
+                max_bytes,
+            },
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "cache level must be 'encoded' or 'decoded'",
+                ));
+            }
+        };
         let source = self.inner.clone();
-        let cached = py
-            .detach(|| source.cache_encoded(chunk_size))
-            .map_err(to_py_err)?;
+        let cached = py.detach(|| source.cache(policy)).map_err(to_py_err)?;
         Ok(Self::from_inner(cached))
     }
 
@@ -115,7 +153,7 @@ impl PyLanceDataset {
 
 #[pyclass(name = "_LanceDatasetDict")]
 pub(crate) struct PyLanceDatasetDict {
-    inner: DatasetBundle<rivet_dataset::sample::image::EncodedImageSample>,
+    inner: DatasetBundle,
 }
 
 #[pymethods]
@@ -238,7 +276,11 @@ impl PyImageFolderDataset {
     }
 
     fn get_decoded(&self, py: Python<'_>, index: usize) -> PyResult<Py<PyDict>> {
-        decoded_sample_to_py(py, self.inner.get(index).map_err(to_py_err)?)
+        let sample = self.inner.get(index).map_err(to_py_err)?;
+        decoded_sample_to_py(
+            py,
+            decode_rgb(sample.image.as_slice(), sample.label).map_err(to_py_err)?,
+        )
     }
 
     fn pipeline(&self) -> PyImagePipeline {
@@ -257,11 +299,7 @@ fn encoded_sample_to_py(py: Python<'_>, image: Buffer, label: i64) -> PyResult<P
     Ok(out.into())
 }
 
-fn decoded_sample_to_py(
-    py: Python<'_>,
-    sample: rivet_dataset::sample::image::EncodedImageSample,
-) -> PyResult<Py<PyDict>> {
-    let decoded = decode_rgb(sample.image.as_slice(), sample.label).map_err(to_py_err)?;
+fn decoded_sample_to_py(py: Python<'_>, decoded: DecodedSample) -> PyResult<Py<PyDict>> {
     let mut batch = ImageBatchBuilder::with_capacity(1);
     batch.push(decoded).map_err(to_py_err)?;
     image_batch_to_py(py, batch.finish())

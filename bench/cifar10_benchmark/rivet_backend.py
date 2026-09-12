@@ -18,8 +18,11 @@ def _rivet_pipeline(
     batch: int,
     workers: int,
     prefetch: int,
+    decode_image: bool = True,
 ):
-    pipeline = dataset.pipeline().decode_image()
+    pipeline = dataset.pipeline()
+    if decode_image:
+        pipeline = pipeline.decode_image()
     pipeline = pipeline.resize(resize, resize)
     if mode == "C":
         pipeline = pipeline.normalize(
@@ -68,7 +71,7 @@ def bench_rivet(
     return total / elapsed if elapsed else 0.0
 
 
-def bench_rivet_encoded_cache(
+def bench_rivet_cache(
     dataset: rivet.LanceDataset,
     mode: str,
     resize: int,
@@ -77,10 +80,11 @@ def bench_rivet_encoded_cache(
     workers: int,
     epochs: int,
     chunk_size: int,
+    cache_level: str = "decoded",
 ) -> dict[str, float]:
-    """Measure encoded cache construction and epoch timings separately."""
+    """Measure cache construction and epoch timings separately."""
     cache_start = time.perf_counter()
-    cached = dataset.cache("encoded", chunk_size=chunk_size)
+    cached = dataset.cache(cache_level, chunk_size=chunk_size)
     cache_seconds = time.perf_counter() - cache_start
 
     epoch_seconds: list[float] = []
@@ -89,7 +93,13 @@ def bench_rivet_encoded_cache(
         rows = 0
         start = time.perf_counter()
         loader = _rivet_pipeline(
-            cached, mode, resize, batch, workers, 2
+            cached,
+            mode,
+            resize,
+            batch,
+            workers,
+            2,
+            decode_image=cache_level != "decoded",
         ).execute()
         for index, output in enumerate(loader):
             if batches and index >= batches:
@@ -116,3 +126,27 @@ def bench_rivet_encoded_cache(
         "later_epoch_images_per_second": later_images_per_second,
         "peak_rss_mb": _peak_rss_mb(),
     }
+
+
+def bench_rivet_encoded_cache(
+    dataset: rivet.LanceDataset,
+    mode: str,
+    resize: int,
+    batch: int,
+    batches: int,
+    workers: int,
+    epochs: int,
+    chunk_size: int,
+) -> dict[str, float]:
+    """Backward-compatible wrapper for the encoded cache benchmark."""
+    return bench_rivet_cache(
+        dataset,
+        mode,
+        resize,
+        batch,
+        batches,
+        workers,
+        epochs,
+        chunk_size,
+        cache_level="encoded",
+    )

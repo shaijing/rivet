@@ -8,7 +8,7 @@ from pathlib import Path
 import rivet
 
 from .common import DEFAULT_LANCE_ROOT, _train_path, detect_encoding
-from .rivet_backend import bench_rivet, bench_rivet_encoded_cache
+from .rivet_backend import bench_rivet, bench_rivet_cache
 from .torch_backend import bench_torch
 
 
@@ -71,13 +71,19 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cache-compare",
         action="store_true",
-        help="compare lazy Lance access with an encoded in-memory cache",
+        help="compare lazy Lance access with an in-memory cache",
+    )
+    parser.add_argument(
+        "--cache-level",
+        choices=("encoded", "decoded"),
+        default="decoded",
+        help="representation for --cache-compare (default: decoded)",
     )
     parser.add_argument(
         "--cache-chunk",
         type=int,
         default=4096,
-        help="rows fetched per Lance request while constructing the encoded cache",
+        help="rows fetched per Lance request while constructing the cache",
     )
     parser.add_argument(
         "--sweep", action="store_true", help="print a Rivet worker scaling table"
@@ -129,13 +135,16 @@ def main() -> None:
 
     if args.cache_compare:
         print()
-        print("Rivet cache comparison (same pipeline and sampler):")
+        print(
+            "Rivet cache comparison "
+            f"(level={args.cache_level}, same pipeline and sampler):"
+        )
         print(
             f"{'mode':<8} {'cache s':>10} {'first s':>10} {'later s':>10} "
             f"{'later img/s':>14} {'peak RSS MB':>13}"
         )
         for mode in modes:
-            result = bench_rivet_encoded_cache(
+            result = bench_rivet_cache(
                 train_dataset,
                 mode,
                 args.resize,
@@ -144,6 +153,7 @@ def main() -> None:
                 args.rivet_workers,
                 args.epochs,
                 args.cache_chunk,
+                args.cache_level,
             )
             print(
                 f"{mode:<8} {result['cache_seconds']:>10.3f} "

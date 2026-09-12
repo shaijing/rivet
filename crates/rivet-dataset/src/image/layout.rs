@@ -41,6 +41,12 @@ fn convert_hwc_to_chw(sample: DecodedSample) -> RivetResult<DecodedSample> {
             height as usize,
             channels as usize,
         )?),
+        ImageBuffer::SharedU8(values) => ImageBuffer::U8(convert_hwc_values_to_chw(
+            values.as_ref().to_vec(),
+            width as usize,
+            height as usize,
+            channels as usize,
+        )?),
         ImageBuffer::F32(values) => ImageBuffer::F32(convert_hwc_values_to_chw(
             values,
             width as usize,
@@ -72,6 +78,12 @@ fn convert_chw_to_hwc(sample: DecodedSample) -> RivetResult<DecodedSample> {
     let out = match image {
         ImageBuffer::U8(values) => ImageBuffer::U8(convert_chw_values_to_hwc(
             values,
+            width as usize,
+            height as usize,
+            channels as usize,
+        )?),
+        ImageBuffer::SharedU8(values) => ImageBuffer::U8(convert_chw_values_to_hwc(
+            values.as_ref().to_vec(),
             width as usize,
             height as usize,
             channels as usize,
@@ -171,6 +183,9 @@ mod tests {
 
         match out.image {
             ImageBuffer::U8(values) => assert_eq!(values, vec![1, 4, 2, 5, 3, 6]),
+            ImageBuffer::SharedU8(values) => {
+                assert_eq!(values.as_ref(), [1, 4, 2, 5, 3, 6])
+            }
             ImageBuffer::F32(_) => panic!("expected u8 output"),
         }
     }

@@ -1,6 +1,6 @@
 pub mod op;
 
-use crate::dataset::source::{Dataset, Source};
+use crate::dataset::{Dataset, ImageSource};
 use crate::errors::{RivetResult, invalid_pipeline};
 use crate::pipeline::op::{
     BatchConfig, ExecutionPlan, ImageOp, IndexOp, PipelineImageState, SourceOp, compile_sampler,
@@ -24,10 +24,10 @@ impl ImagePipeline {
     where
         T: Dataset<Item = EncodedImageSample> + 'static,
     {
-        Self::from_source(Source::new(dataset))
+        Self::from_source(ImageSource::from_encoded(dataset))
     }
 
-    pub fn from_source(source: Source<EncodedImageSample>) -> Self {
+    pub fn from_source(source: ImageSource) -> Self {
         Self {
             source: SourceOp::new(source),
             index_ops: Vec::new(),
@@ -156,7 +156,7 @@ impl ImagePipeline {
     }
 
     pub fn compile_from(self, start: usize) -> RivetResult<ImageDataLoader> {
-        let output_state = validate_image_ops(&self.ops)?;
+        let output_state = validate_image_ops(&self.ops, self.source.state())?;
 
         let batch = self
             .batch
@@ -197,8 +197,11 @@ impl ImagePipeline {
     }
 }
 
-fn validate_image_ops(ops: &[ImageOp]) -> RivetResult<PipelineImageState> {
-    let mut state = PipelineImageState::Encoded;
+fn validate_image_ops(
+    ops: &[ImageOp],
+    initial_state: PipelineImageState,
+) -> RivetResult<PipelineImageState> {
+    let mut state = initial_state;
 
     for op in ops {
         op.validate()?;
@@ -216,8 +219,10 @@ fn validate_image_ops(ops: &[ImageOp]) -> RivetResult<PipelineImageState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dataset::Dataset;
-    use crate::sample::image::{EncodedImageSample, ImageDType, ImageLayout};
+    use crate::dataset::{Dataset, ImageSource};
+    use crate::sample::image::{
+        DecodedSample, EncodedImageSample, ImageBuffer, ImageDType, ImageLayout,
+    };
     use arrow_buffer::Buffer;
 
     struct StubDataset {
@@ -242,8 +247,41 @@ mod tests {
         }
     }
 
+    struct DecodedStubDataset;
+
+    impl Dataset for DecodedStubDataset {
+        type Item = DecodedSample;
+
+        fn len(&self) -> usize {
+            1
+        }
+
+        fn get_many(&self, indices: &[usize]) -> RivetResult<Vec<Self::Item>> {
+            indices
+                .iter()
+                .map(|&index| {
+                    if index != 0 {
+                        return Err(crate::errors::RivetError::IndexOutOfRange { index, len: 1 });
+                    }
+                    Ok(DecodedSample {
+                        image: ImageBuffer::U8(vec![255, 0, 0]),
+                        width: 1,
+                        height: 1,
+                        channels: 3,
+                        label: 7,
+                        layout: ImageLayout::Hwc,
+                    })
+                })
+                .collect()
+        }
+    }
+
     fn stub(len: usize) -> ImagePipeline {
         ImagePipeline::new(Arc::new(StubDataset { len }))
+    }
+
+    fn decoded_stub() -> ImagePipeline {
+        ImagePipeline::from_source(ImageSource::from_decoded(Arc::new(DecodedStubDataset)))
     }
 
     fn compile_err(pipeline: ImagePipeline) -> String {
@@ -289,6 +327,25 @@ mod tests {
         let err = compile_err(stub(10).batch(4, false));
         assert!(
             err.contains("must decode images before batching"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn decoded_source_can_batch_without_decode_op() {
+        let mut loader = decoded_stub().batch(1, false).compile().unwrap();
+        let batch = loader.next_batch().unwrap().unwrap();
+
+        assert_eq!(batch.labels, [7]);
+        assert_eq!(batch.shape, (1, 1, 1, 3));
+    }
+
+    #[test]
+    fn decoded_source_rejects_decode_op() {
+        let err = compile_err(decoded_stub().decode_image().batch(1, false));
+
+        assert!(
+            err.contains("Decode requires an encoded image"),
             "got: {err}"
         );
     }

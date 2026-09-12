@@ -9,7 +9,7 @@ impl DecodeImageConfig {
     pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
         match sample {
             ImageSample::Encoded(sample) => {
-                let image = image::load_from_memory(sample.image.as_slice())?.to_rgb8();
+                let image = image::load_from_memory(sample.image.as_slice())?.into_rgb8();
                 Ok(ImageSample::Decoded(from_rgb_image(image, sample.label)))
             }
             ImageSample::Decoded(_) => {
@@ -20,7 +20,7 @@ impl DecodeImageConfig {
 }
 
 pub fn decode_rgb(encoded: &[u8], label: i64) -> RivetResult<DecodedSample> {
-    let image = image::load_from_memory(encoded)?.to_rgb8();
+    let image = image::load_from_memory(encoded)?.into_rgb8();
     Ok(from_rgb_image(image, label))
 }
 

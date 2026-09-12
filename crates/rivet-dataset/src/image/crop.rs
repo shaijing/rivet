@@ -79,18 +79,16 @@ impl RandomCropConfig {
         let pad = u64::from(self.padding);
         let padded_width = u64::from(width) + 2 * pad;
         let padded_height = u64::from(height) + 2 * pad;
-        let (padded_width, padded_height) = match (
-            u32::try_from(padded_width),
-            u32::try_from(padded_height),
-        ) {
-            (Ok(width), Ok(height)) => (width, height),
-            _ => {
-                return Err(invalid_shape(format!(
-                    "random_crop padding {} makes image {}x{} too large",
-                    self.padding, width, height
-                )));
-            }
-        };
+        let (padded_width, padded_height) =
+            match (u32::try_from(padded_width), u32::try_from(padded_height)) {
+                (Ok(width), Ok(height)) => (width, height),
+                _ => {
+                    return Err(invalid_shape(format!(
+                        "random_crop padding {} makes image {}x{} too large",
+                        self.padding, width, height
+                    )));
+                }
+            };
         let (crop_width, crop_height) = (u64::from(self.width), u64::from(self.height));
         if crop_width > u64::from(padded_width) || crop_height > u64::from(padded_height) {
             return Err(invalid_shape(format!(
@@ -126,8 +124,8 @@ impl RandomCropConfig {
 #[cfg(test)]
 mod tests {
     use super::{RandomCropConfig, SampleContext};
-    use crate::sample::image::{DecodedSample, ImageBuffer, ImageLayout};
     use crate::sample::image::ImageSample::Decoded;
+    use crate::sample::image::{DecodedSample, ImageBuffer, ImageLayout};
 
     /// 4x4 RGB image where every pixel is unique, so any crop offset
     /// produces a distinguishable result.
@@ -157,6 +155,7 @@ mod tests {
         .unwrap();
         match out.image {
             ImageBuffer::U8(values) => values,
+            ImageBuffer::SharedU8(values) => values.to_vec(),
             ImageBuffer::F32(_) => panic!("expected u8 output"),
         }
     }
