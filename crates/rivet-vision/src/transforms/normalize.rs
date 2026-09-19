@@ -1,6 +1,6 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{DecodedSample, ImageLayout, ImageSample};
-use rivet_core::{DType, Device, Tensor};
+use rivet_core::{CpuStorageRef, DType, Device, Tensor};
 
 #[derive(Clone)]
 pub struct NormalizeConfig {
@@ -131,23 +131,32 @@ pub fn normalize_u8_to_f32(
             .checked_mul(input.dims()[2])
             .ok_or_else(|| invalid_shape("normalize image dimensions overflow"))?,
     };
-    let mut output = Vec::with_capacity(input.elem_count());
-    let mut logical_index = 0usize;
-    input.for_each::<u8, _>(|value| {
-        let channel = match axis_order {
-            ImageLayout::Hwc => logical_index % channel_count,
-            ImageLayout::Chw => logical_index / spatial_size,
+    let dims = input.dims().to_vec();
+    let device = input.device().clone();
+    let elem_count = input.elem_count();
+    Ok(input.with_cpu_storage(|storage, layout| {
+        let CpuStorageRef::U8(values) = storage else {
+            return Err(rivet_core::Error::UnexpectedDType {
+                expected: DType::U8,
+                actual: input.dtype(),
+            });
         };
-        let stats_index = if mean.len() == 1 { 0 } else { channel };
-        output.push((value as f32 / 255.0 - mean[stats_index]) / std[stats_index]);
-        logical_index += 1;
-    })?;
 
-    Ok(Tensor::from_vec(
-        output,
-        input.dims().to_vec(),
-        input.device(),
-    )?)
+        let mut output = Vec::with_capacity(elem_count);
+        for (logical_index, physical_index) in layout.strided_index().enumerate() {
+            let value = *values
+                .get(physical_index)
+                .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+            let channel = match axis_order {
+                ImageLayout::Hwc => logical_index % channel_count,
+                ImageLayout::Chw => logical_index / spatial_size,
+            };
+            let stats_index = if mean.len() == 1 { 0 } else { channel };
+            output.push((value as f32 / 255.0 - mean[stats_index]) / std[stats_index]);
+        }
+
+        Tensor::from_vec(output, dims, &device)
+    })?)
 }
 
 #[cfg(test)]

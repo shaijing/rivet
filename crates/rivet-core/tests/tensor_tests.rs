@@ -1,4 +1,4 @@
-use rivet_core::{DType, Device, Layout, Shape, Tensor};
+use rivet_core::{CpuStorageRef, DType, Device, Layout, Shape, Tensor};
 
 #[test]
 fn shape_and_layout_metadata_match_candle_semantics() {
@@ -63,6 +63,27 @@ fn tensor_views_preserve_logical_order() {
 
     let narrow = tensor.narrow(1, 1, 1).unwrap();
     assert_eq!(narrow.to_vec::<u8>().unwrap(), vec![1, 4]);
+}
+
+#[test]
+fn borrowed_cpu_storage_exposes_view_layout_without_materializing() {
+    let tensor = Tensor::from_vec(vec![0u8, 1, 2, 3, 4, 5], (2, 3), &Device::Cpu).unwrap();
+    let transpose = tensor.transpose(0, 1).unwrap();
+
+    let values = transpose
+        .with_cpu_storage(|storage, layout| {
+            let CpuStorageRef::U8(storage) = storage else {
+                panic!("expected uint8 storage");
+            };
+            Ok(layout
+                .strided_index()
+                .map(|index| storage[index])
+                .collect::<Vec<_>>())
+        })
+        .unwrap();
+
+    assert_eq!(values, vec![0, 3, 1, 4, 2, 5]);
+    assert_eq!(values, transpose.to_vec::<u8>().unwrap());
 }
 
 #[test]

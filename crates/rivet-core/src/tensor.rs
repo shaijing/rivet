@@ -1,5 +1,5 @@
 use crate::backend::BackendDevice;
-use crate::cpu_backend::CpuDevice;
+use crate::cpu_backend::{CpuDevice, CpuStorageRef};
 use crate::ops::{BinaryOp, UnaryOp};
 use crate::storage::{Storage, StorageMutRef, StorageRef, validate_layout_for_storage};
 use crate::{DType, Device, Error, Layout, Result, Shape, WithDType};
@@ -331,6 +331,23 @@ impl Tensor {
             }
         }
         Ok(())
+    }
+
+    /// Borrows CPU storage and the tensor layout for the duration of a callback.
+    ///
+    /// The callback receives a read-only view of the backing allocation, so
+    /// callers can implement layout-aware kernels without first materializing
+    /// the tensor into logical row-major order. The storage lock remains held
+    /// until the callback returns and the borrowed view cannot escape it.
+    pub fn with_cpu_storage<R>(
+        &self,
+        f: impl FnOnce(CpuStorageRef<'_>, &Layout) -> Result<R>,
+    ) -> Result<R> {
+        let storage = self.storage();
+        let cpu_storage = match &*storage {
+            Storage::Cpu(storage) => storage.as_ref(),
+        };
+        f(cpu_storage, self.layout())
     }
 
     pub fn to_vec0<T: WithDType>(&self) -> Result<T> {
