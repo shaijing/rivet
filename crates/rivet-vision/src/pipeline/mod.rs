@@ -7,6 +7,7 @@ pub use builder::ImagePipeline;
 #[cfg(test)]
 mod tests {
     use super::ImagePipeline;
+    use crate::cache::DenseImageMemoryDataset;
     use crate::dataset::{Dataset, ImageSource};
     use crate::pipeline::op::{ExecutionKind, PipelineImageState};
     use crate::sample::image::{DecodedSample, EncodedImageSample, ImageLayout};
@@ -68,6 +69,26 @@ mod tests {
 
     fn decoded_stub() -> ImagePipeline {
         ImagePipeline::from_source(ImageSource::from_decoded(Arc::new(DecodedStubDataset)))
+    }
+
+    fn dense_source(batch_native: bool) -> ImageSource {
+        let dataset = Arc::new(
+            DenseImageMemoryDataset::new(
+                Tensor::from_vec(
+                    vec![10u8, 11, 12, 20, 21, 22, 30, 31, 32],
+                    [3, 1, 1, 3],
+                    &Device::Cpu,
+                )
+                .unwrap(),
+                Tensor::from_vec(vec![10i64, 20, 30], [3], &Device::Cpu).unwrap(),
+            )
+            .unwrap(),
+        );
+        if batch_native {
+            ImageSource::from_dense_decoded(dataset)
+        } else {
+            ImageSource::from_decoded(dataset)
+        }
     }
 
     fn compile_err(pipeline: ImagePipeline) -> String {
@@ -284,5 +305,47 @@ mod tests {
         assert_eq!(batch.images.dtype(), DType::F32);
         let values = batch.images.to_vec::<f32>().unwrap();
         assert_eq!(values, [1.0, -1.0, -1.0]);
+    }
+
+    #[test]
+    fn dense_batch_native_read_matches_decoded_fallback() {
+        let mut direct = ImagePipeline::from_source(dense_source(true))
+            .normalize(vec![0.0; 3], vec![1.0; 3])
+            .hwc_to_chw()
+            .workers(4)
+            .batch(2, false)
+            .compile()
+            .unwrap();
+        let mut fallback = ImagePipeline::from_source(dense_source(false))
+            .normalize(vec![0.0; 3], vec![1.0; 3])
+            .hwc_to_chw()
+            .workers(4)
+            .batch(2, false)
+            .compile()
+            .unwrap();
+
+        assert!(direct.plan.can_use_batch_native());
+        assert!(!fallback.plan.can_use_batch_native());
+
+        for _ in 0..2 {
+            let direct_batch = direct.next_batch().unwrap().unwrap();
+            let fallback_batch = fallback.next_batch().unwrap().unwrap();
+            assert_eq!(
+                direct_batch.labels.to_vec::<i64>().unwrap(),
+                fallback_batch.labels.to_vec::<i64>().unwrap()
+            );
+            assert_eq!(
+                direct_batch.images.dims(),
+                [direct_batch.labels.dims()[0], 3, 1, 1]
+            );
+            assert_eq!(direct_batch.images.dims(), fallback_batch.images.dims());
+            assert_eq!(
+                direct_batch.images.to_vec::<f32>().unwrap(),
+                fallback_batch.images.to_vec::<f32>().unwrap()
+            );
+        }
+
+        assert!(direct.next_batch().unwrap().is_none());
+        assert!(fallback.next_batch().unwrap().is_none());
     }
 }

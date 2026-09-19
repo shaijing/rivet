@@ -49,6 +49,10 @@ pub struct ExecutionPlan {
 }
 
 impl ExecutionPlan {
+    pub fn can_use_batch_native(&self) -> bool {
+        self.sample_ops.is_empty() && self.source.supports_batch_read()
+    }
+
     pub fn apply_sample_ops(
         &self,
         mut sample: ImageSample,

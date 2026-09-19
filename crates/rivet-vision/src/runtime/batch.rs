@@ -1,4 +1,4 @@
-use crate::errors::RivetResult;
+use crate::errors::{RivetError, RivetResult};
 use crate::pipeline::op::ExecutionPlan;
 use crate::sample::image::{DecodedSample, ImageBatch};
 use crate::sampler::IndexSampler;
@@ -19,6 +19,14 @@ pub(super) fn next_batch_inline(
         return Ok(None);
     };
 
+    if plan.can_use_batch_native() {
+        let batch = super::scheduler::fetch_batch(plan, &indices)?.ok_or_else(|| {
+            RivetError::Worker("batch-native source capability disappeared".to_string())
+        })?;
+        return Ok(Some(plan.apply_batch_ops(batch)?));
+    }
+
+    let capacity = indices.len();
     let samples = super::scheduler::fetch_samples(plan, &indices)?;
     let samples = indices
         .into_iter()
@@ -26,5 +34,5 @@ pub(super) fn next_batch_inline(
         .map(|(index, sample)| plan.apply_sample_ops(sample, index))
         .collect::<RivetResult<Vec<_>>>()?;
 
-    Ok(Some(finish_samples(plan, samples, plan.batch.size)?))
+    Ok(Some(finish_samples(plan, samples, capacity)?))
 }

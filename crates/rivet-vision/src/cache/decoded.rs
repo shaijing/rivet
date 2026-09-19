@@ -1,5 +1,5 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
-use crate::sample::image::DecodedSample;
+use crate::sample::image::{DecodedSample, ImageBatch};
 use rivet_core::{DType, Device, Tensor};
 use rivet_data::dataset::MemoryDataset;
 use rivet_data::dataset::source::{Dataset, validate_indices};
@@ -51,6 +51,19 @@ impl DenseImageMemoryDataset {
         &self.labels
     }
 
+    /// Read a logical batch directly from the dense backing tensors.
+    ///
+    /// Consecutive indices stay as views into the backing image/label tensors;
+    /// arbitrary order and duplicate indices are gathered into one output
+    /// tensor while preserving the request order.
+    pub fn get_batch(&self, indices: &[usize]) -> RivetResult<ImageBatch> {
+        validate_indices(indices, self.len())?;
+
+        let images = gather_rows(&self.images, indices)?;
+        let labels = gather_rows(&self.labels, indices)?;
+        Ok(ImageBatch { images, labels })
+    }
+
     fn get_one(&self, index: usize) -> RivetResult<DecodedSample> {
         let image = self.images.narrow(0, index, 1)?.squeeze(0)?;
         let label = self
@@ -60,6 +73,35 @@ impl DenseImageMemoryDataset {
             .to_vec0::<i64>()?;
         Ok(DecodedSample { image, label })
     }
+}
+
+fn gather_rows(input: &Tensor, indices: &[usize]) -> RivetResult<Tensor> {
+    if indices.is_empty() {
+        let mut shape = input.dims().to_vec();
+        shape[0] = 0;
+        return Ok(Tensor::zeros(shape, input.dtype(), input.device())?);
+    }
+
+    if let Some((start, len)) = consecutive_range(indices) {
+        return Ok(input.narrow(0, start, len)?);
+    }
+
+    let rows = indices
+        .iter()
+        .map(|&index| input.narrow(0, index, 1))
+        .collect::<Result<Vec<_>, _>>()?;
+    let refs = rows.iter().collect::<Vec<_>>();
+    let stacked = Tensor::stack(&refs, 0)?;
+    Ok(stacked.squeeze(1)?)
+}
+
+fn consecutive_range(indices: &[usize]) -> Option<(usize, usize)> {
+    let start = *indices.first()?;
+    let consecutive = indices
+        .iter()
+        .enumerate()
+        .all(|(offset, &index)| start.checked_add(offset) == Some(index));
+    consecutive.then_some((start, indices.len()))
 }
 
 impl Dataset for DenseImageMemoryDataset {
@@ -219,6 +261,43 @@ mod tests {
         );
         assert!(samples[0].image.same_storage(dense.images()));
         assert!(samples[1].image.same_storage(dense.images()));
+    }
+
+    #[test]
+    fn dense_batch_read_preserves_order_duplicates_and_views() {
+        let dataset = DenseImageMemoryDataset::new(
+            Tensor::from_vec(vec![10u8, 11, 20, 21, 30, 31], [3, 1, 2, 1], &Device::Cpu).unwrap(),
+            Tensor::from_vec(vec![10i64, 20, 30], [3], &Device::Cpu).unwrap(),
+        )
+        .unwrap();
+
+        let range = dataset.get_batch(&[1, 2]).unwrap();
+        assert_eq!(range.images.dims(), [2, 1, 2, 1]);
+        assert_eq!(range.images.to_vec::<u8>().unwrap(), [20, 21, 30, 31]);
+        assert_eq!(range.labels.to_vec::<i64>().unwrap(), [20, 30]);
+        assert!(range.images.same_storage(dataset.images()));
+
+        let gathered = dataset.get_batch(&[2, 0, 2]).unwrap();
+        assert_eq!(gathered.images.dims(), [3, 1, 2, 1]);
+        assert_eq!(
+            gathered.images.to_vec::<u8>().unwrap(),
+            [30, 31, 10, 11, 30, 31]
+        );
+        assert_eq!(gathered.labels.to_vec::<i64>().unwrap(), [30, 10, 30]);
+        assert!(!gathered.images.same_storage(dataset.images()));
+    }
+
+    #[test]
+    fn dense_batch_read_preserves_empty_shape() {
+        let dataset = DenseImageMemoryDataset::new(
+            Tensor::from_vec(Vec::<u8>::new(), [0, 2, 2, 3], &Device::Cpu).unwrap(),
+            Tensor::from_vec(Vec::<i64>::new(), [0], &Device::Cpu).unwrap(),
+        )
+        .unwrap();
+        let batch = dataset.get_batch(&[]).unwrap();
+
+        assert_eq!(batch.images.dims(), [0, 2, 2, 3]);
+        assert_eq!(batch.labels.dims(), [0]);
     }
 
     #[test]

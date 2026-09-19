@@ -8,7 +8,8 @@ use crate::sampler::IndexSampler;
 use std::sync::Arc;
 
 enum LoaderExecutor {
-    /// `num_workers = 0`: direct synchronous execution, no channel overhead.
+    /// Direct synchronous execution, either because workers are disabled or
+    /// because a dense decoded source can read a complete batch natively.
     Inline,
     /// Persistent worker pool with bounded cross-batch prefetch.
     Workers(ImageWorkerPool, ImagePrefetchCoordinator),
@@ -29,7 +30,7 @@ impl ImageDataLoader {
         num_workers: usize,
         prefetch_batches: usize,
     ) -> RivetResult<Self> {
-        let executor = if num_workers == 0 {
+        let executor = if num_workers == 0 || plan.can_use_batch_native() {
             LoaderExecutor::Inline
         } else {
             // prefetch_batches counts *future* batches: the current batch

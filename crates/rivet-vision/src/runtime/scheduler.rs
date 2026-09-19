@@ -45,6 +45,21 @@ pub(super) fn fetch_samples(
     Ok(samples)
 }
 
+pub(super) fn fetch_batch(
+    plan: &ExecutionPlan,
+    indices: &[usize],
+) -> RivetResult<Option<ImageBatch>> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        plan.source.get_batch(indices)
+    })) {
+        Ok(Some(batch)) => batch.map(Some),
+        Ok(None) => Ok(None),
+        Err(_) => Err(RivetError::Worker(
+            "dataset get_batch panicked while fetching a batch".to_string(),
+        )),
+    }
+}
+
 pub(super) fn next_batch_workers(
     plan: &ExecutionPlan,
     sampler: &mut IndexSampler,

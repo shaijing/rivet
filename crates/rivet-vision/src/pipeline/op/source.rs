@@ -1,6 +1,6 @@
 use crate::dataset::ImageSource;
 use crate::errors::RivetResult;
-use crate::sample::image::ImageSample;
+use crate::sample::image::{ImageBatch, ImageSample};
 
 #[derive(Clone)]
 pub struct SourceOp {
@@ -26,5 +26,13 @@ impl SourceOp {
 
     pub fn get_many(&self, indices: &[usize]) -> RivetResult<Vec<ImageSample>> {
         self.source.get_many(indices)
+    }
+
+    pub fn supports_batch_read(&self) -> bool {
+        self.source.supports_batch_read()
+    }
+
+    pub fn get_batch(&self, indices: &[usize]) -> Option<RivetResult<ImageBatch>> {
+        self.source.get_batch(indices)
     }
 }
