@@ -78,6 +78,60 @@ impl NormalizeConfig {
             label: sample.label,
         }))
     }
+
+    /// Apply normalization to a stacked rank-4 image batch. This is the
+    /// initial batch-stage implementation; the one-allocation fused kernel
+    /// is intentionally left for the batch-normalize phase.
+    pub fn apply_batch(&self, input: Tensor, layout: ImageLayout) -> RivetResult<Tensor> {
+        if input.rank() != 4 {
+            return Err(invalid_shape(format!(
+                "batch normalize requires a rank-4 image batch, got shape {:?}",
+                input.dims()
+            )));
+        }
+        if self.mean.is_empty() || self.std.is_empty() {
+            return Err(invalid_argument("normalize mean and std must not be empty"));
+        }
+        if self.mean.len() != self.std.len() {
+            return Err(invalid_argument(
+                "normalize mean and std must have the same length",
+            ));
+        }
+        if self.std.iter().any(|value| *value == 0.0) {
+            return Err(invalid_argument("normalize std values must be non-zero"));
+        }
+
+        let channel_count = match layout {
+            ImageLayout::Hwc => input.dims()[3],
+            ImageLayout::Chw => input.dims()[1],
+        };
+        if self.mean.len() != 1 && self.mean.len() != channel_count {
+            return Err(invalid_argument(format!(
+                "normalize mean/std length must be 1 or channel count {}, got {}",
+                channel_count,
+                self.mean.len()
+            )));
+        }
+
+        let values = match input.dtype() {
+            DType::U8 => input.to_dtype(DType::F32)?.div_scalar(255.0f32)?,
+            DType::F32 => input,
+            dtype => {
+                return Err(invalid_argument(format!(
+                    "normalize supports uint8 or float32 input, got {:?}",
+                    dtype
+                )));
+            }
+        };
+
+        let stats_shape = match layout {
+            ImageLayout::Hwc => vec![1, 1, 1, self.mean.len()],
+            ImageLayout::Chw => vec![1, self.mean.len(), 1, 1],
+        };
+        let mean = Tensor::from_vec(self.mean.clone(), stats_shape.clone(), &Device::Cpu)?;
+        let std = Tensor::from_vec(self.std.clone(), stats_shape, &Device::Cpu)?;
+        Ok(values.broadcast_sub(&mean)?.broadcast_div(&std)?)
+    }
 }
 
 /// Fused uint8 image normalization. The input is read in logical tensor
@@ -193,6 +247,31 @@ mod tests {
         let values = out.to_vec::<f32>().unwrap();
         let expected = [0.0, 1.0, -0.49803922, -0.7490196, -1.9921569, -2.4941177];
         for (actual, expected) in values.iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
+    fn batch_normalize_supports_nhwc_and_chw() {
+        let input =
+            Tensor::from_vec(vec![0u8, 64, 128, 255, 32, 96], [1, 1, 2, 3], &Device::Cpu).unwrap();
+        let config = NormalizeConfig::new(vec![0.0, 0.5, 1.0], vec![1.0, 0.5, 0.25]);
+
+        let nhwc = config.apply_batch(input.clone(), ImageLayout::Hwc).unwrap();
+        assert_eq!(nhwc.dims(), [1, 1, 2, 3]);
+        let nhwc_values = nhwc.to_vec::<f32>().unwrap();
+        let expected_nhwc = [0.0, -0.49803922, -1.9921569, 1.0, -0.7490196, -2.4941177];
+        for (actual, expected) in nhwc_values.iter().zip(expected_nhwc) {
+            assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+        }
+
+        let nchw = config
+            .apply_batch(input.permute(&[0, 3, 1, 2]).unwrap(), ImageLayout::Chw)
+            .unwrap();
+        assert_eq!(nchw.dims(), [1, 3, 1, 2]);
+        let nchw_values = nchw.to_vec::<f32>().unwrap();
+        let expected_nchw = [0.0, 1.0, -0.49803922, -0.7490196, -1.9921569, -2.4941177];
+        for (actual, expected) in nchw_values.iter().zip(expected_nchw) {
             assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
         }
     }

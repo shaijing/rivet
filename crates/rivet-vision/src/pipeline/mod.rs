@@ -8,7 +8,7 @@ pub use builder::ImagePipeline;
 mod tests {
     use super::ImagePipeline;
     use crate::dataset::{Dataset, ImageSource};
-    use crate::pipeline::op::PipelineImageState;
+    use crate::pipeline::op::{ExecutionKind, PipelineImageState};
     use crate::sample::image::{DecodedSample, EncodedImageSample, ImageLayout};
     use arrow_buffer::Buffer;
     use rivet_core::{DType, Device, Tensor};
@@ -215,5 +215,74 @@ mod tests {
                 layout: ImageLayout::Chw,
             }
         );
+    }
+
+    #[test]
+    fn compile_splits_sample_and_batch_stages() {
+        let loader = stub(10)
+            .decode_image()
+            .resize(8, 8)
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .hwc_to_chw()
+            .batch(4, false)
+            .compile()
+            .unwrap();
+
+        assert_eq!(loader.plan.sample_ops.len(), 2);
+        assert_eq!(loader.plan.batch_ops.len(), 2);
+        assert_eq!(loader.plan.input_state, PipelineImageState::Encoded);
+        assert_eq!(
+            loader.plan.pre_batch_state,
+            PipelineImageState::Decoded {
+                dtype: DType::U8,
+                layout: ImageLayout::Hwc,
+            }
+        );
+        assert_eq!(
+            loader.plan.output_state,
+            PipelineImageState::Decoded {
+                dtype: DType::F32,
+                layout: ImageLayout::Chw,
+            }
+        );
+        assert_eq!(
+            loader.plan.sample_ops[0].execution_kind(),
+            ExecutionKind::Sample
+        );
+        assert_eq!(
+            loader.plan.batch_ops[0].execution_kind(),
+            ExecutionKind::Batch
+        );
+    }
+
+    #[test]
+    fn sample_ops_cannot_follow_batch_stage() {
+        let err = compile_err(
+            stub(10)
+                .decode_image()
+                .normalize(vec![0.5; 3], vec![0.5; 3])
+                .resize(8, 8)
+                .batch(4, false),
+        );
+        assert!(
+            err.contains("Resize cannot follow the batch stage"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn batch_stage_runs_after_sample_stack() {
+        let mut loader = decoded_stub()
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .hwc_to_chw()
+            .batch(1, false)
+            .compile()
+            .unwrap();
+        let batch = loader.next_batch().unwrap().unwrap();
+
+        assert_eq!(batch.images.dims(), [1, 3, 1, 1]);
+        assert_eq!(batch.images.dtype(), DType::F32);
+        let values = batch.images.to_vec::<f32>().unwrap();
+        assert_eq!(values, [1.0, -1.0, -1.0]);
     }
 }

@@ -42,7 +42,7 @@ impl ImageDataLoader {
             let pool = ImageWorkerPool::new(
                 num_workers,
                 max_in_flight_samples,
-                move |sample, index| worker_plan.apply_ops(sample, index),
+                move |sample, index| worker_plan.apply_sample_ops(sample, index),
                 move |worker_id, index| {
                     RivetError::Worker(format!(
                         "worker {worker_id} panicked while processing sample {index}"
@@ -155,6 +155,7 @@ mod tests {
     use crate::pipeline::ImagePipeline;
     use crate::sample::image::EncodedImageSample;
     use arrow_buffer::Buffer;
+    use rivet_core::DType;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // 1x1 RGB PNG (red pixel), valid input for decode_image.
@@ -266,10 +267,17 @@ mod tests {
             assert_eq!(labels(a), labels(b));
             assert_eq!(a.images.dims(), b.images.dims());
             assert_eq!(a.images.dtype(), b.images.dtype());
-            assert_eq!(
-                a.images.to_vec::<u8>().unwrap(),
-                b.images.to_vec::<u8>().unwrap()
-            );
+            match a.images.dtype() {
+                DType::U8 => assert_eq!(
+                    a.images.to_vec::<u8>().unwrap(),
+                    b.images.to_vec::<u8>().unwrap()
+                ),
+                DType::F32 => assert_eq!(
+                    a.images.to_vec::<f32>().unwrap(),
+                    b.images.to_vec::<f32>().unwrap()
+                ),
+                dtype => panic!("unexpected test dtype: {dtype:?}"),
+            }
         }
     }
 
@@ -286,6 +294,28 @@ mod tests {
         let pooled = drain(&mut pooled);
         assert_batches_equal(&inline, &pooled);
         assert_eq!(inline.iter().map(|b| b.labels.dims()[0]).sum::<usize>(), 37);
+    }
+
+    #[test]
+    fn workers_match_inline_for_batch_stage() {
+        let mut inline = pipeline(17, 0)
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .hwc_to_chw()
+            .batch(4, false)
+            .compile()
+            .unwrap();
+        let mut pooled = pipeline(17, 3)
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .hwc_to_chw()
+            .batch(4, false)
+            .compile()
+            .unwrap();
+
+        let inline = drain(&mut inline);
+        let pooled = drain(&mut pooled);
+        assert_batches_equal(&inline, &pooled);
+        assert_eq!(inline[0].images.dims()[1], 3);
+        assert_eq!(inline[0].images.dtype(), rivet_core::DType::F32);
     }
 
     #[test]

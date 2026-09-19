@@ -1,18 +1,14 @@
-use crate::batch::ImageBatchBuilder;
 use crate::errors::RivetResult;
 use crate::pipeline::op::ExecutionPlan;
 use crate::sample::image::{DecodedSample, ImageBatch};
 use crate::sampler::IndexSampler;
 
 pub(super) fn finish_samples(
+    plan: &ExecutionPlan,
     samples: impl IntoIterator<Item = DecodedSample>,
     capacity: usize,
 ) -> RivetResult<ImageBatch> {
-    let mut builder = ImageBatchBuilder::with_capacity(capacity);
-    for sample in samples {
-        builder.push(sample)?;
-    }
-    builder.finish()
+    plan.stack_and_apply_batch_ops(samples, capacity)
 }
 
 pub(super) fn next_batch_inline(
@@ -24,10 +20,11 @@ pub(super) fn next_batch_inline(
     };
 
     let samples = super::scheduler::fetch_samples(plan, &indices)?;
-    let mut builder = ImageBatchBuilder::with_capacity(indices.len());
-    for (index, sample) in indices.into_iter().zip(samples) {
-        builder.push(plan.apply_ops(sample, index)?)?;
-    }
+    let samples = indices
+        .into_iter()
+        .zip(samples)
+        .map(|(index, sample)| plan.apply_sample_ops(sample, index))
+        .collect::<RivetResult<Vec<_>>>()?;
 
-    Ok(Some(builder.finish()?))
+    Ok(Some(finish_samples(plan, samples, plan.batch.size)?))
 }

@@ -1,5 +1,6 @@
 use crate::errors::{RivetResult, invalid_shape};
 use crate::sample::image::{DecodedSample, ImageLayout, ImageSample};
+use rivet_core::Tensor;
 
 #[derive(Clone, Copy)]
 pub struct LayoutConfig {
@@ -34,6 +35,24 @@ impl LayoutConfig {
             label: sample.label,
         }))
     }
+
+    pub fn apply_batch(&self, input: Tensor, input_layout: ImageLayout) -> RivetResult<Tensor> {
+        if input_layout == self.layout {
+            return Ok(input);
+        }
+        if input.rank() != 4 {
+            return Err(invalid_shape(format!(
+                "image batch layout conversion requires rank 4, got shape {:?}",
+                input.dims()
+            )));
+        }
+
+        match (input_layout, self.layout) {
+            (ImageLayout::Hwc, ImageLayout::Chw) => Ok(input.permute(&[0, 3, 1, 2])?),
+            (ImageLayout::Chw, ImageLayout::Hwc) => Ok(input.permute(&[0, 2, 3, 1])?),
+            _ => Ok(input),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -59,5 +78,21 @@ mod tests {
         assert_eq!(out.image.to_vec::<u8>().unwrap(), [1, 4, 2, 5, 3, 6]);
         assert!(!out.image.is_contiguous());
         assert!(storage_owner.same_storage(&out.image));
+    }
+
+    #[test]
+    fn converts_nhwc_to_nchw_as_a_shared_view() {
+        let input = Tensor::from_vec(vec![1u8, 2, 3, 4, 5, 6], [1, 1, 2, 3], &Device::Cpu).unwrap();
+        let storage_owner = input.clone();
+        let output = LayoutConfig {
+            layout: ImageLayout::Chw,
+        }
+        .apply_batch(input, ImageLayout::Hwc)
+        .unwrap();
+
+        assert_eq!(output.dims(), [1, 3, 1, 2]);
+        assert_eq!(output.to_vec::<u8>().unwrap(), [1, 4, 2, 5, 3, 6]);
+        assert!(!output.is_contiguous());
+        assert!(storage_owner.same_storage(&output));
     }
 }

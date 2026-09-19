@@ -11,6 +11,12 @@ use crate::sample::image::ImageLayout;
 use crate::sample::image::ImageSample;
 use rivet_core::DType;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutionKind {
+    Sample,
+    Batch,
+}
+
 #[derive(Clone)]
 pub enum ImageOp {
     Decode(DecodeImageConfig),
@@ -33,6 +39,37 @@ pub enum PipelineImageState {
 }
 
 impl ImageOp {
+    pub fn execution_kind(&self) -> ExecutionKind {
+        match self {
+            Self::Normalize(_) | Self::Layout(_) => ExecutionKind::Batch,
+            Self::Decode(_)
+            | Self::Resize(_)
+            | Self::Crop(_)
+            | Self::CenterCrop(_)
+            | Self::Flip(_)
+            | Self::RandomCrop(_)
+            | Self::RandomHorizontalFlip(_)
+            | Self::Brightness(_)
+            | Self::Contrast(_) => ExecutionKind::Sample,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Decode(_) => "Decode",
+            Self::Resize(_) => "Resize",
+            Self::Crop(_) => "Crop",
+            Self::CenterCrop(_) => "CenterCrop",
+            Self::Flip(_) => "Flip",
+            Self::RandomCrop(_) => "RandomCrop",
+            Self::RandomHorizontalFlip(_) => "RandomHorizontalFlip",
+            Self::Brightness(_) => "Brightness",
+            Self::Contrast(_) => "Contrast",
+            Self::Normalize(_) => "Normalize",
+            Self::Layout(_) => "Layout",
+        }
+    }
+
     pub fn transition(&self, input: PipelineImageState) -> RivetResult<PipelineImageState> {
         use PipelineImageState::{Decoded, Encoded};
 
@@ -93,6 +130,36 @@ impl ImageOp {
             Self::Contrast(op) => op.apply(sample),
             Self::Normalize(op) => op.apply(sample, input_layout),
             Self::Layout(op) => op.apply(sample, input_layout),
+        }
+    }
+
+    pub fn apply_sample(
+        &self,
+        sample: ImageSample,
+        ctx: &mut SampleContext,
+        input_layout: ImageLayout,
+    ) -> RivetResult<ImageSample> {
+        if self.execution_kind() != ExecutionKind::Sample {
+            return Err(invalid_pipeline(format!(
+                "{} is a batch-stage operation",
+                self.name()
+            )));
+        }
+        self.apply(sample, ctx, input_layout)
+    }
+
+    pub fn apply_batch(
+        &self,
+        batch: rivet_core::Tensor,
+        input_layout: ImageLayout,
+    ) -> RivetResult<rivet_core::Tensor> {
+        match self {
+            Self::Normalize(op) => op.apply_batch(batch, input_layout),
+            Self::Layout(op) => op.apply_batch(batch, input_layout),
+            _ => Err(invalid_pipeline(format!(
+                "{} is not a batch-stage operation",
+                self.name()
+            ))),
         }
     }
 

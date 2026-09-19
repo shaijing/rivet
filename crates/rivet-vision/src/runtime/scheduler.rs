@@ -67,7 +67,7 @@ pub(super) fn next_batch_workers(
 
         if let Some(samples) = coordinator.take_ready().map_err(runtime_error)? {
             let capacity = samples.len();
-            return super::batch::finish_samples(samples, capacity).map(Some);
+            return super::batch::finish_samples(plan, samples, capacity).map(Some);
         }
 
         if coordinator.closed && coordinator.in_flight == 0 {
