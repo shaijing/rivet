@@ -1,9 +1,8 @@
 use super::batch::next_batch_inline;
-use super::reorder::PrefetchCoordinator;
 use super::scheduler::{next_batch_workers, validate_worker_capacity};
+use super::{ImagePrefetchCoordinator, ImageWorkerPool, runtime_error};
 use crate::errors::{RivetError, RivetResult};
 use crate::pipeline::op::ExecutionPlan;
-use crate::runtime::pool::WorkerPool;
 use crate::sample::image::ImageBatch;
 use crate::sampler::IndexSampler;
 use std::sync::Arc;
@@ -12,7 +11,7 @@ enum LoaderExecutor {
     /// `num_workers = 0`: direct synchronous execution, no channel overhead.
     Inline,
     /// Persistent worker pool with bounded cross-batch prefetch.
-    Workers(WorkerPool, PrefetchCoordinator),
+    Workers(ImageWorkerPool, ImagePrefetchCoordinator),
     /// A sample/worker error terminated the loader; iteration is over.
     Failed,
 }
@@ -39,8 +38,19 @@ impl ImageDataLoader {
             // Reject absurd sizes before constructing any channel: a wrap
             // here would silently produce a broken bounded queue.
             let max_in_flight_samples = validate_worker_capacity(&plan, max_in_flight)?;
-            let pool = WorkerPool::new(Arc::clone(&plan), num_workers, max_in_flight_samples)?;
-            LoaderExecutor::Workers(pool, PrefetchCoordinator::new(max_in_flight))
+            let worker_plan = Arc::clone(&plan);
+            let pool = ImageWorkerPool::new(
+                num_workers,
+                max_in_flight_samples,
+                move |sample, index| worker_plan.apply_ops(sample, index),
+                move |worker_id, index| {
+                    RivetError::Worker(format!(
+                        "worker {worker_id} panicked while processing sample {index}"
+                    ))
+                },
+            )
+            .map_err(runtime_error)?;
+            LoaderExecutor::Workers(pool, ImagePrefetchCoordinator::new(max_in_flight))
         };
 
         Ok(Self {
@@ -143,10 +153,8 @@ mod tests {
     use super::*;
     use crate::dataset::Dataset;
     use crate::pipeline::ImagePipeline;
-    use crate::runtime::reorder::PendingBatch;
-    use crate::sample::image::{DecodedSample, EncodedImageSample};
+    use crate::sample::image::EncodedImageSample;
     use arrow_buffer::Buffer;
-    use rivet_core::{Device, Tensor};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // 1x1 RGB PNG (red pixel), valid input for decode_image.
@@ -465,39 +473,6 @@ mod tests {
             seen.extend(labels(&batch));
         }
         assert_eq!(seen, (0..20).collect::<Vec<i64>>());
-    }
-
-    /// Protocol violations must surface as worker errors, not panics.
-    #[test]
-    fn record_rejects_out_of_range_and_duplicate_positions() {
-        let mut coordinator = PrefetchCoordinator::new(2);
-        coordinator.pending.insert(
-            0,
-            PendingBatch {
-                samples: std::iter::repeat_with(|| None).take(2).collect(),
-                remaining: 2,
-            },
-        );
-        let make_sample = |label: i64| DecodedSample {
-            image: Tensor::from_vec(vec![0u8; 3], [1, 1, 3], &Device::Cpu).unwrap(),
-            label,
-        };
-
-        let err = match coordinator.record(0, 5, make_sample(0)) {
-            Err(err) => err,
-            Ok(()) => panic!("expected an out-of-range error"),
-        };
-        assert!(
-            err.to_string().contains("invalid result position"),
-            "got: {err}"
-        );
-
-        coordinator.record(0, 1, make_sample(1)).unwrap();
-        let err = match coordinator.record(0, 1, make_sample(2)) {
-            Err(err) => err,
-            Ok(()) => panic!("expected a duplicate error"),
-        };
-        assert!(err.to_string().contains("duplicate"), "got: {err}");
     }
 
     /// Extreme batch/prefetch sizes must fail at compile with an argument

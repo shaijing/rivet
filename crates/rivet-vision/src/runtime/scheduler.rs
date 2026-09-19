@@ -1,7 +1,6 @@
-use super::reorder::PrefetchCoordinator;
+use super::{ImagePrefetchCoordinator, ImageWorkerPool, runtime_error};
 use crate::errors::{RivetError, RivetResult, invalid_argument};
 use crate::pipeline::op::ExecutionPlan;
-use crate::runtime::pool::WorkerPool;
 use crate::sample::image::{ImageBatch, ImageSample};
 use crate::sampler::IndexSampler;
 
@@ -49,8 +48,8 @@ pub(super) fn fetch_samples(
 pub(super) fn next_batch_workers(
     plan: &ExecutionPlan,
     sampler: &mut IndexSampler,
-    pool: &WorkerPool,
-    coordinator: &mut PrefetchCoordinator,
+    pool: &ImageWorkerPool,
+    coordinator: &mut ImagePrefetchCoordinator,
 ) -> RivetResult<Option<ImageBatch>> {
     loop {
         // Top up the in-flight window from the sampler.
@@ -58,14 +57,17 @@ pub(super) fn next_batch_workers(
             match take_indices(plan, sampler)? {
                 Some(indices) => {
                     let samples = fetch_samples(plan, &indices)?;
-                    coordinator.submit(indices, samples, pool)?;
+                    coordinator
+                        .submit(indices, samples, pool)
+                        .map_err(runtime_error)?;
                 }
                 None => coordinator.closed = true,
             }
         }
 
-        if let Some(batch) = coordinator.deliver_ready()? {
-            return Ok(Some(batch));
+        if let Some(samples) = coordinator.take_ready().map_err(runtime_error)? {
+            let capacity = samples.len();
+            return super::batch::finish_samples(samples, capacity).map(Some);
         }
 
         if coordinator.closed && coordinator.in_flight == 0 {
@@ -73,9 +75,11 @@ pub(super) fn next_batch_workers(
         }
 
         // Nothing deliverable yet: wait for the next worker result.
-        let result = pool.recv()?;
+        let result = pool.recv().map_err(runtime_error)?;
         match result.result {
-            Ok(sample) => coordinator.record(result.batch_id, result.position, sample)?,
+            Ok(sample) => coordinator
+                .record(result.batch_id, result.position, sample)
+                .map_err(runtime_error)?,
             Err(err) => return Err(err),
         }
     }

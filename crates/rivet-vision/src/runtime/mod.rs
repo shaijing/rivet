@@ -1,11 +1,19 @@
 mod batch;
 mod loader;
-mod pool;
-mod reorder;
 mod scheduler;
-mod worker;
 
 pub use loader::ImageDataLoader;
+
+use crate::errors::RivetError;
+use crate::sample::image::{DecodedSample, ImageSample};
+
+pub(crate) type ImageWorkerPool =
+    rivet_data::runtime::WorkerPool<ImageSample, DecodedSample, RivetError>;
+pub(crate) type ImagePrefetchCoordinator = rivet_data::runtime::PrefetchCoordinator<DecodedSample>;
+
+pub(crate) fn runtime_error(error: rivet_data::runtime::RuntimeError) -> RivetError {
+    RivetError::Worker(error.to_string())
+}
 
 /// Runtime-level execution configuration, separate from batch semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

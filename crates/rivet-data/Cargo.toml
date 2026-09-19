@@ -13,6 +13,7 @@ arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-ipc.workspace = true
 bytes.workspace = true
+crossbeam-channel.workspace = true
 lance = { workspace = true, optional = true }
 memmap2.workspace = true
 serde.workspace = true
