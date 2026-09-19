@@ -6,20 +6,22 @@ use arrow_buffer::Buffer;
 use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
-use rivet_dataset::batch::ImageBatchBuilder;
-use rivet_dataset::dataset::{
-    ArrowImageDataset, Dataset, ImageFolderDatasetCore,
-};
+use rivet_data::dataset::Dataset;
 #[cfg(feature = "lance")]
-use rivet_dataset::dataset::{
-    CachePolicy, DEFAULT_ENCODED_CHUNK_SIZE, DatasetBundle, DatasetLoadResult, ImageSource,
-    LanceImageDataset, load_lance_image_dataset,
-};
-use rivet_dataset::image::decode::decode_rgb;
-use rivet_dataset::pipeline::ImagePipeline;
-use rivet_dataset::sample::image::DecodedSample;
+use rivet_data::{DatasetBundle, DatasetLoadResult};
+use rivet_vision::batch::ImageBatchBuilder;
 #[cfg(feature = "lance")]
-use rivet_dataset::sample::image::ImageSample;
+use rivet_vision::cache::{CachePolicy, DEFAULT_ENCODED_CHUNK_SIZE};
+use rivet_vision::datasets::{ArrowImageDataset, ImageFolderDatasetCore};
+#[cfg(feature = "lance")]
+use rivet_vision::datasets::{LanceImageDataset, load_lance_image_dataset};
+use rivet_vision::image::decode::decode_rgb;
+use rivet_vision::pipeline::ImagePipeline;
+use rivet_vision::sample::image::DecodedSample;
+#[cfg(feature = "lance")]
+use rivet_vision::sample::image::ImageSample;
+#[cfg(feature = "lance")]
+use rivet_vision::source::ImageSource;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -163,7 +165,7 @@ impl PyLanceDataset {
 #[cfg(feature = "lance")]
 #[pyclass(name = "_LanceDatasetDict")]
 pub(crate) struct PyLanceDatasetDict {
-    inner: DatasetBundle,
+    inner: DatasetBundle<ImageSource>,
 }
 
 #[cfg(feature = "lance")]

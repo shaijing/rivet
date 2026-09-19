@@ -1,0 +1,22 @@
+[package]
+name = "rivet-vision"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+lance = ["rivet-data/lance", "dep:lance"]
+
+[dependencies]
+arrow.workspace = true
+arrow-array.workspace = true
+arrow-buffer.workspace = true
+crossbeam-channel.workspace = true
+image.workspace = true
+lance = { workspace = true, optional = true }
+rivet-core.workspace = true
+rivet-data.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+walkdir.workspace = true

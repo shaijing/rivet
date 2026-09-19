@@ -10,11 +10,12 @@ path = "src/lib.rs"
 
 [features]
 default = []
-lance = ["rivet-dataset/lance"]
+lance = ["rivet-vision/lance"]
 
 [dependencies]
 arrow-buffer.workspace = true
 numpy.workspace = true
 pyo3.workspace = true
 rivet-core.workspace = true
-rivet-dataset.workspace = true
+rivet-data.workspace = true
+rivet-vision.workspace = true

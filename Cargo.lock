@@ -4500,6 +4500,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rivet-data"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-ipc",
+ "bytes",
+ "lance",
+ "memmap2",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "rivet-dataset"
 version = "0.1.0"
 dependencies = [
@@ -4514,6 +4531,8 @@ dependencies = [
  "lance",
  "memmap2",
  "rivet-core",
+ "rivet-data",
+ "rivet-vision",
  "serde",
  "serde_json",
  "thiserror",
@@ -4529,7 +4548,26 @@ dependencies = [
  "numpy",
  "pyo3",
  "rivet-core",
- "rivet-dataset",
+ "rivet-data",
+ "rivet-vision",
+]
+
+[[package]]
+name = "rivet-vision"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "arrow-array",
+ "arrow-buffer",
+ "crossbeam-channel",
+ "image",
+ "lance",
+ "rivet-core",
+ "rivet-data",
+ "serde",
+ "thiserror",
+ "tokio",
+ "walkdir",
 ]
 
 [[package]]

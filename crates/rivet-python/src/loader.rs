@@ -4,12 +4,12 @@ use numpy::{PyArray1, PyArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rivet_core::{DType, Tensor};
-use rivet_dataset::batch::ImageBatchBuilder;
-use rivet_dataset::dataset::ArrowImageDataset;
-use rivet_dataset::errors::invalid_argument;
-use rivet_dataset::pipeline::ImagePipeline;
-use rivet_dataset::runtime::ImageDataLoader;
-use rivet_dataset::sample::image::ImageBatch;
+use rivet_vision::batch::ImageBatchBuilder;
+use rivet_vision::datasets::ArrowImageDataset;
+use rivet_vision::errors::invalid_argument;
+use rivet_vision::pipeline::ImagePipeline;
+use rivet_vision::runtime::ImageDataLoader;
+use rivet_vision::sample::image::ImageBatch;
 use std::path::PathBuf;
 use std::sync::Arc;
 

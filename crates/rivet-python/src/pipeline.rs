@@ -1,7 +1,7 @@
 use crate::error::to_py_err;
 use crate::loader::PyDataLoader;
 use pyo3::prelude::*;
-use rivet_dataset::pipeline::ImagePipeline;
+use rivet_vision::pipeline::ImagePipeline;
 
 #[pyclass(name = "_ImagePipeline")]
 pub(crate) struct PyImagePipeline {

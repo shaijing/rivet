@@ -5,7 +5,7 @@ edition.workspace = true
 
 [features]
 default = []
-lance = ["dep:lance"]
+lance = ["rivet-vision/lance", "dep:lance"]
 
 [dependencies]
 arrow.workspace = true
@@ -24,6 +24,8 @@ tokio.workspace = true
 walkdir.workspace = true
 memmap2.workspace = true
 rivet-core.workspace = true
+rivet-data.workspace = true
+rivet-vision.workspace = true
 
 [[example]]
 name = "lance"

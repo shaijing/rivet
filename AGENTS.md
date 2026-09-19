@@ -21,6 +21,16 @@ maturin develop -j 12
 maturin build -j 12
 ```
 
+Use the following commands when the Lance backend is needed:
+
+```bash
+# Debug editable install
+maturin develop -j 12 --features lance
+
+# Release editable install (use this for benchmarks)
+maturin develop --release -j 12 --features lance
+```
+
 
 # References
 candle tensor: /home/ling/ws/rustWS/candle/candle-core/src/tensor.rs
