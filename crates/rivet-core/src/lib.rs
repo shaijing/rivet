@@ -1,2 +1,22 @@
+pub mod backend;
 pub mod cpu_backend;
+pub mod device;
+pub mod dtype;
+pub mod error;
+pub mod layout;
+pub mod ops;
+pub mod shape;
 pub mod storage;
+pub mod strided_index;
+pub mod tensor;
+
+pub use cpu_backend::{CpuDevice, CpuStorage, CpuStorageMutRef, CpuStorageRef};
+pub use device::{Device, DeviceLocation};
+pub use dtype::{DType, WithDType};
+pub use error::{Error, Result};
+pub use layout::Layout;
+pub use ops::{BinaryOp, UnaryOp};
+pub use shape::Shape;
+pub use storage::{Storage, StorageMutRef, StorageRef};
+pub use strided_index::StridedIndex;
+pub use tensor::{Tensor, TensorId};

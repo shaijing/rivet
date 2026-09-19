@@ -4501,6 +4501,7 @@ dependencies = [
  "bytes",
  "crossbeam-channel",
  "futures",
+ "half",
  "image",
  "memmap2",
  "thiserror",
