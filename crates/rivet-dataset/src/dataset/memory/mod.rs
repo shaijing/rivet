@@ -4,4 +4,4 @@ mod dataset;
 mod decoded;
 
 pub use dataset::MemoryDataset;
-pub use decoded::DecodedImageMemoryDataset;
+pub use decoded::{DecodedImageMemoryDataset, DenseImageMemoryDataset, VariableImageMemoryDataset};

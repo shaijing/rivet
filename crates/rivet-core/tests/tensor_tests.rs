@@ -66,6 +66,29 @@ fn tensor_views_preserve_logical_order() {
 }
 
 #[test]
+fn stack_reads_non_contiguous_views_without_materializing_each_input() {
+    let first = Tensor::from_vec((0u8..12).collect(), (2, 2, 3), &Device::Cpu)
+        .unwrap()
+        .permute(&[2, 0, 1])
+        .unwrap();
+    let second = Tensor::from_vec((12u8..24).collect(), (2, 2, 3), &Device::Cpu)
+        .unwrap()
+        .permute(&[2, 0, 1])
+        .unwrap();
+
+    let batch = Tensor::stack(&[&first, &second], 0).unwrap();
+
+    assert_eq!(batch.dims(), &[2, 3, 2, 2]);
+    assert!(batch.is_contiguous());
+    assert_eq!(
+        batch.to_vec::<u8>().unwrap(),
+        [
+            0, 3, 6, 9, 1, 4, 7, 10, 2, 5, 8, 11, 12, 15, 18, 21, 13, 16, 19, 22, 14, 17, 20, 23,
+        ]
+    );
+}
+
+#[test]
 fn reshape_copy_contiguous_and_dtype_follow_their_distinct_semantics() {
     let tensor = Tensor::from_vec(vec![0u8, 1, 2, 3, 4, 5], (2, 3), &Device::Cpu).unwrap();
     let clone = tensor.clone();

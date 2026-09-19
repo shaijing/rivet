@@ -247,14 +247,18 @@ pub fn cat_map<T: Copy>(
     let inner = output_shape[dim + 1..].iter().product::<usize>();
     let outer = output_shape[..dim].iter().product::<usize>();
     let mut output = Vec::with_capacity(output_shape.iter().product());
+    let mut logical_indices = inputs
+        .iter()
+        .map(|(_, layout)| layout.strided_index())
+        .collect::<Vec<_>>();
 
-    for outer_index in 0..outer {
-        for (values, layout) in inputs {
+    for _ in 0..outer {
+        for ((values, layout), logical_index) in inputs.iter().zip(&mut logical_indices) {
             let input_block = layout.dims()[dim] * inner;
-            let logical = copy_logical(values, layout)?;
-            let start = outer_index * input_block;
-            let end = start + input_block;
-            output.extend_from_slice(logical.get(start..end).ok_or(Error::StorageOutOfBounds)?);
+            for _ in 0..input_block {
+                let index = logical_index.next().ok_or(Error::StorageOutOfBounds)?;
+                output.push(*values.get(index).ok_or(Error::StorageOutOfBounds)?);
+            }
         }
     }
     Ok(output)

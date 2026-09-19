@@ -23,5 +23,7 @@ pub use image_source::ImageSource;
 #[cfg(feature = "lance")]
 pub use lance::{LanceImageDataset, LanceTable, load_lance_image_dataset};
 pub use manifest::{DatasetManifest, SplitManifest};
-pub use memory::{DecodedImageMemoryDataset, MemoryDataset};
+pub use memory::{
+    DecodedImageMemoryDataset, DenseImageMemoryDataset, MemoryDataset, VariableImageMemoryDataset,
+};
 pub use source::{Dataset, Source};

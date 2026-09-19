@@ -4495,17 +4495,8 @@ dependencies = [
 name = "rivet-core"
 version = "0.1.0"
 dependencies = [
- "arrow",
- "arrow-buffer",
- "arrow-ipc",
- "bytes",
- "crossbeam-channel",
- "futures",
  "half",
- "image",
- "memmap2",
  "thiserror",
- "walkdir",
 ]
 
 [[package]]

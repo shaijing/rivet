@@ -308,6 +308,31 @@ impl Tensor {
             .collect()
     }
 
+    /// Visits values in logical row-major order without allocating a second
+    /// vector for a view. The callback only receives copied values, so it
+    /// cannot mutate or retain a reference to tensor storage.
+    pub fn for_each<T, F>(&self, mut f: F) -> Result<()>
+    where
+        T: WithDType,
+        F: FnMut(T),
+    {
+        let storage = self.storage();
+        let cpu_storage = match &*storage {
+            Storage::Cpu(storage) => storage,
+        };
+        let values = T::cpu_storage_as_slice(cpu_storage)?;
+        if let Some((start, end)) = self.layout().contiguous_offsets() {
+            for &value in values.get(start..end).ok_or(Error::StorageOutOfBounds)? {
+                f(value);
+            }
+        } else {
+            for index in self.layout().strided_index() {
+                f(*values.get(index).ok_or(Error::StorageOutOfBounds)?);
+            }
+        }
+        Ok(())
+    }
+
     pub fn to_vec0<T: WithDType>(&self) -> Result<T> {
         if self.rank() != 0 {
             return Err(Error::InvalidRank {

@@ -63,7 +63,7 @@ mod tests {
         DecodedSample {
             image: Tensor::from_vec(
                 vec![
-                    1, 2, 3, 4, 5, 6, //
+                    1u8, 2, 3, 4, 5, 6, //
                     7, 8, 9, 10, 11, 12,
                 ],
                 [2, 2, 3],

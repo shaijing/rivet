@@ -52,9 +52,9 @@ where
 /// Decode an encoded image dataset into a Tensor-backed in-memory dataset.
 ///
 /// Decoding is deliberately performed after the source batch is fetched and
-/// before any pipeline operations run. Retrieving samples from the memory
-/// dataset only clones the reference-counted Tensor handle, so pixels are not
-/// copied.
+/// before any pipeline operations run. Fixed-shape decoded samples are
+/// consolidated into one dense image Tensor and one label Tensor; variable
+/// shapes retain Tensor-backed sample views without copying pixels on access.
 pub fn materialize_decoded_to_memory(
     dataset: &dyn Dataset<Item = crate::sample::image::EncodedImageSample>,
     chunk_size: usize,
@@ -102,7 +102,7 @@ pub fn materialize_decoded_to_memory(
         }
     }
 
-    Ok(DecodedImageMemoryDataset::new(items))
+    Ok(DecodedImageMemoryDataset::from_samples(items)?)
 }
 
 #[cfg(test)]
