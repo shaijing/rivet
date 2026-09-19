@@ -1,11 +1,11 @@
-use crate::batch::ImageBatchBuilder;
-use crate::errors::{RivetError, RivetResult, invalid_argument};
+use super::batch::next_batch_inline;
+use super::reorder::PrefetchCoordinator;
+use super::scheduler::{next_batch_workers, validate_worker_capacity};
+use crate::errors::{RivetError, RivetResult};
 use crate::pipeline::op::ExecutionPlan;
 use crate::runtime::pool::WorkerPool;
-use crate::runtime::worker::WorkItem;
-use crate::sample::image::{DecodedSample, ImageBatch, ImageSample};
+use crate::sample::image::ImageBatch;
 use crate::sampler::IndexSampler;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 enum LoaderExecutor {
@@ -38,11 +38,7 @@ impl ImageDataLoader {
             let max_in_flight = prefetch_batches.saturating_add(1);
             // Reject absurd sizes before constructing any channel: a wrap
             // here would silently produce a broken bounded queue.
-            let max_in_flight_samples = plan
-                .batch
-                .size
-                .checked_mul(max_in_flight)
-                .ok_or_else(|| invalid_argument("worker queue capacity overflow"))?;
+            let max_in_flight_samples = validate_worker_capacity(&plan, max_in_flight)?;
             let pool = WorkerPool::new(Arc::clone(&plan), num_workers, max_in_flight_samples)?;
             LoaderExecutor::Workers(pool, PrefetchCoordinator::new(max_in_flight))
         };
@@ -97,218 +93,6 @@ impl ImageDataLoader {
     }
 }
 
-/// Coordinator-side index selection shared by both executors.
-fn take_indices(
-    plan: &ExecutionPlan,
-    sampler: &mut IndexSampler,
-) -> RivetResult<Option<Vec<usize>>> {
-    let Some(indices) = sampler.next_indices(plan.batch.size) else {
-        return Ok(None);
-    };
-
-    if plan.batch.drop_last && indices.len() < plan.batch.size {
-        return Ok(None);
-    }
-
-    Ok(Some(indices))
-}
-
-fn next_batch_inline(
-    plan: &ExecutionPlan,
-    sampler: &mut IndexSampler,
-) -> RivetResult<Option<ImageBatch>> {
-    let Some(indices) = take_indices(plan, sampler)? else {
-        return Ok(None);
-    };
-
-    let mut batch = ImageBatchBuilder::with_capacity(indices.len());
-
-    let samples = fetch_samples(plan, &indices)?;
-    for (index, sample) in indices.into_iter().zip(samples) {
-        let decoded = plan.apply_ops(sample, index)?;
-        batch.push(decoded)?;
-    }
-
-    Ok(Some(batch.finish()?))
-}
-
-/// Source access runs on the coordinator so persistent backends can perform
-/// one batch read. Keep the same terminal panic-to-error behavior as the
-/// worker path for custom dataset implementations.
-fn fetch_samples(plan: &ExecutionPlan, indices: &[usize]) -> RivetResult<Vec<ImageSample>> {
-    let samples = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        plan.source.get_many(indices)
-    }))
-    .unwrap_or_else(|_| {
-        Err(RivetError::Worker(
-            "dataset get_many panicked while fetching a batch".to_string(),
-        ))
-    })?;
-
-    if samples.len() != indices.len() {
-        return Err(RivetError::Worker(format!(
-            "source returned {} samples for {} indices",
-            samples.len(),
-            indices.len()
-        )));
-    }
-    Ok(samples)
-}
-
-/// One in-flight logical batch being filled by workers.
-struct PendingBatch {
-    samples: Vec<Option<DecodedSample>>,
-    remaining: usize,
-}
-
-/// Tracks submitted-but-not-yet-delivered batches so several batches can
-/// run concurrently while delivery stays strictly in sampler order.
-struct PrefetchCoordinator {
-    /// Maximum batches in flight (window control only).
-    max_in_flight: usize,
-    /// Number of submitted batches not yet delivered to the caller.
-    in_flight: usize,
-    /// Sampler produced its last batch (or its tail was dropped).
-    closed: bool,
-    /// Next id handed out when submitting a batch.
-    next_batch_id: u64,
-    /// Next batch that must be returned to the caller, in order.
-    next_deliver_id: u64,
-    pending: BTreeMap<u64, PendingBatch>,
-}
-
-impl PrefetchCoordinator {
-    fn new(max_in_flight: usize) -> Self {
-        Self {
-            max_in_flight,
-            in_flight: 0,
-            closed: false,
-            next_batch_id: 0,
-            next_deliver_id: 0,
-            pending: BTreeMap::new(),
-        }
-    }
-
-    fn submit(
-        &mut self,
-        indices: Vec<usize>,
-        samples: Vec<ImageSample>,
-        pool: &WorkerPool,
-    ) -> RivetResult<()> {
-        if indices.len() != samples.len() {
-            return Err(RivetError::Worker(format!(
-                "source returned {} samples for {} indices",
-                samples.len(),
-                indices.len()
-            )));
-        }
-        let batch_id = self.next_batch_id;
-        self.next_batch_id += 1;
-
-        let batch = PendingBatch {
-            samples: std::iter::repeat_with(|| None)
-                .take(indices.len())
-                .collect(),
-            remaining: indices.len(),
-        };
-        self.pending.insert(batch_id, batch);
-        self.in_flight += 1;
-
-        for (position, (index, sample)) in indices.into_iter().zip(samples).enumerate() {
-            pool.submit(WorkItem {
-                batch_id,
-                position,
-                index,
-                sample,
-            })?;
-        }
-        Ok(())
-    }
-
-    fn record(&mut self, batch_id: u64, position: usize, sample: DecodedSample) -> RivetResult<()> {
-        let batch = self
-            .pending
-            .get_mut(&batch_id)
-            .ok_or_else(|| RivetError::Worker(format!("result for unknown batch {batch_id}")))?;
-        let slot = batch.samples.get_mut(position).ok_or_else(|| {
-            RivetError::Worker(format!(
-                "invalid result position {position} for batch {batch_id}"
-            ))
-        })?;
-        if slot.is_some() {
-            return Err(RivetError::Worker(format!(
-                "duplicate result for batch {batch_id} position {position}"
-            )));
-        }
-        *slot = Some(sample);
-        batch.remaining -= 1;
-        Ok(())
-    }
-
-    /// Deliver the next batch when it is complete; delivery order is
-    /// strictly the submission order regardless of completion order.
-    fn deliver_ready(&mut self) -> RivetResult<Option<ImageBatch>> {
-        let batch_id = self.next_deliver_id;
-        let Some(batch) = self.pending.get(&batch_id) else {
-            return Ok(None);
-        };
-        if batch.remaining != 0 {
-            return Ok(None);
-        }
-        let batch = match self.pending.remove(&batch_id) {
-            Some(batch) => batch,
-            None => {
-                return Err(RivetError::Worker(format!(
-                    "deliverable batch {batch_id} vanished"
-                )));
-            }
-        };
-        self.in_flight -= 1;
-        self.next_deliver_id += 1;
-
-        let mut builder = ImageBatchBuilder::with_capacity(batch.samples.len());
-        for sample in batch.samples.into_iter().flatten() {
-            builder.push(sample)?;
-        }
-        Ok(Some(builder.finish()?))
-    }
-}
-
-fn next_batch_workers(
-    plan: &ExecutionPlan,
-    sampler: &mut IndexSampler,
-    pool: &WorkerPool,
-    coordinator: &mut PrefetchCoordinator,
-) -> RivetResult<Option<ImageBatch>> {
-    loop {
-        // Top up the in-flight window from the sampler.
-        while coordinator.in_flight < coordinator.max_in_flight && !coordinator.closed {
-            match take_indices(plan, sampler)? {
-                Some(indices) => {
-                    let samples = fetch_samples(plan, &indices)?;
-                    coordinator.submit(indices, samples, pool)?;
-                }
-                None => coordinator.closed = true,
-            }
-        }
-
-        if let Some(batch) = coordinator.deliver_ready()? {
-            return Ok(Some(batch));
-        }
-
-        if coordinator.closed && coordinator.in_flight == 0 {
-            return Ok(None);
-        }
-
-        // Nothing deliverable yet: wait for the next worker result.
-        let result = pool.recv()?;
-        match result.result {
-            Ok(sample) => coordinator.record(result.batch_id, result.position, sample)?,
-            Err(err) => return Err(err),
-        }
-    }
-}
-
 /// Fallible iterator over an [`ImageDataLoader`]'s batches.
 ///
 /// Item is `RivetResult<ImageBatch>` so errors are reported once and then
@@ -359,6 +143,7 @@ mod tests {
     use super::*;
     use crate::dataset::Dataset;
     use crate::pipeline::ImagePipeline;
+    use crate::runtime::reorder::PendingBatch;
     use crate::sample::image::{DecodedSample, EncodedImageSample};
     use arrow_buffer::Buffer;
     use rivet_core::{Device, Tensor};

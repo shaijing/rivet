@@ -1,5 +1,8 @@
+mod batch;
 mod loader;
 mod pool;
+mod reorder;
+mod scheduler;
 mod worker;
 
 pub use loader::ImageDataLoader;
