@@ -173,6 +173,25 @@ impl Tensor {
         self.shape().elem_count()
     }
 
+    /// Number of bytes in the logical tensor represented by this handle.
+    pub fn logical_bytes(&self) -> usize {
+        self.elem_count()
+            .saturating_mul(self.dtype().size_in_bytes())
+    }
+
+    /// Number of bytes in the backing allocation, including bytes outside a
+    /// view's logical region.
+    pub fn storage_bytes(&self) -> usize {
+        self.storage()
+            .len()
+            .saturating_mul(self.dtype().size_in_bytes())
+    }
+
+    /// Returns whether two tensor handles refer to the same backing storage.
+    pub fn same_storage(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0.storage, &other.0.storage)
+    }
+
     pub fn is_contiguous(&self) -> bool {
         self.layout().is_contiguous()
     }

@@ -8,8 +8,13 @@ name = "_rivet"
 crate-type = ["cdylib"]
 path = "src/lib.rs"
 
+[features]
+default = []
+lance = ["rivet-dataset/lance"]
+
 [dependencies]
 arrow-buffer.workspace = true
 numpy.workspace = true
 pyo3.workspace = true
+rivet-core.workspace = true
 rivet-dataset.workspace = true

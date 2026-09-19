@@ -1,15 +1,15 @@
 //! Read the Rivet-native CIFAR Lance datasets through Rivet's API.
 //!
 //! Usage:
-//!   cargo run -j 16 -p rivet-dataset --example lance_cifar
-//!   cargo run -j 16 -p rivet-dataset --example lance_cifar -- cifar100 test 4 128
+//!   cargo run -j 16 -p rivet-dataset --features lance --example lance_cifar
+//!   cargo run -j 16 -p rivet-dataset --features lance --example lance_cifar -- cifar100 test 4 128
 //!
 //! Arguments are: <dataset> <split> <max_batches> <batch_size>.
 //! Defaults are: cifar10 train 2 64.
 //!
 //! The dataset root can be overridden with RIVET_LANCE_ROOT:
 //!   RIVET_LANCE_ROOT=/data/datasets/rivet cargo run -j 16 \
-//!     -p rivet-dataset --example lance_cifar
+//!     -p rivet-dataset --features lance --example lance_cifar
 
 use rivet_dataset::dataset::{DatasetLoadResult, ImageSource, load_lance_image_dataset};
 use rivet_dataset::sample::image::ImageSample;

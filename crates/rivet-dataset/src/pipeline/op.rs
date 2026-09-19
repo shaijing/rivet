@@ -7,9 +7,10 @@ use crate::image::flip::{FlipConfig, FlipDirection, RandomHorizontalFlipConfig};
 use crate::image::layout::LayoutConfig;
 use crate::image::normalize::NormalizeConfig;
 use crate::image::resize::ResizeConfig;
+use crate::sample::image::ImageLayout;
 use crate::sample::image::{DecodedSample, ImageSample};
-use crate::sample::image::{ImageDType, ImageLayout};
 use crate::sampler::{SamplerPlan, permute};
+use rivet_core::DType;
 
 #[derive(Clone)]
 pub struct SourceOp {
@@ -87,10 +88,7 @@ pub enum ImageOp {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PipelineImageState {
     Encoded,
-    Decoded {
-        dtype: ImageDType,
-        layout: ImageLayout,
-    },
+    Decoded { dtype: DType, layout: ImageLayout },
 }
 
 impl ImageOp {
@@ -100,7 +98,7 @@ impl ImageOp {
         match self {
             Self::Decode(_) => match input {
                 Encoded => Ok(Decoded {
-                    dtype: ImageDType::U8,
+                    dtype: DType::U8,
                     layout: ImageLayout::Hwc,
                 }),
                 Decoded { .. } => Err(invalid_pipeline(
@@ -120,7 +118,7 @@ impl ImageOp {
                     "Normalize requires a decoded image, current state is encoded",
                 )),
                 Decoded { layout, .. } => Ok(Decoded {
-                    dtype: ImageDType::F32,
+                    dtype: DType::F32,
                     layout,
                 }),
             },
@@ -136,19 +134,24 @@ impl ImageOp {
         }
     }
 
-    pub fn apply(&self, sample: ImageSample, ctx: &mut SampleContext) -> RivetResult<ImageSample> {
+    pub fn apply(
+        &self,
+        sample: ImageSample,
+        ctx: &mut SampleContext,
+        input_layout: ImageLayout,
+    ) -> RivetResult<ImageSample> {
         match self {
             Self::Decode(op) => op.apply(sample),
             Self::Resize(op) => op.apply(sample),
-            Self::Crop(op) => op.apply(sample),
-            Self::CenterCrop(op) => op.apply(sample),
+            Self::Crop(op) => op.apply(sample, input_layout),
+            Self::CenterCrop(op) => op.apply(sample, input_layout),
             Self::Flip(op) => op.apply(sample),
-            Self::RandomCrop(op) => op.apply(sample, ctx),
+            Self::RandomCrop(op) => op.apply(sample, ctx, input_layout),
             Self::RandomHorizontalFlip(op) => op.apply(sample, ctx),
             Self::Brightness(op) => op.apply(sample),
             Self::Contrast(op) => op.apply(sample),
-            Self::Normalize(op) => op.apply(sample),
-            Self::Layout(op) => op.apply(sample),
+            Self::Normalize(op) => op.apply(sample, input_layout),
+            Self::Layout(op) => op.apply(sample, input_layout),
         }
     }
 }
@@ -159,12 +162,12 @@ fn require_u8_hwc(input: PipelineImageState, op_name: &str) -> RivetResult<Pipel
             "{op_name} requires a decoded image, current state is encoded"
         ))),
         PipelineImageState::Decoded {
-            dtype: ImageDType::U8,
+            dtype: DType::U8,
             layout: ImageLayout::Hwc,
         } => Ok(input),
         PipelineImageState::Decoded { dtype, layout } => Err(invalid_pipeline(format!(
-            "{op_name} requires uint8 HWC input, current state is {} {}",
-            dtype.as_str(),
+            "{op_name} requires uint8 HWC input, current state is {:?} {}",
+            dtype,
             layout.as_str()
         ))),
     }
@@ -260,8 +263,14 @@ impl ExecutionPlan {
     ) -> RivetResult<DecodedSample> {
         let mut ctx = SampleContext::new(sample_index);
         ctx.global_seed = self.random_seed;
+        let mut state = self.source.state();
         for op in &self.ops {
-            sample = op.apply(sample, &mut ctx)?;
+            let input_layout = match state {
+                PipelineImageState::Decoded { layout, .. } => layout,
+                PipelineImageState::Encoded => ImageLayout::Hwc,
+            };
+            sample = op.apply(sample, &mut ctx, input_layout)?;
+            state = op.transition(state)?;
         }
 
         sample.into_decoded()

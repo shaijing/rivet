@@ -15,7 +15,7 @@ impl BrightnessConfig {
         Ok(ImageSample::Decoded(from_rgb_image(
             brighten(&image, self.value),
             label,
-        )))
+        )?))
     }
 }
 
@@ -31,6 +31,6 @@ impl ContrastConfig {
         Ok(ImageSample::Decoded(from_rgb_image(
             contrast(&image, self.value),
             label,
-        )))
+        )?))
     }
 }

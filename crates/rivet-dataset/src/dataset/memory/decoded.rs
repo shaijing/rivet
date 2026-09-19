@@ -3,8 +3,8 @@ use crate::dataset::source::Dataset;
 use crate::errors::RivetResult;
 use crate::sample::image::DecodedSample;
 
-/// In-memory decoded image samples. The samples are expected to use the
-/// shared U8 HWC backing produced by decoded cache materialization.
+/// In-memory decoded image samples. Tensor handles share their backing
+/// allocation when samples are cloned or requested repeatedly.
 #[derive(Debug)]
 pub struct DecodedImageMemoryDataset {
     inner: MemoryDataset<DecodedSample>,

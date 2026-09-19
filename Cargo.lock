@@ -4522,6 +4522,7 @@ dependencies = [
  "image",
  "lance",
  "memmap2",
+ "rivet-core",
  "serde",
  "serde_json",
  "thiserror",
@@ -4536,6 +4537,7 @@ dependencies = [
  "arrow-buffer",
  "numpy",
  "pyo3",
+ "rivet-core",
  "rivet-dataset",
 ]
 

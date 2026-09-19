@@ -14,6 +14,6 @@ impl ResizeConfig {
         let sample = sample.into_decoded()?;
         let (image, label) = into_rgb_image(sample, "resize")?;
         let resized = resize(&image, self.width, self.height, FilterType::Triangle);
-        Ok(ImageSample::Decoded(from_rgb_image(resized, label)))
+        Ok(ImageSample::Decoded(from_rgb_image(resized, label)?))
     }
 }

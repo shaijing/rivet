@@ -1,7 +1,7 @@
 use crate::errors::{RivetResult, invalid_shape};
 use crate::image::{from_rgb_image, into_rgb_image};
 use crate::pipeline::op::SampleContext;
-use crate::sample::image::ImageSample;
+use crate::sample::image::{ImageLayout, ImageSample};
 use image::imageops::crop_imm;
 use image::{Rgb, RgbImage};
 
@@ -14,19 +14,44 @@ pub struct CropConfig {
 }
 
 impl CropConfig {
-    pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
+    pub fn apply(&self, sample: ImageSample, layout: ImageLayout) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
-
-        if self.x + self.width > sample.width || self.y + self.height > sample.height {
+        if sample.image.rank() != 3 {
             return Err(invalid_shape(format!(
-                "crop rectangle ({}, {}, {}, {}) exceeds image shape {}x{}",
-                self.x, self.y, self.width, self.height, sample.width, sample.height
+                "crop requires a rank-3 image, got shape {:?}",
+                sample.image.dims()
             )));
         }
-
-        let (image, label) = into_rgb_image(sample, "crop")?;
-        let cropped = crop_imm(&image, self.x, self.y, self.width, self.height).to_image();
-        Ok(ImageSample::Decoded(from_rgb_image(cropped, label)))
+        let (height, width) = match layout {
+            ImageLayout::Hwc => (sample.image.dims()[0], sample.image.dims()[1]),
+            ImageLayout::Chw => (sample.image.dims()[1], sample.image.dims()[2]),
+        };
+        let x = self.x as usize;
+        let y = self.y as usize;
+        let crop_width = self.width as usize;
+        let crop_height = self.height as usize;
+        if x.checked_add(crop_width).is_none_or(|end| end > width)
+            || y.checked_add(crop_height).is_none_or(|end| end > height)
+        {
+            return Err(invalid_shape(format!(
+                "crop rectangle ({}, {}, {}, {}) exceeds image shape {}x{}",
+                self.x, self.y, self.width, self.height, width, height
+            )));
+        }
+        let image = match layout {
+            ImageLayout::Hwc => sample
+                .image
+                .narrow(0, y, crop_height)?
+                .narrow(1, x, crop_width)?,
+            ImageLayout::Chw => sample
+                .image
+                .narrow(1, y, crop_height)?
+                .narrow(2, x, crop_width)?,
+        };
+        Ok(ImageSample::Decoded(crate::sample::image::DecodedSample {
+            image,
+            label: sample.label,
+        }))
     }
 }
 
@@ -37,25 +62,28 @@ pub struct CenterCropConfig {
 }
 
 impl CenterCropConfig {
-    pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
+    pub fn apply(&self, sample: ImageSample, layout: ImageLayout) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
-
-        if self.width > sample.width || self.height > sample.height {
+        let (image_height, image_width) = match layout {
+            ImageLayout::Hwc => (sample.image.dims()[0], sample.image.dims()[1]),
+            ImageLayout::Chw => (sample.image.dims()[1], sample.image.dims()[2]),
+        };
+        if self.width as usize > image_width || self.height as usize > image_height {
             return Err(invalid_shape(format!(
                 "center_crop size {}x{} exceeds image shape {}x{}",
-                self.width, self.height, sample.width, sample.height
+                self.width, self.height, image_width, image_height
             )));
         }
 
-        let x = (sample.width - self.width) / 2;
-        let y = (sample.height - self.height) / 2;
+        let x = (image_width as u32 - self.width) / 2;
+        let y = (image_height as u32 - self.height) / 2;
         CropConfig {
             x,
             y,
             width: self.width,
             height: self.height,
         }
-        .apply(ImageSample::Decoded(sample))
+        .apply(ImageSample::Decoded(sample), layout)
     }
 }
 
@@ -71,8 +99,18 @@ impl RandomCropConfig {
     /// Zero-pad the image by `padding` on each side, then crop a
     /// `width`x`height` window whose offset is drawn uniformly per sample
     /// from the pipeline RNG stream (two draws: y then x).
-    pub fn apply(&self, sample: ImageSample, ctx: &mut SampleContext) -> RivetResult<ImageSample> {
+    pub fn apply(
+        &self,
+        sample: ImageSample,
+        ctx: &mut SampleContext,
+        layout: ImageLayout,
+    ) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
+        if layout != ImageLayout::Hwc {
+            return Err(crate::errors::invalid_argument(
+                "random_crop currently requires uint8 HWC input",
+            ));
+        }
         let (image, label) = into_rgb_image(sample, "random_crop")?;
         let (width, height) = image.dimensions();
 
@@ -117,7 +155,7 @@ impl RandomCropConfig {
         }
 
         let cropped = crop_imm(&padded, x, y, self.width, self.height).to_image();
-        Ok(ImageSample::Decoded(from_rgb_image(cropped, label)))
+        Ok(ImageSample::Decoded(from_rgb_image(cropped, label)?))
     }
 }
 
@@ -125,19 +163,16 @@ impl RandomCropConfig {
 mod tests {
     use super::{RandomCropConfig, SampleContext};
     use crate::sample::image::ImageSample::Decoded;
-    use crate::sample::image::{DecodedSample, ImageBuffer, ImageLayout};
+    use crate::sample::image::{DecodedSample, ImageLayout};
+    use rivet_core::{Device, Tensor};
 
     /// 4x4 RGB image where every pixel is unique, so any crop offset
     /// produces a distinguishable result.
     fn unique_image() -> DecodedSample {
         let values: Vec<u8> = (0..4 * 4 * 3).map(|value| value as u8).collect();
         DecodedSample {
-            image: ImageBuffer::U8(values),
-            width: 4,
-            height: 4,
-            channels: 3,
+            image: Tensor::from_vec(values, [4, 4, 3], &Device::Cpu).unwrap(),
             label: 7,
-            layout: ImageLayout::Hwc,
         }
     }
 
@@ -149,15 +184,11 @@ mod tests {
             height: 4,
             padding: 2,
         }
-        .apply(Decoded(unique_image()), &mut ctx)
+        .apply(Decoded(unique_image()), &mut ctx, ImageLayout::Hwc)
         .unwrap()
         .into_decoded()
         .unwrap();
-        match out.image {
-            ImageBuffer::U8(values) => values,
-            ImageBuffer::SharedU8(values) => values.to_vec(),
-            ImageBuffer::F32(_) => panic!("expected u8 output"),
-        }
+        out.image.to_vec::<u8>().unwrap()
     }
 
     #[test]
@@ -190,11 +221,10 @@ mod tests {
             height: 4,
             padding: 2,
         }
-        .apply(Decoded(unique_image()), &mut ctx)
+        .apply(Decoded(unique_image()), &mut ctx, ImageLayout::Hwc)
         .unwrap();
         let out = sample.into_decoded().unwrap();
-        assert_eq!(out.width, 4);
-        assert_eq!(out.height, 4);
+        assert_eq!(out.image.dims(), [4, 4, 3]);
         assert_eq!(out.label, 7);
     }
 
@@ -207,7 +237,7 @@ mod tests {
             height: 4,
             padding: 2,
         }
-        .apply(Decoded(unique_image()), &mut ctx);
+        .apply(Decoded(unique_image()), &mut ctx, ImageLayout::Hwc);
         assert!(result.is_err(), "oversized random crop must fail");
     }
 }

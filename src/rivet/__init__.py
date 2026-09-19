@@ -8,11 +8,19 @@ from ._rivet import (
     _ArrowDataset,
     _ImageFolderDataset,
     _ImagePipeline,
-    _LanceDataset,
-    _LanceDatasetDict,
 )
-from ._rivet import load_lance_split as _load_lance_split
 from ._rivet import read_image_batch as _read_image_batch
+
+try:
+    from ._rivet import (
+        _LanceDataset,
+        _LanceDatasetDict,
+        load_lance_split as _load_lance_split,
+    )
+except ImportError:
+    _LanceDataset = None
+    _LanceDatasetDict = None
+    _load_lance_split = None
 
 __all__ = [
     "ArrowDataset",
@@ -60,6 +68,14 @@ def _maybe_numpy_batch(batch: dict[str, Any], as_numpy: bool) -> dict[str, Any]:
         batch["labels"] = labels.tolist()
 
     return batch
+
+
+def _require_lance() -> tuple[Any, Any, Any]:
+    if _LanceDataset is None or _LanceDatasetDict is None or _load_lance_split is None:
+        raise RuntimeError(
+            "Lance support is disabled; rebuild rivet-python with the 'lance' feature"
+        )
+    return _LanceDataset, _LanceDatasetDict, _load_lance_split
 
 
 class ArrowDataset:
@@ -192,7 +208,8 @@ class LanceDataset:
         image_column: str = "image",
         label_column: str = "label",
     ) -> None:
-        self._inner = _LanceDataset(
+        lance_dataset, _, _ = _require_lance()
+        self._inner = lance_dataset(
             str(path),
             image_column,
             label_column,
@@ -431,6 +448,7 @@ def load_dataset(
     *.lance child directories otherwise.
     """
     path = Path(path)
+    _, lance_dataset_dict, load_lance_split = _require_lance()
     is_physical = path.name.endswith(".lance")
 
     if split is None:
@@ -441,7 +459,7 @@ def load_dataset(
                 label_column=label_column,
             )
         return DatasetDict(
-            _LanceDatasetDict(
+            lance_dataset_dict(
                 str(path),
                 image_column,
                 label_column,
@@ -454,7 +472,7 @@ def load_dataset(
         )
 
     return LanceDataset._from_inner(
-        _load_lance_split(
+        load_lance_split(
             str(path),
             image_column,
             label_column,

@@ -15,7 +15,6 @@
 
 use rivet_dataset::dataset::{Dataset, ImageFolderDatasetCore};
 use rivet_dataset::pipeline::ImagePipeline;
-use rivet_dataset::sample::image::ImageBuffer;
 use std::env;
 use std::path::Path;
 use std::sync::Arc;
@@ -80,18 +79,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut images = 0usize;
     for batch in (&mut loader).into_iter().take(max_batches) {
         let batch = batch?;
-        assert_eq!(batch.shape.1, 3);
-        assert_eq!(batch.shape.2, IMAGE_SIZE as usize);
-        assert_eq!(batch.shape.3, IMAGE_SIZE as usize);
-        assert!(matches!(batch.images, ImageBuffer::F32(_)));
+        assert_eq!(batch.images.dims()[1], 3);
+        assert_eq!(batch.images.dims()[2], IMAGE_SIZE as usize);
+        assert_eq!(batch.images.dims()[3], IMAGE_SIZE as usize);
+        assert_eq!(format!("{:?}", batch.images.dtype()), "F32");
 
         batches += 1;
-        images += batch.shape.0;
+        images += batch.images.dims()[0];
         println!(
             "batch {batches}: shape={:?} dtype={} labels={:?}",
-            batch.shape,
-            batch.images.dtype().as_str(),
-            batch.labels,
+            batch.images.dims(),
+            format!("{:?}", batch.images.dtype()),
+            batch.labels.to_vec::<i64>()?,
         );
     }
 

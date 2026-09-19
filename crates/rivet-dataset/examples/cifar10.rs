@@ -13,7 +13,7 @@
 use rivet_dataset::dataset::{ArrowImageDataset, Dataset};
 use rivet_dataset::pipeline::ImagePipeline;
 use rivet_dataset::runtime::ImageDataLoader;
-use rivet_dataset::sample::image::{ImageBatch, ImageBuffer};
+use rivet_dataset::sample::image::ImageBatch;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,10 +28,12 @@ const STD: [f32; 3] = [0.2470, 0.2435, 0.2616];
 fn find_cache_file() -> Option<PathBuf> {
     let roots = [
         env::var("HF_DATASETS_CACHE").ok().map(PathBuf::from),
-        env::var("HF_HOME").ok().map(|home| PathBuf::from(home).join("datasets")),
-        env::var("HOME").ok().map(|home| {
-            PathBuf::from(home).join(".cache/huggingface/datasets")
-        }),
+        env::var("HF_HOME")
+            .ok()
+            .map(|home| PathBuf::from(home).join("datasets")),
+        env::var("HOME")
+            .ok()
+            .map(|home| PathBuf::from(home).join(".cache/huggingface/datasets")),
     ]
     .into_iter()
     .flatten();
@@ -70,10 +72,9 @@ fn arrow_file_arg() -> Result<PathBuf, Box<dyn std::error::Error>> {
 /// A minimal "training step" over one batch, mirroring real use: `x` is the
 /// normalized image tensor and `y` the labels.
 fn train_step(step: usize, batch: ImageBatch) {
-    let ImageBatch {
-        images, labels, ..
-    } = batch;
-    let dtype = images.dtype().as_str();
+    let ImageBatch { images, labels, .. } = batch;
+    let dtype = format!("{:?}", images.dtype());
+    let labels = labels.to_vec::<i64>()?;
     let (first, last) = match labels.as_slice() {
         [] => (None, None),
         [head, .., tail] => (Some(*head), Some(*tail)),
@@ -88,11 +89,8 @@ fn train_step(step: usize, batch: ImageBatch) {
     );
 }
 
-fn batch_count(images: ImageBuffer) -> usize {
-    match images {
-        ImageBuffer::U8(values) => values.len() / (32 * 32 * 3),
-        ImageBuffer::F32(values) => values.len() / (3 * 32 * 32),
-    }
+fn batch_count(images: rivet_core::Tensor) -> usize {
+    images.dims()[0]
 }
 
 fn run(loader: &mut ImageDataLoader, max_batches: usize) -> Result<(), Box<dyn std::error::Error>> {
@@ -105,9 +103,10 @@ fn run(loader: &mut ImageDataLoader, max_batches: usize) -> Result<(), Box<dyn s
     for (index, batch) in loader.into_iter().take(max_batches).enumerate() {
         let batch = batch?;
         batches += 1;
-        images += batch.shape.0;
-        last_label = batch.labels.last().copied();
-        first_label.get_or_insert_with(|| batch.labels[0]);
+        images += batch.images.dims()[0];
+        let labels = batch.labels.to_vec::<i64>()?;
+        last_label = labels.last().copied();
+        first_label.get_or_insert_with(|| labels[0]);
         train_step(batches, batch);
     }
 

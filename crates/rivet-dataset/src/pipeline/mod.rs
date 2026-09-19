@@ -220,10 +220,9 @@ fn validate_image_ops(
 mod tests {
     use super::*;
     use crate::dataset::{Dataset, ImageSource};
-    use crate::sample::image::{
-        DecodedSample, EncodedImageSample, ImageBuffer, ImageDType, ImageLayout,
-    };
+    use crate::sample::image::{DecodedSample, EncodedImageSample, ImageLayout};
     use arrow_buffer::Buffer;
+    use rivet_core::{DType, Device, Tensor};
 
     struct StubDataset {
         len: usize,
@@ -264,12 +263,9 @@ mod tests {
                         return Err(crate::errors::RivetError::IndexOutOfRange { index, len: 1 });
                     }
                     Ok(DecodedSample {
-                        image: ImageBuffer::U8(vec![255, 0, 0]),
-                        width: 1,
-                        height: 1,
-                        channels: 3,
+                        image: Tensor::from_vec(vec![255u8, 0, 0], [1, 1, 3], &Device::Cpu)
+                            .unwrap(),
                         label: 7,
-                        layout: ImageLayout::Hwc,
                     })
                 })
                 .collect()
@@ -336,8 +332,8 @@ mod tests {
         let mut loader = decoded_stub().batch(1, false).compile().unwrap();
         let batch = loader.next_batch().unwrap().unwrap();
 
-        assert_eq!(batch.labels, [7]);
-        assert_eq!(batch.shape, (1, 1, 1, 3));
+        assert_eq!(batch.labels.to_vec::<i64>().unwrap(), [7]);
+        assert_eq!(batch.images.dims(), [1, 1, 1, 3]);
     }
 
     #[test]
@@ -425,7 +421,7 @@ mod tests {
         assert_eq!(
             loader.plan.output_state,
             PipelineImageState::Decoded {
-                dtype: ImageDType::F32,
+                dtype: DType::F32,
                 layout: ImageLayout::Chw,
             }
         );

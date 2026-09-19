@@ -4,7 +4,9 @@ use super::cache::{CachePolicy, materialize_decoded_to_memory};
 use super::source::{Dataset, Source};
 use crate::errors::{RivetResult, invalid_argument};
 use crate::pipeline::op::PipelineImageState;
+use crate::sample::image::ImageLayout;
 use crate::sample::image::{DecodedSample, EncodedImageSample, ImageSample};
+use rivet_core::DType;
 use std::sync::Arc;
 
 /// A typed image source that keeps the pipeline's initial representation
@@ -43,8 +45,8 @@ impl ImageSource {
         match self {
             Self::Encoded(_) => PipelineImageState::Encoded,
             Self::Decoded(_) => PipelineImageState::Decoded {
-                dtype: crate::sample::image::ImageDType::U8,
-                layout: crate::sample::image::ImageLayout::Hwc,
+                dtype: DType::U8,
+                layout: ImageLayout::Hwc,
             },
         }
     }
@@ -122,8 +124,9 @@ impl ImageSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sample::image::{EncodedImageSample, ImageBuffer, ImageSample};
+    use crate::sample::image::{EncodedImageSample, ImageSample};
     use arrow_buffer::Buffer;
+    use rivet_core::DType;
     use std::sync::Arc;
 
     const PNG_1X1: &[u8] = b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90\x77\x53\xde\x00\x00\x00\x0c\x49\x44\x41\x54\x78\x9c\x63\xf8\xcf\xc0\x00\x00\x03\x01\x01\x00\xc9\xfe\x92\xef\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
@@ -161,7 +164,7 @@ mod tests {
         assert_eq!(
             cached.state(),
             PipelineImageState::Decoded {
-                dtype: crate::sample::image::ImageDType::U8,
+                dtype: DType::U8,
                 layout: crate::sample::image::ImageLayout::Hwc,
             }
         );
@@ -169,15 +172,9 @@ mod tests {
         let [ImageSample::Decoded(first), ImageSample::Decoded(second)] = samples.as_slice() else {
             panic!("expected decoded samples");
         };
-        let (ImageBuffer::SharedU8(first_pixels), ImageBuffer::SharedU8(second_pixels)) =
-            (&first.image, &second.image)
-        else {
-            panic!("expected shared U8 pixels");
-        };
-        assert!(Arc::ptr_eq(first_pixels, second_pixels));
-        assert_eq!(first_pixels.as_ref(), [255, 0, 0]);
-        assert_eq!(first.width, 1);
-        assert_eq!(first.height, 1);
+        assert!(first.image.same_storage(&second.image));
+        assert_eq!(first.image.to_vec::<u8>().unwrap(), [255, 0, 0]);
+        assert_eq!(first.image.dims(), [1, 1, 3]);
         assert_eq!(first.label, 4);
     }
 }

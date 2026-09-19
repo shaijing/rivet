@@ -11,11 +11,15 @@ pub enum RivetError {
     #[error("Arrow error: {0}")]
     Arrow(#[from] arrow::error::ArrowError),
 
+    #[cfg(feature = "lance")]
     #[error("Lance error: {0}")]
     Lance(#[from] lance::Error),
 
     #[error("image error: {0}")]
     Image(#[from] image::ImageError),
+
+    #[error(transparent)]
+    Core(#[from] rivet_core::Error),
 
     #[error("invalid argument: {0}")]
     InvalidArgument(String),

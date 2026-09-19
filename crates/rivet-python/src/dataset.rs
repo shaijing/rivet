@@ -2,18 +2,24 @@ use crate::error::to_py_err;
 use crate::loader::image_batch_to_py;
 use crate::pipeline::PyImagePipeline;
 use arrow_buffer::Buffer;
+#[cfg(feature = "lance")]
 use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use rivet_dataset::batch::ImageBatchBuilder;
 use rivet_dataset::dataset::{
-    ArrowImageDataset, CachePolicy, DEFAULT_ENCODED_CHUNK_SIZE, Dataset, DatasetBundle,
-    DatasetLoadResult, ImageFolderDatasetCore, ImageSource, LanceImageDataset,
-    load_lance_image_dataset,
+    ArrowImageDataset, Dataset, ImageFolderDatasetCore,
+};
+#[cfg(feature = "lance")]
+use rivet_dataset::dataset::{
+    CachePolicy, DEFAULT_ENCODED_CHUNK_SIZE, DatasetBundle, DatasetLoadResult, ImageSource,
+    LanceImageDataset, load_lance_image_dataset,
 };
 use rivet_dataset::image::decode::decode_rgb;
 use rivet_dataset::pipeline::ImagePipeline;
-use rivet_dataset::sample::image::{DecodedSample, ImageSample};
+use rivet_dataset::sample::image::DecodedSample;
+#[cfg(feature = "lance")]
+use rivet_dataset::sample::image::ImageSample;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -63,17 +69,20 @@ impl PyArrowDataset {
     }
 }
 
+#[cfg(feature = "lance")]
 #[pyclass(name = "_LanceDataset")]
 pub(crate) struct PyLanceDataset {
     pub(crate) inner: ImageSource,
 }
 
+#[cfg(feature = "lance")]
 impl PyLanceDataset {
     pub(crate) fn from_inner(inner: ImageSource) -> Self {
         Self { inner }
     }
 }
 
+#[cfg(feature = "lance")]
 #[pymethods]
 impl PyLanceDataset {
     #[new]
@@ -151,11 +160,13 @@ impl PyLanceDataset {
     }
 }
 
+#[cfg(feature = "lance")]
 #[pyclass(name = "_LanceDatasetDict")]
 pub(crate) struct PyLanceDatasetDict {
     inner: DatasetBundle,
 }
 
+#[cfg(feature = "lance")]
 #[pymethods]
 impl PyLanceDatasetDict {
     #[new]
@@ -192,6 +203,7 @@ impl PyLanceDatasetDict {
     }
 }
 
+#[cfg(feature = "lance")]
 #[pyfunction]
 #[pyo3(signature = (path, image_column="image", label_column="label", split=None))]
 pub(crate) fn load_lance_split(
@@ -302,5 +314,5 @@ fn encoded_sample_to_py(py: Python<'_>, image: Buffer, label: i64) -> PyResult<P
 fn decoded_sample_to_py(py: Python<'_>, decoded: DecodedSample) -> PyResult<Py<PyDict>> {
     let mut batch = ImageBatchBuilder::with_capacity(1);
     batch.push(decoded).map_err(to_py_err)?;
-    image_batch_to_py(py, batch.finish())
+    image_batch_to_py(py, batch.finish().map_err(to_py_err)?)
 }

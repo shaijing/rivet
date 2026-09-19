@@ -10,7 +10,7 @@ impl DecodeImageConfig {
         match sample {
             ImageSample::Encoded(sample) => {
                 let image = image::load_from_memory(sample.image.as_slice())?.into_rgb8();
-                Ok(ImageSample::Decoded(from_rgb_image(image, sample.label)))
+                Ok(ImageSample::Decoded(from_rgb_image(image, sample.label)?))
             }
             ImageSample::Decoded(_) => {
                 Err(invalid_argument("decode_image received a decoded sample"))
@@ -21,14 +21,15 @@ impl DecodeImageConfig {
 
 pub fn decode_rgb(encoded: &[u8], label: i64) -> RivetResult<DecodedSample> {
     let image = image::load_from_memory(encoded)?.into_rgb8();
-    Ok(from_rgb_image(image, label))
+    Ok(from_rgb_image(image, label)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sample::image::{EncodedImageSample, ImageBuffer, ImageDType, ImageLayout};
+    use crate::sample::image::EncodedImageSample;
     use arrow_buffer::Buffer;
+    use rivet_core::DType;
     use std::io::Cursor;
 
     #[test]
@@ -48,13 +49,10 @@ mod tests {
         let ImageSample::Decoded(decoded) = DecodeImageConfig.apply(sample).unwrap() else {
             panic!("expected decoded sample");
         };
-        assert_eq!((decoded.width, decoded.height, decoded.channels), (2, 1, 3));
         assert_eq!(decoded.label, 42);
-        assert_eq!(decoded.layout, ImageLayout::Hwc);
-        assert_eq!(decoded.image.dtype(), ImageDType::U8);
-        let ImageBuffer::U8(out) = decoded.image else {
-            panic!("expected u8 image");
-        };
-        assert_eq!(out, pixels);
+        assert_eq!(decoded.image.dtype(), DType::U8);
+        assert_eq!(decoded.image.dims(), [1, 2, 3]);
+        assert!(decoded.image.is_contiguous());
+        assert_eq!(decoded.image.to_vec::<u8>().unwrap(), pixels);
     }
 }

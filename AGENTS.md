@@ -1,23 +1,11 @@
-## Build resource limits
-
-To avoid saturating the development machine, do not run Rust builds with the default CPU-wide parallelism.
-
-For all Cargo commands that may compile code, limit parallel jobs to 16:
-
-```bash
-cargo check -j 16
-cargo build -j 16
-cargo test -j 16
-```
-
 ## Build scope
 
 Do not run unscoped Cargo commands from the workspace root for a full build.
 Prefer targeting the crate and target needed for the task, for example:
 
 ```bash
-cargo check -j 16 -p rivet-core --lib
-cargo test -j 16 -p rivet-dataset --lib
+cargo check -j 12 -p rivet-core --lib
+cargo test -j 12 -p rivet-dataset --lib
 ```
 
 Avoid `--all-targets` and `--examples` unless the task specifically requires
@@ -29,6 +17,10 @@ For the PyO3 project, prefer using maturin rather than invoking Cargo directly.
 The Python extension is configured in `pyproject.toml`; typical commands are:
 
 ```bash
-maturin develop -j 16
-maturin build -j 16
+maturin develop -j 12
+maturin build -j 12
 ```
+
+
+# References
+candle tensor: /home/ling/ws/rustWS/candle/candle-core/src/tensor.rs

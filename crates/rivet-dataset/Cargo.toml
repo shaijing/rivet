@@ -3,6 +3,10 @@ name = "rivet-dataset"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+lance = ["dep:lance"]
+
 [dependencies]
 arrow.workspace = true
 arrow-array.workspace = true
@@ -12,10 +16,27 @@ bytes.workspace = true
 crossbeam-channel.workspace = true
 futures.workspace = true
 image.workspace = true
-lance.workspace = true
+lance = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 walkdir.workspace = true
 memmap2.workspace = true
+rivet-core.workspace = true
+
+[[example]]
+name = "lance"
+required-features = ["lance"]
+
+[[example]]
+name = "lance_cifar"
+required-features = ["lance"]
+
+[[example]]
+name = "lancecopy"
+required-features = ["lance"]
+
+[[example]]
+name = "lancedataset"
+required-features = ["lance"]

@@ -1,90 +1,30 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
-use crate::sample::image::{DecodedSample, ImageBatch, ImageBuffer, ImageDType, ImageLayout};
+use crate::sample::image::{DecodedSample, ImageBatch};
+use rivet_core::{DType, Device, Tensor};
 
-enum ImageBatchBufferBuilder {
-    Empty,
-    U8(Vec<u8>),
-    F32(Vec<f32>),
-}
-
-impl ImageBatchBufferBuilder {
-    fn dtype(&self) -> Option<ImageDType> {
-        match self {
-            Self::Empty => None,
-            Self::U8(_) => Some(ImageDType::U8),
-            Self::F32(_) => Some(ImageDType::F32),
-        }
-    }
-
-    fn push(&mut self, image: ImageBuffer) -> RivetResult<()> {
-        match (std::mem::replace(self, Self::Empty), image) {
-            (Self::Empty, ImageBuffer::U8(values)) => {
-                *self = Self::U8(values);
-                Ok(())
-            }
-            (Self::Empty, ImageBuffer::F32(values)) => {
-                *self = Self::F32(values);
-                Ok(())
-            }
-            (Self::U8(mut buffer), ImageBuffer::U8(values)) => {
-                buffer.extend(values);
-                *self = Self::U8(buffer);
-                Ok(())
-            }
-            (Self::Empty, ImageBuffer::SharedU8(values)) => {
-                *self = Self::U8(values.as_ref().to_vec());
-                Ok(())
-            }
-            (Self::U8(mut buffer), ImageBuffer::SharedU8(values)) => {
-                buffer.extend_from_slice(values.as_ref());
-                *self = Self::U8(buffer);
-                Ok(())
-            }
-            (Self::F32(mut buffer), ImageBuffer::F32(values)) => {
-                buffer.extend(values);
-                *self = Self::F32(buffer);
-                Ok(())
-            }
-            (current, _) => {
-                *self = current;
-                Err(invalid_argument(
-                    "all images in a batch must have the same dtype",
-                ))
-            }
-        }
-    }
-
-    fn finish(self) -> ImageBuffer {
-        match self {
-            Self::Empty => ImageBuffer::U8(Vec::new()),
-            Self::U8(values) => ImageBuffer::U8(values),
-            Self::F32(values) => ImageBuffer::F32(values),
-        }
-    }
-}
-
+/// Builds a batch without forcing individual samples contiguous. `Tensor::stack`
+/// reads each sample in logical order and allocates the final batch once.
 pub struct ImageBatchBuilder {
-    images: ImageBatchBufferBuilder,
+    images: Vec<Tensor>,
     labels: Vec<i64>,
-    expected_shape: Option<(u32, u32, u8)>,
-    layout: Option<ImageLayout>,
+    expected_shape: Option<Vec<usize>>,
+    expected_dtype: Option<DType>,
 }
 
 impl ImageBatchBuilder {
     pub fn with_capacity(batch_size: usize) -> Self {
         Self {
-            images: ImageBatchBufferBuilder::Empty,
+            images: Vec::with_capacity(batch_size),
             labels: Vec::with_capacity(batch_size),
             expected_shape: None,
-            layout: None,
+            expected_dtype: None,
         }
     }
 
     pub fn push(&mut self, sample: DecodedSample) -> RivetResult<()> {
-        let shape = (sample.height, sample.width, sample.channels);
-
-        if let Some(expected) = self.expected_shape {
-            if expected != shape {
+        let shape = sample.image.dims().to_vec();
+        if let Some(expected) = &self.expected_shape {
+            if expected != &shape {
                 return Err(invalid_shape(format!(
                     "all images in a batch must have the same shape; expected {:?}, got {:?}",
                     expected, shape
@@ -94,87 +34,60 @@ impl ImageBatchBuilder {
             self.expected_shape = Some(shape);
         }
 
-        if let Some(dtype) = self.images.dtype() {
-            if dtype != sample.image.dtype() {
-                return Err(invalid_argument(
-                    "all images in a batch must have the same dtype",
-                ));
-            }
-        }
-
-        if let Some(layout) = self.layout {
-            if layout != sample.layout {
-                return Err(invalid_argument(
-                    "all images in a batch must have the same layout",
-                ));
+        if let Some(expected) = self.expected_dtype {
+            if expected != sample.image.dtype() {
+                return Err(invalid_argument(format!(
+                    "all images in a batch must have the same dtype; expected {:?}, got {:?}",
+                    expected,
+                    sample.image.dtype()
+                )));
             }
         } else {
-            self.layout = Some(sample.layout);
+            self.expected_dtype = Some(sample.image.dtype());
         }
 
-        self.images.push(sample.image)?;
+        self.images.push(sample.image);
         self.labels.push(sample.label);
         Ok(())
     }
 
-    pub fn finish(self) -> ImageBatch {
-        let batch_len = self.labels.len();
-        let (height, width, channels) = self.expected_shape.unwrap_or((0, 0, 3));
-        let images = self.images.finish();
-        let layout = self.layout.unwrap_or(ImageLayout::Hwc);
-        let shape = match layout {
-            ImageLayout::Hwc => (
-                batch_len,
-                height as usize,
-                width as usize,
-                channels as usize,
-            ),
-            ImageLayout::Chw => (
-                batch_len,
-                channels as usize,
-                height as usize,
-                width as usize,
-            ),
+    pub fn finish(self) -> RivetResult<ImageBatch> {
+        let labels = Tensor::from_vec(self.labels, [self.images.len()], &Device::Cpu)?;
+        let images = if self.images.is_empty() {
+            Tensor::from_vec(Vec::<u8>::new(), [0usize], &Device::Cpu)?
+        } else {
+            let refs: Vec<&Tensor> = self.images.iter().collect();
+            Tensor::stack(&refs, 0)?
         };
 
-        ImageBatch {
-            images,
-            labels: self.labels,
-            shape,
-            layout,
-        }
+        Ok(ImageBatch { images, labels })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::ImageBatchBuilder;
-    use crate::sample::image::{DecodedSample, ImageBuffer, ImageLayout};
+    use crate::sample::image::DecodedSample;
+    use rivet_core::{DType, Device, Tensor};
 
     fn sample(values: Vec<f32>) -> DecodedSample {
         DecodedSample {
-            image: ImageBuffer::F32(values),
-            width: 1,
-            height: 1,
-            channels: 1,
+            image: Tensor::from_vec(values, [1, 1, 1], &Device::Cpu).unwrap(),
             label: 7,
-            layout: ImageLayout::Hwc,
         }
     }
 
     #[test]
-    fn batch_builder_preserves_f32_buffer() {
+    fn batch_builder_stacks_images_and_labels() {
         let mut builder = ImageBatchBuilder::with_capacity(2);
-
         builder.push(sample(vec![1.0])).unwrap();
         builder.push(sample(vec![2.0])).unwrap();
-        let batch = builder.finish();
+        let batch = builder.finish().unwrap();
 
-        assert_eq!(batch.shape, (2, 1, 1, 1));
-        assert_eq!(batch.images.dtype().as_str(), "float32");
-        match batch.images {
-            ImageBuffer::F32(values) => assert_eq!(values, vec![1.0, 2.0]),
-            ImageBuffer::U8(_) | ImageBuffer::SharedU8(_) => panic!("expected f32 batch"),
-        }
+        assert_eq!(batch.images.dims(), [2, 1, 1, 1]);
+        assert_eq!(batch.images.dtype(), DType::F32);
+        assert_eq!(batch.images.to_vec::<f32>().unwrap(), [1.0, 2.0]);
+        assert_eq!(batch.labels.dims(), [2]);
+        assert_eq!(batch.labels.to_vec::<i64>().unwrap(), [7, 7]);
     }
 }

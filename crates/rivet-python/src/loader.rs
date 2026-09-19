@@ -3,12 +3,13 @@ use crate::error::to_py_err;
 use numpy::{PyArray1, PyArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use rivet_core::{DType, Tensor};
 use rivet_dataset::batch::ImageBatchBuilder;
 use rivet_dataset::dataset::ArrowImageDataset;
 use rivet_dataset::errors::invalid_argument;
 use rivet_dataset::pipeline::ImagePipeline;
 use rivet_dataset::runtime::ImageDataLoader;
-use rivet_dataset::sample::image::{ImageBatch, ImageBuffer};
+use rivet_dataset::sample::image::ImageBatch;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -71,52 +72,77 @@ pub(crate) fn read_image_batch(
         .batch(batch_size, false)
         .compile_from(start)
         .map_err(to_py_err)?;
-    let batch = loader
-        .next_batch()
-        .map_err(to_py_err)?
-        .unwrap_or_else(|| ImageBatchBuilder::with_capacity(0).finish());
+    let batch = loader.next_batch().map_err(to_py_err)?.unwrap_or_else(|| {
+        ImageBatchBuilder::with_capacity(0)
+            .finish()
+            .expect("empty batch")
+    });
 
     image_batch_to_py(py, batch)
 }
 
 pub(super) fn image_batch_to_py(py: Python<'_>, batch: ImageBatch) -> PyResult<Py<PyDict>> {
-    let ImageBatch {
-        images,
-        labels,
-        shape,
-        layout,
-    } = batch;
+    let ImageBatch { images, labels } = batch;
     let dtype = images.dtype();
-    let images = image_array_to_py(py, images, shape)?;
-    let labels = PyArray1::from_vec(py, labels);
+    let shape = images.dims().to_vec();
+    let images = image_array_to_py(py, images)?;
+    let labels = PyArray1::from_vec(
+        py,
+        labels
+            .to_vec::<i64>()
+            .map_err(|err| to_py_err(invalid_argument(err)))?,
+    );
 
     let out = PyDict::new(py);
     out.set_item("images", images)?;
     out.set_item("labels", labels)?;
-    out.set_item("shape", shape)?;
-    out.set_item("dtype", dtype.as_str())?;
-    out.set_item("layout", layout.batch_as_str())?;
+    out.set_item("shape", &shape)?;
+    out.set_item("dtype", dtype_name(dtype))?;
+    out.set_item("layout", batch_layout(&shape))?;
 
     Ok(out.into())
 }
 
-fn image_array_to_py(
-    py: Python<'_>,
-    images: ImageBuffer,
-    shape: (usize, usize, usize, usize),
-) -> PyResult<Py<PyAny>> {
-    match images {
-        ImageBuffer::U8(values) => Ok(PyArray1::from_vec(py, values)
-            .reshape(shape)?
-            .into_any()
-            .unbind()),
-        ImageBuffer::SharedU8(values) => Ok(PyArray1::from_vec(py, values.to_vec())
-            .reshape(shape)?
-            .into_any()
-            .unbind()),
-        ImageBuffer::F32(values) => Ok(PyArray1::from_vec(py, values)
-            .reshape(shape)?
-            .into_any()
-            .unbind()),
+fn image_array_to_py(py: Python<'_>, images: Tensor) -> PyResult<Py<PyAny>> {
+    let shape = images.dims().to_vec();
+    match images.dtype() {
+        DType::U8 => Ok(PyArray1::from_vec(
+            py,
+            images
+                .to_vec::<u8>()
+                .map_err(|err| to_py_err(invalid_argument(err)))?,
+        )
+        .reshape(shape)?
+        .into_any()
+        .unbind()),
+        DType::F32 => Ok(PyArray1::from_vec(
+            py,
+            images
+                .to_vec::<f32>()
+                .map_err(|err| to_py_err(invalid_argument(err)))?,
+        )
+        .reshape(shape)?
+        .into_any()
+        .unbind()),
+        dtype => Err(to_py_err(invalid_argument(format!(
+            "Python image conversion does not support {:?}",
+            dtype
+        )))),
+    }
+}
+
+fn dtype_name(dtype: DType) -> &'static str {
+    match dtype {
+        DType::U8 => "uint8",
+        DType::F32 => "float32",
+        _ => "unsupported",
+    }
+}
+
+fn batch_layout(shape: &[usize]) -> &'static str {
+    if shape.len() == 4 && shape[1] == 3 {
+        "NCHW"
+    } else {
+        "NHWC"
     }
 }

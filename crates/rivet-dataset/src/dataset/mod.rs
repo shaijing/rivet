@@ -6,6 +6,7 @@ pub mod bundle;
 pub mod cache;
 pub mod filesystem;
 pub mod image_source;
+#[cfg(feature = "lance")]
 pub mod lance;
 pub mod manifest;
 pub mod memory;
@@ -19,6 +20,7 @@ pub use cache::{
 };
 pub use filesystem::{ImageFolderDatasetCore, ImageFolderSample};
 pub use image_source::ImageSource;
+#[cfg(feature = "lance")]
 pub use lance::{LanceImageDataset, LanceTable, load_lance_image_dataset};
 pub use manifest::{DatasetManifest, SplitManifest};
 pub use memory::{DecodedImageMemoryDataset, MemoryDataset};

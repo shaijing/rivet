@@ -23,7 +23,7 @@ impl FlipConfig {
             FlipDirection::Horizontal => flip_horizontal(&image),
             FlipDirection::Vertical => flip_vertical(&image),
         };
-        Ok(ImageSample::Decoded(from_rgb_image(flipped, label)))
+        Ok(ImageSample::Decoded(from_rgb_image(flipped, label)?))
     }
 }
 
@@ -46,7 +46,7 @@ impl RandomHorizontalFlipConfig {
 
         let (image, label) = into_rgb_image(sample, "random_horizontal_flip")?;
         let flipped = flip_horizontal(&image);
-        Ok(ImageSample::Decoded(from_rgb_image(flipped, label)))
+        Ok(ImageSample::Decoded(from_rgb_image(flipped, label)?))
     }
 }
 
@@ -55,30 +55,28 @@ mod tests {
     use super::{RandomHorizontalFlipConfig, SampleContext};
     use crate::image::flip::{FlipConfig, FlipDirection};
     use crate::sample::image::ImageSample::Decoded;
-    use crate::sample::image::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
+    use crate::sample::image::{DecodedSample, ImageSample};
+    use rivet_core::{Device, Tensor};
 
     /// 2x2 RGB image with asymmetric content so a flip is observable.
     fn asymmetric_image() -> DecodedSample {
         DecodedSample {
-            image: ImageBuffer::U8(vec![
-                1, 2, 3, 4, 5, 6, //
-                7, 8, 9, 10, 11, 12,
-            ]),
-            width: 2,
-            height: 2,
-            channels: 3,
+            image: Tensor::from_vec(
+                vec![
+                    1, 2, 3, 4, 5, 6, //
+                    7, 8, 9, 10, 11, 12,
+                ],
+                [2, 2, 3],
+                &Device::Cpu,
+            )
+            .unwrap(),
             label: 3,
-            layout: ImageLayout::Hwc,
         }
     }
 
     fn raw_pixels(sample: ImageSample) -> Vec<u8> {
         let sample = sample.into_decoded().unwrap();
-        match sample.image {
-            ImageBuffer::U8(values) => values,
-            ImageBuffer::SharedU8(values) => values.to_vec(),
-            ImageBuffer::F32(_) => panic!("expected u8 output"),
-        }
+        sample.image.to_vec::<u8>().unwrap()
     }
 
     fn apply_with(probability: f64, seed: u64, index: usize) -> Vec<u8> {

@@ -17,6 +17,7 @@ pub enum DatasetLoadResult {
 }
 
 impl DatasetBundle {
+    #[cfg(any(feature = "lance", test))]
     pub(crate) fn from_splits(splits: BTreeMap<String, ImageSource>) -> Self {
         Self { splits }
     }
@@ -48,10 +49,9 @@ impl DatasetBundle {
 mod tests {
     use super::*;
     use crate::dataset::memory::MemoryDataset;
-    use crate::sample::image::{
-        DecodedSample, EncodedImageSample, ImageBuffer, ImageLayout, ImageSample,
-    };
+    use crate::sample::image::{DecodedSample, EncodedImageSample, ImageSample};
     use arrow_buffer::Buffer;
+    use rivet_core::{Device, Tensor};
     use std::sync::Arc;
 
     struct LazyTestDataset {
@@ -99,12 +99,8 @@ mod tests {
         splits.insert(
             "validation".to_owned(),
             ImageSource::from_decoded(Arc::new(MemoryDataset::new(vec![DecodedSample {
-                image: ImageBuffer::SharedU8(Arc::from(vec![2u8].into_boxed_slice())),
-                width: 1,
-                height: 1,
-                channels: 1,
+                image: Tensor::from_vec(vec![2u8], [1, 1, 1], &Device::Cpu).unwrap(),
                 label: 2,
-                layout: ImageLayout::Hwc,
             }]))),
         );
 

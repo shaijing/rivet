@@ -129,7 +129,7 @@ fn next_batch_inline(
         batch.push(decoded)?;
     }
 
-    Ok(Some(batch.finish()))
+    Ok(Some(batch.finish()?))
 }
 
 /// Source access runs on the coordinator so persistent backends can perform
@@ -270,7 +270,7 @@ impl PrefetchCoordinator {
         for sample in batch.samples.into_iter().flatten() {
             builder.push(sample)?;
         }
-        Ok(Some(builder.finish()))
+        Ok(Some(builder.finish()?))
     }
 }
 
@@ -359,8 +359,9 @@ mod tests {
     use super::*;
     use crate::dataset::source::Dataset;
     use crate::pipeline::ImagePipeline;
-    use crate::sample::image::{EncodedImageSample, ImageBuffer};
+    use crate::sample::image::{DecodedSample, EncodedImageSample};
     use arrow_buffer::Buffer;
+    use rivet_core::{Device, Tensor};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // 1x1 RGB PNG (red pixel), valid input for decode_image.
@@ -469,13 +470,18 @@ mod tests {
     fn assert_batches_equal(left: &[ImageBatch], right: &[ImageBatch]) {
         assert_eq!(left.len(), right.len());
         for (a, b) in left.iter().zip(right) {
-            assert_eq!(a.labels, b.labels);
-            assert_eq!(a.shape, b.shape);
-            match (&a.images, &b.images) {
-                (ImageBuffer::U8(a), ImageBuffer::U8(b)) => assert_eq!(a, b),
-                _ => panic!("expected u8 images"),
-            }
+            assert_eq!(labels(a), labels(b));
+            assert_eq!(a.images.dims(), b.images.dims());
+            assert_eq!(a.images.dtype(), b.images.dtype());
+            assert_eq!(
+                a.images.to_vec::<u8>().unwrap(),
+                b.images.to_vec::<u8>().unwrap()
+            );
         }
+    }
+
+    fn labels(batch: &ImageBatch) -> Vec<i64> {
+        batch.labels.to_vec::<i64>().unwrap()
     }
 
     #[test]
@@ -486,7 +492,7 @@ mod tests {
         let inline = drain(&mut inline);
         let pooled = drain(&mut pooled);
         assert_batches_equal(&inline, &pooled);
-        assert_eq!(inline.iter().map(|b| b.labels.len()).sum::<usize>(), 37);
+        assert_eq!(inline.iter().map(|b| b.labels.dims()[0]).sum::<usize>(), 37);
     }
 
     #[test]
@@ -509,8 +515,8 @@ mod tests {
         assert_batches_equal(&inline, &pooled);
         // 11 taken rows, drop_last keeps 5+5, second batch is the last.
         assert_eq!(inline.len(), 2);
-        assert_eq!(inline[0].labels, vec![2, 3, 4, 5, 6]);
-        assert_eq!(inline[1].labels, vec![7, 8, 9, 10, 11]);
+        assert_eq!(labels(&inline[0]), vec![2, 3, 4, 5, 6]);
+        assert_eq!(labels(&inline[1]), vec![7, 8, 9, 10, 11]);
     }
 
     #[test]
@@ -594,8 +600,8 @@ mod tests {
                 .unwrap();
             let batches = drain(&mut loader);
             assert_eq!(batches.len(), 2, "workers={workers} prefetch={prefetch}");
-            assert_eq!(batches[0].labels, vec![30, 31, 32, 33, 34]);
-            assert_eq!(batches[1].labels, vec![35, 36, 37, 38, 39]);
+            assert_eq!(labels(&batches[0]), vec![30, 31, 32, 33, 34]);
+            assert_eq!(labels(&batches[1]), vec![35, 36, 37, 38, 39]);
         }
     }
 
@@ -671,7 +677,7 @@ mod tests {
 
         let mut seen = Vec::new();
         while let Some(batch) = loader.next_batch().unwrap() {
-            seen.extend(batch.labels);
+            seen.extend(labels(&batch));
         }
         assert_eq!(seen, (0..20).collect::<Vec<i64>>());
     }
@@ -688,12 +694,8 @@ mod tests {
             },
         );
         let make_sample = |label: i64| DecodedSample {
-            image: ImageBuffer::U8(vec![0; 3]),
-            width: 1,
-            height: 1,
-            channels: 3,
+            image: Tensor::from_vec(vec![0u8; 3], [1, 1, 3], &Device::Cpu).unwrap(),
             label,
-            layout: crate::sample::image::ImageLayout::Hwc,
         };
 
         let err = match coordinator.record(0, 5, make_sample(0)) {
@@ -775,7 +777,7 @@ mod tests {
             .collect::<RivetResult<Vec<_>>>()
             .unwrap();
         assert_eq!(batches.len(), 3);
-        assert_eq!(batches[0].labels, vec![0, 1, 2, 3]);
+        assert_eq!(labels(&batches[0]), vec![0, 1, 2, 3]);
 
         let mut iter = (&mut loader).into_iter();
         assert!(iter.next().is_none());
@@ -869,7 +871,7 @@ mod tests {
 
         let mut seen = Vec::new();
         for batch in &a {
-            seen.extend(batch.labels.iter().copied());
+            seen.extend(labels(batch));
         }
         assert_eq!(
             seen.iter()
@@ -886,7 +888,7 @@ mod tests {
             .compile()
             .unwrap();
         let c = drain(&mut loader_c);
-        let c_labels: Vec<i64> = c.iter().flat_map(|b| b.labels.iter().copied()).collect();
+        let c_labels: Vec<i64> = c.iter().flat_map(labels).collect();
         assert_ne!(c_labels, seen, "different seeds must reorder");
     }
 
@@ -902,10 +904,7 @@ mod tests {
             .compile()
             .unwrap();
         let batches = drain(&mut loader);
-        let mut seen: Vec<i64> = batches
-            .iter()
-            .flat_map(|b| b.labels.iter().copied())
-            .collect();
+        let mut seen: Vec<i64> = batches.iter().flat_map(labels).collect();
         seen.sort_unstable();
         assert_eq!(seen, (10..30).collect::<Vec<i64>>(), "window preserved");
     }

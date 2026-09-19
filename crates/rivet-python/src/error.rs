@@ -6,11 +6,13 @@ pub(crate) fn to_py_err(err: RivetError) -> PyErr {
     match err {
         RivetError::Io(err) => PyIOError::new_err(err.to_string()),
         RivetError::Arrow(err) => PyRuntimeError::new_err(err.to_string()),
+        #[cfg(feature = "lance")]
         RivetError::Lance(err) => PyRuntimeError::new_err(err.to_string()),
         RivetError::InvalidArgument(message)
         | RivetError::InvalidPipeline(message)
         | RivetError::InvalidShape(message) => PyValueError::new_err(message),
         RivetError::Image(err) => PyRuntimeError::new_err(err.to_string()),
+        RivetError::Core(err) => PyRuntimeError::new_err(err.to_string()),
         RivetError::Worker(message) => PyRuntimeError::new_err(message),
         RivetError::IndexOutOfRange { index, len } => {
             PyIndexError::new_err(format!("index {index} is out of range for length {len}"))

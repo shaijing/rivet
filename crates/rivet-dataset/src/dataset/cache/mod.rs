@@ -6,8 +6,6 @@ use crate::dataset::memory::{DecodedImageMemoryDataset, MemoryDataset};
 use crate::dataset::source::Dataset;
 use crate::errors::{RivetResult, invalid_argument};
 use crate::image::decode::decode_rgb;
-use crate::sample::image::{DecodedSample, ImageBuffer};
-use std::sync::Arc;
 
 pub use policy::{
     CacheConfig, CacheLevel, CachePolicy, DEFAULT_DECODED_CHUNK_SIZE, DEFAULT_ENCODED_CHUNK_SIZE,
@@ -51,11 +49,12 @@ where
     Ok(MemoryDataset::new(items))
 }
 
-/// Decode an encoded image dataset into a shared-backing in-memory dataset.
+/// Decode an encoded image dataset into a Tensor-backed in-memory dataset.
 ///
 /// Decoding is deliberately performed after the source batch is fetched and
-/// before any pipeline operations run. The returned samples use shared U8
-/// backing, so retrieving them from the memory dataset does not copy pixels.
+/// before any pipeline operations run. Retrieving samples from the memory
+/// dataset only clones the reference-counted Tensor handle, so pixels are not
+/// copied.
 pub fn materialize_decoded_to_memory(
     dataset: &dyn Dataset<Item = crate::sample::image::EncodedImageSample>,
     chunk_size: usize,
@@ -86,7 +85,7 @@ pub fn materialize_decoded_to_memory(
             let decoded = decode_rgb(sample.image.as_slice(), sample.label).map_err(|error| {
                 invalid_argument(format!("failed to decode image at index {index}: {error}"))
             })?;
-            let bytes = decoded.image.as_u8_slice().map_or(0, |values| values.len());
+            let bytes = decoded.image.logical_bytes();
             total_bytes = total_bytes
                 .checked_add(bytes)
                 .ok_or_else(|| invalid_argument("decoded cache byte count overflow"))?;
@@ -99,36 +98,11 @@ pub fn materialize_decoded_to_memory(
                 }
             }
 
-            items.push(shared_u8_sample(decoded)?);
+            items.push(decoded);
         }
     }
 
     Ok(DecodedImageMemoryDataset::new(items))
-}
-
-fn shared_u8_sample(sample: DecodedSample) -> RivetResult<DecodedSample> {
-    let DecodedSample {
-        image,
-        width,
-        height,
-        channels,
-        label,
-        layout,
-    } = sample;
-    let ImageBuffer::U8(values) = image else {
-        return Err(invalid_argument(
-            "decoded image cache requires uint8 image samples",
-        ));
-    };
-
-    Ok(DecodedSample {
-        image: ImageBuffer::SharedU8(Arc::from(values.into_boxed_slice())),
-        width,
-        height,
-        channels,
-        label,
-        layout,
-    })
 }
 
 #[cfg(test)]

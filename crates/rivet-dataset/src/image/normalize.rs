@@ -1,5 +1,6 @@
-use crate::errors::{RivetResult, invalid_argument};
-use crate::sample::image::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
+use crate::errors::{RivetResult, invalid_argument, invalid_shape};
+use crate::sample::image::{DecodedSample, ImageLayout, ImageSample};
+use rivet_core::{DType, Device, Tensor};
 
 #[derive(Clone)]
 pub struct NormalizeConfig {
@@ -8,8 +9,6 @@ pub struct NormalizeConfig {
 }
 
 impl NormalizeConfig {
-    /// Raw configuration; parameter validation happens at pipeline compile
-    /// time via [`NormalizeConfig::validate`].
     pub fn new(mean: Vec<f32>, std: Vec<f32>) -> Self {
         Self { mean, std }
     }
@@ -30,10 +29,19 @@ impl NormalizeConfig {
         Ok(())
     }
 
-    pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
+    pub fn apply(&self, sample: ImageSample, layout: ImageLayout) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
-        let channel_count = sample.channels as usize;
-
+        let dims = sample.image.dims();
+        if dims.len() != 3 {
+            return Err(invalid_shape(format!(
+                "normalize requires a rank-3 image, got shape {:?}",
+                dims
+            )));
+        }
+        let channel_count = match layout {
+            ImageLayout::Hwc => dims[2],
+            ImageLayout::Chw => dims[0],
+        };
         if self.mean.len() != 1 && self.mean.len() != channel_count {
             return Err(invalid_argument(format!(
                 "normalize mean/std length must be 1 or channel count {}, got {}",
@@ -42,100 +50,51 @@ impl NormalizeConfig {
             )));
         }
 
-        let values = match &sample.image {
-            ImageBuffer::U8(values) => values
-                .iter()
-                .map(|value| f32::from(*value) / 255.0)
-                .collect::<Vec<_>>(),
-            ImageBuffer::SharedU8(values) => values
-                .iter()
-                .map(|value| f32::from(*value) / 255.0)
-                .collect::<Vec<_>>(),
-            ImageBuffer::F32(values) => values.clone(),
+        let values = if sample.image.dtype() == DType::U8 {
+            sample.image.to_dtype(DType::F32)?.div_scalar(255.0f32)?
+        } else if sample.image.dtype() == DType::F32 {
+            sample.image
+        } else {
+            return Err(invalid_argument(format!(
+                "normalize supports uint8 or float32 input, got {:?}",
+                sample.image.dtype()
+            )));
         };
-        let normalized = match sample.layout {
-            ImageLayout::Hwc => normalize_hwc(&values, &self.mean, &self.std, channel_count),
-            ImageLayout::Chw => normalize_chw(
-                &values,
-                &self.mean,
-                &self.std,
-                channel_count,
-                sample.width as usize,
-                sample.height as usize,
-            ),
+
+        let stats_shape = match layout {
+            ImageLayout::Hwc => [1, 1, self.mean.len()],
+            ImageLayout::Chw => [self.mean.len(), 1, 1],
         };
+        let mean = Tensor::from_vec(self.mean.clone(), stats_shape, &Device::Cpu)?;
+        let std = Tensor::from_vec(self.std.clone(), stats_shape, &Device::Cpu)?;
+        let image = values.broadcast_sub(&mean)?.broadcast_div(&std)?;
 
         Ok(ImageSample::Decoded(DecodedSample {
-            image: ImageBuffer::F32(normalized),
-            width: sample.width,
-            height: sample.height,
-            channels: sample.channels,
+            image,
             label: sample.label,
-            layout: sample.layout,
         }))
     }
-}
-
-fn normalize_hwc(values: &[f32], mean: &[f32], std: &[f32], channels: usize) -> Vec<f32> {
-    values
-        .iter()
-        .enumerate()
-        .map(|(offset, value)| {
-            let channel = offset % channels;
-            let stat_index = if mean.len() == 1 { 0 } else { channel };
-            (*value - mean[stat_index]) / std[stat_index]
-        })
-        .collect()
-}
-
-fn normalize_chw(
-    values: &[f32],
-    mean: &[f32],
-    std: &[f32],
-    channels: usize,
-    width: usize,
-    height: usize,
-) -> Vec<f32> {
-    let plane = width * height;
-
-    values
-        .iter()
-        .enumerate()
-        .map(|(offset, value)| {
-            let channel = (offset / plane).min(channels - 1);
-            let stat_index = if mean.len() == 1 { 0 } else { channel };
-            (*value - mean[stat_index]) / std[stat_index]
-        })
-        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::NormalizeConfig;
-    use crate::sample::image::{DecodedSample, ImageBuffer, ImageLayout, ImageSample};
+    use crate::sample::image::{DecodedSample, ImageLayout, ImageSample};
+    use rivet_core::{DType, Device, Tensor};
 
     #[test]
     fn normalize_u8_to_f32() {
-        let sample = ImageSample::Decoded(DecodedSample {
-            image: ImageBuffer::U8(vec![0, 255, 128]),
-            width: 1,
-            height: 1,
-            channels: 3,
-            label: 0,
-            layout: ImageLayout::Hwc,
-        });
+        let image = Tensor::from_vec(vec![0u8, 255, 128], [1, 1, 3], &Device::Cpu).unwrap();
+        let sample = ImageSample::Decoded(DecodedSample { image, label: 0 });
         let out = NormalizeConfig::new(vec![0.5], vec![0.5])
-            .apply(sample)
+            .apply(sample, ImageLayout::Hwc)
             .unwrap()
             .into_decoded()
             .unwrap();
 
-        match out.image {
-            ImageBuffer::F32(values) => {
-                assert_eq!(values[0], -1.0);
-                assert_eq!(values[1], 1.0);
-            }
-            ImageBuffer::U8(_) | ImageBuffer::SharedU8(_) => panic!("expected f32 output"),
-        }
+        assert_eq!(out.image.dtype(), DType::F32);
+        let values = out.image.to_vec::<f32>().unwrap();
+        assert_eq!(values[0], -1.0);
+        assert_eq!(values[1], 1.0);
     }
 }
