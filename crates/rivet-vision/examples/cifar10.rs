@@ -2,18 +2,19 @@
 //! pipeline -> training-style batch loop over (x, y).
 //!
 //! ```text
-//! cargo run -p rivet-dataset --example cifar10            # all batches
-//! cargo run -p rivet-dataset --example cifar10 -- 10      # first 10 batches
+//! cargo run -p rivet-vision --example cifar10            # all batches
+//! cargo run -p rivet-vision --example cifar10 -- 10      # first 10 batches
 //! ```
 //!
 //! The Arrow file comes from `RIVET_TEST_ARROW_FILE` or the local Hugging
 //! Face CIFAR-10 cache (populated by `load_dataset("uoft-cs/cifar10")`);
 //! the optional argument caps the number of batches.
 
-use rivet_dataset::dataset::{ArrowImageDataset, Dataset};
-use rivet_dataset::pipeline::ImagePipeline;
-use rivet_dataset::runtime::ImageDataLoader;
-use rivet_dataset::sample::image::ImageBatch;
+use rivet_data::dataset::Dataset;
+use rivet_vision::datasets::ArrowImageDataset;
+use rivet_vision::pipeline::ImagePipeline;
+use rivet_vision::runtime::ImageDataLoader;
+use rivet_vision::sample::image::ImageBatch;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -71,7 +72,7 @@ fn arrow_file_arg() -> Result<PathBuf, Box<dyn std::error::Error>> {
 
 /// A minimal "training step" over one batch, mirroring real use: `x` is the
 /// normalized image tensor and `y` the labels.
-fn train_step(step: usize, batch: ImageBatch) {
+fn train_step(step: usize, batch: ImageBatch) -> Result<(), Box<dyn std::error::Error>> {
     let ImageBatch { images, labels, .. } = batch;
     let dtype = format!("{:?}", images.dtype());
     let labels = labels.to_vec::<i64>()?;
@@ -87,6 +88,7 @@ fn train_step(step: usize, batch: ImageBatch) {
         first.unwrap_or(-1),
         last.unwrap_or(-1),
     );
+    Ok(())
 }
 
 fn batch_count(images: rivet_core::Tensor) -> usize {
@@ -100,14 +102,14 @@ fn run(loader: &mut ImageDataLoader, max_batches: usize) -> Result<(), Box<dyn s
     let mut last_label: Option<i64> = None;
     let start = Instant::now();
 
-    for (index, batch) in loader.into_iter().take(max_batches).enumerate() {
+    for batch in loader.into_iter().take(max_batches) {
         let batch = batch?;
         batches += 1;
         images += batch.images.dims()[0];
         let labels = batch.labels.to_vec::<i64>()?;
         last_label = labels.last().copied();
         first_label.get_or_insert_with(|| labels[0]);
-        train_step(batches, batch);
+        train_step(batches, batch)?;
     }
 
     let elapsed = start.elapsed();

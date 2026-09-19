@@ -1,8 +1,8 @@
 //! End-to-end ImageFolder example over the nuImages classification dataset.
 //!
 //! ```text
-//! cargo run -p rivet-dataset --example imagefolder                 # train, 2 batches
-//! cargo run -p rivet-dataset --example imagefolder -- val 1        # val, 1 batch
+//! cargo run -p rivet-vision --example imagefolder                 # train, 2 batches
+//! cargo run -p rivet-vision --example imagefolder -- val 1        # val, 1 batch
 //! ```
 //!
 //! The dataset has the usual split/class directory layout:
@@ -13,8 +13,9 @@
 //! └── val/<class>/*.jpg
 //! ```
 
-use rivet_dataset::dataset::{Dataset, ImageFolderDatasetCore};
-use rivet_dataset::pipeline::ImagePipeline;
+use rivet_data::dataset::Dataset;
+use rivet_vision::datasets::ImageFolderDatasetCore;
+use rivet_vision::pipeline::ImagePipeline;
 use std::env;
 use std::path::Path;
 use std::sync::Arc;

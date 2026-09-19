@@ -71,13 +71,13 @@
   folder -> encoded "read file bytes"
 ]
 
-|group#core| "Rust core: crates/rivet-dataset" { cell: 1 3; span: 2 1; } [
-  |box#dataset| "dataset::Source + Dataset\nArrowImageDataset / ImageFolderDatasetCore" .core
-  |box#sampler| "sampler::IndexSampler\nsequential / skip / take / shuffle" .core
-  |box#compile| "pipeline::ImagePipeline::compile\nvalidate ops + build ExecutionPlan" .core
-  |box#ops| "image ops\ndecode / resize / crop / flip / normalize / layout" .core
-  |box#runtime| "runtime::ImageDataLoader\ninline path or WorkerPool + prefetch" .runtime
-  |box#batch| "batch::ImageBatchBuilder\nshape / dtype / layout checks" .runtime
+|group#core| "Rust crates: rivet-data + rivet-vision + rivet-core" { cell: 1 3; span: 2 1; } [
+  |box#dataset| "rivet-data::Dataset + Source\nrivet-vision image adapters" .core
+  |box#sampler| "rivet-data::sampler::IndexSampler\nsequential / skip / take / shuffle" .core
+  |box#compile| "rivet-vision::ImagePipeline::compile\nvalidate ops + build ExecutionPlan" .core
+  |box#ops| "rivet-vision image ops\ndecode / resize / crop / flip / normalize / layout" .core
+  |box#runtime| "rivet-vision::ImageDataLoader\ninline path or WorkerPool + prefetch" .runtime
+  |box#batch| "rivet-vision::ImageBatchBuilder\nshape / dtype / layout checks" .runtime
 
   dataset -> sampler "len / indexed samples"
   dataset -> compile "SourceOp"

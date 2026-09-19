@@ -5,7 +5,7 @@ Prefer targeting the crate and target needed for the task, for example:
 
 ```bash
 cargo check -j 12 -p rivet-core --lib
-cargo test -j 12 -p rivet-dataset --lib
+cargo test -j 12 -p rivet-data --lib
 ```
 
 Avoid `--all-targets` and `--examples` unless the task specifically requires

@@ -2,7 +2,6 @@
 members = [
     "crates/rivet-core",
     "crates/rivet-data",
-    "crates/rivet-dataset",
     "crates/rivet-python",
     "crates/rivet-vision",
 ]
@@ -28,7 +27,6 @@ numpy = "0.29.0"
 pyo3 = "0.29.0"
 rivet-core = { path = "crates/rivet-core" }
 rivet-data = { path = "crates/rivet-data", default-features = false }
-rivet-dataset = { path = "crates/rivet-dataset", default-features = false }
 rivet-vision = { path = "crates/rivet-vision", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"

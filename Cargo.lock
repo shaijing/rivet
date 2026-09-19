@@ -4517,30 +4517,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rivet-dataset"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "arrow-array",
- "arrow-buffer",
- "arrow-ipc",
- "bytes",
- "crossbeam-channel",
- "futures",
- "image",
- "lance",
- "memmap2",
- "rivet-core",
- "rivet-data",
- "rivet-vision",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "walkdir",
-]
-
-[[package]]
 name = "rivet-python"
 version = "0.1.0"
 dependencies = [
@@ -4559,9 +4535,13 @@ dependencies = [
  "arrow",
  "arrow-array",
  "arrow-buffer",
+ "arrow-ipc",
+ "bytes",
  "crossbeam-channel",
+ "futures",
  "image",
  "lance",
+ "memmap2",
  "rivet-core",
  "rivet-data",
  "serde",

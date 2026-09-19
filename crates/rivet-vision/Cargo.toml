@@ -20,3 +20,25 @@ serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 walkdir.workspace = true
+
+[dev-dependencies]
+arrow-ipc.workspace = true
+bytes.workspace = true
+futures.workspace = true
+memmap2.workspace = true
+
+[[example]]
+name = "lance"
+required-features = ["lance"]
+
+[[example]]
+name = "lance_cifar"
+required-features = ["lance"]
+
+[[example]]
+name = "lancecopy"
+required-features = ["lance"]
+
+[[example]]
+name = "lancedataset"
+required-features = ["lance"]

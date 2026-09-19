@@ -15,11 +15,9 @@ fn mmap_arrow_file(path: impl AsRef<Path>) -> Result<Buffer, Box<dyn Error>> {
     let mmap = unsafe { Mmap::map(&file)? };
 
     println!("mmap len: {} bytes", mmap.len());
-    println!(
-        "mmap range: {:p} .. {:p}",
-        mmap.as_ptr(),
-        unsafe { mmap.as_ptr().add(mmap.len()) }
-    );
+    println!("mmap range: {:p} .. {:p}", mmap.as_ptr(), unsafe {
+        mmap.as_ptr().add(mmap.len())
+    });
 
     // zero-copy:
     // Bytes 持有 Mmap ownership
@@ -46,9 +44,7 @@ fn inspect_first_image_batch(
     println!("columns: {}", batch.num_columns());
     println!("schema: {}", batch.schema());
 
-    let img_column = batch
-        .column_by_name("img")
-        .ok_or("missing img column")?;
+    let img_column = batch.column_by_name("img").ok_or("missing img column")?;
 
     let img = img_column
         .as_any()
@@ -75,8 +71,7 @@ fn inspect_first_image_batch(
         let start = buf.as_ptr() as usize;
         let end = start + buf.len();
 
-        let fully_inside_mmap =
-            start >= mmap_start && end <= mmap_end;
+        let fully_inside_mmap = start >= mmap_start && end <= mmap_end;
 
         println!(
             "buffer[{i}]: addr={:#x}, len={}, end={:#x}, in_mmap={}",
@@ -118,10 +113,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mmap_end = mmap_start + buffer.len();
 
     println!();
-    println!(
-        "saved mmap range: {:#x} .. {:#x}",
-        mmap_start, mmap_end
-    );
+    println!("saved mmap range: {:#x} .. {:#x}", mmap_start, mmap_end);
 
     let mut decoder = StreamDecoder::new();
 
@@ -136,11 +128,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 row_count += batch.num_rows();
 
                 if !inspected {
-                    inspect_first_image_batch(
-                        &batch,
-                        mmap_start,
-                        mmap_end,
-                    )?;
+                    inspect_first_image_batch(&batch, mmap_start, mmap_end)?;
                     inspected = true;
                 }
 
