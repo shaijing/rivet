@@ -75,8 +75,45 @@ fn compile_image_ops(
     let mut pre_batch_state = None;
     let mut batch_stage_started = false;
 
-    for op in ops {
+    let mut ops = ops.into_iter().peekable();
+    while let Some(op) = ops.next() {
         op.validate()?;
+
+        if let ImageOp::Normalize(config) = &op {
+            let can_fuse = matches!(
+                state,
+                PipelineImageState::Decoded {
+                    dtype: rivet_core::DType::U8,
+                    layout: crate::sample::image::ImageLayout::Hwc,
+                }
+            ) && matches!(
+                ops.peek(),
+                Some(ImageOp::Layout(layout)) if layout.layout == crate::sample::image::ImageLayout::Chw
+            );
+            if can_fuse {
+                let layout = ops.next().expect("peeked fused layout operation");
+                layout.validate()?;
+                if !batch_stage_started {
+                    pre_batch_state = Some(state);
+                    batch_stage_started = true;
+                }
+                let fused = ImageOp::NormalizeToChw(config.clone());
+                state = fused.transition(state)?;
+                batch_ops.push(fused);
+                continue;
+            }
+        }
+
+        if let ImageOp::Layout(layout) = &op {
+            if matches!(
+                state,
+                PipelineImageState::Decoded { layout: current, .. }
+                    if current == layout.layout
+            ) {
+                continue;
+            }
+        }
+
         match op.execution_kind() {
             ExecutionKind::Sample => {
                 if batch_stage_started {

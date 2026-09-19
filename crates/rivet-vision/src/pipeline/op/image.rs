@@ -29,6 +29,7 @@ pub enum ImageOp {
     Brightness(BrightnessConfig),
     Contrast(ContrastConfig),
     Normalize(NormalizeConfig),
+    NormalizeToChw(NormalizeConfig),
     Layout(LayoutConfig),
 }
 
@@ -41,7 +42,7 @@ pub enum PipelineImageState {
 impl ImageOp {
     pub fn execution_kind(&self) -> ExecutionKind {
         match self {
-            Self::Normalize(_) | Self::Layout(_) => ExecutionKind::Batch,
+            Self::Normalize(_) | Self::NormalizeToChw(_) | Self::Layout(_) => ExecutionKind::Batch,
             Self::Decode(_)
             | Self::Resize(_)
             | Self::Crop(_)
@@ -66,6 +67,7 @@ impl ImageOp {
             Self::Brightness(_) => "Brightness",
             Self::Contrast(_) => "Contrast",
             Self::Normalize(_) => "Normalize",
+            Self::NormalizeToChw(_) => "NormalizeToChw",
             Self::Layout(_) => "Layout",
         }
     }
@@ -100,6 +102,13 @@ impl ImageOp {
                     layout,
                 }),
             },
+            Self::NormalizeToChw(_) => {
+                require_u8_hwc(input, "NormalizeToChw")?;
+                Ok(PipelineImageState::Decoded {
+                    dtype: DType::F32,
+                    layout: ImageLayout::Chw,
+                })
+            }
             Self::Layout(op) => match input {
                 Encoded => Err(invalid_pipeline(
                     "Layout requires a decoded image, current state is encoded",
@@ -129,6 +138,9 @@ impl ImageOp {
             Self::Brightness(op) => op.apply(sample),
             Self::Contrast(op) => op.apply(sample),
             Self::Normalize(op) => op.apply(sample, input_layout),
+            Self::NormalizeToChw(_) => Err(invalid_pipeline(
+                "NormalizeToChw is a batch-stage operation",
+            )),
             Self::Layout(op) => op.apply(sample, input_layout),
         }
     }
@@ -155,6 +167,12 @@ impl ImageOp {
     ) -> RivetResult<rivet_core::Tensor> {
         match self {
             Self::Normalize(op) => op.apply_batch(batch, input_layout),
+            Self::NormalizeToChw(op) => {
+                if input_layout != ImageLayout::Hwc {
+                    return Err(invalid_pipeline("NormalizeToChw requires HWC batch input"));
+                }
+                op.apply_batch_to_chw(batch)
+            }
             Self::Layout(op) => op.apply_batch(batch, input_layout),
             _ => Err(invalid_pipeline(format!(
                 "{} is not a batch-stage operation",
@@ -282,6 +300,7 @@ impl ImageOp {
                 Ok(())
             }
             Self::Normalize(op) => op.validate(),
+            Self::NormalizeToChw(op) => op.validate(),
         }
     }
 }

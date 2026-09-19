@@ -250,7 +250,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(loader.plan.sample_ops.len(), 2);
-        assert_eq!(loader.plan.batch_ops.len(), 2);
+        assert_eq!(loader.plan.batch_ops.len(), 1);
         assert_eq!(loader.plan.input_state, PipelineImageState::Encoded);
         assert_eq!(
             loader.plan.pre_batch_state,
@@ -274,6 +274,21 @@ mod tests {
             loader.plan.batch_ops[0].execution_kind(),
             ExecutionKind::Batch
         );
+        assert_eq!(loader.plan.batch_ops[0].name(), "NormalizeToChw");
+    }
+
+    #[test]
+    fn compiler_removes_noop_layout_transition() {
+        let loader = decoded_stub()
+            .chw_to_hwc()
+            .batch(1, false)
+            .compile()
+            .unwrap();
+
+        assert!(loader.plan.sample_ops.is_empty());
+        assert!(loader.plan.batch_ops.is_empty());
+        assert_eq!(loader.plan.pre_batch_state, loader.plan.input_state);
+        assert_eq!(loader.plan.output_state, loader.plan.input_state);
     }
 
     #[test]
