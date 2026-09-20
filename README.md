@@ -50,6 +50,18 @@ while let Some(batch) = loader.next_batch()? {
 
 More complete examples are available in `crates/rivet-vision/examples`.
 
+The fixed operator decomposition benchmark uses the local CIFAR-10 Arrow
+cache with `batch=128` and `workers=4`:
+
+```bash
+RIVET_OPERATOR_BENCH_ITERS=100 \
+  cargo run -j 12 -p rivet-vision --release --example operator_bench
+```
+
+Set `RIVET_OPERATOR_BENCH_ARROW` to select another CIFAR-10 Arrow file. The
+benchmark reports latency, images/sec, allocation counts/bytes, and estimated
+bytes copied for operations where the data movement is explicit.
+
 Rust namespace migration:
 
 - Use `rivet_vision::datasets`, `rivet_vision::transforms`, and
