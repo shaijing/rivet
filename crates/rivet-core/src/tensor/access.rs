@@ -1,10 +1,72 @@
-use super::{Tensor, TensorId};
+use super::{ExclusiveTensor, Tensor, Tensor_, TensorId};
 use crate::cpu_backend::CpuStorageRef;
 use crate::storage::Storage;
 use crate::{DType, Error, Layout, Result, WithDType};
 use std::sync::Arc;
 
 impl Tensor {
+    /// Returns whether no other `Tensor` handle points at this logical tensor
+    /// node.
+    pub fn is_handle_unique(&self) -> bool {
+        Arc::strong_count(&self.0) == 1
+    }
+
+    /// Returns whether no other tensor node points at the backing storage.
+    ///
+    /// This does not rule out `Tensor::clone()` aliases of this same handle;
+    /// use [`Self::is_uniquely_owned`] for the complete ownership predicate.
+    pub fn is_storage_unique(&self) -> bool {
+        Arc::strong_count(&self.0.storage) == 1
+    }
+
+    /// Returns whether this handle and its backing storage are both unique.
+    ///
+    /// This is an observational check for diagnostics and fast paths. An
+    /// ownership transfer must use [`Self::try_into_exclusive`] instead of
+    /// relying on this result across a later operation.
+    pub fn is_uniquely_owned(&self) -> bool {
+        self.is_handle_unique() && self.is_storage_unique()
+    }
+
+    /// Atomically takes exclusive ownership of this tensor's backing storage.
+    ///
+    /// The operation uses `Arc::try_unwrap` for both reference-counted layers,
+    /// so a concurrent clone or a view alias cannot pass a check-then-transfer
+    /// race. Read-only or otherwise non-transferable storage is also rejected.
+    pub fn try_into_exclusive(self) -> std::result::Result<ExclusiveTensor, Self> {
+        if !self.0.storage.can_transfer_exclusively() {
+            return Err(self);
+        }
+
+        let tensor = match Arc::try_unwrap(self.0) {
+            Ok(tensor) => tensor,
+            Err(inner) => return Err(Self(inner)),
+        };
+        let Tensor_ {
+            id,
+            storage,
+            layout,
+            dtype,
+            device,
+        } = tensor;
+
+        match Arc::try_unwrap(storage) {
+            Ok(storage) => Ok(ExclusiveTensor {
+                storage,
+                layout,
+                dtype,
+                device,
+            }),
+            Err(storage) => Err(Self(Arc::new(Tensor_ {
+                id,
+                storage,
+                layout,
+                dtype,
+                device,
+            }))),
+        }
+    }
+
     pub fn id(&self) -> TensorId {
         self.0.id
     }

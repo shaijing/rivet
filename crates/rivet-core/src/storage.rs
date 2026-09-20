@@ -13,6 +13,16 @@ pub enum Storage {
 }
 
 impl Storage {
+    /// Returns whether this backend can be handed to a mutable external
+    /// consumer after all Rivet aliases have been removed.
+    ///
+    /// Read-only and externally owned backends must not be exposed through an
+    /// ownership-transferring mutable interface, even when their `Arc` count
+    /// happens to be one.
+    pub fn can_transfer_exclusively(&self) -> bool {
+        matches!(self, Self::Cpu(_))
+    }
+
     pub(crate) fn binary(
         lhs: &Self,
         lhs_layout: &Layout,

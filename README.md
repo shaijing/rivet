@@ -111,11 +111,18 @@ torch_batch = loader.next_torch()
 Python batches expose read-only NumPy views by default. The views borrow the
 Rust CPU allocation without copying and keep their owner alive through the
 array base object. Use `DataLoader.next_dlpack()` for repeatable shared
-DLPack producers or `DataLoader.next_torch()` for Torch tensors. Each capsule
-is one-shot; `into_dlpack()` explicitly transfers ownership, after which
-Rivet retains no Tensor alias. Rivet currently exports CPU tensors only;
-unsupported dtype/device conversions fail explicitly instead of silently
-copying.
+DLPack producers or `DataLoader.next_torch()` for Torch tensors. A standard
+`__dlpack__()` export is shared and repeatable; its versioned `READ_ONLY` flag
+describes Rivet's immutable contract, but cannot prevent a consumer such as
+Torch from attempting an in-place write. Each capsule is one-shot.
+
+`into_dlpack()` is the explicit mutable ownership-transfer path: it succeeds
+only when the Tensor handle and backing storage are both uniquely owned and
+the backend is transferable. On success Rivet retains no Tensor alias, so the
+consumer may mutate the allocation. Aliased views and read-only backends fail
+with `BufferError` instead of silently copying. Rivet currently exports CPU
+tensors only; unsupported dtype/device conversions fail explicitly instead of
+silently copying.
 
 `rivet` keeps the same names as a compatibility root during the migration;
 new image code should use `rivet.vision`. No placeholder namespace is added

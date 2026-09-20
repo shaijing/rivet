@@ -21,4 +21,4 @@ pub use readonly::ReadOnlyCpuStorage;
 pub use shape::Shape;
 pub use storage::Storage;
 pub use strided_index::StridedIndex;
-pub use tensor::{RangeElement, Tensor, TensorId};
+pub use tensor::{ExclusiveTensor, RangeElement, Tensor, TensorId};

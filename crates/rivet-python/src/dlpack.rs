@@ -1,6 +1,6 @@
 use crate::dtype;
 use pyo3::{ffi, prelude::*};
-use rivet_core::{CpuStorageRef, Tensor};
+use rivet_core::{CpuStorageRef, ExclusiveTensor, Tensor};
 use std::ffi::{c_char, c_void};
 
 const DLTENSOR: &[u8] = b"dltensor\0";
@@ -54,16 +54,23 @@ struct DLManagedTensorVersioned {
 #[repr(C)]
 struct ManagedTensor {
     managed: DLManagedTensor,
-    _tensor: Tensor,
+    _owner: TensorOwner,
     _shape: Vec<i64>,
     _strides: Vec<i64>,
 }
 #[repr(C)]
 struct ManagedTensorVersioned {
     managed: DLManagedTensorVersioned,
-    _tensor: Tensor,
+    _owner: TensorOwner,
     _shape: Vec<i64>,
     _strides: Vec<i64>,
+}
+
+enum TensorOwner {
+    /// Standard DLPack is a borrowed, read-only shared export.
+    Shared { _tensor: Tensor },
+    /// Explicit `into_dlpack` is a mutable ownership transfer.
+    Exclusive { _tensor: ExclusiveTensor },
 }
 
 #[derive(Clone, Copy)]
@@ -284,9 +291,23 @@ impl PyDLPackTensor {
             byte_offset,
         } = dlpack_layout(tensor)?;
         let (code, bits) = dtype::dlpack_code_bits(tensor.dtype());
-        // Move the Tensor into the managed owner. No Tensor clone remains in
-        // this producer after a successful export.
         let tensor = self.tensor.take().ok_or_else(Self::consumed_error)?;
+        let owner = if read_only {
+            TensorOwner::Shared { _tensor: tensor }
+        } else {
+            match tensor.try_into_exclusive() {
+                Ok(exclusive) => TensorOwner::Exclusive { _tensor: exclusive },
+                Err(tensor) => {
+                    let message = if !tensor.is_uniquely_owned() {
+                        "cannot transfer aliased Rivet storage without copying"
+                    } else {
+                        "cannot transfer read-only or externally owned Rivet storage without copying"
+                    };
+                    self.tensor = Some(tensor);
+                    return Err(pyo3::exceptions::PyBufferError::new_err(message));
+                }
+            }
+        };
 
         if matches!(abi, DlpackAbi::Versioned) {
             let mut owner = Box::new(ManagedTensorVersioned {
@@ -319,7 +340,7 @@ impl PyDLPackTensor {
                         byte_offset,
                     },
                 },
-                _tensor: tensor,
+                _owner: owner,
                 _shape: shape,
                 _strides: strides,
             });
@@ -360,7 +381,7 @@ impl PyDLPackTensor {
                     manager_ctx: std::ptr::null_mut(),
                     deleter: Some(dlpack_deleter),
                 },
-                _tensor: tensor,
+                _owner: owner,
                 _shape: shape,
                 _strides: strides,
             });
@@ -574,6 +595,25 @@ mod tests {
                 .__dlpack__(py, None, Some((1, 0)), None, None)
                 .unwrap();
             drop(repeated);
+        });
+    }
+
+    #[test]
+    fn into_dlpack_rejects_storage_aliases_until_they_are_dropped() {
+        Python::initialize();
+        Python::attach(|py| {
+            let base = Tensor::from_vec(vec![0u8, 1, 2, 3], (2, 2), &Device::Cpu).unwrap();
+            let view = base.narrow(0, 1, 1).unwrap();
+            let mut producer = PyDLPackTensor::new(base);
+
+            let error = producer
+                .into_dlpack(py, None, None, None, None)
+                .expect_err("aliased storage must not become a writable DLPack export");
+            assert!(error.to_string().contains("aliased"));
+
+            drop(view);
+            let capsule = producer.into_dlpack(py, None, None, None, None).unwrap();
+            drop(capsule);
         });
     }
 }

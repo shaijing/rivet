@@ -81,6 +81,60 @@ fn tensor_views_preserve_logical_order() {
 }
 
 #[test]
+fn tensor_uniqueness_distinguishes_handles_from_storage_views() {
+    let tensor = Tensor::from_vec(vec![0u8, 1, 2, 3], (2, 2), &Device::Cpu).unwrap();
+    assert!(tensor.is_handle_unique());
+    assert!(tensor.is_storage_unique());
+    assert!(tensor.is_uniquely_owned());
+
+    let clone = tensor.clone();
+    assert!(!tensor.is_handle_unique());
+    assert!(tensor.is_storage_unique());
+    assert!(!tensor.is_uniquely_owned());
+    drop(clone);
+
+    let view = tensor.narrow(0, 1, 1).unwrap();
+    assert!(tensor.is_handle_unique());
+    assert!(!tensor.is_storage_unique());
+    assert!(!tensor.is_uniquely_owned());
+    drop(view);
+    assert!(tensor.is_uniquely_owned());
+}
+
+#[test]
+fn tensor_exclusive_transfer_requires_unique_mutable_storage() {
+    let tensor = Tensor::from_vec(vec![0u8, 1, 2, 3], (2, 2), &Device::Cpu).unwrap();
+    assert!(tensor.try_into_exclusive().is_ok());
+
+    let tensor = Tensor::from_vec(vec![0u8, 1, 2, 3], (2, 2), &Device::Cpu).unwrap();
+    let clone = tensor.clone();
+    let tensor = tensor
+        .try_into_exclusive()
+        .expect_err("a cloned Tensor handle must prevent exclusive transfer");
+    assert!(!tensor.is_handle_unique());
+    drop(clone);
+    assert!(tensor.try_into_exclusive().is_ok());
+
+    let tensor = Tensor::from_vec(vec![0u8, 1, 2, 3], (2, 2), &Device::Cpu).unwrap();
+    let view = tensor.narrow(0, 1, 1).unwrap();
+    let tensor = tensor
+        .try_into_exclusive()
+        .expect_err("a view must prevent exclusive transfer");
+    assert!(!tensor.is_storage_unique());
+    assert_eq!(view.to_vec::<u8>().unwrap(), [2, 3]);
+    drop(view);
+    assert!(tensor.try_into_exclusive().is_ok());
+
+    let storage = ReadOnlyCpuStorage::from_bytes(Arc::from([0u8, 1, 2, 3]), DType::U8).unwrap();
+    let tensor = Tensor::from_read_only_storage(storage, (2, 2), &Device::Cpu).unwrap();
+    assert!(tensor.is_uniquely_owned());
+    assert!(
+        tensor.try_into_exclusive().is_err(),
+        "read-only storage is never mutable-transferable"
+    );
+}
+
+#[test]
 fn borrowed_cpu_storage_exposes_view_layout_without_materializing() {
     let tensor = Tensor::from_vec(vec![0u8, 1, 2, 3, 4, 5], (2, 3), &Device::Cpu).unwrap();
     let transpose = tensor.transpose(0, 1).unwrap();
