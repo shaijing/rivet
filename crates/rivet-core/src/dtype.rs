@@ -1,4 +1,4 @@
-use crate::cpu_backend::CpuStorage;
+use crate::cpu_backend::{CpuStorage, CpuStorageRef};
 use crate::{Error, Result};
 use half::{bf16, f16};
 
@@ -17,6 +17,21 @@ pub enum DType {
 }
 
 impl DType {
+    /// Stable name used by integration metadata and public bindings.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::U8 => "uint8",
+            Self::U32 => "uint32",
+            Self::I16 => "int16",
+            Self::I32 => "int32",
+            Self::I64 => "int64",
+            Self::BF16 => "bfloat16",
+            Self::F16 => "float16",
+            Self::F32 => "float32",
+            Self::F64 => "float64",
+        }
+    }
+
     pub const fn size_in_bytes(self) -> usize {
         match self {
             Self::U8 => 1,
@@ -46,6 +61,13 @@ pub trait WithDType: Copy + Send + Sync + 'static {
 
     fn cpu_storage_as_slice(storage: &CpuStorage) -> Result<&[Self]>;
 
+    fn cpu_storage_ref_as_slice(storage: CpuStorageRef<'_>) -> Result<&[Self]> {
+        Err(Error::UnexpectedDType {
+            expected: Self::DTYPE,
+            actual: storage.dtype(),
+        })
+    }
+
     fn cpu_storage_as_mut_slice(storage: &mut CpuStorage) -> Result<&mut [Self]>;
 }
 
@@ -61,6 +83,16 @@ macro_rules! impl_with_dtype {
             fn cpu_storage_as_slice(storage: &CpuStorage) -> Result<&[Self]> {
                 match storage {
                     CpuStorage::$variant(data) => Ok(data),
+                    _ => Err(Error::UnexpectedDType {
+                        expected: DType::$variant,
+                        actual: storage.dtype(),
+                    }),
+                }
+            }
+
+            fn cpu_storage_ref_as_slice(storage: CpuStorageRef<'_>) -> Result<&[Self]> {
+                match storage {
+                    CpuStorageRef::$variant(data) => Ok(data),
                     _ => Err(Error::UnexpectedDType {
                         expected: DType::$variant,
                         actual: storage.dtype(),

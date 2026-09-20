@@ -1,12 +1,10 @@
+use crate::dtype;
 use pyo3::{ffi, prelude::*};
-use rivet_core::{CpuStorageRef, DType, Tensor};
+use rivet_core::{CpuStorageRef, Tensor};
 use std::ffi::{c_char, c_void};
 
 const DLTENSOR: &[u8] = b"dltensor\0";
 const DL_DEVICE_CPU: i32 = 1;
-const DL_INT: u8 = 0;
-const DL_UINT: u8 = 1;
-const DL_FLOAT: u8 = 2;
 
 #[repr(C)]
 struct DLDevice {
@@ -83,10 +81,17 @@ impl PyDLPackTensor {
         dl_device: Option<(i32, i32)>,
         copy: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
-        let _ = (stream, max_version, dl_device);
+        let _ = (stream, max_version);
         if copy == Some(true) {
             return Err(pyo3::exceptions::PyBufferError::new_err(
-                "Rivet DLPack export is zero-copy only",
+                "Rivet DLPack export is zero-copy only; copy=True is unsupported",
+            ));
+        }
+        if let Some((device_type, device_id)) = dl_device
+            && (device_type != DL_DEVICE_CPU || device_id != 0)
+        {
+            return Err(pyo3::exceptions::PyBufferError::new_err(
+                "Rivet currently exports DLPack only on CPU device 0",
             ));
         }
         let shape: Vec<i64> = self
@@ -103,38 +108,32 @@ impl PyDLPackTensor {
             .map(|&v| i64::try_from(v))
             .collect::<Result<_, _>>()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("stride exceeds DLPack range"))?;
-        let (code, bits) = match self.tensor.dtype() {
-            DType::U8 => (DL_UINT, 8),
-            DType::U32 => (DL_UINT, 32),
-            DType::I16 => (DL_INT, 16),
-            DType::I32 => (DL_INT, 32),
-            DType::I64 => (DL_INT, 64),
-            DType::F32 => (DL_FLOAT, 32),
-            DType::F64 => (DL_FLOAT, 64),
-            _ => {
-                return Err(pyo3::exceptions::PyTypeError::new_err(
-                    "dtype is not supported by Rivet DLPack export",
-                ));
-            }
-        };
+        let (code, bits) = dtype::dlpack_code_bits(self.tensor.dtype());
         let data = self
             .tensor
             .with_cpu_storage(|storage, layout| {
-                let p: *const u8 = match storage {
-                    CpuStorageRef::U8(v) => v.as_ptr().cast(),
-                    CpuStorageRef::U32(v) => v.as_ptr().cast(),
-                    CpuStorageRef::I16(v) => v.as_ptr().cast(),
-                    CpuStorageRef::I32(v) => v.as_ptr().cast(),
-                    CpuStorageRef::I64(v) => v.as_ptr().cast(),
-                    CpuStorageRef::F32(v) => v.as_ptr().cast(),
-                    CpuStorageRef::F64(v) => v.as_ptr().cast(),
-                    _ => return Err(rivet_core::Error::StorageOutOfBounds),
+                let (p, storage_len): (*const u8, usize) = match storage {
+                    CpuStorageRef::U8(v) => (v.as_ptr().cast(), v.len()),
+                    CpuStorageRef::U32(v) => (v.as_ptr().cast(), v.len()),
+                    CpuStorageRef::I16(v) => (v.as_ptr().cast(), v.len()),
+                    CpuStorageRef::I32(v) => (v.as_ptr().cast(), v.len()),
+                    CpuStorageRef::I64(v) => (v.as_ptr().cast(), v.len()),
+                    CpuStorageRef::BF16(v) => (v.as_ptr().cast(), v.len()),
+                    CpuStorageRef::F16(v) => (v.as_ptr().cast(), v.len()),
+                    CpuStorageRef::F32(v) => (v.as_ptr().cast(), v.len()),
+                    CpuStorageRef::F64(v) => (v.as_ptr().cast(), v.len()),
                 };
-                Ok(if layout.elem_count() == 0 {
-                    p
-                } else {
-                    unsafe { p.add(layout.start_offset() * self.tensor.dtype().size_in_bytes()) }
-                })
+                let Some((_, max_offset)) = layout.storage_bounds() else {
+                    return Ok(p);
+                };
+                if max_offset >= storage_len {
+                    return Err(rivet_core::Error::StorageOutOfBounds);
+                }
+                let byte_offset = layout
+                    .start_offset()
+                    .checked_mul(self.tensor.dtype().size_in_bytes())
+                    .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+                Ok(unsafe { p.add(byte_offset) })
             })
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let mut owner = Box::new(ManagedTensor {

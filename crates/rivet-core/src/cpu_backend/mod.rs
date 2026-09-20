@@ -38,6 +38,22 @@ pub enum CpuStorageRef<'a> {
     F64(&'a [f64]),
 }
 
+impl CpuStorageRef<'_> {
+    pub fn dtype(self) -> DType {
+        match self {
+            Self::U8(_) => DType::U8,
+            Self::U32(_) => DType::U32,
+            Self::I16(_) => DType::I16,
+            Self::I32(_) => DType::I32,
+            Self::I64(_) => DType::I64,
+            Self::BF16(_) => DType::BF16,
+            Self::F16(_) => DType::F16,
+            Self::F32(_) => DType::F32,
+            Self::F64(_) => DType::F64,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum CpuStorageMutRef<'a> {
     U8(&'a mut [u8]),

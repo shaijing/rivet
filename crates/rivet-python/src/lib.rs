@@ -2,6 +2,7 @@ use pyo3::prelude::*;
 
 mod dataset;
 mod dlpack;
+mod dtype;
 mod error;
 mod loader;
 mod numpy;

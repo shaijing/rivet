@@ -1,4 +1,5 @@
-use rivet_core::{CpuStorageRef, DType, Device, Error, Layout, Shape, Tensor};
+use rivet_core::{CpuStorageRef, DType, Device, Error, Layout, ReadOnlyCpuStorage, Shape, Tensor};
+use std::sync::Arc;
 
 #[test]
 fn shape_and_layout_metadata_match_candle_semantics() {
@@ -11,6 +12,8 @@ fn shape_and_layout_metadata_match_candle_semantics() {
     let offset = Layout::new(Shape::from((2, 3)), vec![3, 1], 7).unwrap();
     assert!(offset.is_contiguous());
     assert_eq!(offset.contiguous_offsets(), Some((7, 13)));
+    assert_eq!(offset.storage_bounds(), Some((7, 12)));
+    assert_eq!(offset.max_storage_offset(), Some(12));
 
     let narrow = Layout::contiguous(Shape::from((2, 3, 4)))
         .narrow(1, 1, 1)
@@ -23,6 +26,18 @@ fn shape_and_layout_metadata_match_candle_semantics() {
         .broadcast_as(Shape::from((4, 3)))
         .unwrap();
     assert_eq!(broadcast.stride(), &[0, 1]);
+    assert_eq!(broadcast.storage_bounds(), Some((0, 2)));
+}
+
+#[test]
+fn layout_storage_bounds_handle_empty_and_overflowing_views() {
+    let empty = Layout::new(Shape::from((0, 3)), vec![3, 1], usize::MAX).unwrap();
+    assert_eq!(empty.storage_bounds(), None);
+    assert_eq!(empty.max_storage_offset(), None);
+
+    let overflowing = Layout::new(Shape::from((2, 2)), vec![usize::MAX, 1], 0).unwrap();
+    assert_eq!(overflowing.storage_bounds(), None);
+    assert_eq!(overflowing.max_storage_offset(), None);
 }
 
 #[test]
@@ -84,6 +99,62 @@ fn borrowed_cpu_storage_exposes_view_layout_without_materializing() {
 
     assert_eq!(values, vec![0, 3, 1, 4, 2, 5]);
     assert_eq!(values, transpose.to_vec::<u8>().unwrap());
+}
+
+#[test]
+fn read_only_shared_storage_supports_views_and_operation_fallback() {
+    let mut raw = Vec::new();
+    for value in [1u32, 2, 3, 4] {
+        raw.extend_from_slice(&value.to_ne_bytes());
+    }
+    let bytes: Arc<[u8]> = Arc::from(raw);
+    let storage = ReadOnlyCpuStorage::from_bytes(bytes, DType::U32).unwrap();
+    let tensor = Tensor::from_read_only_storage(storage, [2, 2], &Device::Cpu).unwrap();
+
+    assert_eq!(tensor.to_vec::<u32>().unwrap(), [1, 2, 3, 4]);
+    assert_eq!(
+        tensor
+            .with_cpu_storage(|storage, _| {
+                let CpuStorageRef::U32(values) = storage else {
+                    panic!("expected u32 storage");
+                };
+                Ok(values.to_vec())
+            })
+            .unwrap(),
+        [1, 2, 3, 4]
+    );
+
+    // Read-only input is materialized only at the operation boundary.
+    assert_eq!(
+        tensor.add_scalar(1u32).unwrap().to_vec::<u32>().unwrap(),
+        [2, 3, 4, 5]
+    );
+
+    let mut with_prefix = vec![0u8; 4];
+    with_prefix.extend_from_slice(&2u32.to_ne_bytes());
+    let offset_storage =
+        ReadOnlyCpuStorage::from_bytes_with_offset(Arc::from(with_prefix), 4, DType::U32).unwrap();
+    let offset_tensor = Tensor::from_read_only_storage(offset_storage, [1], &Device::Cpu).unwrap();
+    assert_eq!(offset_tensor.to_vec::<u32>().unwrap(), [2]);
+}
+
+#[test]
+fn mmap_storage_keeps_file_backed_tensor_read_only_and_zero_copy() {
+    let path = std::env::temp_dir().join(format!(
+        "rivet-core-mmap-{}-{}.bin",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let mut raw = Vec::new();
+    for value in [10u32, 20, 30] {
+        raw.extend_from_slice(&value.to_ne_bytes());
+    }
+    std::fs::write(&path, raw).unwrap();
+
+    let tensor = Tensor::from_mmap(&path, DType::U32, [3], &Device::Cpu).unwrap();
+    assert_eq!(tensor.to_vec::<u32>().unwrap(), [10, 20, 30]);
+    assert_eq!(tensor.storage_bytes(), 12);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

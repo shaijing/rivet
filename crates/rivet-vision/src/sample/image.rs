@@ -47,6 +47,8 @@ pub struct DecodedSample {
 pub struct ImageBatch {
     pub images: Tensor,
     pub labels: Tensor,
+    /// Semantic order of the image dimensions after the batch dimension.
+    pub axis_order: ImageAxisOrder,
 }
 
 #[derive(Clone, Debug)]

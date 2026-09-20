@@ -86,7 +86,11 @@ impl ExecutionPlan {
     }
 
     pub fn apply_batch_ops(&self, batch: ImageBatch) -> RivetResult<ImageBatch> {
-        let ImageBatch { mut images, labels } = batch;
+        let ImageBatch {
+            mut images,
+            labels,
+            axis_order: mut batch_axis_order,
+        } = batch;
         let mut state = self.pre_batch_state;
 
         for op in &self.batch_ops {
@@ -94,11 +98,19 @@ impl ExecutionPlan {
                 PipelineImageState::Decoded { axis_order, .. } => axis_order,
                 PipelineImageState::Encoded => ImageAxisOrder::Hwc,
             };
+            debug_assert_eq!(batch_axis_order, input_layout);
             images = op.apply_batch(images, input_layout)?;
             state = op.transition(state)?;
+            if let PipelineImageState::Decoded { axis_order, .. } = state {
+                batch_axis_order = axis_order;
+            }
         }
 
-        Ok(ImageBatch { images, labels })
+        Ok(ImageBatch {
+            images,
+            labels,
+            axis_order: batch_axis_order,
+        })
     }
 
     pub fn stack_and_apply_batch_ops(

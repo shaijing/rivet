@@ -79,6 +79,7 @@ def _validate_hf_dataset(dataset: Any) -> None:
 
 
 def _maybe_numpy_batch(batch: dict[str, Any], as_numpy: bool) -> dict[str, Any]:
+    """Keep the native read-only NumPy views or serialize them explicitly."""
     if as_numpy:
         return batch
 
@@ -981,6 +982,11 @@ class DataLoader:
             x = batch["images"]      # numpy array (or bytes when
             y = batch["labels"]      # as_numpy=False)
 
+    NumPy batches are read-only zero-copy views over Rust-owned CPU storage;
+    keep a reference to the batch while using the views. Use
+    :meth:`next_dlpack` for a zero-copy framework handoff or
+    :meth:`next_torch` for a Torch tensor batch.
+
     ``iter(loader)`` returns the loader itself and exhaustion is sticky
     (StopIteration). Loading always happens inside Rust on the pipeline's
     persistent worker pool (``pipeline.workers(n)``) with the GIL released
@@ -1011,6 +1017,32 @@ class DataLoader:
 
     def __next__(self) -> dict[str, Any]:
         return _maybe_numpy_batch(next(self._inner), self.as_numpy)
+
+    def next_dlpack(self) -> dict[str, Any]:
+        """Return the next batch through public zero-copy DLPack objects.
+
+        The ``images`` and ``labels`` values are one-shot DLPack producers;
+        pass each directly to a consumer such as
+        ``torch.utils.dlpack.from_dlpack``.
+        """
+        batch = self._inner.next_dlpack()
+        if batch is None:
+            raise StopIteration
+        return batch
+
+    def next_torch(self) -> dict[str, Any]:
+        """Return the next batch as Torch tensors through DLPack."""
+        try:
+            import torch
+        except ImportError as exc:
+            raise ImportError(
+                "DataLoader.next_torch requires the `torch` package"
+            ) from exc
+
+        batch = self.next_dlpack()
+        batch["images"] = torch.utils.dlpack.from_dlpack(batch["images"])
+        batch["labels"] = torch.utils.dlpack.from_dlpack(batch["labels"])
+        return batch
 
 
 def hf_arrow_files(dataset: Any) -> list[str]:
@@ -1062,7 +1094,8 @@ def read_image_batch(
 ) -> dict[str, Any]:
     """Read decoded RGB images from Arrow files through the Rust backend.
 
-    The returned image axis order is NHWC and dtype is uint8.
+    The returned image axis order is NHWC and dtype is uint8. NumPy values
+    are read-only zero-copy views over Rust-owned CPU storage.
     """
     result = _read_image_batch(
         _normalize_arrow_files(arrow_files),

@@ -74,6 +74,38 @@ impl Layout {
         ))
     }
 
+    /// Returns the inclusive range of storage elements touched by this view.
+    ///
+    /// Layout strides are non-negative, so the first element is always at
+    /// `start_offset` and the last one is the sum of each dimension's span.
+    /// Empty layouts do not touch storage and therefore return `None`.
+    pub fn storage_bounds(&self) -> Option<(usize, usize)> {
+        if self.elem_count() == 0 {
+            return None;
+        }
+
+        let max_offset = self.max_storage_offset()?;
+        Some((self.start_offset, max_offset))
+    }
+
+    /// Returns the greatest storage element offset addressed by this view.
+    ///
+    /// `None` means either that the layout is empty or that computing the
+    /// offset overflowed `usize`.
+    pub fn max_storage_offset(&self) -> Option<usize> {
+        if self.elem_count() == 0 {
+            return None;
+        }
+
+        self.dims().iter().zip(self.stride()).try_fold(
+            self.start_offset,
+            |max_offset, (&dim, &stride)| {
+                let span = dim.checked_sub(1)?.checked_mul(stride)?;
+                max_offset.checked_add(span)
+            },
+        )
+    }
+
     pub fn narrow(&self, dim: usize, start: usize, len: usize) -> Result<Self> {
         let dim_size = *self.dims().get(dim).ok_or(Error::InvalidDim {
             dim,

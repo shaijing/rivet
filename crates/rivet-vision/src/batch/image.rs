@@ -1,5 +1,5 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
-use crate::sample::image::{DecodedSample, ImageBatch};
+use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageBatch};
 use rivet_core::{DType, Device, Tensor};
 
 /// Builds a batch without forcing individual samples contiguous. `Tensor::stack`
@@ -60,7 +60,11 @@ impl ImageBatchBuilder {
             Tensor::stack(&refs, 0)?
         };
 
-        Ok(ImageBatch { images, labels })
+        Ok(ImageBatch {
+            images,
+            labels,
+            axis_order: ImageAxisOrder::Hwc,
+        })
     }
 }
 

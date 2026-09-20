@@ -101,7 +101,19 @@ for batch in loader:
     images = batch["images"]
     labels = batch["labels"]
     print(images.shape, labels.shape)
+
+# Explicit zero-copy framework handoff:
+dlpack_batch = loader.next_dlpack()
+# Or, when torch is installed:
+torch_batch = loader.next_torch()
 ```
+
+Python batches expose read-only NumPy views by default. The views borrow the
+Rust CPU allocation without copying and keep their owner alive through the
+array base object. Use `DataLoader.next_dlpack()` for one-shot DLPack
+producers or `DataLoader.next_torch()` for Torch tensors. Rivet currently
+exports CPU tensors only; unsupported dtype/device conversions fail explicitly
+instead of silently copying.
 
 `rivet` keeps the same names as a compatibility root during the migration;
 new image code should use `rivet.vision`. No placeholder namespace is added

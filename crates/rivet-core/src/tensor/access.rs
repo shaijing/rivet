@@ -85,9 +85,10 @@ impl Tensor {
     pub fn to_vec<T: WithDType>(&self) -> Result<Vec<T>> {
         let storage = self.storage();
         let cpu_storage = match &*storage {
-            Storage::Cpu(storage) => storage,
+            Storage::Cpu(storage) => storage.as_ref(),
+            Storage::CpuReadOnly(storage) => storage.as_ref(),
         };
-        let values = T::cpu_storage_as_slice(cpu_storage)?;
+        let values = T::cpu_storage_ref_as_slice(cpu_storage)?;
         if let Some((start, end)) = self.layout().contiguous_offsets() {
             return values
                 .get(start..end)
@@ -110,9 +111,10 @@ impl Tensor {
     {
         let storage = self.storage();
         let cpu_storage = match &*storage {
-            Storage::Cpu(storage) => storage,
+            Storage::Cpu(storage) => storage.as_ref(),
+            Storage::CpuReadOnly(storage) => storage.as_ref(),
         };
-        let values = T::cpu_storage_as_slice(cpu_storage)?;
+        let values = T::cpu_storage_ref_as_slice(cpu_storage)?;
         if let Some((start, end)) = self.layout().contiguous_offsets() {
             for &value in values.get(start..end).ok_or(Error::StorageOutOfBounds)? {
                 f(value);
@@ -133,6 +135,7 @@ impl Tensor {
         let storage = self.storage();
         let cpu_storage = match &*storage {
             Storage::Cpu(storage) => storage.as_ref(),
+            Storage::CpuReadOnly(storage) => storage.as_ref(),
         };
         f(cpu_storage, self.layout())
     }

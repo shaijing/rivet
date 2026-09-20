@@ -1,5 +1,5 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
-use crate::sample::image::{DecodedSample, ImageBatch};
+use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageBatch};
 use rivet_core::{DType, Device, Tensor};
 use rivet_data::dataset::MemoryDataset;
 use rivet_data::dataset::source::{Dataset, validate_indices};
@@ -61,7 +61,11 @@ impl DenseImageMemoryDataset {
 
         let images = gather_rows(&self.images, indices)?;
         let labels = gather_rows(&self.labels, indices)?;
-        Ok(ImageBatch { images, labels })
+        Ok(ImageBatch {
+            images,
+            labels,
+            axis_order: ImageAxisOrder::Hwc,
+        })
     }
 
     fn get_one(&self, index: usize) -> RivetResult<DecodedSample> {
