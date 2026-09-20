@@ -5,7 +5,7 @@ use crate::transforms::{from_rgb_image, into_rgb_image};
 use image::imageops::crop_imm;
 use image::{Rgb, RgbImage};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CropConfig {
     pub x: u32,
     pub y: u32,
@@ -14,6 +14,15 @@ pub struct CropConfig {
 }
 
 impl CropConfig {
+    pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
     pub fn apply(&self, sample: ImageSample, layout: ImageLayout) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
         if sample.image.rank() != 3 {
@@ -55,13 +64,17 @@ impl CropConfig {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CenterCropConfig {
     pub width: u32,
     pub height: u32,
 }
 
 impl CenterCropConfig {
+    pub const fn new(width: u32, height: u32) -> Self {
+        Self { width, height }
+    }
+
     pub fn apply(&self, sample: ImageSample, layout: ImageLayout) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
         let (image_height, image_width) = match layout {
@@ -77,17 +90,11 @@ impl CenterCropConfig {
 
         let x = (image_width as u32 - self.width) / 2;
         let y = (image_height as u32 - self.height) / 2;
-        CropConfig {
-            x,
-            y,
-            width: self.width,
-            height: self.height,
-        }
-        .apply(ImageSample::Decoded(sample), layout)
+        CropConfig::new(x, y, self.width, self.height).apply(ImageSample::Decoded(sample), layout)
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RandomCropConfig {
     pub width: u32,
     pub height: u32,
@@ -96,6 +103,14 @@ pub struct RandomCropConfig {
 }
 
 impl RandomCropConfig {
+    pub const fn new(width: u32, height: u32, padding: u32) -> Self {
+        Self {
+            width,
+            height,
+            padding,
+        }
+    }
+
     /// Zero-pad the image by `padding` on each side, then crop a
     /// `width`x`height` window whose offset is drawn uniformly per sample
     /// from the pipeline RNG stream (two draws: y then x).
@@ -179,15 +194,11 @@ mod tests {
     fn crop_with(seed: u64, index: usize) -> Vec<u8> {
         let mut ctx = SampleContext::new(index);
         ctx.global_seed = seed;
-        let out = RandomCropConfig {
-            width: 4,
-            height: 4,
-            padding: 2,
-        }
-        .apply(Decoded(unique_image()), &mut ctx, ImageLayout::Hwc)
-        .unwrap()
-        .into_decoded()
-        .unwrap();
+        let out = RandomCropConfig::new(4, 4, 2)
+            .apply(Decoded(unique_image()), &mut ctx, ImageLayout::Hwc)
+            .unwrap()
+            .into_decoded()
+            .unwrap();
         out.image.to_vec::<u8>().unwrap()
     }
 
@@ -216,13 +227,9 @@ mod tests {
     fn random_crop_outputs_requested_size_and_preserves_labels() {
         let mut ctx = SampleContext::new(0);
         ctx.global_seed = 99;
-        let sample = RandomCropConfig {
-            width: 4,
-            height: 4,
-            padding: 2,
-        }
-        .apply(Decoded(unique_image()), &mut ctx, ImageLayout::Hwc)
-        .unwrap();
+        let sample = RandomCropConfig::new(4, 4, 2)
+            .apply(Decoded(unique_image()), &mut ctx, ImageLayout::Hwc)
+            .unwrap();
         let out = sample.into_decoded().unwrap();
         assert_eq!(out.image.dims(), [4, 4, 3]);
         assert_eq!(out.label, 7);
@@ -232,12 +239,11 @@ mod tests {
     fn random_crop_size_beyond_padded_image_rejected() {
         let mut ctx = SampleContext::new(0);
         ctx.global_seed = 1;
-        let result = RandomCropConfig {
-            width: 9,
-            height: 4,
-            padding: 2,
-        }
-        .apply(Decoded(unique_image()), &mut ctx, ImageLayout::Hwc);
+        let result = RandomCropConfig::new(9, 4, 2).apply(
+            Decoded(unique_image()),
+            &mut ctx,
+            ImageLayout::Hwc,
+        );
         assert!(result.is_err(), "oversized random crop must fail");
     }
 }

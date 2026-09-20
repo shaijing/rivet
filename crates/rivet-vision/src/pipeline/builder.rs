@@ -2,6 +2,7 @@ use super::op::{BatchConfig, ImageOp, IndexOp, SourceOp};
 use crate::runtime::RuntimeConfig;
 use crate::sample::image::EncodedImageSample;
 use crate::source::ImageSource;
+use crate::transforms::InterpolationMode;
 use rivet_data::dataset::Dataset;
 use std::sync::Arc;
 
@@ -39,6 +40,20 @@ impl ImagePipeline {
 
     pub fn resize(mut self, width: u32, height: u32) -> Self {
         self.ops.push(ImageOp::resize(width, height));
+        self
+    }
+
+    pub fn resize_with_interpolation(
+        mut self,
+        width: u32,
+        height: u32,
+        interpolation: InterpolationMode,
+    ) -> Self {
+        self.ops.push(ImageOp::resize_with_interpolation(
+            width,
+            height,
+            interpolation,
+        ));
         self
     }
 

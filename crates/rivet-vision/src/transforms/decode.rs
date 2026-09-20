@@ -2,10 +2,14 @@ use crate::errors::{RivetResult, invalid_argument};
 use crate::sample::image::{DecodedSample, ImageSample};
 use crate::transforms::from_rgb_image;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DecodeImageConfig;
 
 impl DecodeImageConfig {
+    pub const fn new() -> Self {
+        Self
+    }
+
     pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
         match sample {
             ImageSample::Encoded(sample) => {

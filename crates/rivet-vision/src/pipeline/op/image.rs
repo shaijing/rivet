@@ -5,10 +5,10 @@ use crate::sample::image::ImageSample;
 use crate::transforms::color::{BrightnessConfig, ContrastConfig};
 use crate::transforms::crop::{CenterCropConfig, CropConfig, RandomCropConfig};
 use crate::transforms::decode::DecodeImageConfig;
-use crate::transforms::flip::{FlipConfig, FlipDirection, RandomHorizontalFlipConfig};
+use crate::transforms::flip::{FlipConfig, RandomHorizontalFlipConfig};
 use crate::transforms::layout::LayoutConfig;
 use crate::transforms::normalize::NormalizeConfig;
-use crate::transforms::resize::ResizeConfig;
+use crate::transforms::resize::{InterpolationMode, ResizeConfig};
 use rivet_core::DType;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -182,56 +182,55 @@ impl ImageOp {
     }
 
     pub fn decode() -> Self {
-        Self::Decode(DecodeImageConfig)
+        Self::Decode(DecodeImageConfig::new())
     }
 
     pub fn resize(width: u32, height: u32) -> Self {
-        Self::Resize(ResizeConfig { width, height })
+        Self::Resize(ResizeConfig::new(width, height))
+    }
+
+    pub fn resize_with_interpolation(
+        width: u32,
+        height: u32,
+        interpolation: InterpolationMode,
+    ) -> Self {
+        Self::Resize(ResizeConfig::with_interpolation(
+            width,
+            height,
+            interpolation,
+        ))
     }
 
     pub fn crop(x: u32, y: u32, width: u32, height: u32) -> Self {
-        Self::Crop(CropConfig {
-            x,
-            y,
-            width,
-            height,
-        })
+        Self::Crop(CropConfig::new(x, y, width, height))
     }
 
     pub fn center_crop(width: u32, height: u32) -> Self {
-        Self::CenterCrop(CenterCropConfig { width, height })
+        Self::CenterCrop(CenterCropConfig::new(width, height))
     }
 
     pub fn random_crop(width: u32, height: u32, padding: u32) -> Self {
-        Self::RandomCrop(RandomCropConfig {
-            width,
-            height,
-            padding,
-        })
+        Self::RandomCrop(RandomCropConfig::new(width, height, padding))
     }
 
     pub fn horizontal_flip() -> Self {
-        Self::Flip(FlipConfig {
-            direction: FlipDirection::Horizontal,
-        })
+        Self::Flip(FlipConfig::horizontal())
     }
 
     pub fn vertical_flip() -> Self {
-        Self::Flip(FlipConfig {
-            direction: FlipDirection::Vertical,
-        })
+        Self::Flip(FlipConfig::vertical())
     }
 
     pub fn random_horizontal_flip(probability: f64) -> Self {
-        Self::RandomHorizontalFlip(RandomHorizontalFlipConfig { probability })
+        Self::RandomHorizontalFlip(RandomHorizontalFlipConfig::new(probability))
     }
 
     pub fn brightness(value: i32) -> Self {
-        Self::Brightness(BrightnessConfig { value })
+        Self::Brightness(BrightnessConfig::new(value))
     }
 
     pub fn contrast(value: f32) -> Self {
-        Self::Contrast(ContrastConfig { value })
+        Self::Contrast(ContrastConfig::new(value))
     }
 
     pub fn normalize(mean: Vec<f32>, std: Vec<f32>) -> Self {
@@ -239,15 +238,11 @@ impl ImageOp {
     }
 
     pub fn hwc_to_chw() -> Self {
-        Self::Layout(LayoutConfig {
-            layout: ImageLayout::Chw,
-        })
+        Self::Layout(LayoutConfig::new(ImageLayout::Chw))
     }
 
     pub fn chw_to_hwc() -> Self {
-        Self::Layout(LayoutConfig {
-            layout: ImageLayout::Hwc,
-        })
+        Self::Layout(LayoutConfig::new(ImageLayout::Hwc))
     }
 
     /// Validate the op's own configuration (not its position in the

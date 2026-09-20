@@ -37,6 +37,26 @@ def test_resize(arrow_file: Path) -> None:
     assert batch["dtype"] == "uint8"
 
 
+@pytest.mark.parametrize("interpolation", ["nearest", "bilinear", "bicubic", "lanczos3"])
+def test_resize_accepts_rivet_interpolation_modes(
+    arrow_file: Path, interpolation: str
+) -> None:
+    batch = next(
+        scan(arrow_file)
+        .decode_image()
+        .resize(24, 20, interpolation)
+        .batch(1)
+        .execute()
+    )
+
+    assert batch["images"].shape == (1, 20, 24, 3)
+
+
+def test_resize_rejects_unknown_interpolation_mode(arrow_file: Path) -> None:
+    with pytest.raises(ValueError, match="unknown interpolation mode"):
+        scan(arrow_file).decode_image().resize(24, 20, "box")
+
+
 def test_center_crop(arrow_file: Path) -> None:
     batch = next(scan(arrow_file).decode_image().center_crop(20, 18).batch(2).execute())
 

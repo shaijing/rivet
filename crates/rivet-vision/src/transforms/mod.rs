@@ -6,12 +6,20 @@ pub mod layout;
 pub mod normalize;
 pub mod resize;
 
+pub use color::{BrightnessConfig, ContrastConfig};
+pub use crop::{CenterCropConfig, CropConfig, RandomCropConfig};
+pub use decode::DecodeImageConfig;
+pub use flip::{FlipConfig, FlipDirection, RandomHorizontalFlipConfig};
+pub use layout::LayoutConfig;
+pub use normalize::NormalizeConfig;
+pub use resize::{InterpolationMode, ResizeConfig};
+
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::DecodedSample;
 use image::RgbImage;
 use rivet_core::{DType, Device, Tensor};
 
-pub fn require_u8_hwc(sample: DecodedSample, op_name: &str) -> RivetResult<DecodedSample> {
+pub(crate) fn require_u8_hwc(sample: DecodedSample, op_name: &str) -> RivetResult<DecodedSample> {
     let dims = sample.image.dims();
     if sample.image.dtype() != DType::U8 || dims.len() != 3 || dims[2] != 3 {
         return Err(invalid_argument(format!(
@@ -24,7 +32,7 @@ pub fn require_u8_hwc(sample: DecodedSample, op_name: &str) -> RivetResult<Decod
     Ok(sample)
 }
 
-pub fn into_rgb_image(sample: DecodedSample, op_name: &str) -> RivetResult<(RgbImage, i64)> {
+pub(crate) fn into_rgb_image(sample: DecodedSample, op_name: &str) -> RivetResult<(RgbImage, i64)> {
     let sample = require_u8_hwc(sample, op_name)?;
     let label = sample.label;
     let [height, width, channels] = sample.image.dims() else {
@@ -52,7 +60,7 @@ pub fn into_rgb_image(sample: DecodedSample, op_name: &str) -> RivetResult<(RgbI
     Ok((image, label))
 }
 
-pub fn from_rgb_image(image: RgbImage, label: i64) -> RivetResult<DecodedSample> {
+pub(crate) fn from_rgb_image(image: RgbImage, label: i64) -> RivetResult<DecodedSample> {
     let (width, height) = image.dimensions();
     let tensor = Tensor::from_vec(
         image.into_raw(),

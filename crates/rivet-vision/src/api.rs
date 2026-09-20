@@ -22,6 +22,11 @@ pub use crate::sample::image::{
     DecodedSample, EncodedImageSample, ImageBatch, ImageLayout, ImageSample,
 };
 pub use crate::source::ImageSource;
+pub use crate::transforms::{
+    BrightnessConfig, CenterCropConfig, ContrastConfig, CropConfig, DecodeImageConfig, FlipConfig,
+    FlipDirection, InterpolationMode, LayoutConfig, NormalizeConfig, RandomCropConfig,
+    RandomHorizontalFlipConfig, ResizeConfig,
+};
 
 /// Decode one encoded image and expose it as the standard one-item batch
 /// returned by the Python binding.

@@ -288,8 +288,12 @@ class Pipeline:
     def decode_image(self) -> Pipeline:
         return Pipeline(self._inner.decode_image(), as_numpy=self.as_numpy)
 
-    def resize(self, width: int, height: int) -> Pipeline:
-        return Pipeline(self._inner.resize(width, height), as_numpy=self.as_numpy)
+    def resize(
+        self, width: int, height: int, interpolation: str = "bilinear"
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.resize(width, height, interpolation), as_numpy=self.as_numpy
+        )
 
     def crop(self, x: int, y: int, width: int, height: int) -> Pipeline:
         return Pipeline(self._inner.crop(x, y, width, height), as_numpy=self.as_numpy)

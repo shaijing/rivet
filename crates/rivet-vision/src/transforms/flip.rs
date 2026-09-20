@@ -4,18 +4,30 @@ use crate::sample::image::ImageSample;
 use crate::transforms::{from_rgb_image, into_rgb_image};
 use image::imageops::{flip_horizontal, flip_vertical};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlipDirection {
     Horizontal,
     Vertical,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FlipConfig {
     pub direction: FlipDirection,
 }
 
 impl FlipConfig {
+    pub const fn new(direction: FlipDirection) -> Self {
+        Self { direction }
+    }
+
+    pub const fn horizontal() -> Self {
+        Self::new(FlipDirection::Horizontal)
+    }
+
+    pub const fn vertical() -> Self {
+        Self::new(FlipDirection::Vertical)
+    }
+
     pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
         let (image, label) = into_rgb_image(sample, "flip")?;
@@ -27,7 +39,7 @@ impl FlipConfig {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RandomHorizontalFlipConfig {
     /// Probability of flipping a sample; one draw from the pipeline RNG
     /// stream is compared against it per image.
@@ -35,6 +47,10 @@ pub struct RandomHorizontalFlipConfig {
 }
 
 impl RandomHorizontalFlipConfig {
+    pub const fn new(probability: f64) -> Self {
+        Self { probability }
+    }
+
     pub fn apply(&self, sample: ImageSample, ctx: &mut SampleContext) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
         let draw = ctx.next_rng_u64();
@@ -52,7 +68,7 @@ impl RandomHorizontalFlipConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{FlipConfig, FlipDirection};
+    use super::FlipConfig;
     use super::{RandomHorizontalFlipConfig, SampleContext};
     use crate::sample::image::ImageSample::Decoded;
     use crate::sample::image::{DecodedSample, ImageSample};
@@ -82,7 +98,7 @@ mod tests {
     fn apply_with(probability: f64, seed: u64, index: usize) -> Vec<u8> {
         let mut ctx = SampleContext::new(index);
         ctx.global_seed = seed;
-        let out = RandomHorizontalFlipConfig { probability }
+        let out = RandomHorizontalFlipConfig::new(probability)
             .apply(Decoded(asymmetric_image()), &mut ctx)
             .unwrap();
         raw_pixels(out)
@@ -99,11 +115,9 @@ mod tests {
     #[test]
     fn flip_probability_one_always_flips() {
         let expected = raw_pixels(
-            FlipConfig {
-                direction: FlipDirection::Horizontal,
-            }
-            .apply(Decoded(asymmetric_image()))
-            .unwrap(),
+            FlipConfig::horizontal()
+                .apply(Decoded(asymmetric_image()))
+                .unwrap(),
         );
 
         for seed in 0..32u64 {

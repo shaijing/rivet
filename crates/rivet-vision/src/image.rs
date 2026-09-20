@@ -2,7 +2,7 @@
 //!
 //! Use [`crate::transforms`] (or [`crate::api`] for integration-facing
 //! helpers) in new code. This module remains temporarily so downstream users
-//! can migrate from `rivet_vision::image` without an immediate break.
+//! can migrate from `rivet_vision::image` while the compatibility namespace is
+//! retained for one migration window.
 
 pub use crate::transforms::{color, crop, decode, flip, layout, normalize, resize};
-pub use crate::transforms::{from_rgb_image, into_rgb_image, require_u8_hwc};

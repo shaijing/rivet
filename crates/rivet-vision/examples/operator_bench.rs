@@ -255,12 +255,7 @@ fn main() -> BenchResult<()> {
     })?;
     print_measurement("dense_cache.get_batch", &measurement, iterations, 0);
 
-    let crop = CropConfig {
-        x: 0,
-        y: 0,
-        width: WIDTH as u32,
-        height: HEIGHT as u32,
-    };
+    let crop = CropConfig::new(0, 0, WIDTH as u32, HEIGHT as u32);
     let measurement = measure(iterations, || {
         for sample in &samples {
             let output = crop.apply(ImageSample::Decoded(sample.clone()), ImageLayout::Hwc)?;
@@ -270,9 +265,7 @@ fn main() -> BenchResult<()> {
     })?;
     print_measurement("crop_view", &measurement, iterations, 0);
 
-    let layout = LayoutConfig {
-        layout: ImageLayout::Chw,
-    };
+    let layout = LayoutConfig::new(ImageLayout::Chw);
     let measurement = measure(iterations, || {
         let output = layout.apply_batch(batch_images.clone(), ImageLayout::Hwc)?;
         black_box(output);

@@ -1,7 +1,7 @@
 use crate::error::to_py_err;
 use crate::loader::PyDataLoader;
 use pyo3::prelude::*;
-use rivet_vision::api::ImagePipeline;
+use rivet_vision::api::{ImagePipeline, InterpolationMode};
 
 #[pyclass(name = "_ImagePipeline")]
 pub(crate) struct PyImagePipeline {
@@ -16,10 +16,17 @@ impl PyImagePipeline {
         }
     }
 
-    fn resize(&self, width: u32, height: u32) -> Self {
-        Self {
-            inner: self.inner.clone().resize(width, height),
-        }
+    #[pyo3(signature = (width, height, interpolation="bilinear"))]
+    fn resize(&self, width: u32, height: u32, interpolation: &str) -> PyResult<Self> {
+        let interpolation = interpolation
+            .parse::<InterpolationMode>()
+            .map_err(to_py_err)?;
+        Ok(Self {
+            inner: self
+                .inner
+                .clone()
+                .resize_with_interpolation(width, height, interpolation),
+        })
     }
 
     fn crop(&self, x: u32, y: u32, width: u32, height: u32) -> Self {

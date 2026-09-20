@@ -2,12 +2,16 @@ use crate::errors::{RivetResult, invalid_shape};
 use crate::sample::image::{DecodedSample, ImageLayout, ImageSample};
 use rivet_core::Tensor;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayoutConfig {
     pub layout: ImageLayout,
 }
 
 impl LayoutConfig {
+    pub const fn new(layout: ImageLayout) -> Self {
+        Self { layout }
+    }
+
     pub fn apply(
         &self,
         sample: ImageSample,
@@ -66,13 +70,11 @@ mod tests {
         let image = Tensor::from_vec(vec![1u8, 2, 3, 4, 5, 6], [1, 2, 3], &Device::Cpu).unwrap();
         let storage_owner = image.clone();
         let sample = ImageSample::Decoded(DecodedSample { image, label: 0 });
-        let out = LayoutConfig {
-            layout: ImageLayout::Chw,
-        }
-        .apply(sample, ImageLayout::Hwc)
-        .unwrap()
-        .into_decoded()
-        .unwrap();
+        let out = LayoutConfig::new(ImageLayout::Chw)
+            .apply(sample, ImageLayout::Hwc)
+            .unwrap()
+            .into_decoded()
+            .unwrap();
 
         assert_eq!(out.image.dims(), [3, 1, 2]);
         assert_eq!(out.image.to_vec::<u8>().unwrap(), [1, 4, 2, 5, 3, 6]);
@@ -84,11 +86,9 @@ mod tests {
     fn converts_nhwc_to_nchw_as_a_shared_view() {
         let input = Tensor::from_vec(vec![1u8, 2, 3, 4, 5, 6], [1, 1, 2, 3], &Device::Cpu).unwrap();
         let storage_owner = input.clone();
-        let output = LayoutConfig {
-            layout: ImageLayout::Chw,
-        }
-        .apply_batch(input, ImageLayout::Hwc)
-        .unwrap();
+        let output = LayoutConfig::new(ImageLayout::Chw)
+            .apply_batch(input, ImageLayout::Hwc)
+            .unwrap();
 
         assert_eq!(output.dims(), [1, 3, 1, 2]);
         assert_eq!(output.to_vec::<u8>().unwrap(), [1, 4, 2, 5, 3, 6]);

@@ -2,7 +2,7 @@ use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{DecodedSample, ImageLayout, ImageSample};
 use rivet_core::{CpuStorageRef, DType, Device, Tensor};
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct NormalizeConfig {
     pub mean: Vec<f32>,
     pub std: Vec<f32>,
