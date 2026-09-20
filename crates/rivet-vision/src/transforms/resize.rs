@@ -135,4 +135,55 @@ mod tests {
         assert_eq!(output.image.dtype(), DType::U8);
         assert!(!output.image.same_storage(&input));
     }
+
+    #[test]
+    fn resize_executes_each_interpolation_mode_at_the_backend_boundary() {
+        let modes = [
+            InterpolationMode::Nearest,
+            InterpolationMode::Bilinear,
+            InterpolationMode::Bicubic,
+            InterpolationMode::Lanczos3,
+        ];
+        for mode in modes {
+            let input = Tensor::from_vec(
+                vec![
+                    0u8, 1, 2, // top-left
+                    10, 11, 12, // top-right
+                    20, 21, 22, // bottom-left
+                    30, 31, 32, // bottom-right
+                ],
+                [2, 2, 3],
+                &Device::Cpu,
+            )
+            .unwrap();
+            let output = ResizeConfig::with_interpolation(4, 4, mode)
+                .apply(ImageSample::Decoded(DecodedSample {
+                    image: input.clone(),
+                    label: 7,
+                }))
+                .unwrap()
+                .into_decoded()
+                .unwrap();
+
+            assert_eq!(output.image.dims(), [4, 4, 3]);
+            assert_eq!(output.image.dtype(), DType::U8);
+            assert_eq!(output.label, 7);
+            assert!(!output.image.same_storage(&input));
+            if mode == InterpolationMode::Nearest {
+                let values = output.image.to_vec::<u8>().unwrap();
+                assert_eq!(&values[..3], &[0, 1, 2]);
+                assert_eq!(&values[45..48], &[30, 31, 32]);
+            }
+        }
+
+        let input = Tensor::zeros([2, 2, 3], DType::F32, &Device::Cpu).unwrap();
+        let err = ResizeConfig::new(4, 4)
+            .apply(ImageSample::Decoded(DecodedSample {
+                image: input,
+                label: 0,
+            }))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("requires uint8 HWC RGB"), "got: {err}");
+    }
 }
