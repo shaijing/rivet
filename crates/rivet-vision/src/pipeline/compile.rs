@@ -17,7 +17,7 @@ impl ImagePipeline {
 
     pub fn compile_from(self, start: usize) -> RivetResult<ImageDataLoader> {
         let input_state = self.source.state();
-        let compiled_ops = compile_image_ops(self.ops, input_state)?;
+        let compiled_ops = compile_image_ops(self.ops, input_state, self.runtime.num_workers)?;
 
         let batch = self
             .batch
@@ -73,6 +73,7 @@ struct CompiledImageOps {
 fn compile_image_ops(
     ops: Vec<ImageOp>,
     initial_state: PipelineImageState,
+    num_workers: usize,
 ) -> RivetResult<CompiledImageOps> {
     let mut state = initial_state;
     let mut sample_ops = Vec::new();
@@ -86,6 +87,20 @@ fn compile_image_ops(
         op.validate()?;
 
         if let ImageOp::Normalize(config) = &op {
+            // Normalization is expensive per pixel. When sample workers are
+            // already needed for preceding augmentations, keep this work on
+            // those workers and leave any following layout view for the
+            // batch stage. A batch kernel is still preferable for pipelines
+            // with no sample-stage work to parallelize.
+            if num_workers > 0 && !sample_ops.is_empty() {
+                let sample_normalize = ImageOp::NormalizeSample(config.clone());
+                state = sample_normalize.transition(state)?;
+                sample_ops.push(CompiledImageOp {
+                    op: sample_normalize,
+                    random_key: None,
+                });
+                continue;
+            }
             let can_fuse = matches!(
                 state,
                 PipelineImageState::Decoded {

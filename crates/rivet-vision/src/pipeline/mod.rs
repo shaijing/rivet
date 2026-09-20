@@ -580,6 +580,31 @@ mod tests {
     }
 
     #[test]
+    fn workers_keep_normalization_on_sample_stage() {
+        let loader = stub(10)
+            .decode_image()
+            .resize(8, 8)
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .hwc_to_chw()
+            .workers(2)
+            .batch(4, false)
+            .compile()
+            .unwrap();
+
+        assert_eq!(loader.plan.sample_ops.len(), 3);
+        assert_eq!(loader.plan.sample_ops[2].name(), "NormalizeSample");
+        assert_eq!(loader.plan.batch_ops.len(), 1);
+        assert_eq!(loader.plan.batch_ops[0].name(), "Layout");
+        assert_eq!(
+            loader.plan.pre_batch_state,
+            PipelineImageState::Decoded {
+                dtype: DType::F32,
+                axis_order: ImageAxisOrder::Hwc,
+            }
+        );
+    }
+
+    #[test]
     fn dtype_conversion_runs_after_sample_stack() {
         let mut loader = decoded_stub()
             .convert_image_dtype(DType::F32)

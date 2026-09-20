@@ -65,6 +65,7 @@ pub enum ImageOp {
     ConvertImageDtype(ConvertImageDtypeConfig),
     Rotate(RotateConfig),
     Normalize(NormalizeConfig),
+    NormalizeSample(NormalizeConfig),
     NormalizeToChw(NormalizeConfig),
     Layout(LayoutConfig),
 }
@@ -104,6 +105,7 @@ impl ImageOp {
             | Self::NormalizeToChw(_)
             | Self::ConvertImageDtype(_)
             | Self::Layout(_) => ExecutionKind::Batch,
+            Self::NormalizeSample(_) => ExecutionKind::Sample,
             Self::Decode(_)
             | Self::Resize(_)
             | Self::Crop(_)
@@ -175,6 +177,7 @@ impl ImageOp {
             Self::ConvertImageDtype(_) => "ConvertImageDtype",
             Self::Rotate(_) => "Rotate",
             Self::Normalize(_) => "Normalize",
+            Self::NormalizeSample(_) => "NormalizeSample",
             Self::NormalizeToChw(_) => "NormalizeToChw",
             Self::Layout(_) => "Layout",
         }
@@ -275,6 +278,15 @@ impl ImageOp {
             },
             Self::Rotate(_) => require_u8_hwc(input, "Rotate"),
             Self::Normalize(_) => match input {
+                Encoded => Err(invalid_pipeline(
+                    "Normalize requires a decoded image, current state is encoded",
+                )),
+                Decoded { axis_order, .. } => Ok(Decoded {
+                    dtype: DType::F32,
+                    axis_order,
+                }),
+            },
+            Self::NormalizeSample(_) => match input {
                 Encoded => Err(invalid_pipeline(
                     "Normalize requires a decoded image, current state is encoded",
                 )),
@@ -440,6 +452,7 @@ impl ImageOp {
             )),
             Self::Rotate(op) => op.apply(sample),
             Self::Normalize(op) => op.apply(sample, input_layout),
+            Self::NormalizeSample(op) => op.apply(sample, input_layout),
             Self::NormalizeToChw(_) => Err(invalid_pipeline(
                 "NormalizeToChw is a batch-stage operation",
             )),
@@ -482,6 +495,9 @@ impl ImageOp {
     ) -> RivetResult<rivet_core::Tensor> {
         match self {
             Self::Normalize(op) => op.apply_batch(batch, input_layout),
+            Self::NormalizeSample(_) => Err(invalid_pipeline(
+                "NormalizeSample is a sample-stage operation",
+            )),
             Self::NormalizeToChw(op) => {
                 if input_layout != ImageAxisOrder::Hwc {
                     return Err(invalid_pipeline("NormalizeToChw requires HWC batch input"));
@@ -790,6 +806,7 @@ impl ImageOp {
             Self::Rotate(_) => Ok(()),
             Self::ConvertImageDtype(op) => op.validate(),
             Self::Normalize(op) => op.validate(),
+            Self::NormalizeSample(op) => op.validate(),
             Self::NormalizeToChw(op) => op.validate(),
         }
     }

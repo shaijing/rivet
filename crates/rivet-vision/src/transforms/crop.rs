@@ -1,7 +1,7 @@
 use crate::errors::{RivetResult, invalid_shape};
 use crate::sample::image::{ImageAxisOrder, ImageSample};
 use crate::transforms::{from_rgb_image, into_rgb_image};
-use image::imageops::{crop_imm, replace};
+use image::imageops::crop_imm;
 use image::{Rgb, RgbImage};
 use rivet_data::random::RandomStream;
 
@@ -162,12 +162,18 @@ impl RandomCropConfig {
         let x = rng.gen_range_usize(0..x_count as usize)? as u32;
 
         let mut padded = RgbImage::from_pixel(padded_width, padded_height, Rgb([0, 0, 0]));
-        replace(
-            &mut padded,
-            &image,
-            i64::from(self.padding),
-            i64::from(self.padding),
-        );
+        // Both images are tightly packed RGB buffers. Copy each source row
+        // directly instead of going through the generic per-pixel backend.
+        let source = image.as_raw();
+        let dest = padded.as_mut();
+        let source_row = width as usize * 3;
+        let dest_row = padded_width as usize * 3;
+        let offset = self.padding as usize;
+        for row in 0..height as usize {
+            let start = (offset + row) * dest_row + offset * 3;
+            dest[start..start + source_row]
+                .copy_from_slice(&source[row * source_row..(row + 1) * source_row]);
+        }
 
         let cropped = crop_imm(&padded, x, y, self.width, self.height).to_image();
         Ok(ImageSample::Decoded(from_rgb_image(cropped, label)?))
