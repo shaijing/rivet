@@ -1,7 +1,7 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
-use crate::pipeline::op::SampleContext;
 use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
 use rivet_core::{CpuStorageRef, DType, Tensor};
+use rivet_data::random::RandomStream;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlipDirection {
@@ -60,21 +60,18 @@ impl RandomHorizontalFlipConfig {
     }
 
     /// Apply to the historical HWC representation.
-    pub fn apply(&self, sample: ImageSample, ctx: &mut SampleContext) -> RivetResult<ImageSample> {
-        self.apply_with_axis_order(sample, ctx, ImageAxisOrder::Hwc)
+    pub fn apply(&self, sample: ImageSample, rng: &mut RandomStream) -> RivetResult<ImageSample> {
+        self.apply_with_axis_order(sample, rng, ImageAxisOrder::Hwc)
     }
 
     pub fn apply_with_axis_order(
         &self,
         sample: ImageSample,
-        ctx: &mut SampleContext,
+        rng: &mut RandomStream,
         axis_order: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
-        let draw = ctx.next_rng_u64();
-        // Uniform [0, 1) over the full 53-bit mantissa.
-        let value = (draw >> 11) as f64 * (1.0 / (1u64 << 53) as f64);
-        if value >= self.probability {
+        if !rng.gen_bool(self.probability)? {
             return Ok(ImageSample::Decoded(sample));
         }
 
@@ -183,10 +180,12 @@ fn flip_decoded(
 #[cfg(test)]
 mod tests {
     use super::FlipConfig;
-    use super::{RandomHorizontalFlipConfig, SampleContext};
+    use super::RandomHorizontalFlipConfig;
+    use crate::pipeline::op::SampleContext;
     use crate::sample::image::ImageSample::Decoded;
     use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
     use rivet_core::{Device, Tensor};
+    use rivet_data::random::{OpKey, RandomContext};
 
     /// 2x2 RGB image with asymmetric content so a flip is observable.
     fn asymmetric_image() -> DecodedSample {
@@ -210,10 +209,10 @@ mod tests {
     }
 
     fn apply_with(probability: f64, seed: u64, index: usize) -> Vec<u8> {
-        let mut ctx = SampleContext::new(index);
-        ctx.global_seed = seed;
+        let ctx = SampleContext::with_random(index, RandomContext::new(seed));
+        let mut rng = ctx.stream(OpKey::from_parts("RandomHorizontalFlip", 0));
         let out = RandomHorizontalFlipConfig::new(probability)
-            .apply(Decoded(asymmetric_image()), &mut ctx)
+            .apply(Decoded(asymmetric_image()), &mut rng)
             .unwrap();
         raw_pixels(out)
     }

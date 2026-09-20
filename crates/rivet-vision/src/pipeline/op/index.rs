@@ -1,5 +1,6 @@
 use crate::errors::{RivetResult, invalid_pipeline};
 use crate::sampler::{SamplerPlan, permute};
+use rivet_data::random::RandomContext;
 
 #[derive(Clone)]
 pub enum IndexOp {
@@ -32,7 +33,11 @@ impl IndexOp {
     }
 }
 
-pub fn compile_sampler(len: usize, index_ops: &[IndexOp]) -> RivetResult<SamplerPlan> {
+pub fn compile_sampler(
+    len: usize,
+    index_ops: &[IndexOp],
+    random: RandomContext,
+) -> RivetResult<SamplerPlan> {
     let mut start = 0usize;
     let mut end = len;
     let mut shuffle_seed: Option<u64> = None;
@@ -53,9 +58,9 @@ pub fn compile_sampler(len: usize, index_ops: &[IndexOp]) -> RivetResult<Sampler
 
     match shuffle_seed {
         None => Ok(SamplerPlan::Sequential { start, end }),
-        Some(seed) => {
+        Some(_) => {
             let window_len = end - start;
-            let mut indices = permute(window_len, seed);
+            let mut indices = permute(window_len, random.sampler_seed());
             for index in &mut indices {
                 *index += start;
             }

@@ -397,6 +397,24 @@ def test_random_ops_deterministic_across_workers(arrow_file: Path) -> None:
         assert serial_batch["labels"].tolist() == pooled_batch["labels"].tolist()
 
 
+def test_pipeline_seed_and_epoch_namespace(arrow_file: Path) -> None:
+    def first_images(epoch: int) -> np.ndarray:
+        return next(
+            scan(arrow_file)
+            .take(8)
+            .decode_image()
+            .random_crop(32, 32, padding=4)
+            .seed(31)
+            .shuffle()
+            .epoch(epoch)
+            .batch(8)
+            .execute()
+        )["images"]
+
+    assert np.array_equal(first_images(2), first_images(2))
+    assert not np.array_equal(first_images(2), first_images(3))
+
+
 def test_composition_controls_deterministic_across_workers(arrow_file: Path) -> None:
     def collect(loader: object) -> list[dict[str, object]]:
         out = []

@@ -3,6 +3,7 @@ use crate::sample::image::{ImageAxisOrder, ImageSample};
 use crate::transforms::{from_rgb_image, into_rgb_image};
 use image::imageops::{brighten, contrast, huerotate};
 use rivet_core::{CpuStorageRef, DType, Tensor};
+use rivet_data::random::RandomStream;
 
 pub use super::u8_color::{
     AutocontrastConfig, EqualizeConfig, InvertConfig, PosterizeConfig, SharpnessConfig,
@@ -228,25 +229,21 @@ impl ColorJitterConfig {
         Ok(())
     }
 
-    pub fn resolve(&self, ctx: &mut crate::pipeline::op::SampleContext) -> ColorJitterParams {
-        let brightness = sample_i32(ctx.next_rng_u64(), -self.brightness, self.brightness);
+    pub fn resolve(&self, rng: &mut RandomStream) -> RivetResult<ColorJitterParams> {
+        let brightness = sample_i32(rng, -self.brightness, self.brightness)?;
         let contrast_min = (1.0 - self.contrast).max(0.0);
-        let contrast = sample_f32(ctx.next_rng_u64(), contrast_min, 1.0 + self.contrast);
-        let hue = sample_i32(ctx.next_rng_u64(), -self.hue, self.hue);
-        ColorJitterParams {
+        let contrast = contrast_min + (1.0 + self.contrast - contrast_min) * rng.next_f32();
+        let hue = sample_i32(rng, -self.hue, self.hue)?;
+        Ok(ColorJitterParams {
             brightness,
             contrast,
             hue,
-        }
+        })
     }
 
-    pub fn apply(
-        &self,
-        sample: ImageSample,
-        ctx: &mut crate::pipeline::op::SampleContext,
-    ) -> RivetResult<ImageSample> {
+    pub fn apply(&self, sample: ImageSample, rng: &mut RandomStream) -> RivetResult<ImageSample> {
         self.validate()?;
-        self.resolve(ctx).apply(sample)
+        self.resolve(rng)?.apply(sample)
     }
 }
 
@@ -307,29 +304,24 @@ impl RandomGrayscaleConfig {
     pub fn apply(
         &self,
         sample: ImageSample,
-        ctx: &mut crate::pipeline::op::SampleContext,
+        rng: &mut RandomStream,
         axis_order: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
         self.validate()?;
-        let draw = (ctx.next_rng_u64() >> 11) as f64 * (1.0 / (1u64 << 53) as f64);
-        if draw >= self.probability {
+        if !rng.gen_bool(self.probability)? {
             return Ok(sample);
         }
         GrayscaleConfig::new(self.num_output_channels).apply(sample, axis_order)
     }
 }
 
-fn sample_f32(bits: u64, min: f32, max: f32) -> f32 {
-    let unit = (bits >> 11) as f32 * (1.0 / (1u64 << 53) as f32);
-    min + (max - min) * unit
-}
-
-fn sample_i32(bits: u64, min: i32, max: i32) -> i32 {
+fn sample_i32(rng: &mut RandomStream, min: i32, max: i32) -> RivetResult<i32> {
     if min == max {
-        return min;
+        return Ok(min);
     }
     let span = i64::from(max) - i64::from(min) + 1;
-    (i64::from(min) + (bits % span as u64) as i64) as i32
+    let offset = rng.gen_range_usize(0..span as usize)? as i64;
+    Ok((i64::from(min) + offset) as i32)
 }
 
 #[cfg(test)]
@@ -341,6 +333,7 @@ mod tests {
     use crate::pipeline::op::SampleContext;
     use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
     use rivet_core::{DType, Device, Tensor};
+    use rivet_data::random::{OpKey, RandomContext};
 
     fn sample() -> ImageSample {
         ImageSample::Decoded(DecodedSample {
@@ -412,17 +405,17 @@ mod tests {
     #[test]
     fn color_jitter_is_seeded_and_keeps_rgb_contract() {
         let config = ColorJitterConfig::new(10, 0.25, 20);
-        let mut left = SampleContext::new(3);
-        left.global_seed = 9;
-        let mut right = SampleContext::new(3);
-        right.global_seed = 9;
+        let left_ctx = SampleContext::with_random(3, RandomContext::new(9));
+        let right_ctx = SampleContext::with_random(3, RandomContext::new(9));
+        let mut left_rng = left_ctx.stream(OpKey::from_parts("ColorJitter", 0));
+        let mut right_rng = right_ctx.stream(OpKey::from_parts("ColorJitter", 0));
         let left = config
-            .apply(sample(), &mut left)
+            .apply(sample(), &mut left_rng)
             .unwrap()
             .into_decoded()
             .unwrap();
         let right = config
-            .apply(sample(), &mut right)
+            .apply(sample(), &mut right_rng)
             .unwrap()
             .into_decoded()
             .unwrap();
@@ -436,17 +429,19 @@ mod tests {
 
     #[test]
     fn random_grayscale_probability_zero_and_one_are_exact() {
-        let mut ctx = SampleContext::new(0);
+        let ctx = SampleContext::new(0);
+        let mut rng = ctx.stream(OpKey::from_parts("RandomGrayscale", 0));
         let unchanged = RandomGrayscaleConfig::new(0.0)
-            .apply(sample(), &mut ctx, ImageAxisOrder::Hwc)
+            .apply(sample(), &mut rng, ImageAxisOrder::Hwc)
             .unwrap()
             .into_decoded()
             .unwrap();
         assert_eq!(unchanged.image.dims(), [1, 2, 3]);
 
-        let mut ctx = SampleContext::new(0);
+        let ctx = SampleContext::new(0);
+        let mut rng = ctx.stream(OpKey::from_parts("RandomGrayscale", 0));
         let changed = RandomGrayscaleConfig::new(1.0)
-            .apply(sample(), &mut ctx, ImageAxisOrder::Hwc)
+            .apply(sample(), &mut rng, ImageAxisOrder::Hwc)
             .unwrap()
             .into_decoded()
             .unwrap();

@@ -1,8 +1,8 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
-use crate::pipeline::op::SampleContext;
 use crate::sample::image::{ImageAxisOrder, ImageSample};
 use crate::transforms::logical_offset;
 use rivet_core::{CpuStorageRef, DType, Tensor};
+use rivet_data::random::RandomStream;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EraseRegion {
@@ -81,9 +81,9 @@ impl RandomErasingConfig {
         &self,
         width: usize,
         height: usize,
-        ctx: &mut SampleContext,
+        rng: &mut RandomStream,
     ) -> Option<EraseRegion> {
-        let draw = uniform(ctx.next_rng_u64());
+        let draw = uniform(rng);
         if draw >= self.probability || width == 0 || height == 0 {
             return None;
         }
@@ -92,12 +92,11 @@ impl RandomErasingConfig {
         let log_ratio_max = f64::from(self.ratio_max).ln();
         for _ in 0..10 {
             let scale = interpolate(
-                uniform(ctx.next_rng_u64()),
+                uniform(rng),
                 f64::from(self.scale_min),
                 f64::from(self.scale_max),
             );
-            let ratio =
-                interpolate(uniform(ctx.next_rng_u64()), log_ratio_min, log_ratio_max).exp();
+            let ratio = interpolate(uniform(rng), log_ratio_min, log_ratio_max).exp();
             let target = area * scale;
             let erase_width = (target * ratio).sqrt().round() as usize;
             let erase_height = (target / ratio).sqrt().round() as usize;
@@ -106,12 +105,12 @@ impl RandomErasingConfig {
                 let x = if width == erase_width {
                     0
                 } else {
-                    (ctx.next_rng_u64() % (width - erase_width + 1) as u64) as usize
+                    rng.gen_range_usize(0..width - erase_width + 1).ok()?
                 };
                 let y = if height == erase_height {
                     0
                 } else {
-                    (ctx.next_rng_u64() % (height - erase_height + 1) as u64) as usize
+                    rng.gen_range_usize(0..height - erase_height + 1).ok()?
                 };
                 return Some(EraseRegion {
                     x,
@@ -132,7 +131,7 @@ impl RandomErasingConfig {
     pub fn apply(
         &self,
         sample: ImageSample,
-        ctx: &mut SampleContext,
+        rng: &mut RandomStream,
         axis_order: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
         self.validate()?;
@@ -148,7 +147,7 @@ impl RandomErasingConfig {
             ImageAxisOrder::Hwc => (dims[0], dims[1], dims[2]),
             ImageAxisOrder::Chw => (dims[1], dims[2], dims[0]),
         };
-        let Some(region) = self.resolve(width, height, ctx) else {
+        let Some(region) = self.resolve(width, height, rng) else {
             return Ok(ImageSample::Decoded(sample));
         };
 
@@ -257,8 +256,8 @@ fn in_region(x: usize, y: usize, region: EraseRegion) -> bool {
     x >= region.x && x < region.x + region.width && y >= region.y && y < region.y + region.height
 }
 
-fn uniform(bits: u64) -> f64 {
-    (bits >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
+fn uniform(rng: &mut RandomStream) -> f64 {
+    rng.next_f64()
 }
 
 fn interpolate(unit: f64, min: f64, max: f64) -> f64 {
@@ -271,6 +270,7 @@ mod tests {
     use crate::pipeline::op::SampleContext;
     use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
     use rivet_core::{DType, Device, Tensor};
+    use rivet_data::random::{OpKey, RandomContext};
 
     fn sample() -> ImageSample {
         ImageSample::Decoded(DecodedSample {
@@ -282,14 +282,15 @@ mod tests {
     #[test]
     fn random_erasing_probability_zero_preserves_storage() {
         let input = sample().into_decoded().unwrap().image;
-        let mut ctx = SampleContext::new(0);
+        let ctx = SampleContext::with_random(0, RandomContext::new(1));
+        let mut rng = ctx.stream(OpKey::from_parts("RandomErasing", 0));
         let output = RandomErasingConfig::new(0.0)
             .apply(
                 ImageSample::Decoded(DecodedSample {
                     image: input.clone(),
                     label: 0,
                 }),
-                &mut ctx,
+                &mut rng,
                 ImageAxisOrder::Hwc,
             )
             .unwrap()
@@ -301,7 +302,8 @@ mod tests {
     #[test]
     fn random_erasing_can_erase_full_image_without_in_place_mutation() {
         let input = sample().into_decoded().unwrap().image;
-        let mut ctx = SampleContext::new(0);
+        let ctx = SampleContext::new(0);
+        let mut rng = ctx.stream(OpKey::from_parts("RandomErasing", 0));
         let output = RandomErasingConfig::new(1.0)
             .with_params(1.0, 1.0, 0.5, 0.5)
             .with_value(9.0)
@@ -310,7 +312,7 @@ mod tests {
                     image: input.clone(),
                     label: 0,
                 }),
-                &mut ctx,
+                &mut rng,
                 ImageAxisOrder::Hwc,
             )
             .unwrap()

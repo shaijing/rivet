@@ -21,6 +21,7 @@ use crate::transforms::{
 };
 use crate::transforms::{GaussianBlurConfig, RandomErasingConfig};
 use rivet_core::DType;
+use rivet_data::random::{OpKey, RandomStream};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutionKind {
@@ -78,6 +79,25 @@ pub enum PipelineImageState {
 }
 
 impl ImageOp {
+    /// Stable semantic name used to assign per-operator random namespaces.
+    pub fn random_key_kind(&self) -> Option<&'static str> {
+        match self {
+            Self::RandomCrop(_) => Some("RandomCrop"),
+            Self::RandomResizedCrop(_) => Some("RandomResizedCrop"),
+            Self::RandomHorizontalFlip(_) => Some("RandomHorizontalFlip"),
+            Self::ColorJitter(_) => Some("ColorJitter"),
+            Self::RandomAffine(_) => Some("RandomAffine"),
+            Self::RandomPerspective(_) => Some("RandomPerspective"),
+            Self::ElasticTransform(_) => Some("ElasticTransform"),
+            Self::RandomApply { .. } => Some("RandomApply"),
+            Self::RandomChoice { .. } => Some("RandomChoice"),
+            Self::RandomOrder { .. } => Some("RandomOrder"),
+            Self::RandomGrayscale(_) => Some("RandomGrayscale"),
+            Self::RandomErasing(_) => Some("RandomErasing"),
+            _ => None,
+        }
+    }
+
     pub fn execution_kind(&self) -> ExecutionKind {
         match self {
             Self::Normalize(_) | Self::NormalizeToChw(_) | Self::Layout(_) => ExecutionKind::Batch,
@@ -283,9 +303,12 @@ impl ImageOp {
     pub fn apply(
         &self,
         sample: ImageSample,
-        ctx: &mut SampleContext,
+        ctx: &SampleContext,
         input_layout: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
+        let random_key = self
+            .random_key_kind()
+            .map(|kind| OpKey::from_parts(kind, 0));
         self.apply_with_state(
             sample,
             ctx,
@@ -293,14 +316,16 @@ impl ImageOp {
                 dtype: DType::U8,
                 axis_order: input_layout,
             },
+            random_key,
         )
     }
 
     fn apply_with_state(
         &self,
         sample: ImageSample,
-        ctx: &mut SampleContext,
+        ctx: &SampleContext,
         input_state: PipelineImageState,
+        random_key: Option<OpKey>,
     ) -> RivetResult<ImageSample> {
         let input_layout = match input_state {
             PipelineImageState::Encoded => ImageAxisOrder::Hwc,
@@ -313,13 +338,27 @@ impl ImageOp {
             Self::CenterCrop(op) => op.apply(sample, input_layout),
             Self::Pad(op) => op.apply(sample, input_layout),
             Self::Flip(op) => op.apply_with_axis_order(sample, input_layout),
-            Self::RandomCrop(op) => op.apply(sample, ctx, input_layout),
-            Self::RandomResizedCrop(op) => op.apply(sample, ctx, input_layout),
-            Self::RandomHorizontalFlip(op) => op.apply_with_axis_order(sample, ctx, input_layout),
+            Self::RandomCrop(op) => op.apply(
+                sample,
+                &mut required_rng(ctx, random_key, self.name())?,
+                input_layout,
+            ),
+            Self::RandomResizedCrop(op) => op.apply(
+                sample,
+                &mut required_rng(ctx, random_key, self.name())?,
+                input_layout,
+            ),
+            Self::RandomHorizontalFlip(op) => op.apply_with_axis_order(
+                sample,
+                &mut required_rng(ctx, random_key, self.name())?,
+                input_layout,
+            ),
             Self::Brightness(op) => op.apply(sample),
             Self::Contrast(op) => op.apply(sample),
             Self::Hue(op) => op.apply(sample),
-            Self::ColorJitter(op) => op.apply(sample, ctx),
+            Self::ColorJitter(op) => {
+                op.apply(sample, &mut required_rng(ctx, random_key, self.name())?)
+            }
             Self::Invert(op) => op.apply(sample, input_layout),
             Self::Posterize(op) => op.apply(sample, input_layout),
             Self::Solarize(op) => op.apply(sample, input_layout),
@@ -327,38 +366,73 @@ impl ImageOp {
             Self::Equalize(op) => op.apply(sample, input_layout),
             Self::Sharpness(op) => op.apply(sample, input_layout),
             Self::ArbitraryRotate(op) => op.apply(sample, input_layout),
-            Self::RandomAffine(op) => op.apply(sample, ctx, input_layout),
+            Self::RandomAffine(op) => op.apply(
+                sample,
+                &mut required_rng(ctx, random_key, self.name())?,
+                input_layout,
+            ),
             Self::Perspective(op) => op.apply(sample, input_layout),
-            Self::RandomPerspective(op) => op.apply(sample, ctx, input_layout),
-            Self::ElasticTransform(op) => op.apply(sample, ctx, input_layout),
+            Self::RandomPerspective(op) => op.apply(
+                sample,
+                &mut required_rng(ctx, random_key, self.name())?,
+                input_layout,
+            ),
+            Self::ElasticTransform(op) => op.apply(
+                sample,
+                &mut required_rng(ctx, random_key, self.name())?,
+                input_layout,
+            ),
             Self::RandomApply { probability, ops } => {
-                if ctx.next_rng_f64() >= *probability {
+                let mut rng = required_rng(ctx, random_key, self.name())?;
+                if !rng.gen_bool(*probability)? {
                     Ok(sample)
                 } else {
-                    apply_sequence(sample, ops, ctx, input_state).map(|(sample, _)| sample)
+                    apply_sequence(sample, ops, ctx, input_state, random_key.unwrap())
+                        .map(|(sample, _)| sample)
                 }
             }
             Self::RandomChoice { choices } => {
-                let index = ctx.choose_index(choices.len()).ok_or_else(|| {
-                    invalid_argument("random_choice requires at least one choice")
-                })?;
-                apply_sequence(sample, &choices[index], ctx, input_state).map(|(sample, _)| sample)
+                let mut rng = required_rng(ctx, random_key, self.name())?;
+                let index = if choices.is_empty() {
+                    return Err(invalid_argument(
+                        "random_choice requires at least one choice",
+                    ));
+                } else {
+                    rng.gen_range_usize(0..choices.len())?
+                };
+                apply_sequence(
+                    sample,
+                    &choices[index],
+                    ctx,
+                    input_state,
+                    random_key
+                        .unwrap()
+                        .derive(OpKey::from_parts("RandomChoiceBranch", index as u32)),
+                )
+                .map(|(sample, _)| sample)
             }
             Self::RandomOrder { ops } => {
                 let mut order: Vec<usize> = (0..ops.len()).collect();
-                ctx.shuffle(&mut order);
-                let mut sample = sample;
-                let mut state = input_state;
-                for index in order {
-                    (sample, state) =
-                        apply_sequence(sample, std::slice::from_ref(&ops[index]), ctx, state)?;
+                let mut rng = required_rng(ctx, random_key, self.name())?;
+                for index in (1..order.len()).rev() {
+                    let swap = rng.gen_range_usize(0..index + 1)?;
+                    order.swap(index, swap);
                 }
-                Ok(sample)
+                apply_ordered_sequence(sample, ops, &order, ctx, input_state, random_key.unwrap())
+                    .map(|(sample, _)| sample)
             }
             Self::GaussianBlur(op) => op.apply(sample),
             Self::Grayscale(op) => op.apply(sample, input_layout),
-            Self::RandomGrayscale(op) => op.apply(sample, ctx, input_layout),
-            Self::RandomErasing(op) => op.apply(sample, ctx, input_layout),
+            Self::RandomGrayscale(op) => op.apply(
+                sample,
+                &mut required_rng(ctx, random_key, self.name())?,
+                input_layout,
+            ),
+            Self::RandomErasing(op) => op.apply(
+                sample,
+                &mut required_rng(ctx, random_key, self.name())?,
+                input_layout,
+            ),
             Self::ConvertImageDtype(op) => op.apply(sample, input_layout),
             Self::Rotate(op) => op.apply(sample),
             Self::Normalize(op) => op.apply(sample, input_layout),
@@ -372,8 +446,21 @@ impl ImageOp {
     pub fn apply_sample(
         &self,
         sample: ImageSample,
-        ctx: &mut SampleContext,
+        ctx: &SampleContext,
         input_state: PipelineImageState,
+    ) -> RivetResult<ImageSample> {
+        let random_key = self
+            .random_key_kind()
+            .map(|kind| OpKey::from_parts(kind, 0));
+        self.apply_sample_with_key(sample, ctx, input_state, random_key)
+    }
+
+    pub fn apply_sample_with_key(
+        &self,
+        sample: ImageSample,
+        ctx: &SampleContext,
+        input_state: PipelineImageState,
+        random_key: Option<OpKey>,
     ) -> RivetResult<ImageSample> {
         if self.execution_kind() != ExecutionKind::Sample {
             return Err(invalid_pipeline(format!(
@@ -381,7 +468,7 @@ impl ImageOp {
                 self.name()
             )));
         }
-        self.apply_with_state(sample, ctx, input_state)
+        self.apply_with_state(sample, ctx, input_state, random_key)
     }
 
     pub fn apply_batch(
@@ -734,14 +821,57 @@ fn transition_sequence(
 fn apply_sequence(
     mut sample: ImageSample,
     ops: &[ImageOp],
-    ctx: &mut SampleContext,
+    ctx: &SampleContext,
     mut state: PipelineImageState,
+    parent_key: OpKey,
 ) -> RivetResult<(ImageSample, PipelineImageState)> {
-    for op in ops {
-        sample = op.apply_sample(sample, ctx, state)?;
+    let random_keys = nested_random_keys(ops, parent_key);
+    for (op, random_key) in ops.iter().zip(random_keys) {
+        sample = op.apply_sample_with_key(sample, ctx, state, random_key)?;
         state = op.transition(state)?;
     }
     Ok((sample, state))
+}
+
+fn apply_ordered_sequence(
+    mut sample: ImageSample,
+    ops: &[ImageOp],
+    order: &[usize],
+    ctx: &SampleContext,
+    mut state: PipelineImageState,
+    parent_key: OpKey,
+) -> RivetResult<(ImageSample, PipelineImageState)> {
+    let random_keys = nested_random_keys(ops, parent_key);
+    for &index in order {
+        let op = &ops[index];
+        sample = op.apply_sample_with_key(sample, ctx, state, random_keys[index])?;
+        state = op.transition(state)?;
+    }
+    Ok((sample, state))
+}
+
+fn nested_random_keys(ops: &[ImageOp], parent_key: OpKey) -> Vec<Option<OpKey>> {
+    let mut occurrences = std::collections::HashMap::<&'static str, u32>::new();
+    ops.iter()
+        .map(|op| {
+            op.random_key_kind().map(|kind| {
+                let occurrence = occurrences.entry(kind).or_default();
+                let key = parent_key.derive(OpKey::from_parts(kind, *occurrence));
+                *occurrence += 1;
+                key
+            })
+        })
+        .collect()
+}
+
+fn required_rng(
+    ctx: &SampleContext,
+    random_key: Option<OpKey>,
+    op_name: &str,
+) -> RivetResult<RandomStream> {
+    random_key
+        .map(|key| ctx.stream(key))
+        .ok_or_else(|| invalid_pipeline(format!("{op_name} is missing its random key")))
 }
 
 fn require_u8_decoded(input: PipelineImageState, op_name: &str) -> RivetResult<PipelineImageState> {

@@ -477,6 +477,40 @@ mod tests {
     }
 
     #[test]
+    fn deterministic_ops_do_not_perturb_random_op_keys() {
+        let base = stub(1)
+            .decode_image()
+            .random_crop(1, 1, 0)
+            .random_horizontal_flip(0.5)
+            .batch(1, false)
+            .compile()
+            .unwrap();
+        let with_deterministic = stub(1)
+            .decode_image()
+            .resize(1, 1)
+            .random_crop(1, 1, 0)
+            .brightness(0)
+            .random_horizontal_flip(0.5)
+            .batch(1, false)
+            .compile()
+            .unwrap();
+
+        assert_eq!(base.plan.sample_ops[0].random_key, None);
+        assert_eq!(
+            base.plan.sample_ops[1].random_key,
+            with_deterministic.plan.sample_ops[2].random_key
+        );
+        assert_eq!(
+            base.plan.sample_ops[2].random_key,
+            with_deterministic.plan.sample_ops[4].random_key
+        );
+        assert_ne!(
+            base.plan.sample_ops[1].random_key,
+            base.plan.sample_ops[2].random_key
+        );
+    }
+
+    #[test]
     fn zero_batch_size_rejected_at_compile() {
         let err = compile_err(stub(10).decode_image().batch(0, false));
         assert!(

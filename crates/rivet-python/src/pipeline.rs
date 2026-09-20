@@ -725,9 +725,16 @@ impl PyImagePipeline {
         }
     }
 
-    fn shuffle(&self, seed: u64) -> Self {
+    fn seed(&self, seed: u64) -> Self {
         Self {
-            inner: self.inner.clone().shuffle(seed),
+            inner: self.inner.clone().seed(seed),
+        }
+    }
+
+    #[pyo3(signature = (seed=None))]
+    fn shuffle(&self, seed: Option<u64>) -> Self {
+        Self {
+            inner: self.inner.clone().shuffle(seed.unwrap_or(0)),
         }
     }
 

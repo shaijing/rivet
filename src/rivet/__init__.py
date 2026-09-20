@@ -727,13 +727,17 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
-    def shuffle(self, seed: int) -> Pipeline:
-        """Deterministically shuffle the sampled window with `seed`.
+    def seed(self, seed: int) -> Pipeline:
+        """Set the pipeline-owned seed for sampling and transforms."""
+        return Pipeline(self._inner.seed(seed), as_numpy=self.as_numpy)
+
+    def shuffle(self, seed: int | None = None) -> Pipeline:
+        """Deterministically shuffle the sampled window.
 
         The same seed reproduces the same order at any worker count.
-        Stochastic ops draw from this seed and the explicit ``.epoch(epoch)``
-        value, so one ``(seed, epoch)`` reproduces both order and
-        augmentations.
+        If ``seed`` is omitted, use the pipeline-owned seed configured by
+        :meth:`seed`; ``.epoch(epoch)`` changes both sampler and transform
+        namespaces.
         """
         return Pipeline(
             self._inner.shuffle(seed),

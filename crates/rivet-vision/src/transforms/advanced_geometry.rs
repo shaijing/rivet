@@ -1,9 +1,9 @@
 use super::logical_offset;
 use super::resize::InterpolationMode;
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
-use crate::pipeline::op::SampleContext;
 use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
 use rivet_core::{CpuStorageRef, DType, Tensor};
+use rivet_data::random::RandomStream;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point2 {
@@ -174,21 +174,21 @@ impl RandomAffineConfig {
     pub fn apply(
         &self,
         sample: ImageSample,
-        ctx: &mut SampleContext,
+        rng: &mut RandomStream,
         axis_order: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
         self.validate()?;
         let sample = require_u8_image(sample, "random affine")?;
         let dims = sample.image.dims();
         let (height, width, _) = image_dims(dims, axis_order)?;
-        let angle = uniform(ctx, -self.degrees, self.degrees).to_radians();
+        let angle = uniform(rng, -self.degrees, self.degrees).to_radians();
         let translate_x =
-            uniform(ctx, -self.translate[0], self.translate[0]) * width.saturating_sub(1) as f32;
+            uniform(rng, -self.translate[0], self.translate[0]) * width.saturating_sub(1) as f32;
         let translate_y =
-            uniform(ctx, -self.translate[1], self.translate[1]) * height.saturating_sub(1) as f32;
-        let scale = uniform(ctx, self.scale[0], self.scale[1]);
-        let shear_x = uniform(ctx, -self.shear[0], self.shear[0]).to_radians();
-        let shear_y = uniform(ctx, -self.shear[1], self.shear[1]).to_radians();
+            uniform(rng, -self.translate[1], self.translate[1]) * height.saturating_sub(1) as f32;
+        let scale = uniform(rng, self.scale[0], self.scale[1]);
+        let shear_x = uniform(rng, -self.shear[0], self.shear[0]).to_radians();
+        let shear_y = uniform(rng, -self.shear[1], self.shear[1]).to_radians();
         let matrix = multiply_matrix(
             rotation_matrix(angle),
             multiply_matrix(
@@ -317,12 +317,12 @@ impl RandomPerspectiveConfig {
     pub fn apply(
         &self,
         sample: ImageSample,
-        ctx: &mut SampleContext,
+        rng: &mut RandomStream,
         axis_order: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
         self.validate()?;
         let sample = sample.into_decoded()?;
-        if ctx.next_rng_f64() >= self.probability {
+        if !rng.gen_bool(self.probability)? {
             return Ok(ImageSample::Decoded(sample));
         }
         let dims = sample.image.dims();
@@ -345,8 +345,8 @@ impl RandomPerspectiveConfig {
         ];
         let mut end_points = corners;
         for point in &mut end_points {
-            point.x += uniform(ctx, -half_x, half_x);
-            point.y += uniform(ctx, -half_y, half_y);
+            point.x += uniform(rng, -half_x, half_x);
+            point.y += uniform(rng, -half_y, half_y);
         }
         warp_perspective(
             sample,
@@ -404,7 +404,7 @@ impl ElasticTransformConfig {
     pub fn apply(
         &self,
         sample: ImageSample,
-        ctx: &mut SampleContext,
+        rng: &mut RandomStream,
         axis_order: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
         self.validate()?;
@@ -414,8 +414,8 @@ impl ElasticTransformConfig {
         let count = height
             .checked_mul(width)
             .ok_or_else(|| invalid_shape("elastic transform image is too large"))?;
-        let seed_x = ctx.next_rng_u64();
-        let seed_y = ctx.next_rng_u64();
+        let seed_x = rng.next_u64();
+        let seed_y = rng.next_u64();
         let mut x_field = (0..count)
             .map(|index| hash_unit(seed_x, index))
             .collect::<Vec<_>>();
@@ -767,8 +767,8 @@ fn subtract(lhs: [f32; 2], rhs: [f32; 2]) -> [f32; 2] {
     [lhs[0] - rhs[0], lhs[1] - rhs[1]]
 }
 
-fn uniform(ctx: &mut SampleContext, min: f32, max: f32) -> f32 {
-    min + (max - min) * ctx.next_rng_f64() as f32
+fn uniform(rng: &mut RandomStream, min: f32, max: f32) -> f32 {
+    min + (max - min) * rng.next_f32()
 }
 
 fn homography(from: &[Point2; 4], to: &[Point2; 4]) -> Option<[[f32; 3]; 3]> {
@@ -905,6 +905,7 @@ mod tests {
     use crate::pipeline::op::SampleContext;
     use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
     use rivet_core::{DType, Device, Tensor};
+    use rivet_data::random::{OpKey, RandomContext};
 
     fn image() -> ImageSample {
         ImageSample::Decoded(DecodedSample {
@@ -982,21 +983,19 @@ mod tests {
 
     #[test]
     fn random_geometry_is_seeded_and_validates_contracts() {
-        let mut left = SampleContext::new(3);
-        left.global_seed = 19;
-        left.epoch = 4;
-        let mut right = SampleContext::new(3);
-        right.global_seed = 19;
-        right.epoch = 4;
+        let left_ctx = SampleContext::with_random(3, RandomContext::new(19).with_epoch(4));
+        let right_ctx = SampleContext::with_random(3, RandomContext::new(19).with_epoch(4));
+        let mut left_rng = left_ctx.stream(OpKey::from_parts("RandomAffine", 0));
+        let mut right_rng = right_ctx.stream(OpKey::from_parts("RandomAffine", 0));
         let left = RandomAffineConfig::new(15.0)
             .with_translate(0.2, 0.2)
-            .apply(image(), &mut left, ImageAxisOrder::Hwc)
+            .apply(image(), &mut left_rng, ImageAxisOrder::Hwc)
             .unwrap()
             .into_decoded()
             .unwrap();
         let right = RandomAffineConfig::new(15.0)
             .with_translate(0.2, 0.2)
-            .apply(image(), &mut right, ImageAxisOrder::Hwc)
+            .apply(image(), &mut right_rng, ImageAxisOrder::Hwc)
             .unwrap()
             .into_decoded()
             .unwrap();
@@ -1005,19 +1004,19 @@ mod tests {
             right.image.to_vec::<u8>().unwrap()
         );
 
-        let mut perspective_ctx = SampleContext::new(3);
-        perspective_ctx.global_seed = 19;
-        perspective_ctx.epoch = 4;
+        let perspective_ctx = SampleContext::with_random(3, RandomContext::new(19).with_epoch(4));
+        let mut perspective_rng = perspective_ctx.stream(OpKey::from_parts("RandomPerspective", 0));
         let perspective = RandomPerspectiveConfig::new(0.5, 1.0)
-            .apply(image(), &mut perspective_ctx, ImageAxisOrder::Hwc)
+            .apply(image(), &mut perspective_rng, ImageAxisOrder::Hwc)
             .unwrap()
             .into_decoded()
             .unwrap();
         assert_eq!(perspective.image.dims(), [2, 2, 1]);
 
-        let mut ctx = SampleContext::new(0);
+        let ctx = SampleContext::new(0);
+        let mut rng = ctx.stream(OpKey::from_parts("ElasticTransform", 0));
         let elastic = ElasticTransformConfig::new(0.0, 1.0)
-            .apply(image(), &mut ctx, ImageAxisOrder::Hwc)
+            .apply(image(), &mut rng, ImageAxisOrder::Hwc)
             .unwrap()
             .into_decoded()
             .unwrap();

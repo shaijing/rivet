@@ -1,9 +1,9 @@
 use crate::errors::{RivetResult, invalid_shape};
-use crate::pipeline::op::SampleContext;
 use crate::sample::image::{ImageAxisOrder, ImageSample};
 use crate::transforms::{from_rgb_image, into_rgb_image};
 use image::imageops::crop_imm;
 use image::{Rgb, RgbImage};
+use rivet_data::random::RandomStream;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CropConfig {
@@ -123,7 +123,7 @@ impl RandomCropConfig {
     pub fn apply(
         &self,
         sample: ImageSample,
-        ctx: &mut SampleContext,
+        rng: &mut RandomStream,
         layout: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
@@ -158,8 +158,8 @@ impl RandomCropConfig {
 
         let x_count = u64::from(padded_width) - crop_width + 1;
         let y_count = u64::from(padded_height) - crop_height + 1;
-        let y = (ctx.next_rng_u64() % y_count) as u32;
-        let x = (ctx.next_rng_u64() % x_count) as u32;
+        let y = rng.gen_range_usize(0..y_count as usize)? as u32;
+        let x = rng.gen_range_usize(0..x_count as usize)? as u32;
 
         let mut padded = RgbImage::from_pixel(padded_width, padded_height, Rgb([0, 0, 0]));
         {
@@ -182,10 +182,12 @@ impl RandomCropConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{CenterCropConfig, CropConfig, RandomCropConfig, SampleContext};
+    use super::{CenterCropConfig, CropConfig, RandomCropConfig};
+    use crate::pipeline::op::SampleContext;
     use crate::sample::image::ImageSample::Decoded;
     use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
     use rivet_core::{Device, Tensor};
+    use rivet_data::random::{OpKey, RandomContext};
 
     /// 4x4 RGB image where every pixel is unique, so any crop offset
     /// produces a distinguishable result.
@@ -198,10 +200,10 @@ mod tests {
     }
 
     fn crop_with(seed: u64, index: usize) -> Vec<u8> {
-        let mut ctx = SampleContext::new(index);
-        ctx.global_seed = seed;
+        let ctx = SampleContext::with_random(index, RandomContext::new(seed));
+        let mut rng = ctx.stream(OpKey::from_parts("RandomCrop", 0));
         let out = RandomCropConfig::new(4, 4, 2)
-            .apply(Decoded(unique_image()), &mut ctx, ImageAxisOrder::Hwc)
+            .apply(Decoded(unique_image()), &mut rng, ImageAxisOrder::Hwc)
             .unwrap()
             .into_decoded()
             .unwrap();
@@ -231,10 +233,10 @@ mod tests {
 
     #[test]
     fn random_crop_outputs_requested_size_and_preserves_labels() {
-        let mut ctx = SampleContext::new(0);
-        ctx.global_seed = 99;
+        let ctx = SampleContext::with_random(0, RandomContext::new(99));
+        let mut rng = ctx.stream(OpKey::from_parts("RandomCrop", 0));
         let sample = RandomCropConfig::new(4, 4, 2)
-            .apply(Decoded(unique_image()), &mut ctx, ImageAxisOrder::Hwc)
+            .apply(Decoded(unique_image()), &mut rng, ImageAxisOrder::Hwc)
             .unwrap();
         let out = sample.into_decoded().unwrap();
         assert_eq!(out.image.dims(), [4, 4, 3]);
@@ -243,11 +245,11 @@ mod tests {
 
     #[test]
     fn random_crop_size_beyond_padded_image_rejected() {
-        let mut ctx = SampleContext::new(0);
-        ctx.global_seed = 1;
+        let ctx = SampleContext::with_random(0, RandomContext::new(1));
+        let mut rng = ctx.stream(OpKey::from_parts("RandomCrop", 0));
         let result = RandomCropConfig::new(9, 4, 2).apply(
             Decoded(unique_image()),
-            &mut ctx,
+            &mut rng,
             ImageAxisOrder::Hwc,
         );
         assert!(result.is_err(), "oversized random crop must fail");

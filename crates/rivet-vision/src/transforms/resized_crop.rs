@@ -1,9 +1,9 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
-use crate::pipeline::op::SampleContext;
 use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
 use crate::transforms::InterpolationMode;
 use crate::transforms::resize::ResizeConfig;
 use rivet_core::DType;
+use rivet_data::random::RandomStream;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CropRegion {
@@ -88,7 +88,7 @@ impl RandomResizedCropConfig {
         &self,
         image_width: u32,
         image_height: u32,
-        ctx: &mut SampleContext,
+        rng: &mut RandomStream,
     ) -> CropRegion {
         if image_width == 0 || image_height == 0 {
             return CropRegion {
@@ -102,12 +102,8 @@ impl RandomResizedCropConfig {
         let log_ratio_min = f64::from(self.ratio_min).ln();
         let log_ratio_max = f64::from(self.ratio_max).ln();
         for _ in 0..10 {
-            let scale = uniform(
-                ctx.next_rng_u64(),
-                f64::from(self.scale_min),
-                f64::from(self.scale_max),
-            );
-            let ratio = (uniform(ctx.next_rng_u64(), log_ratio_min, log_ratio_max)).exp();
+            let scale = uniform(rng, f64::from(self.scale_min), f64::from(self.scale_max));
+            let ratio = uniform(rng, log_ratio_min, log_ratio_max).exp();
             let target_area = area * scale;
             let crop_width = (target_area * ratio).sqrt().round() as u32;
             let crop_height = (target_area / ratio).sqrt().round() as u32;
@@ -119,12 +115,16 @@ impl RandomResizedCropConfig {
                 let x = if image_width == crop_width {
                     0
                 } else {
-                    (ctx.next_rng_u64() % u64::from(image_width - crop_width + 1)) as u32
+                    rng.gen_range_usize(0..(image_width - crop_width + 1) as usize)
+                        .expect("random resized crop x range is non-empty")
+                        as u32
                 };
                 let y = if image_height == crop_height {
                     0
                 } else {
-                    (ctx.next_rng_u64() % u64::from(image_height - crop_height + 1)) as u32
+                    rng.gen_range_usize(0..(image_height - crop_height + 1) as usize)
+                        .expect("random resized crop y range is non-empty")
+                        as u32
                 };
                 return CropRegion {
                     x,
@@ -162,7 +162,7 @@ impl RandomResizedCropConfig {
     pub fn apply(
         &self,
         sample: ImageSample,
-        ctx: &mut SampleContext,
+        rng: &mut RandomStream,
         axis_order: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
         self.validate()?;
@@ -189,7 +189,7 @@ impl RandomResizedCropConfig {
                 "random_resized_crop does not support empty images",
             ));
         }
-        let region = self.resolve(image_width, image_height, ctx);
+        let region = self.resolve(image_width, image_height, rng);
         let image = sample
             .image
             .narrow(0, region.y as usize, region.height as usize)?
@@ -203,9 +203,8 @@ impl RandomResizedCropConfig {
     }
 }
 
-fn uniform(bits: u64, min: f64, max: f64) -> f64 {
-    let unit = (bits >> 11) as f64 * (1.0 / (1u64 << 53) as f64);
-    min + (max - min) * unit
+fn uniform(rng: &mut RandomStream, min: f64, max: f64) -> f64 {
+    min + (max - min) * rng.next_f64()
 }
 
 #[cfg(test)]
@@ -214,6 +213,7 @@ mod tests {
     use crate::pipeline::op::SampleContext;
     use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
     use rivet_core::{DType, Device, Tensor};
+    use rivet_data::random::{OpKey, RandomContext};
 
     fn sample() -> ImageSample {
         ImageSample::Decoded(DecodedSample {
@@ -225,17 +225,17 @@ mod tests {
     #[test]
     fn random_resized_crop_is_deterministic_and_has_requested_shape() {
         let config = RandomResizedCropConfig::new(2, 3);
-        let mut left = SampleContext::new(5);
-        left.global_seed = 42;
-        let mut right = SampleContext::new(5);
-        right.global_seed = 42;
+        let left_ctx = SampleContext::with_random(5, RandomContext::new(42));
+        let right_ctx = SampleContext::with_random(5, RandomContext::new(42));
+        let mut left_rng = left_ctx.stream(OpKey::from_parts("RandomResizedCrop", 0));
+        let mut right_rng = right_ctx.stream(OpKey::from_parts("RandomResizedCrop", 0));
         let left = config
-            .apply(sample(), &mut left, ImageAxisOrder::Hwc)
+            .apply(sample(), &mut left_rng, ImageAxisOrder::Hwc)
             .unwrap()
             .into_decoded()
             .unwrap();
         let right = config
-            .apply(sample(), &mut right, ImageAxisOrder::Hwc)
+            .apply(sample(), &mut right_rng, ImageAxisOrder::Hwc)
             .unwrap()
             .into_decoded()
             .unwrap();
@@ -250,8 +250,9 @@ mod tests {
     #[test]
     fn random_resized_crop_fallback_is_centered() {
         let config = RandomResizedCropConfig::new(2, 2).with_params(1.0, 1.0, 0.1, 0.5);
-        let mut ctx = SampleContext::new(0);
-        let region = config.resolve(8, 4, &mut ctx);
+        let ctx = SampleContext::new(0);
+        let mut rng = ctx.stream(OpKey::from_parts("RandomResizedCrop", 0));
+        let region = config.resolve(8, 4, &mut rng);
         assert_eq!(
             region,
             super::CropRegion {

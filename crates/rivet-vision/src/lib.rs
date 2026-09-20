@@ -18,6 +18,9 @@ pub use batch::ImageBatchBuilder;
 pub use cache::{DecodedImageMemoryDataset, DenseImageMemoryDataset, VariableImageMemoryDataset};
 pub use errors::{RivetError, RivetResult, VisionError, VisionResult};
 pub use pipeline::{Compose, ImagePipeline, ImageTransform, TransformSequence};
+pub use rivet_data::random::{
+    OpKey, RNG_ALGORITHM_VERSION, RandomContext, RandomDomain, RandomStream, SampleKey,
+};
 pub use runtime::ImageDataLoader;
 pub use sample::image::{
     DecodedSample, EncodedImageSample, ImageAxisOrder, ImageBatch, ImageSample,

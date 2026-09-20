@@ -35,6 +35,9 @@ pub use crate::transforms::{
     SolarizeConfig, TenCropConfig,
 };
 pub use rivet_core::DType;
+pub use rivet_data::random::{
+    OpKey, RNG_ALGORITHM_VERSION, RandomContext, RandomDomain, RandomStream, SampleKey,
+};
 
 /// Decode one encoded image and expose it as the standard one-item batch
 /// returned by the Python binding.

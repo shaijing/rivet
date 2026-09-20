@@ -19,6 +19,7 @@ pub struct ImagePipeline {
     pub batch: Option<BatchConfig>,
     pub runtime: RuntimeConfig,
     pub epoch: u64,
+    pub global_seed: Option<u64>,
 }
 
 impl ImagePipeline {
@@ -37,6 +38,7 @@ impl ImagePipeline {
             batch: None,
             runtime: RuntimeConfig::default(),
             epoch: 0,
+            global_seed: None,
         }
     }
 
@@ -317,16 +319,24 @@ impl ImagePipeline {
     }
 
     /// Deterministically shuffle the sampled window with `seed`; the same
-    /// seed reproduces the same order at any worker count. Use `.epoch(epoch)`
-    /// to change the augmentation stream without changing sample order.
+    /// semantic seed and epoch reproduce the same order at any worker count.
+    /// Prefer `.seed(seed)` when sampler and transform randomness should share
+    /// an explicit pipeline-owned namespace.
     pub fn shuffle(mut self, seed: u64) -> Self {
         self.index_ops.push(IndexOp::Shuffle { seed });
         self
     }
 
-    /// Set the deterministic augmentation epoch without changing sample
-    /// ordering. Use the same epoch with different worker counts to reproduce
-    /// exactly; changing it produces a fresh per-sample RNG stream.
+    /// Set the pipeline-owned semantic seed used by sampling and transforms.
+    /// A legacy `.shuffle(seed)` remains a fallback when this is omitted.
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.global_seed = Some(seed);
+        self
+    }
+
+    /// Set the explicit epoch used by both sampler and transform namespaces.
+    /// Use the same epoch with different worker counts to reproduce exactly;
+    /// changing it produces a fresh permutation and per-sample RNG stream.
     pub fn epoch(mut self, epoch: u64) -> Self {
         self.epoch = epoch;
         self

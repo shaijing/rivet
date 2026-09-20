@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod dataset;
 pub mod errors;
+pub mod random;
 pub mod runtime;
 pub mod sampler;
 
@@ -10,4 +11,5 @@ pub use dataset::{
     Source, SplitManifest,
 };
 pub use errors::{DataError, DataResult};
+pub use random::{OpKey, RandomContext, RandomDomain, RandomStream, SampleKey};
 pub use sampler::{IndexSampler, SamplerPlan};

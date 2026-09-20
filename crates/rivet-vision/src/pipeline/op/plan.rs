@@ -4,6 +4,7 @@ use super::source::SourceOp;
 use crate::errors::RivetResult;
 use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageBatch, ImageSample};
 use crate::sampler::SamplerPlan;
+use rivet_data::random::{OpKey, RandomContext};
 
 #[derive(Clone, Copy)]
 pub struct BatchConfig {
@@ -29,20 +30,30 @@ impl BatchConfig {
 }
 
 #[derive(Clone)]
+pub struct CompiledImageOp {
+    pub op: ImageOp,
+    pub random_key: Option<OpKey>,
+}
+
+impl CompiledImageOp {
+    pub fn execution_kind(&self) -> super::image::ExecutionKind {
+        self.op.execution_kind()
+    }
+
+    pub fn name(&self) -> &'static str {
+        self.op.name()
+    }
+}
+
+#[derive(Clone)]
 pub struct ExecutionPlan {
     pub source: SourceOp,
     pub sampler: SamplerPlan,
-    pub sample_ops: Vec<ImageOp>,
+    pub sample_ops: Vec<CompiledImageOp>,
     pub batch_ops: Vec<ImageOp>,
     pub batch: BatchConfig,
-    /// Seed for stochastic image ops. When the pipeline shuffles, this is
-    /// the shuffle seed, so one `(seed, epoch)` reproduces both the sample
-    /// order and every random augmentation.
-    pub random_seed: u64,
-    /// Epoch mixed into the per-sample augmentation stream. It does not alter
-    /// the sampler order; callers can use it to request a fresh augmentation
-    /// stream for the same dataset window.
-    pub epoch: u64,
+    /// Semantic random namespace shared by sampler and sample transforms.
+    pub random: RandomContext,
     /// Image state at the source boundary, before any operation executes.
     pub input_state: PipelineImageState,
     /// Image state after sample operations and before stacking into a batch.
@@ -62,13 +73,13 @@ impl ExecutionPlan {
         mut sample: ImageSample,
         sample_index: usize,
     ) -> RivetResult<DecodedSample> {
-        let mut ctx = SampleContext::new(sample_index);
-        ctx.global_seed = self.random_seed;
-        ctx.epoch = self.epoch;
+        let ctx = SampleContext::with_random(sample_index, self.random);
         let mut state = self.input_state;
         for op in &self.sample_ops {
-            sample = op.apply_sample(sample, &mut ctx, state)?;
-            state = op.transition(state)?;
+            sample = op
+                .op
+                .apply_sample_with_key(sample, &ctx, state, op.random_key)?;
+            state = op.op.transition(state)?;
         }
 
         sample.into_decoded()

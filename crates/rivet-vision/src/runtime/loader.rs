@@ -756,4 +756,25 @@ mod tests {
         seen.sort_unstable();
         assert_eq!(seen, (10..30).collect::<Vec<i64>>(), "window preserved");
     }
+
+    #[test]
+    fn epoch_changes_sampler_namespace_when_seed_is_pipeline_owned() {
+        let collect_labels = |epoch| {
+            let mut loader = pipeline(50, 0)
+                .seed(7)
+                .shuffle(11)
+                .epoch(epoch)
+                .batch(8, false)
+                .compile()
+                .unwrap();
+            drain(&mut loader)
+                .iter()
+                .flat_map(labels)
+                .collect::<Vec<_>>()
+        };
+
+        let first = collect_labels(0);
+        assert_eq!(first, collect_labels(0));
+        assert_ne!(first, collect_labels(1));
+    }
 }

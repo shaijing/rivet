@@ -1,76 +1,35 @@
+use rivet_data::random::{OpKey, RandomContext, RandomStream, SampleKey};
+
+/// Semantic random context for one logical sample.
+///
+/// The context does not own a shared mutable RNG stream. Each stochastic
+/// operator derives an independent local stream from its semantic `OpKey`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SampleContext {
-    pub sample_index: usize,
-    pub epoch: u64,
-    pub global_seed: u64,
-    rng_state: Option<u64>,
+    pub sample_key: SampleKey,
+    pub random: RandomContext,
 }
 
 impl SampleContext {
     pub fn new(sample_index: usize) -> Self {
         Self {
-            sample_index,
-            epoch: 0,
-            global_seed: 0,
-            rng_state: None,
+            sample_key: SampleKey::from_index(sample_index),
+            random: RandomContext::new(0),
         }
     }
 
-    pub fn sample_seed(&self) -> u64 {
-        let mut seed = self.global_seed ^ 0x9E37_79B9_7F4A_7C15;
-        seed = mix_seed(seed ^ self.epoch);
-        mix_seed(seed ^ self.sample_index as u64)
-    }
-
-    /// Draw the next deterministic u64 for a stochastic op on this sample.
-    ///
-    /// The stream is seeded from `(global_seed, epoch, sample_index)`, so
-    /// every sample gets a reproducible, distinct draw sequence regardless
-    /// of worker count or scheduling; each stochastic op consumes one or
-    /// more draws in pipeline order.
-    pub fn next_rng_u64(&mut self) -> u64 {
-        if self.rng_state.is_none() {
-            self.rng_state = Some(self.sample_seed());
-        }
-        splitmix64(self.rng_state.as_mut().unwrap())
-    }
-
-    /// Draw a deterministic value in `[0, 1)` from this sample's stream.
-    pub fn next_rng_f64(&mut self) -> f64 {
-        (self.next_rng_u64() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
-    }
-
-    /// Choose an index uniformly enough for deterministic control flow.
-    ///
-    /// The transform controls only need a stable choice, not cryptographic
-    /// randomness; the stream is still isolated per `(seed, epoch, sample)`.
-    pub fn choose_index(&mut self, len: usize) -> Option<usize> {
-        if len == 0 {
-            None
-        } else {
-            Some((self.next_rng_u64() % len as u64) as usize)
+    pub const fn with_random(sample_index: usize, random: RandomContext) -> Self {
+        Self {
+            sample_key: SampleKey::from_index(sample_index),
+            random,
         }
     }
 
-    /// Deterministically shuffle a small control sequence in place.
-    pub fn shuffle<T>(&mut self, values: &mut [T]) {
-        for index in (1..values.len()).rev() {
-            let swap = (self.next_rng_u64() % (index as u64 + 1)) as usize;
-            values.swap(index, swap);
-        }
+    pub const fn sample_index(self) -> u64 {
+        self.sample_key.as_u64()
     }
-}
 
-/// SplitMix64 stream step: advance the state and return a mixed output.
-fn splitmix64(state: &mut u64) -> u64 {
-    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    let mut value = *state;
-    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    value ^ (value >> 31)
-}
-
-fn mix_seed(mut value: u64) -> u64 {
-    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    value ^ (value >> 31)
+    pub fn stream(&self, op_key: OpKey) -> RandomStream {
+        self.random.stream(self.sample_key, op_key)
+    }
 }

@@ -1,10 +1,13 @@
 use super::builder::ImagePipeline;
 use super::op::{
-    ExecutionKind, ExecutionPlan, ImageOp, IndexOp, PipelineImageState, compile_sampler,
+    CompiledImageOp, ExecutionKind, ExecutionPlan, ImageOp, IndexOp, PipelineImageState,
+    compile_sampler,
 };
 use crate::errors::{RivetResult, invalid_pipeline};
 use crate::runtime::ImageDataLoader;
 use crate::sampler::IndexSampler;
+use rivet_data::random::{OpKey, RandomContext};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 impl ImagePipeline {
@@ -22,11 +25,7 @@ impl ImagePipeline {
         batch.validate()?;
 
         let len = self.source.len();
-        let sampler = compile_sampler(len, &self.index_ops)?;
-        // Stochastic image ops share the shuffle seed when the pipeline
-        // shuffles, so one seed reproduces order and augmentations; without
-        // a shuffle the ops stay deterministic with a fixed seed.
-        let random_seed = self
+        let shuffle_seed = self
             .index_ops
             .iter()
             .find_map(|op| match op {
@@ -34,14 +33,19 @@ impl ImagePipeline {
                 _ => None,
             })
             .unwrap_or(0);
+        // Keep `.shuffle(seed)` as the legacy seed source when `.seed(...)`
+        // was not configured, while allowing the pipeline-owned seed to be
+        // independent from sampler ordering.
+        let global_seed = self.global_seed.unwrap_or(shuffle_seed);
+        let random = RandomContext::new(global_seed).with_epoch(self.epoch);
+        let sampler = compile_sampler(len, &self.index_ops, random)?;
         let plan = ExecutionPlan {
             source: self.source,
             sampler,
             sample_ops: compiled_ops.sample_ops,
             batch_ops: compiled_ops.batch_ops,
             batch,
-            random_seed,
-            epoch: self.epoch,
+            random,
             input_state,
             pre_batch_state: compiled_ops.pre_batch_state,
             output_state: compiled_ops.output_state,
@@ -60,7 +64,7 @@ impl ImagePipeline {
 }
 
 struct CompiledImageOps {
-    sample_ops: Vec<ImageOp>,
+    sample_ops: Vec<CompiledImageOp>,
     batch_ops: Vec<ImageOp>,
     pre_batch_state: PipelineImageState,
     output_state: PipelineImageState,
@@ -72,6 +76,7 @@ fn compile_image_ops(
 ) -> RivetResult<CompiledImageOps> {
     let mut state = initial_state;
     let mut sample_ops = Vec::new();
+    let mut random_occurrences = HashMap::<&'static str, u32>::new();
     let mut batch_ops = Vec::new();
     let mut pre_batch_state = None;
     let mut batch_stage_started = false;
@@ -127,7 +132,8 @@ fn compile_image_ops(
                     )));
                 }
                 state = op.transition(state)?;
-                sample_ops.push(op);
+                let random_key = assign_random_key(&op, &mut random_occurrences);
+                sample_ops.push(CompiledImageOp { op, random_key });
             }
             ExecutionKind::Batch => {
                 if !batch_stage_started {
@@ -154,4 +160,12 @@ fn compile_image_ops(
         pre_batch_state,
         output_state,
     })
+}
+
+fn assign_random_key(op: &ImageOp, occurrences: &mut HashMap<&'static str, u32>) -> Option<OpKey> {
+    let kind = op.random_key_kind()?;
+    let occurrence = occurrences.entry(kind).or_default();
+    let key = OpKey::from_parts(kind, *occurrence);
+    *occurrence += 1;
+    Some(key)
 }

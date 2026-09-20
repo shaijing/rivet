@@ -53,20 +53,14 @@ impl SamplerPlan {
 /// count or scheduling.
 pub fn permute(len: usize, seed: u64) -> Vec<usize> {
     let mut indices: Vec<usize> = (0..len).collect();
-    let mut state = seed;
+    let mut stream = RandomStream::from_seed(seed);
     for i in (1..len).rev() {
-        state = splitmix64(state);
-        let j = (state as usize) % (i + 1);
+        let j = stream
+            .gen_range_usize(0..i + 1)
+            .expect("Fisher-Yates range is non-empty");
         indices.swap(i, j);
     }
     indices
-}
-
-fn splitmix64(mut x: u64) -> u64 {
-    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    x ^ (x >> 31)
 }
 
 #[cfg(test)]
@@ -98,3 +92,4 @@ mod tests {
         );
     }
 }
+use crate::random::RandomStream;
