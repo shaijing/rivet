@@ -1,4 +1,4 @@
-use crate::errors::{RivetResult, invalid_argument};
+use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{ImageAxisOrder, ImageSample};
 use rivet_core::{CpuStorageRef, DType, Tensor};
 
@@ -35,12 +35,36 @@ impl ConvertImageDtypeConfig {
     ) -> RivetResult<ImageSample> {
         self.validate()?;
         let sample = sample.into_decoded()?;
-        let input = &sample.image;
+        let output = self.convert_tensor(&sample.image)?;
+
+        Ok(ImageSample::Decoded(crate::sample::image::DecodedSample {
+            image: output,
+            label: sample.label,
+        }))
+    }
+
+    /// Apply dtype conversion to a stacked rank-4 image batch.
+    ///
+    /// Dtype conversion is intentionally a batch-stage operation: it is
+    /// deterministic, has no per-sample policy, and can read the stacked
+    /// storage once instead of allocating one converted tensor per sample.
+    pub fn apply_batch(&self, input: Tensor, _axis_order: ImageAxisOrder) -> RivetResult<Tensor> {
+        self.validate()?;
+        if input.rank() != 4 {
+            return Err(invalid_shape(format!(
+                "batch dtype conversion requires a rank-4 image batch, got shape {:?}",
+                input.dims()
+            )));
+        }
+        self.convert_tensor(&input)
+    }
+
+    fn convert_tensor(&self, input: &Tensor) -> RivetResult<Tensor> {
         if input.dtype() == self.dtype {
-            return Ok(ImageSample::Decoded(sample));
+            return Ok(input.clone());
         }
         let dims = input.dims().to_vec();
-        let output = match (input.dtype(), self.dtype) {
+        match (input.dtype(), self.dtype) {
             (DType::U8, DType::F32) => {
                 let values = input.with_cpu_storage(|storage, layout| {
                     let CpuStorageRef::U8(values) = storage else {
@@ -56,7 +80,7 @@ impl ConvertImageDtypeConfig {
                             .collect()
                     })
                 })?;
-                Tensor::from_vec(values, dims, input.device())?
+                Ok(Tensor::from_vec(values, dims, input.device())?)
             }
             (DType::F32, DType::U8) => {
                 let values = input.with_cpu_storage(|storage, layout| {
@@ -80,20 +104,13 @@ impl ConvertImageDtypeConfig {
                             .collect()
                     })
                 })?;
-                Tensor::from_vec(values, dims, input.device())?
+                Ok(Tensor::from_vec(values, dims, input.device())?)
             }
-            (actual, target) => {
-                return Err(invalid_argument(format!(
-                    "image dtype conversion does not support {:?} -> {:?}",
-                    actual, target
-                )));
-            }
-        };
-
-        Ok(ImageSample::Decoded(crate::sample::image::DecodedSample {
-            image: output,
-            label: sample.label,
-        }))
+            (actual, target) => Err(invalid_argument(format!(
+                "image dtype conversion does not support {:?} -> {:?}",
+                actual, target
+            ))),
+        }
     }
 }
 
@@ -171,5 +188,87 @@ mod tests {
             .into_decoded()
             .unwrap();
         assert!(output.image.same_storage(&input));
+    }
+
+    #[test]
+    fn batch_conversion_matches_unfused_sample_conversion() {
+        let input = Tensor::from_vec(
+            (0..24).map(|value| value as u8).collect::<Vec<_>>(),
+            [2, 2, 2, 3],
+            &Device::Cpu,
+        )
+        .unwrap();
+        let config = ConvertImageDtypeConfig::new(DType::F32);
+
+        let expected = (0..2)
+            .map(|index| {
+                let sample = input.narrow(0, index, 1).unwrap().squeeze(0).unwrap();
+                config
+                    .apply(
+                        ImageSample::Decoded(DecodedSample {
+                            image: sample,
+                            label: index as i64,
+                        }),
+                        ImageAxisOrder::Hwc,
+                    )
+                    .unwrap()
+                    .into_decoded()
+                    .unwrap()
+                    .image
+            })
+            .collect::<Vec<_>>();
+        let expected = Tensor::stack(&expected.iter().collect::<Vec<_>>(), 0).unwrap();
+        let actual = config.apply_batch(input, ImageAxisOrder::Hwc).unwrap();
+
+        assert_eq!(actual.dims(), [2, 2, 2, 3]);
+        assert_eq!(actual.dtype(), DType::F32);
+        assert_eq!(
+            actual.to_vec::<f32>().unwrap(),
+            expected.to_vec::<f32>().unwrap()
+        );
+
+        let input = Tensor::from_vec(
+            vec![-1.0f32, 0.5, 2.0, f32::NAN],
+            [2, 1, 2, 1],
+            &Device::Cpu,
+        )
+        .unwrap();
+        let config = ConvertImageDtypeConfig::new(DType::U8);
+        let expected = (0..2)
+            .map(|index| {
+                let sample = input.narrow(0, index, 1).unwrap().squeeze(0).unwrap();
+                config
+                    .apply(
+                        ImageSample::Decoded(DecodedSample {
+                            image: sample,
+                            label: index as i64,
+                        }),
+                        ImageAxisOrder::Hwc,
+                    )
+                    .unwrap()
+                    .into_decoded()
+                    .unwrap()
+                    .image
+            })
+            .collect::<Vec<_>>();
+        let expected = Tensor::stack(&expected.iter().collect::<Vec<_>>(), 0).unwrap();
+        let actual = config.apply_batch(input, ImageAxisOrder::Hwc).unwrap();
+
+        assert_eq!(actual.dtype(), DType::U8);
+        assert_eq!(
+            actual.to_vec::<u8>().unwrap(),
+            expected.to_vec::<u8>().unwrap()
+        );
+        assert_eq!(actual.to_vec::<u8>().unwrap(), [0, 128, 255, 0]);
+    }
+
+    #[test]
+    fn batch_conversion_preserves_same_dtype_storage() {
+        let input = Tensor::from_vec(vec![1u8, 2, 3, 4], [1, 2, 2, 1], &Device::Cpu).unwrap();
+        let output = ConvertImageDtypeConfig::new(DType::U8)
+            .apply_batch(input.clone(), ImageAxisOrder::Hwc)
+            .unwrap();
+
+        assert!(output.same_storage(&input));
     }
 }

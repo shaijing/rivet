@@ -223,7 +223,8 @@ mod tests {
             .compile()
             .unwrap();
 
-        assert_eq!(loader.plan.sample_ops.len(), 3);
+        assert_eq!(loader.plan.sample_ops.len(), 2);
+        assert_eq!(loader.plan.batch_ops.len(), 1);
         assert_eq!(
             loader.plan.output_state,
             PipelineImageState::Decoded {
@@ -413,7 +414,7 @@ mod tests {
                 )
                 .batch(1, false),
         );
-        assert!(err.contains("preserve image state"), "got: {err}");
+        assert!(err.contains("is batch-stage"), "got: {err}");
     }
 
     #[test]
@@ -579,6 +580,35 @@ mod tests {
     }
 
     #[test]
+    fn dtype_conversion_runs_after_sample_stack() {
+        let mut loader = decoded_stub()
+            .convert_image_dtype(DType::F32)
+            .batch(1, false)
+            .compile()
+            .unwrap();
+
+        assert!(loader.plan.sample_ops.is_empty());
+        assert_eq!(loader.plan.batch_ops.len(), 1);
+        assert_eq!(
+            loader.plan.pre_batch_state,
+            PipelineImageState::Decoded {
+                dtype: DType::U8,
+                axis_order: ImageAxisOrder::Hwc,
+            }
+        );
+        assert_eq!(
+            loader.plan.output_state,
+            PipelineImageState::Decoded {
+                dtype: DType::F32,
+                axis_order: ImageAxisOrder::Hwc,
+            }
+        );
+
+        let batch = loader.next_batch().unwrap().unwrap();
+        assert_eq!(batch.images.to_vec::<f32>().unwrap(), [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
     fn compiler_removes_noop_layout_transition() {
         let loader = decoded_stub()
             .chw_to_hwc()
@@ -603,6 +633,18 @@ mod tests {
         );
         assert!(
             err.contains("Resize cannot follow the batch stage"),
+            "got: {err}"
+        );
+
+        let err = compile_err(
+            stub(10)
+                .decode_image()
+                .convert_image_dtype(DType::F32)
+                .brightness(1)
+                .batch(4, false),
+        );
+        assert!(
+            err.contains("Brightness cannot follow the batch stage"),
             "got: {err}"
         );
     }

@@ -62,6 +62,14 @@ Set `RIVET_OPERATOR_BENCH_ARROW` to select another CIFAR-10 Arrow file. The
 benchmark reports latency, images/sec, allocation counts/bytes, and estimated
 bytes copied for operations where the data movement is explicit.
 
+The dtype stage benchmark compares per-sample conversion with the batch-stage
+candidate:
+
+```bash
+RIVET_DTYPE_BENCH_ITERS=20 \
+  cargo run -j 12 -p rivet-vision --release --example dtype_bench
+```
+
 Rust namespace migration:
 
 - Use `rivet_vision::datasets`, `rivet_vision::transforms`, and

@@ -100,7 +100,10 @@ impl ImageOp {
 
     pub fn execution_kind(&self) -> ExecutionKind {
         match self {
-            Self::Normalize(_) | Self::NormalizeToChw(_) | Self::Layout(_) => ExecutionKind::Batch,
+            Self::Normalize(_)
+            | Self::NormalizeToChw(_)
+            | Self::ConvertImageDtype(_)
+            | Self::Layout(_) => ExecutionKind::Batch,
             Self::Decode(_)
             | Self::Resize(_)
             | Self::Crop(_)
@@ -132,7 +135,6 @@ impl ImageOp {
             | Self::Grayscale(_)
             | Self::RandomGrayscale(_)
             | Self::RandomErasing(_)
-            | Self::ConvertImageDtype(_)
             | Self::Rotate(_) => ExecutionKind::Sample,
         }
     }
@@ -433,7 +435,9 @@ impl ImageOp {
                 &mut required_rng(ctx, random_key, self.name())?,
                 input_layout,
             ),
-            Self::ConvertImageDtype(op) => op.apply(sample, input_layout),
+            Self::ConvertImageDtype(_) => Err(invalid_pipeline(
+                "ConvertImageDtype is a batch-stage operation",
+            )),
             Self::Rotate(op) => op.apply(sample),
             Self::Normalize(op) => op.apply(sample, input_layout),
             Self::NormalizeToChw(_) => Err(invalid_pipeline(
@@ -484,6 +488,7 @@ impl ImageOp {
                 }
                 op.apply_batch_to_chw(batch)
             }
+            Self::ConvertImageDtype(op) => op.apply_batch(batch, input_layout),
             Self::Layout(op) => op.apply_batch(batch, input_layout),
             _ => Err(invalid_pipeline(format!(
                 "{} is not a batch-stage operation",
