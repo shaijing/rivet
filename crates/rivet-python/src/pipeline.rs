@@ -92,6 +92,16 @@ impl PyTransform {
         }
     }
 
+    #[pyo3(signature = (left, top, right, bottom, fill=0.0))]
+    fn pad_with_sides(&self, left: u32, top: u32, right: u32, bottom: u32, fill: f32) -> Self {
+        Self {
+            inner: self
+                .inner
+                .clone()
+                .pad_with_sides(left, top, right, bottom, fill),
+        }
+    }
+
     fn horizontal_flip(&self) -> Self {
         Self {
             inner: self.inner.clone().horizontal_flip(),
@@ -115,6 +125,26 @@ impl PyTransform {
         Self {
             inner: self.inner.clone().random_resized_crop(width, height),
         }
+    }
+
+    #[pyo3(signature = (width, height, scale=None, ratio=None, interpolation="bilinear"))]
+    fn random_resized_crop_with_options(
+        &self,
+        width: u32,
+        height: u32,
+        scale: Option<Vec<f32>>,
+        ratio: Option<Vec<f32>>,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        let scale = parse_pair(scale, "scale", [0.08, 1.0])?;
+        let ratio = parse_pair(ratio, "ratio", [0.75, 1.3333334])?;
+        let interpolation = parse_interpolation(interpolation)?;
+        let config = rivet_vision::api::RandomResizedCropConfig::new(width, height)
+            .with_params(scale[0], scale[1], ratio[0], ratio[1])
+            .with_interpolation(interpolation);
+        Ok(Self {
+            inner: self.inner.clone().random_resized_crop_with_config(config),
+        })
     }
 
     #[pyo3(signature = (probability=0.5))]
@@ -213,6 +243,24 @@ impl PyTransform {
         Self {
             inner: self.inner.clone().random_erasing(probability),
         }
+    }
+
+    #[pyo3(signature = (probability=0.5, scale=None, ratio=None, value=0.0))]
+    fn random_erasing_with_options(
+        &self,
+        probability: f64,
+        scale: Option<Vec<f32>>,
+        ratio: Option<Vec<f32>>,
+        value: f32,
+    ) -> PyResult<Self> {
+        let scale = parse_pair(scale, "scale", [0.02, 0.33])?;
+        let ratio = parse_pair(ratio, "ratio", [0.3, 3.3333333])?;
+        let config = rivet_vision::api::RandomErasingConfig::new(probability)
+            .with_params(scale[0], scale[1], ratio[0], ratio[1])
+            .with_value(value);
+        Ok(Self {
+            inner: self.inner.clone().random_erasing_with_config(config),
+        })
     }
 
     fn convert_image_dtype(&self, dtype: &str) -> PyResult<Self> {
@@ -419,6 +467,16 @@ impl PyImagePipeline {
         }
     }
 
+    #[pyo3(signature = (left, top, right, bottom, fill=0.0))]
+    fn pad_with_sides(&self, left: u32, top: u32, right: u32, bottom: u32, fill: f32) -> Self {
+        Self {
+            inner: self
+                .inner
+                .clone()
+                .pad_with_sides(left, top, right, bottom, fill),
+        }
+    }
+
     fn horizontal_flip(&self) -> Self {
         Self {
             inner: self.inner.clone().horizontal_flip(),
@@ -442,6 +500,26 @@ impl PyImagePipeline {
         Self {
             inner: self.inner.clone().random_resized_crop(width, height),
         }
+    }
+
+    #[pyo3(signature = (width, height, scale=None, ratio=None, interpolation="bilinear"))]
+    fn random_resized_crop_with_options(
+        &self,
+        width: u32,
+        height: u32,
+        scale: Option<Vec<f32>>,
+        ratio: Option<Vec<f32>>,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        let scale = parse_pair(scale, "scale", [0.08, 1.0])?;
+        let ratio = parse_pair(ratio, "ratio", [0.75, 1.3333334])?;
+        let interpolation = parse_interpolation(interpolation)?;
+        let config = rivet_vision::api::RandomResizedCropConfig::new(width, height)
+            .with_params(scale[0], scale[1], ratio[0], ratio[1])
+            .with_interpolation(interpolation);
+        Ok(Self {
+            inner: self.inner.clone().random_resized_crop_with_config(config),
+        })
     }
 
     #[pyo3(signature = (probability=0.5))]
@@ -572,6 +650,24 @@ impl PyImagePipeline {
         Self {
             inner: self.inner.clone().random_erasing(probability),
         }
+    }
+
+    #[pyo3(signature = (probability=0.5, scale=None, ratio=None, value=0.0))]
+    fn random_erasing_with_options(
+        &self,
+        probability: f64,
+        scale: Option<Vec<f32>>,
+        ratio: Option<Vec<f32>>,
+        value: f32,
+    ) -> PyResult<Self> {
+        let scale = parse_pair(scale, "scale", [0.02, 0.33])?;
+        let ratio = parse_pair(ratio, "ratio", [0.3, 3.3333333])?;
+        let config = rivet_vision::api::RandomErasingConfig::new(probability)
+            .with_params(scale[0], scale[1], ratio[0], ratio[1])
+            .with_value(value);
+        Ok(Self {
+            inner: self.inner.clone().random_erasing_with_config(config),
+        })
     }
 
     fn convert_image_dtype(&self, dtype: &str) -> PyResult<Self> {

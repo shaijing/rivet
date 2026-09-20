@@ -5,7 +5,7 @@ use crate::sample::image::EncodedImageSample;
 use crate::source::ImageSource;
 use crate::transforms::{
     ElasticTransformConfig, InterpolationMode, PerspectiveConfig, Point2, RandomAffineConfig,
-    RandomPerspectiveConfig,
+    RandomErasingConfig, RandomPerspectiveConfig, RandomResizedCropConfig,
 };
 use rivet_core::DType;
 use rivet_data::dataset::Dataset;
@@ -86,6 +86,19 @@ impl ImagePipeline {
         self
     }
 
+    pub fn pad_with_sides(
+        mut self,
+        left: u32,
+        top: u32,
+        right: u32,
+        bottom: u32,
+        value: f32,
+    ) -> Self {
+        self.ops
+            .push(ImageOp::pad_with_sides(left, top, right, bottom, value));
+        self
+    }
+
     pub fn horizontal_flip(mut self) -> Self {
         self.ops.push(ImageOp::horizontal_flip());
         self
@@ -109,6 +122,12 @@ impl ImagePipeline {
 
     pub fn random_resized_crop(mut self, width: u32, height: u32) -> Self {
         self.ops.push(ImageOp::random_resized_crop(width, height));
+        self
+    }
+
+    pub fn random_resized_crop_with_config(mut self, config: RandomResizedCropConfig) -> Self {
+        self.ops
+            .push(ImageOp::random_resized_crop_with_config(config));
         self
     }
 
@@ -188,6 +207,11 @@ impl ImagePipeline {
 
     pub fn random_erasing(mut self, probability: f64) -> Self {
         self.ops.push(ImageOp::random_erasing(probability));
+        self
+    }
+
+    pub fn random_erasing_with_config(mut self, config: RandomErasingConfig) -> Self {
+        self.ops.push(ImageOp::random_erasing_with_config(config));
         self
     }
 

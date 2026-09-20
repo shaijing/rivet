@@ -311,6 +311,11 @@ class Transform:
     def pad(self, padding: int, fill: float = 0.0) -> Transform:
         return Transform(self._inner.pad(padding, fill))
 
+    def pad_with_sides(
+        self, left: int, top: int, right: int, bottom: int, fill: float = 0.0
+    ) -> Transform:
+        return Transform(self._inner.pad_with_sides(left, top, right, bottom, fill))
+
     def horizontal_flip(self) -> Transform:
         return Transform(self._inner.horizontal_flip())
 
@@ -324,6 +329,24 @@ class Transform:
 
     def random_resized_crop(self, width: int, height: int) -> Transform:
         return Transform(self._inner.random_resized_crop(width, height))
+
+    def random_resized_crop_with_options(
+        self,
+        width: int,
+        height: int,
+        scale: Iterable[float] | None = None,
+        ratio: Iterable[float] | None = None,
+        interpolation: str = "bilinear",
+    ) -> Transform:
+        return Transform(
+            self._inner.random_resized_crop_with_options(
+                width,
+                height,
+                None if scale is None else list(scale),
+                None if ratio is None else list(ratio),
+                interpolation,
+            )
+        )
 
     def random_horizontal_flip(self, probability: float = 0.5) -> Transform:
         return Transform(self._inner.random_horizontal_flip(probability))
@@ -375,6 +398,22 @@ class Transform:
 
     def random_erasing(self, probability: float = 0.5) -> Transform:
         return Transform(self._inner.random_erasing(probability))
+
+    def random_erasing_with_options(
+        self,
+        probability: float = 0.5,
+        scale: Iterable[float] | None = None,
+        ratio: Iterable[float] | None = None,
+        value: float = 0.0,
+    ) -> Transform:
+        return Transform(
+            self._inner.random_erasing_with_options(
+                probability,
+                None if scale is None else list(scale),
+                None if ratio is None else list(ratio),
+                value,
+            )
+        )
 
     def convert_image_dtype(self, dtype: str) -> Transform:
         return Transform(self._inner.convert_image_dtype(dtype))
@@ -503,6 +542,14 @@ class Pipeline:
     def pad(self, padding: int, fill: float = 0.0) -> Pipeline:
         return Pipeline(self._inner.pad(padding, fill), as_numpy=self.as_numpy)
 
+    def pad_with_sides(
+        self, left: int, top: int, right: int, bottom: int, fill: float = 0.0
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.pad_with_sides(left, top, right, bottom, fill),
+            as_numpy=self.as_numpy,
+        )
+
     def horizontal_flip(self) -> Pipeline:
         return Pipeline(self._inner.horizontal_flip(), as_numpy=self.as_numpy)
 
@@ -533,6 +580,25 @@ class Pipeline:
     def random_resized_crop(self, width: int, height: int) -> Pipeline:
         return Pipeline(
             self._inner.random_resized_crop(width, height), as_numpy=self.as_numpy
+        )
+
+    def random_resized_crop_with_options(
+        self,
+        width: int,
+        height: int,
+        scale: Iterable[float] | None = None,
+        ratio: Iterable[float] | None = None,
+        interpolation: str = "bilinear",
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.random_resized_crop_with_options(
+                width,
+                height,
+                None if scale is None else list(scale),
+                None if ratio is None else list(ratio),
+                interpolation,
+            ),
+            as_numpy=self.as_numpy,
         )
 
     def random_horizontal_flip(self, probability: float = 0.5) -> Pipeline:
@@ -620,6 +686,23 @@ class Pipeline:
     def random_erasing(self, probability: float = 0.5) -> Pipeline:
         return Pipeline(
             self._inner.random_erasing(probability), as_numpy=self.as_numpy
+        )
+
+    def random_erasing_with_options(
+        self,
+        probability: float = 0.5,
+        scale: Iterable[float] | None = None,
+        ratio: Iterable[float] | None = None,
+        value: float = 0.0,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.random_erasing_with_options(
+                probability,
+                None if scale is None else list(scale),
+                None if ratio is None else list(ratio),
+                value,
+            ),
+            as_numpy=self.as_numpy,
         )
 
     def convert_image_dtype(self, dtype: str) -> Pipeline:

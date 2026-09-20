@@ -533,12 +533,20 @@ impl ImageOp {
         Self::Pad(PadConfig::new(padding).with_fill(value))
     }
 
+    pub fn pad_with_sides(left: u32, top: u32, right: u32, bottom: u32, value: f32) -> Self {
+        Self::Pad(PadConfig::with_sides(left, top, right, bottom).with_fill(value))
+    }
+
     pub fn random_crop(width: u32, height: u32, padding: u32) -> Self {
         Self::RandomCrop(RandomCropConfig::new(width, height, padding))
     }
 
     pub fn random_resized_crop(width: u32, height: u32) -> Self {
         Self::RandomResizedCrop(RandomResizedCropConfig::new(width, height))
+    }
+
+    pub fn random_resized_crop_with_config(config: RandomResizedCropConfig) -> Self {
+        Self::RandomResizedCrop(config)
     }
 
     pub fn horizontal_flip() -> Self {
@@ -673,6 +681,10 @@ impl ImageOp {
 
     pub fn random_erasing(probability: f64) -> Self {
         Self::RandomErasing(RandomErasingConfig::new(probability))
+    }
+
+    pub fn random_erasing_with_config(config: RandomErasingConfig) -> Self {
+        Self::RandomErasing(config)
     }
 
     pub fn convert_image_dtype(dtype: DType) -> Self {
