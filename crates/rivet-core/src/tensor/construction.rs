@@ -3,7 +3,94 @@ use crate::backend::BackendDevice;
 use crate::cpu_backend::CpuDevice;
 use crate::storage::{Storage, validate_layout_for_storage};
 use crate::{DType, Device, Error, Layout, Result, Shape, WithDType};
+use std::ops::Add;
 use std::sync::{Arc, RwLock};
+
+/// Numeric element contract used by [`Tensor::arange`] and
+/// [`Tensor::arange_step`].
+///
+/// This is deliberately separate from `WithDType`: dtype conversion and
+/// storage access do not require ordering or arithmetic semantics.
+pub trait RangeElement: WithDType + PartialEq + PartialOrd + Add<Output = Self> {
+    fn zero() -> Self;
+    fn one() -> Self;
+    fn checked_add(self, rhs: Self) -> Option<Self>;
+}
+
+macro_rules! impl_range_element_int {
+    ($ty:ty) => {
+        impl RangeElement for $ty {
+            fn zero() -> Self {
+                0
+            }
+
+            fn one() -> Self {
+                1
+            }
+
+            fn checked_add(self, rhs: Self) -> Option<Self> {
+                self.checked_add(rhs)
+            }
+        }
+    };
+}
+
+macro_rules! impl_range_element_float {
+    ($ty:ty) => {
+        impl RangeElement for $ty {
+            fn zero() -> Self {
+                0.0
+            }
+
+            fn one() -> Self {
+                1.0
+            }
+
+            fn checked_add(self, rhs: Self) -> Option<Self> {
+                let next = self + rhs;
+                next.is_finite().then_some(next)
+            }
+        }
+    };
+}
+
+impl_range_element_int!(u8);
+impl_range_element_int!(u32);
+impl_range_element_int!(i16);
+impl_range_element_int!(i32);
+impl_range_element_int!(i64);
+impl_range_element_float!(f32);
+impl_range_element_float!(f64);
+
+impl RangeElement for half::bf16 {
+    fn zero() -> Self {
+        Self::from_f32(0.0)
+    }
+
+    fn one() -> Self {
+        Self::from_f32(1.0)
+    }
+
+    fn checked_add(self, rhs: Self) -> Option<Self> {
+        let next = self + rhs;
+        next.is_finite().then_some(next)
+    }
+}
+
+impl RangeElement for half::f16 {
+    fn zero() -> Self {
+        Self::from_f32(0.0)
+    }
+
+    fn one() -> Self {
+        Self::from_f32(1.0)
+    }
+
+    fn checked_add(self, rhs: Self) -> Option<Self> {
+        let next = self + rhs;
+        next.is_finite().then_some(next)
+    }
+}
 
 impl Tensor {
     pub(super) fn from_parts(
@@ -110,5 +197,74 @@ impl Tensor {
             Device::Cpu => CpuDevice.ones(&shape, dtype)?,
         };
         Self::from_storage(Storage::Cpu(storage), shape, device)
+    }
+
+    /// Creates a tensor filled with one scalar value.
+    pub fn full<D, S>(value: D, shape: S, device: &Device) -> Result<Self>
+    where
+        D: WithDType,
+        S: Into<Shape>,
+    {
+        let shape = shape.into();
+        Self::from_vec(vec![value; shape.elem_count()], shape, device)
+    }
+
+    /// Creates a one-dimensional tensor from an iterator.
+    pub fn from_iter<D>(iter: impl IntoIterator<Item = D>, device: &Device) -> Result<Self>
+    where
+        D: WithDType,
+    {
+        let values = iter.into_iter().collect::<Vec<_>>();
+        let len = values.len();
+        Self::from_vec(values, len, device)
+    }
+
+    /// Creates values in the half-open interval `[start, end)` with step one.
+    pub fn arange<D>(start: D, end: D, device: &Device) -> Result<Self>
+    where
+        D: RangeElement,
+    {
+        Self::arange_step(start, end, D::one(), device)
+    }
+
+    /// Creates values in a half-open range using an explicit step.
+    pub fn arange_step<D>(start: D, end: D, step: D, device: &Device) -> Result<Self>
+    where
+        D: RangeElement,
+    {
+        if step == D::zero() {
+            return Err(Error::InvalidRangeStep);
+        }
+
+        let increasing = step > D::zero();
+        let mut current = start;
+        let mut values = Vec::new();
+        while if increasing {
+            current < end
+        } else {
+            current > end
+        } {
+            values.push(current);
+            let next = current.checked_add(step).ok_or(Error::RangeOverflow)?;
+            if (increasing && next <= current) || (!increasing && next >= current) {
+                return Err(Error::RangeOverflow);
+            }
+            current = next;
+        }
+
+        let len = values.len();
+        Self::from_vec(values, len, device)
+    }
+
+    /// Creates a tensor filled with zeros and matching this tensor's shape,
+    /// dtype, and device.
+    pub fn zeros_like(&self) -> Result<Self> {
+        Self::zeros(self.shape().clone(), self.dtype(), self.device())
+    }
+
+    /// Creates a tensor filled with ones and matching this tensor's shape,
+    /// dtype, and device.
+    pub fn ones_like(&self) -> Result<Self> {
+        Self::ones(self.shape().clone(), self.dtype(), self.device())
     }
 }

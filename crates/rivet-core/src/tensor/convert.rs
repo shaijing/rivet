@@ -25,6 +25,13 @@ impl Tensor {
         Self::from_storage(storage, self.shape().clone(), self.device())
     }
 
+    /// Materializes the logical tensor into a new contiguous allocation even
+    /// when the input is already contiguous.
+    pub fn force_contiguous(&self) -> Result<Self> {
+        let storage = Storage::copy_logical(&self.storage(), self.layout())?;
+        Self::from_storage(storage, self.shape().clone(), self.device())
+    }
+
     pub fn to_dtype(&self, dtype: DType) -> Result<Self> {
         if dtype == self.dtype() {
             return Ok(self.clone());

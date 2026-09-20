@@ -9,6 +9,8 @@ mod convert;
 mod ops;
 mod view;
 
+pub use construction::RangeElement;
+
 /// Unique identifier for a logical tensor node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TensorId(u64);

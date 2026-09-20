@@ -1,4 +1,4 @@
-use rivet_core::{CpuStorageRef, DType, Device, Layout, Shape, Tensor};
+use rivet_core::{CpuStorageRef, DType, Device, Error, Layout, Shape, Tensor};
 
 #[test]
 fn shape_and_layout_metadata_match_candle_semantics() {
@@ -257,5 +257,195 @@ fn cat_and_stack_support_non_contiguous_inputs() {
     assert_eq!(
         stacked.to_vec::<i32>().unwrap(),
         vec![1, 4, 2, 5, 3, 6, 1, 4, 2, 5, 3, 6]
+    );
+}
+
+#[test]
+fn phase1_construction_and_access_apis_follow_tensor_contracts() {
+    let full = Tensor::full(7u8, [2, 2], &Device::Cpu).unwrap();
+    assert_eq!(full.to_vec::<u8>().unwrap(), [7, 7, 7, 7]);
+
+    let zeros = full.zeros_like().unwrap();
+    let ones = full.ones_like().unwrap();
+    assert_eq!(zeros.dtype(), DType::U8);
+    assert_eq!(zeros.dims(), &[2, 2]);
+    assert_eq!(zeros.to_vec::<u8>().unwrap(), [0, 0, 0, 0]);
+    assert_eq!(ones.to_vec::<u8>().unwrap(), [1, 1, 1, 1]);
+    assert!(!zeros.same_storage(&full));
+
+    let from_iter = Tensor::from_iter(0u32..4, &Device::Cpu).unwrap();
+    assert_eq!(from_iter.dims(), &[4]);
+    assert_eq!(from_iter.to_vec::<u32>().unwrap(), [0, 1, 2, 3]);
+
+    assert_eq!(
+        Tensor::arange(0u8, 5u8, &Device::Cpu)
+            .unwrap()
+            .to_vec::<u8>()
+            .unwrap(),
+        [0, 1, 2, 3, 4]
+    );
+    assert_eq!(
+        Tensor::arange_step(5i32, 0i32, -2i32, &Device::Cpu)
+            .unwrap()
+            .to_vec::<i32>()
+            .unwrap(),
+        [5, 3, 1]
+    );
+    assert!(matches!(
+        Tensor::arange_step(0i32, 1i32, 0i32, &Device::Cpu),
+        Err(Error::InvalidRangeStep)
+    ));
+
+    let scalar = Tensor::from_vec(vec![42i64], (), &Device::Cpu).unwrap();
+    assert_eq!(scalar.to_scalar::<i64>().unwrap(), 42);
+    assert_eq!(scalar.to_vec0::<i64>().unwrap(), 42);
+
+    let tensor = Tensor::from_vec((0u8..24).collect(), [2, 3, 4], &Device::Cpu).unwrap();
+    assert_eq!(tensor.dim(0).unwrap(), 2);
+    assert_eq!(tensor.dim(2).unwrap(), 4);
+    assert!(matches!(
+        tensor.dim(3),
+        Err(Error::InvalidDim { dim: 3, .. })
+    ));
+    assert_eq!(
+        tensor.to_vec3::<u8>().unwrap(),
+        vec![
+            vec![vec![0, 1, 2, 3], vec![4, 5, 6, 7], vec![8, 9, 10, 11]],
+            vec![
+                vec![12, 13, 14, 15],
+                vec![16, 17, 18, 19],
+                vec![20, 21, 22, 23]
+            ],
+        ]
+    );
+
+    let transposed = tensor.permute(&[2, 0, 1]).unwrap();
+    assert_eq!(
+        transposed.to_vec3::<u8>().unwrap(),
+        vec![
+            vec![vec![0, 4, 8], vec![12, 16, 20]],
+            vec![vec![1, 5, 9], vec![13, 17, 21]],
+            vec![vec![2, 6, 10], vec![14, 18, 22]],
+            vec![vec![3, 7, 11], vec![15, 19, 23]],
+        ]
+    );
+    let empty = Tensor::zeros([2, 0, 3], DType::F32, &Device::Cpu).unwrap();
+    assert_eq!(
+        empty.to_vec3::<f32>().unwrap(),
+        vec![Vec::<Vec<f32>>::new(), Vec::<Vec<f32>>::new()]
+    );
+}
+
+#[test]
+fn phase1_view_composition_preserves_logical_order_and_storage_contracts() {
+    let tensor = Tensor::from_vec((0u8..24).collect(), [2, 3, 4], &Device::Cpu).unwrap();
+
+    let first = tensor.get(1).unwrap();
+    assert_eq!(first.dims(), &[3, 4]);
+    assert_eq!(
+        first.to_vec::<u8>().unwrap(),
+        (12u8..24).collect::<Vec<_>>()
+    );
+    assert!(first.same_storage(&tensor));
+
+    let middle = tensor.get_on_dim(1, 2).unwrap();
+    assert_eq!(middle.dims(), &[2, 4]);
+    assert_eq!(
+        middle.to_vec::<u8>().unwrap(),
+        [8, 9, 10, 11, 20, 21, 22, 23]
+    );
+    assert!(middle.same_storage(&tensor));
+
+    let matrix = Tensor::from_vec((0u8..6).collect(), [2, 3], &Device::Cpu).unwrap();
+    assert_eq!(matrix.t().unwrap().dims(), &[3, 2]);
+    assert_eq!(
+        matrix.t().unwrap().to_vec::<u8>().unwrap(),
+        [0, 3, 1, 4, 2, 5]
+    );
+    assert!(matches!(tensor.t(), Ok(_)));
+    assert!(
+        Tensor::from_vec(vec![1u8], 1, &Device::Cpu)
+            .unwrap()
+            .t()
+            .is_err()
+    );
+
+    let flattened = tensor.flatten(1, 2).unwrap();
+    assert_eq!(flattened.dims(), &[2, 12]);
+    assert!(flattened.same_storage(&tensor));
+    assert_eq!(tensor.flatten_to(1).unwrap().dims(), &[6, 4]);
+    assert_eq!(tensor.flatten_from(1).unwrap().dims(), &[2, 12]);
+
+    let non_contiguous = tensor.permute(&[1, 0, 2]).unwrap();
+    let flattened_view = non_contiguous.flatten(0, 1).unwrap();
+    assert_eq!(flattened_view.dims(), &[6, 4]);
+    assert!(!flattened_view.same_storage(&non_contiguous));
+    assert_eq!(
+        flattened_view.to_vec::<u8>().unwrap(),
+        vec![
+            0, 1, 2, 3, 12, 13, 14, 15, 4, 5, 6, 7, 16, 17, 18, 19, 8, 9, 10, 11, 20, 21, 22, 23,
+        ]
+    );
+
+    let row = Tensor::from_vec(vec![1u8, 2, 3], [1, 3], &Device::Cpu).unwrap();
+    let left = row.broadcast_left([2]).unwrap();
+    assert_eq!(left.dims(), &[2, 1, 3]);
+    assert_eq!(left.to_vec::<u8>().unwrap(), [1, 2, 3, 1, 2, 3]);
+    assert!(left.same_storage(&row));
+    assert_eq!(row.expand([4, 3]).unwrap().dims(), &[4, 3]);
+
+    let one_dim = Tensor::from_vec((0u8..10).collect(), 10, &Device::Cpu).unwrap();
+    let chunks = one_dim.chunk(3, 0).unwrap();
+    assert_eq!(
+        chunks
+            .iter()
+            .map(|chunk| chunk.dims().to_vec())
+            .collect::<Vec<_>>(),
+        vec![vec![4], vec![3], vec![3]]
+    );
+    assert_eq!(chunks[0].to_vec::<u8>().unwrap(), [0, 1, 2, 3]);
+    assert_eq!(chunks[2].to_vec::<u8>().unwrap(), [7, 8, 9]);
+    assert_eq!(one_dim.chunk(20, 0).unwrap().len(), 10);
+    assert!(matches!(
+        one_dim.chunk(0, 0),
+        Err(Error::InvalidChunkCount { chunks: 0 })
+    ));
+
+    let repeated = Tensor::from_vec(vec![1u8, 2], [2, 1], &Device::Cpu)
+        .unwrap()
+        .repeat([2, 3])
+        .unwrap();
+    assert_eq!(repeated.dims(), &[4, 3]);
+    assert_eq!(
+        repeated.to_vec::<u8>().unwrap(),
+        [1, 1, 1, 2, 2, 2, 1, 1, 1, 2, 2, 2]
+    );
+
+    assert_eq!(
+        one_dim.roll(1, 0).unwrap().to_vec::<u8>().unwrap(),
+        [9, 0, 1, 2, 3, 4, 5, 6, 7, 8]
+    );
+    assert_eq!(
+        one_dim.roll(-2, 0).unwrap().to_vec::<u8>().unwrap(),
+        [2, 3, 4, 5, 6, 7, 8, 9, 0, 1]
+    );
+    let empty = Tensor::zeros([0], DType::U8, &Device::Cpu).unwrap();
+    assert!(empty.roll(1, 0).unwrap().same_storage(&empty));
+
+    let forced = tensor.force_contiguous().unwrap();
+    assert!(forced.is_contiguous());
+    assert!(!forced.same_storage(&tensor));
+    assert_eq!(
+        forced.to_vec::<u8>().unwrap(),
+        tensor.to_vec::<u8>().unwrap()
+    );
+
+    let offset = tensor.narrow(0, 1, 1).unwrap();
+    let forced_offset = offset.force_contiguous().unwrap();
+    assert_eq!(forced_offset.layout().start_offset(), 0);
+    assert!(!forced_offset.same_storage(&offset));
+    assert_eq!(
+        forced_offset.to_vec::<u8>().unwrap(),
+        offset.to_vec::<u8>().unwrap()
     );
 }

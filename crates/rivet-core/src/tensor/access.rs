@@ -29,6 +29,14 @@ impl Tensor {
         self.layout().dims()
     }
 
+    /// Returns the size of one dimension.
+    pub fn dim(&self, dim: usize) -> Result<usize> {
+        self.dims().get(dim).copied().ok_or(Error::InvalidDim {
+            dim,
+            rank: self.rank(),
+        })
+    }
+
     pub fn stride(&self) -> &[usize] {
         self.layout().stride()
     }
@@ -130,6 +138,11 @@ impl Tensor {
     }
 
     pub fn to_vec0<T: WithDType>(&self) -> Result<T> {
+        self.to_scalar()
+    }
+
+    /// Extracts the only value from a rank-0 tensor.
+    pub fn to_scalar<T: WithDType>(&self) -> Result<T> {
         if self.rank() != 0 {
             return Err(Error::InvalidRank {
                 expected: 0,
@@ -165,6 +178,36 @@ impl Tensor {
             return Ok((0..self.dims()[0]).map(|_| Vec::new()).collect());
         }
         Ok(values.chunks(width).map(ToOwned::to_owned).collect())
+    }
+
+    pub fn to_vec3<T: WithDType>(&self) -> Result<Vec<Vec<Vec<T>>>> {
+        if self.rank() != 3 {
+            return Err(Error::InvalidRank {
+                expected: 3,
+                actual: self.rank(),
+            });
+        }
+        let values = self.to_vec::<T>()?;
+        let [dim0, dim1, dim2] = self.dims() else {
+            unreachable!("rank was checked above");
+        };
+        let mut output = Vec::with_capacity(*dim0);
+        let mut offset = 0usize;
+        for _ in 0..*dim0 {
+            let mut rows = Vec::with_capacity(*dim1);
+            for _ in 0..*dim1 {
+                let end = offset.checked_add(*dim2).ok_or(Error::StorageOutOfBounds)?;
+                rows.push(
+                    values
+                        .get(offset..end)
+                        .ok_or(Error::StorageOutOfBounds)?
+                        .to_vec(),
+                );
+                offset = end;
+            }
+            output.push(rows);
+        }
+        Ok(output)
     }
 
     pub fn flatten_all(&self) -> Result<Self> {

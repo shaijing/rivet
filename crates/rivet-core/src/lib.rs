@@ -19,4 +19,4 @@ pub use ops::{BinaryOp, UnaryOp};
 pub use shape::Shape;
 pub use storage::{Storage, StorageMutRef, StorageRef};
 pub use strided_index::StridedIndex;
-pub use tensor::{Tensor, TensorId};
+pub use tensor::{RangeElement, Tensor, TensorId};

@@ -59,8 +59,17 @@ pub enum Error {
     #[error("invalid concat dimension {dim} for rank {rank}")]
     InvalidConcatDim { dim: usize, rank: usize },
 
+    #[error("chunk count must be greater than zero, got {chunks}")]
+    InvalidChunkCount { chunks: usize },
+
     #[error("tensor list cannot be empty")]
     EmptyTensorList,
+
+    #[error("range step must not be zero")]
+    InvalidRangeStep,
+
+    #[error("range progression overflowed or stopped making progress")]
+    RangeOverflow,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
