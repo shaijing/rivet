@@ -1,6 +1,6 @@
 use crate::errors::RivetResult;
-use crate::image::{from_rgb_image, into_rgb_image};
 use crate::sample::image::ImageSample;
+use crate::transforms::{from_rgb_image, into_rgb_image};
 use image::imageops::{brighten, contrast};
 
 #[derive(Clone, Copy)]

@@ -1,3 +1,10 @@
+//! Typed, zero-copy access to one row of an Arrow [`RecordBatch`].
+//!
+//! `ArrowRow` is an Arrow backend helper. It deliberately understands only
+//! Arrow physical types and is not a universal sample or modality
+//! representation. Modality adapters should translate its values into their
+//! own sample types at the backend boundary.
+
 use crate::errors::{DataError, DataResult, invalid_argument};
 use arrow::array::{
     Array, BinaryArray, Int32Array, Int64Array, LargeBinaryArray, LargeStringArray, StringArray,

@@ -152,11 +152,11 @@ impl<'a> IntoIterator for &'a mut ImageDataLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dataset::Dataset;
     use crate::pipeline::ImagePipeline;
     use crate::sample::image::EncodedImageSample;
     use arrow_buffer::Buffer;
     use rivet_core::DType;
+    use rivet_data::dataset::Dataset;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // 1x1 RGB PNG (red pixel), valid input for decode_image.

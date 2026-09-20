@@ -8,11 +8,12 @@ pub use builder::ImagePipeline;
 mod tests {
     use super::ImagePipeline;
     use crate::cache::DenseImageMemoryDataset;
-    use crate::dataset::{Dataset, ImageSource};
     use crate::pipeline::op::{ExecutionKind, PipelineImageState};
     use crate::sample::image::{DecodedSample, EncodedImageSample, ImageLayout};
+    use crate::source::ImageSource;
     use arrow_buffer::Buffer;
     use rivet_core::{DType, Device, Tensor};
+    use rivet_data::dataset::Dataset;
     use std::sync::Arc;
 
     struct StubDataset {

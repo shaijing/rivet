@@ -50,6 +50,17 @@ while let Some(batch) = loader.next_batch()? {
 
 More complete examples are available in `crates/rivet-vision/examples`.
 
+Rust namespace migration:
+
+- Use `rivet_vision::datasets`, `rivet_vision::transforms`, and
+  `rivet_vision::pipeline` for the image implementation APIs.
+- `rivet_vision::api` is the supported cross-module facade for integrations
+  such as PyO3. The singular `rivet_vision::dataset` and `rivet_vision::image`
+  modules remain deprecated compatibility shims.
+- Arrow storage types are scoped to
+  `rivet_data::dataset::arrow::{ArrowRow, MmapArrowTable}`; they are not
+  re-exported from the `rivet-data` crate root.
+
 ## Python
 
 The Python package is built with Maturin. From a virtual environment:
@@ -62,10 +73,10 @@ maturin develop -j 8 --features lance
 Example:
 
 ```python
-import rivet
+from rivet import vision
 
 loader = (
-    rivet.scan_image_folder("data/images")
+    vision.scan_image_folder("data/images")
     .decode_image()
     .resize(224, 224)
     .batch(32)
@@ -78,6 +89,10 @@ for batch in loader:
     labels = batch["labels"]
     print(images.shape, labels.shape)
 ```
+
+`rivet` keeps the same names as a compatibility root during the migration;
+new image code should use `rivet.vision`. No placeholder namespace is added
+for modalities that do not yet have a public implementation.
 
 Lance support is optional and uses the native image schema (`image` plus
 `label`) or the supported Hugging Face-compatible image struct.

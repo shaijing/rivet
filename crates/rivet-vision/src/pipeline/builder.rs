@@ -1,7 +1,8 @@
 use super::op::{BatchConfig, ImageOp, IndexOp, SourceOp};
-use crate::dataset::{Dataset, ImageSource};
 use crate::runtime::RuntimeConfig;
 use crate::sample::image::EncodedImageSample;
+use crate::source::ImageSource;
+use rivet_data::dataset::Dataset;
 use std::sync::Arc;
 
 #[derive(Clone)]

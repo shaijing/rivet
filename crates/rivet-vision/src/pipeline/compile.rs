@@ -118,7 +118,7 @@ fn compile_image_ops(
             ExecutionKind::Sample => {
                 if batch_stage_started {
                     return Err(invalid_pipeline(format!(
-                        "{} cannot follow the batch stage; move sample operations before normalize/layout",
+                        "{} cannot follow the batch stage; move sample operations before normalize/layout (sample ops require uint8 HWC input)",
                         op.name()
                     )));
                 }

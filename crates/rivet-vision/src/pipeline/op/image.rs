@@ -1,14 +1,14 @@
 use super::context::SampleContext;
 use crate::errors::{RivetResult, invalid_argument, invalid_pipeline};
-use crate::image::color::{BrightnessConfig, ContrastConfig};
-use crate::image::crop::{CenterCropConfig, CropConfig, RandomCropConfig};
-use crate::image::decode::DecodeImageConfig;
-use crate::image::flip::{FlipConfig, FlipDirection, RandomHorizontalFlipConfig};
-use crate::image::layout::LayoutConfig;
-use crate::image::normalize::NormalizeConfig;
-use crate::image::resize::ResizeConfig;
 use crate::sample::image::ImageLayout;
 use crate::sample::image::ImageSample;
+use crate::transforms::color::{BrightnessConfig, ContrastConfig};
+use crate::transforms::crop::{CenterCropConfig, CropConfig, RandomCropConfig};
+use crate::transforms::decode::DecodeImageConfig;
+use crate::transforms::flip::{FlipConfig, FlipDirection, RandomHorizontalFlipConfig};
+use crate::transforms::layout::LayoutConfig;
+use crate::transforms::normalize::NormalizeConfig;
+use crate::transforms::resize::ResizeConfig;
 use rivet_core::DType;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

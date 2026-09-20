@@ -1,6 +1,6 @@
 use crate::errors::{RivetResult, invalid_argument};
-use crate::image::from_rgb_image;
 use crate::sample::image::{DecodedSample, ImageSample};
+use crate::transforms::from_rgb_image;
 
 #[derive(Clone, Copy)]
 pub struct DecodeImageConfig;

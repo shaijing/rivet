@@ -85,6 +85,29 @@ impl ImageSource {
         Ok(samples.remove(0))
     }
 
+    /// Return an encoded sample when this source still exposes encoded data.
+    ///
+    /// This keeps integrations from matching on the internal source enum just
+    /// to implement a point read.
+    pub fn get_encoded(&self, index: usize) -> VisionResult<EncodedImageSample> {
+        match self.get(index)? {
+            ImageSample::Encoded(sample) => Ok(sample),
+            ImageSample::Decoded(_) => Err(invalid_argument(
+                "encoded samples are unavailable after decoded caching",
+            )),
+        }
+    }
+
+    /// Return one decoded sample as the standard one-item image batch.
+    pub fn get_decoded_batch(&self, index: usize) -> VisionResult<ImageBatch> {
+        match self.get(index)? {
+            ImageSample::Encoded(sample) => {
+                crate::api::decode_image_batch(sample.image.as_slice(), sample.label)
+            }
+            ImageSample::Decoded(sample) => crate::api::single_sample_batch(sample),
+        }
+    }
+
     pub fn get_many(&self, indices: &[usize]) -> VisionResult<Vec<ImageSample>> {
         match self {
             Self::Encoded(source) => Ok(source
@@ -150,6 +173,11 @@ impl ImageSource {
                 Self::Decoded(_) | Self::DenseDecoded(..) => Ok(self.clone()),
             },
         }
+    }
+
+    /// Cache this source using the public vision cache configuration.
+    pub fn cache_config(&self, config: crate::cache::CacheConfig) -> RivetResult<Self> {
+        self.cache(config.policy())
     }
 
     pub fn cache_encoded(&self, chunk_size: usize) -> RivetResult<Self> {

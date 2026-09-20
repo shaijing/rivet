@@ -6,8 +6,8 @@
 //! ```
 
 use rivet_core::{Device, Tensor};
-use rivet_vision::image::normalize::{normalize_u8_batch_to_f32, normalize_u8_to_f32};
 use rivet_vision::sample::image::ImageLayout;
+use rivet_vision::transforms::normalize::{normalize_u8_batch_to_f32, normalize_u8_to_f32};
 use std::env;
 use std::hint::black_box;
 use std::time::Instant;

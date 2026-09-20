@@ -1,7 +1,7 @@
 use crate::errors::RivetResult;
-use crate::image::{from_rgb_image, into_rgb_image};
 use crate::pipeline::op::SampleContext;
 use crate::sample::image::ImageSample;
+use crate::transforms::{from_rgb_image, into_rgb_image};
 use image::imageops::{flip_horizontal, flip_vertical};
 
 #[derive(Clone, Copy)]
@@ -52,8 +52,8 @@ impl RandomHorizontalFlipConfig {
 
 #[cfg(test)]
 mod tests {
+    use super::{FlipConfig, FlipDirection};
     use super::{RandomHorizontalFlipConfig, SampleContext};
-    use crate::image::flip::{FlipConfig, FlipDirection};
     use crate::sample::image::ImageSample::Decoded;
     use crate::sample::image::{DecodedSample, ImageSample};
     use rivet_core::{Device, Tensor};

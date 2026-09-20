@@ -63,7 +63,7 @@
 |group#storage| "Data sources" { cell: 3 2; } [
   |cyl#arrow| "Hugging Face / Arrow IPC" .storage
   |cyl#folder| "ImageFolder\nclass directories" .storage
-  |box#table| "MmapArrowTable + ArrowRow\nschema checks, zero-copy views" .storage
+  |box#table| "dataset::arrow::{MmapArrowTable, ArrowRow}\nschema checks, zero-copy views" .storage
   |box#encoded| "EncodedImageSample\nshared bytes + label" .storage
 
   arrow -> table "mmap + IPC decode"

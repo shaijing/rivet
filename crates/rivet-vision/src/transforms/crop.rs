@@ -1,7 +1,7 @@
 use crate::errors::{RivetResult, invalid_shape};
-use crate::image::{from_rgb_image, into_rgb_image};
 use crate::pipeline::op::SampleContext;
 use crate::sample::image::{ImageLayout, ImageSample};
+use crate::transforms::{from_rgb_image, into_rgb_image};
 use image::imageops::crop_imm;
 use image::{Rgb, RgbImage};
 

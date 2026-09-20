@@ -1,6 +1,6 @@
-use crate::dataset::ImageSource;
 use crate::errors::RivetResult;
 use crate::sample::image::{ImageBatch, ImageSample};
+use crate::source::ImageSource;
 
 #[derive(Clone)]
 pub struct SourceOp {

@@ -4,12 +4,10 @@ use numpy::{PyArray1, PyArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rivet_core::{DType, Tensor};
-use rivet_vision::batch::ImageBatchBuilder;
-use rivet_vision::datasets::ArrowImageDataset;
-use rivet_vision::errors::invalid_argument;
-use rivet_vision::pipeline::ImagePipeline;
-use rivet_vision::runtime::ImageDataLoader;
-use rivet_vision::sample::image::ImageBatch;
+use rivet_vision::api::{
+    ArrowImageDataset, ImageBatch, ImageDataLoader, ImagePipeline, empty_image_batch,
+    invalid_argument,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -72,11 +70,10 @@ pub(crate) fn read_image_batch(
         .batch(batch_size, false)
         .compile_from(start)
         .map_err(to_py_err)?;
-    let batch = loader.next_batch().map_err(to_py_err)?.unwrap_or_else(|| {
-        ImageBatchBuilder::with_capacity(0)
-            .finish()
-            .expect("empty batch")
-    });
+    let batch = loader
+        .next_batch()
+        .map_err(to_py_err)?
+        .unwrap_or_else(|| empty_image_batch().expect("empty batch"));
 
     image_batch_to_py(py, batch)
 }

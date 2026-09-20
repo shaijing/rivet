@@ -1,7 +1,8 @@
 use crate::sample::image::EncodedImageSample;
 use arrow::datatypes::{DataType, Schema};
+use rivet_data::dataset::Dataset;
+use rivet_data::dataset::arrow::MmapArrowTable;
 use rivet_data::dataset::source::validate_indices;
-use rivet_data::dataset::{Dataset, MmapArrowTable};
 use rivet_data::errors::{DataResult, invalid_argument};
 use std::path::PathBuf;
 use std::sync::Arc;

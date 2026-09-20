@@ -1,3 +1,10 @@
+"""Rivet's backwards-compatible root namespace.
+
+The canonical image API is available from :mod:`rivet.vision`. The root
+exports remain during the namespace migration so existing applications can
+upgrade without changing every import at once.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -40,7 +47,18 @@ __all__ = [
     "scan_hf",
     "scan_image_folder",
     "scan_lance",
+    "vision",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name == "vision":
+        import importlib
+
+        module = importlib.import_module(".vision", __name__)
+        globals()[name] = module
+        return module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _normalize_arrow_files(arrow_files: Iterable[str | Path]) -> list[str]:
