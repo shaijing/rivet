@@ -21,14 +21,13 @@ maturin develop -j 12
 maturin build -j 12
 ```
 
-Use the following commands when the Lance backend is needed:
-
 ```bash
+# Lance is enabled by default. Use --no-default-features to disable it.
 # Debug editable install
-maturin develop -j 12 --features lance
+maturin develop -j 12
 
 # Release editable install (use this for benchmarks)
-maturin develop --release -j 12 --features lance
+maturin develop --release -j 12
 ```
 
 

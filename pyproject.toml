@@ -24,7 +24,6 @@ dependencies = [
 python-source = "src"
 module-name = "rivet._rivet"
 manifest-path = "crates/rivet-python/Cargo.toml"
-features = ["lance"]
 
 [dependency-groups]
 dev = [

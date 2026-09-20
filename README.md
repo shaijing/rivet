@@ -2,7 +2,7 @@
 
 Rivet is a Rust and Python image data pipeline for loading, transforming, and
 batching datasets. It provides zero-copy tensor views where possible, bounded
-multi-worker loading, deterministic sampling, and optional Lance support.
+multi-worker loading, deterministic sampling, and Lance-backed dataset support.
 
 ## Workspace crates
 
@@ -19,12 +19,6 @@ Run the focused test suites with:
 cargo test -j 8 -p rivet-core --lib
 cargo test -j 8 -p rivet-data --lib
 cargo test -j 8 -p rivet-vision --lib
-```
-
-Enable the optional Lance backend with:
-
-```bash
-cargo test -j 8 -p rivet-vision --lib --features lance
 ```
 
 The image pipeline can be assembled from a dataset and compiled into a loader:
@@ -86,7 +80,7 @@ The Python package is built with Maturin. From a virtual environment:
 
 ```bash
 python -m pip install maturin
-maturin develop -j 8 --features lance
+maturin develop -j 8
 ```
 
 Example:
@@ -113,7 +107,7 @@ for batch in loader:
 new image code should use `rivet.vision`. No placeholder namespace is added
 for modalities that do not yet have a public implementation.
 
-Lance support is optional and uses the native image schema (`image` plus
+Lance support is enabled by default and uses the native image schema (`image` plus
 `label`) or the supported Hugging Face-compatible image struct.
 
 ## License

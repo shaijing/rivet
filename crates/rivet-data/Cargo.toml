@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Dataset abstractions, storage backends, sampling, caching, and runtime primitives"
 
 [features]
-default = []
+default = ["lance"]
 lance = ["dep:lance"]
 
 [dependencies]

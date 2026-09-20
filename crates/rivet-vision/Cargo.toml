@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Image datasets, transforms, batching, caching, and data loading pipelines"
 
 [features]
-default = []
+default = ["lance"]
 lance = ["rivet-data/lance", "dep:lance"]
 
 [dependencies]
