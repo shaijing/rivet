@@ -344,6 +344,22 @@ class Pipeline:
     def contrast(self, value: float) -> Pipeline:
         return Pipeline(self._inner.contrast(value), as_numpy=self.as_numpy)
 
+    def hue(self, degrees: int) -> Pipeline:
+        return Pipeline(self._inner.hue(degrees), as_numpy=self.as_numpy)
+
+    def grayscale(self, num_output_channels: int = 1) -> Pipeline:
+        return Pipeline(
+            self._inner.grayscale(num_output_channels), as_numpy=self.as_numpy
+        )
+
+    def convert_image_dtype(self, dtype: str) -> Pipeline:
+        return Pipeline(
+            self._inner.convert_image_dtype(dtype), as_numpy=self.as_numpy
+        )
+
+    def rotate(self, angle: int) -> Pipeline:
+        return Pipeline(self._inner.rotate(angle), as_numpy=self.as_numpy)
+
     def normalize(self, mean: list[float], std: list[float]) -> Pipeline:
         return Pipeline(self._inner.normalize(mean, std), as_numpy=self.as_numpy)
 

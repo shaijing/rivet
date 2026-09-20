@@ -2,12 +2,14 @@ use super::context::SampleContext;
 use crate::errors::{RivetResult, invalid_argument, invalid_pipeline};
 use crate::sample::image::ImageAxisOrder;
 use crate::sample::image::ImageSample;
-use crate::transforms::color::{BrightnessConfig, ContrastConfig};
+use crate::transforms::color::{BrightnessConfig, ContrastConfig, GrayscaleConfig, HueConfig};
 use crate::transforms::geometry::{
     CenterCropConfig, CropConfig, FlipConfig, InterpolationMode, LayoutConfig, RandomCropConfig,
-    RandomHorizontalFlipConfig, ResizeConfig,
+    RandomHorizontalFlipConfig, ResizeConfig, RotateConfig, RotationAngle,
 };
-use crate::transforms::representation::{DecodeImageConfig, NormalizeConfig};
+use crate::transforms::representation::{
+    ConvertImageDtypeConfig, DecodeImageConfig, NormalizeConfig,
+};
 use rivet_core::DType;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +29,10 @@ pub enum ImageOp {
     RandomHorizontalFlip(RandomHorizontalFlipConfig),
     Brightness(BrightnessConfig),
     Contrast(ContrastConfig),
+    Hue(HueConfig),
+    Grayscale(GrayscaleConfig),
+    ConvertImageDtype(ConvertImageDtypeConfig),
+    Rotate(RotateConfig),
     Normalize(NormalizeConfig),
     NormalizeToChw(NormalizeConfig),
     Layout(LayoutConfig),
@@ -53,7 +59,11 @@ impl ImageOp {
             | Self::RandomCrop(_)
             | Self::RandomHorizontalFlip(_)
             | Self::Brightness(_)
-            | Self::Contrast(_) => ExecutionKind::Sample,
+            | Self::Contrast(_)
+            | Self::Hue(_)
+            | Self::Grayscale(_)
+            | Self::ConvertImageDtype(_)
+            | Self::Rotate(_) => ExecutionKind::Sample,
         }
     }
 
@@ -68,6 +78,10 @@ impl ImageOp {
             Self::RandomHorizontalFlip(_) => "RandomHorizontalFlip",
             Self::Brightness(_) => "Brightness",
             Self::Contrast(_) => "Contrast",
+            Self::Hue(_) => "Hue",
+            Self::Grayscale(_) => "Grayscale",
+            Self::ConvertImageDtype(_) => "ConvertImageDtype",
+            Self::Rotate(_) => "Rotate",
             Self::Normalize(_) => "Normalize",
             Self::NormalizeToChw(_) => "NormalizeToChw",
             Self::Layout(_) => "Layout",
@@ -88,13 +102,25 @@ impl ImageOp {
                 )),
             },
             Self::Resize(_) => require_u8_hwc(input, "Resize"),
-            Self::Crop(_) => require_u8_hwc(input, "Crop"),
-            Self::CenterCrop(_) => require_u8_hwc(input, "CenterCrop"),
-            Self::Flip(_) => require_u8_hwc(input, "Flip"),
+            Self::Crop(_) => require_u8_decoded(input, "Crop"),
+            Self::CenterCrop(_) => require_u8_decoded(input, "CenterCrop"),
+            Self::Flip(_) => require_u8_decoded(input, "Flip"),
             Self::RandomCrop(_) => require_u8_hwc(input, "RandomCrop"),
-            Self::RandomHorizontalFlip(_) => require_u8_hwc(input, "RandomHorizontalFlip"),
+            Self::RandomHorizontalFlip(_) => require_u8_decoded(input, "RandomHorizontalFlip"),
             Self::Brightness(_) => require_u8_hwc(input, "Brightness"),
             Self::Contrast(_) => require_u8_hwc(input, "Contrast"),
+            Self::Hue(_) => require_u8_hwc(input, "Hue"),
+            Self::Grayscale(_) => require_u8_decoded(input, "Grayscale"),
+            Self::ConvertImageDtype(op) => match input {
+                Encoded => Err(invalid_pipeline(
+                    "ConvertImageDtype requires a decoded image, current state is encoded",
+                )),
+                Decoded { axis_order, .. } => Ok(Decoded {
+                    dtype: op.dtype,
+                    axis_order,
+                }),
+            },
+            Self::Rotate(_) => require_u8_hwc(input, "Rotate"),
             Self::Normalize(_) => match input {
                 Encoded => Err(invalid_pipeline(
                     "Normalize requires a decoded image, current state is encoded",
@@ -134,11 +160,15 @@ impl ImageOp {
             Self::Resize(op) => op.apply(sample),
             Self::Crop(op) => op.apply(sample, input_layout),
             Self::CenterCrop(op) => op.apply(sample, input_layout),
-            Self::Flip(op) => op.apply(sample),
+            Self::Flip(op) => op.apply_with_axis_order(sample, input_layout),
             Self::RandomCrop(op) => op.apply(sample, ctx, input_layout),
-            Self::RandomHorizontalFlip(op) => op.apply(sample, ctx),
+            Self::RandomHorizontalFlip(op) => op.apply_with_axis_order(sample, ctx, input_layout),
             Self::Brightness(op) => op.apply(sample),
             Self::Contrast(op) => op.apply(sample),
+            Self::Hue(op) => op.apply(sample),
+            Self::Grayscale(op) => op.apply(sample, input_layout),
+            Self::ConvertImageDtype(op) => op.apply(sample, input_layout),
+            Self::Rotate(op) => op.apply(sample),
             Self::Normalize(op) => op.apply(sample, input_layout),
             Self::NormalizeToChw(_) => Err(invalid_pipeline(
                 "NormalizeToChw is a batch-stage operation",
@@ -235,6 +265,22 @@ impl ImageOp {
         Self::Contrast(ContrastConfig::new(value))
     }
 
+    pub fn hue(degrees: i32) -> Self {
+        Self::Hue(HueConfig::new(degrees))
+    }
+
+    pub fn grayscale(num_output_channels: u8) -> Self {
+        Self::Grayscale(GrayscaleConfig::new(num_output_channels))
+    }
+
+    pub fn convert_image_dtype(dtype: DType) -> Self {
+        Self::ConvertImageDtype(ConvertImageDtypeConfig::new(dtype))
+    }
+
+    pub fn rotate(angle: RotationAngle) -> Self {
+        Self::Rotate(RotateConfig::new(angle))
+    }
+
     pub fn normalize(mean: Vec<f32>, std: Vec<f32>) -> Self {
         Self::Normalize(NormalizeConfig::new(mean, std))
     }
@@ -251,11 +297,7 @@ impl ImageOp {
     /// pipeline; that is `transition`'s job).
     pub fn validate(&self) -> RivetResult<()> {
         match self {
-            Self::Decode(_)
-            | Self::Flip(_)
-            | Self::Brightness(_)
-            | Self::Contrast(_)
-            | Self::Layout(_) => Ok(()),
+            Self::Decode(_) | Self::Flip(_) | Self::Brightness(_) | Self::Layout(_) => Ok(()),
             Self::Resize(op) => {
                 if op.width == 0 || op.height == 0 {
                     return Err(invalid_argument(
@@ -296,9 +338,29 @@ impl ImageOp {
                 }
                 Ok(())
             }
+            Self::Contrast(op) => op.validate(),
+            Self::Hue(_) | Self::Rotate(_) => Ok(()),
+            Self::Grayscale(op) => op.validate(),
+            Self::ConvertImageDtype(op) => op.validate(),
             Self::Normalize(op) => op.validate(),
             Self::NormalizeToChw(op) => op.validate(),
         }
+    }
+}
+
+fn require_u8_decoded(input: PipelineImageState, op_name: &str) -> RivetResult<PipelineImageState> {
+    match input {
+        PipelineImageState::Encoded => Err(invalid_pipeline(format!(
+            "{op_name} requires a decoded image, current state is encoded"
+        ))),
+        PipelineImageState::Decoded {
+            dtype: DType::U8, ..
+        } => Ok(input),
+        PipelineImageState::Decoded { dtype, axis_order } => Err(invalid_pipeline(format!(
+            "{op_name} requires uint8 input, current state is {:?} {}",
+            dtype,
+            axis_order.as_str()
+        ))),
     }
 }
 

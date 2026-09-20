@@ -3,6 +3,7 @@ use crate::runtime::RuntimeConfig;
 use crate::sample::image::EncodedImageSample;
 use crate::source::ImageSource;
 use crate::transforms::InterpolationMode;
+use rivet_core::DType;
 use rivet_data::dataset::Dataset;
 use std::sync::Arc;
 
@@ -102,6 +103,26 @@ impl ImagePipeline {
 
     pub fn contrast(mut self, value: f32) -> Self {
         self.ops.push(ImageOp::contrast(value));
+        self
+    }
+
+    pub fn hue(mut self, degrees: i32) -> Self {
+        self.ops.push(ImageOp::hue(degrees));
+        self
+    }
+
+    pub fn grayscale(mut self, num_output_channels: u8) -> Self {
+        self.ops.push(ImageOp::grayscale(num_output_channels));
+        self
+    }
+
+    pub fn convert_image_dtype(mut self, dtype: DType) -> Self {
+        self.ops.push(ImageOp::convert_image_dtype(dtype));
+        self
+    }
+
+    pub fn rotate(mut self, angle: crate::transforms::RotationAngle) -> Self {
+        self.ops.push(ImageOp::rotate(angle));
         self
     }
 

@@ -211,6 +211,35 @@ mod tests {
     }
 
     #[test]
+    fn phase1_representation_and_color_ops_update_pipeline_state() {
+        let loader = stub(1)
+            .decode_image()
+            .grayscale(1)
+            .convert_image_dtype(DType::F32)
+            .batch(1, false)
+            .compile()
+            .unwrap();
+
+        assert_eq!(loader.plan.sample_ops.len(), 3);
+        assert_eq!(
+            loader.plan.output_state,
+            PipelineImageState::Decoded {
+                dtype: DType::F32,
+                axis_order: ImageAxisOrder::Hwc,
+            }
+        );
+    }
+
+    #[test]
+    fn phase1_invalid_configs_are_rejected_at_compile() {
+        let err = compile_err(stub(1).decode_image().grayscale(2).batch(1, false));
+        assert!(err.contains("must be 1 or 3"), "got: {err}");
+
+        let err = compile_err(stub(1).decode_image().contrast(f32::NAN).batch(1, false));
+        assert!(err.contains("must be finite"), "got: {err}");
+    }
+
+    #[test]
     fn zero_batch_size_rejected_at_compile() {
         let err = compile_err(stub(10).decode_image().batch(0, false));
         assert!(

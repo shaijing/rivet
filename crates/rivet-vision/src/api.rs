@@ -23,10 +23,12 @@ pub use crate::sample::image::{
 };
 pub use crate::source::ImageSource;
 pub use crate::transforms::{
-    BrightnessConfig, CenterCropConfig, ContrastConfig, CropConfig, DecodeImageConfig, FlipConfig,
-    FlipDirection, InterpolationMode, LayoutConfig, NormalizeConfig, PaddingMode, RandomCropConfig,
-    RandomHorizontalFlipConfig, ResizeConfig,
+    BrightnessConfig, CenterCropConfig, ContrastConfig, ConvertImageDtypeConfig, CropConfig,
+    DecodeImageConfig, FlipConfig, FlipDirection, GrayscaleConfig, HueConfig, InterpolationMode,
+    LayoutConfig, NormalizeConfig, PaddingMode, RandomCropConfig, RandomHorizontalFlipConfig,
+    ResizeConfig, RotateConfig, RotationAngle,
 };
+pub use rivet_core::DType;
 
 /// Decode one encoded image and expose it as the standard one-item batch
 /// returned by the Python binding.

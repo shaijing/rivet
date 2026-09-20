@@ -86,6 +86,8 @@ impl ResizeConfig {
 #[cfg(test)]
 mod tests {
     use super::{InterpolationMode, ResizeConfig};
+    use crate::sample::image::{DecodedSample, ImageSample};
+    use rivet_core::{DType, Device, Tensor};
 
     #[test]
     fn resize_config_defaults_to_bilinear() {
@@ -114,5 +116,23 @@ mod tests {
             InterpolationMode::Lanczos3
         );
         assert!("box".parse::<InterpolationMode>().is_err());
+    }
+
+    #[test]
+    fn resize_materializes_non_contiguous_hwc_input() {
+        let base = Tensor::from_vec((0..18).collect::<Vec<u8>>(), [2, 3, 3], &Device::Cpu).unwrap();
+        let input = base.permute(&[1, 0, 2]).unwrap();
+        assert!(!input.is_contiguous());
+        let output = ResizeConfig::with_interpolation(4, 2, InterpolationMode::Nearest)
+            .apply(ImageSample::Decoded(DecodedSample {
+                image: input.clone(),
+                label: 0,
+            }))
+            .unwrap()
+            .into_decoded()
+            .unwrap();
+        assert_eq!(output.image.dims(), [2, 4, 3]);
+        assert_eq!(output.image.dtype(), DType::U8);
+        assert!(!output.image.same_storage(&input));
     }
 }

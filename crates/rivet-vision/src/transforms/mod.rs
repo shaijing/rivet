@@ -4,10 +4,12 @@ pub mod representation;
 
 mod crop;
 mod decode;
+mod dtype;
 mod flip;
 mod layout;
 mod normalize;
 mod resize;
+mod rotate;
 
 /// Padding semantics shared by geometry transforms.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,12 +20,12 @@ pub enum PaddingMode {
     Symmetric,
 }
 
-pub use color::{BrightnessConfig, ContrastConfig};
+pub use color::{BrightnessConfig, ContrastConfig, GrayscaleConfig, HueConfig};
 pub use geometry::{
     CenterCropConfig, CropConfig, FlipConfig, FlipDirection, InterpolationMode, LayoutConfig,
-    RandomCropConfig, RandomHorizontalFlipConfig, ResizeConfig,
+    RandomCropConfig, RandomHorizontalFlipConfig, ResizeConfig, RotateConfig, RotationAngle,
 };
-pub use representation::{DecodeImageConfig, NormalizeConfig};
+pub use representation::{ConvertImageDtypeConfig, DecodeImageConfig, NormalizeConfig};
 
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::DecodedSample;

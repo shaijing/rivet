@@ -1,7 +1,7 @@
 use crate::error::to_py_err;
 use crate::loader::PyDataLoader;
 use pyo3::prelude::*;
-use rivet_vision::api::{ImagePipeline, InterpolationMode};
+use rivet_vision::api::{DType, ImagePipeline, InterpolationMode, RotationAngle};
 
 #[pyclass(name = "_ImagePipeline")]
 pub(crate) struct PyImagePipeline {
@@ -77,6 +77,41 @@ impl PyImagePipeline {
         Self {
             inner: self.inner.clone().contrast(value),
         }
+    }
+
+    fn hue(&self, degrees: i32) -> Self {
+        Self {
+            inner: self.inner.clone().hue(degrees),
+        }
+    }
+
+    #[pyo3(signature = (num_output_channels=1))]
+    fn grayscale(&self, num_output_channels: u8) -> Self {
+        Self {
+            inner: self.inner.clone().grayscale(num_output_channels),
+        }
+    }
+
+    fn convert_image_dtype(&self, dtype: &str) -> PyResult<Self> {
+        let dtype = match dtype.trim().to_ascii_lowercase().as_str() {
+            "uint8" | "u8" => DType::U8,
+            "float32" | "f32" => DType::F32,
+            _ => {
+                return Err(to_py_err(rivet_vision::api::invalid_argument(
+                    "dtype must be uint8/u8 or float32/f32",
+                )));
+            }
+        };
+        Ok(Self {
+            inner: self.inner.clone().convert_image_dtype(dtype),
+        })
+    }
+
+    fn rotate(&self, angle: i32) -> PyResult<Self> {
+        let angle = RotationAngle::try_from(angle).map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().rotate(angle),
+        })
     }
 
     fn normalize(&self, mean: Vec<f32>, std: Vec<f32>) -> Self {

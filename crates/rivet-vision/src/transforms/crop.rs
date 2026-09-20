@@ -77,6 +77,12 @@ impl CenterCropConfig {
 
     pub fn apply(&self, sample: ImageSample, layout: ImageAxisOrder) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
+        if sample.image.rank() != 3 {
+            return Err(invalid_shape(format!(
+                "center_crop requires a rank-3 image, got shape {:?}",
+                sample.image.dims()
+            )));
+        }
         let (image_height, image_width) = match layout {
             ImageAxisOrder::Hwc => (sample.image.dims()[0], sample.image.dims()[1]),
             ImageAxisOrder::Chw => (sample.image.dims()[1], sample.image.dims()[2]),
@@ -176,9 +182,9 @@ impl RandomCropConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{RandomCropConfig, SampleContext};
+    use super::{CenterCropConfig, CropConfig, RandomCropConfig, SampleContext};
     use crate::sample::image::ImageSample::Decoded;
-    use crate::sample::image::{DecodedSample, ImageAxisOrder};
+    use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
     use rivet_core::{Device, Tensor};
 
     /// 4x4 RGB image where every pixel is unique, so any crop offset
@@ -245,5 +251,42 @@ mod tests {
             ImageAxisOrder::Hwc,
         );
         assert!(result.is_err(), "oversized random crop must fail");
+    }
+
+    #[test]
+    fn crop_and_center_crop_are_shared_views_for_hwc_and_chw() {
+        let image =
+            Tensor::from_vec((0..24).collect::<Vec<u8>>(), [4, 2, 3], &Device::Cpu).unwrap();
+        let owner = image.clone();
+        let out = CropConfig::new(0, 1, 2, 2)
+            .apply(
+                ImageSample::Decoded(DecodedSample { image, label: 0 }),
+                ImageAxisOrder::Hwc,
+            )
+            .unwrap()
+            .into_decoded()
+            .unwrap();
+        assert_eq!(out.image.dims(), [2, 2, 3]);
+        assert_eq!(
+            out.image.to_vec::<u8>().unwrap(),
+            (6..18).collect::<Vec<_>>()
+        );
+        assert!(out.image.same_storage(&owner));
+
+        let chw = Tensor::from_vec((0..24).collect::<Vec<u8>>(), [3, 4, 2], &Device::Cpu).unwrap();
+        let owner = chw.clone();
+        let out = CenterCropConfig::new(1, 2)
+            .apply(
+                Decoded(DecodedSample {
+                    image: chw,
+                    label: 0,
+                }),
+                ImageAxisOrder::Chw,
+            )
+            .unwrap()
+            .into_decoded()
+            .unwrap();
+        assert!(out.image.same_storage(&owner));
+        assert_eq!(out.image.dims(), [3, 2, 1]);
     }
 }
