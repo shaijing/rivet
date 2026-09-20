@@ -893,20 +893,7 @@ fn phase3_scatter_index_add_and_slice_scatter_define_duplicate_and_aliasing_beha
             .unwrap(),
         [0, 5, 0]
     );
-
-    let inplace = Tensor::zeros((1, 3), DType::I32, &Device::Cpu).unwrap();
-    inplace.scatter_set(&indexes, &source, 1).unwrap();
-    assert_eq!(inplace.to_vec::<i32>().unwrap(), [0, 3, 0]);
-    inplace.scatter_add_set(&indexes, &source, 1).unwrap();
-    assert_eq!(inplace.to_vec::<i32>().unwrap(), [0, 8, 0]);
-    assert!(matches!(
-        inplace.scatter_set(
-            &Tensor::from_vec(vec![0i64, 1, 2], (1, 3), &Device::Cpu).unwrap(),
-            &inplace,
-            1
-        ),
-        Err(Error::StorageAliasConflict { op: "scatter_set" })
-    ));
+    assert_eq!(base.to_vec::<i32>().unwrap(), [0, 0, 0]);
 
     let target = Tensor::from_vec(vec![1i32, 1, 1, 1], (2, 2), &Device::Cpu).unwrap();
     let add_indexes = Tensor::from_vec(vec![1i64, 0, 1], 3, &Device::Cpu).unwrap();

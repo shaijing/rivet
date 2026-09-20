@@ -1,7 +1,7 @@
 use crate::storage::Storage;
 use crate::{DType, Device, Layout};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
 
 mod access;
 mod construction;
@@ -26,7 +26,8 @@ impl TensorId {
 #[derive(Debug)]
 struct Tensor_ {
     id: TensorId,
-    storage: Arc<RwLock<Storage>>,
+    /// Immutable backing allocation shared by view tensors.
+    storage: Arc<Storage>,
     layout: Layout,
     dtype: DType,
     device: Device,

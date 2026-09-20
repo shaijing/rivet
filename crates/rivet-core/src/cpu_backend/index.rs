@@ -237,50 +237,6 @@ pub fn scatter_map<T: Copy + BinaryElement, I: IndexElement>(
     Ok(output)
 }
 
-pub fn scatter_in_place<T: Copy + BinaryElement, I: IndexElement>(
-    values: &mut [T],
-    values_layout: &Layout,
-    indexes: &[I],
-    indexes_layout: &Layout,
-    source: &[T],
-    source_layout: &Layout,
-    dim: usize,
-    add: bool,
-) -> Result<()> {
-    if indexes_layout.dims() != source_layout.dims()
-        || values_layout.dims().len() != source_layout.dims().len()
-        || dim >= values_layout.dims().len()
-    {
-        return Err(Error::ShapeMismatchBinary {
-            lhs: values_layout.dims().to_vec(),
-            rhs: source_layout.dims().to_vec(),
-        });
-    }
-    for linear in 0..source_layout.elem_count() {
-        let coordinates = coordinates(source_layout.dims(), linear);
-        let index = read_index(
-            indexes,
-            indexes_layout,
-            &coordinates,
-            values_layout.dims()[dim],
-            if add { "scatter_add" } else { "scatter" },
-        )?;
-        let source_physical = physical_index(source_layout, &coordinates)?;
-        let mut target_coordinates = coordinates;
-        target_coordinates[dim] = index;
-        let target = physical_index(values_layout, &target_coordinates)?;
-        let source_value = *source
-            .get(source_physical)
-            .ok_or(Error::StorageOutOfBounds)?;
-        if add {
-            values[target] = T::apply(BinaryOp::Add, values[target], source_value)?;
-        } else {
-            values[target] = source_value;
-        }
-    }
-    Ok(())
-}
-
 pub fn index_add_map<T: Copy + BinaryElement, I: IndexElement>(
     values: &[T],
     values_layout: &Layout,

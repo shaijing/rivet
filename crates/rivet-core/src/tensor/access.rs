@@ -1,6 +1,6 @@
 use super::{Tensor, TensorId};
 use crate::cpu_backend::CpuStorageRef;
-use crate::storage::{Storage, StorageMutRef, StorageRef};
+use crate::storage::Storage;
 use crate::{DType, Error, Layout, Result, WithDType};
 use std::sync::Arc;
 
@@ -214,15 +214,7 @@ impl Tensor {
         self.reshape(vec![self.elem_count()])
     }
 
-    pub(super) fn storage(&self) -> StorageRef<'_> {
-        self.0.storage.read().expect("tensor storage lock poisoned")
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn storage_mut(&self) -> StorageMutRef<'_> {
-        self.0
-            .storage
-            .write()
-            .expect("tensor storage lock poisoned")
+    pub(super) fn storage(&self) -> &Storage {
+        &self.0.storage
     }
 }

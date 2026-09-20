@@ -1,7 +1,6 @@
 use crate::cpu_backend::CpuStorage;
 use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use crate::{DType, Device, Error, Layout, Result, Shape, WithDType};
-use std::sync::{RwLockReadGuard, RwLockWriteGuard};
 
 /// Backend storage. Storage itself is deliberately not `Clone`; cloning an
 /// allocation is explicit through `try_clone`.
@@ -9,9 +8,6 @@ use std::sync::{RwLockReadGuard, RwLockWriteGuard};
 pub enum Storage {
     Cpu(CpuStorage),
 }
-
-pub type StorageRef<'a> = RwLockReadGuard<'a, Storage>;
-pub type StorageMutRef<'a> = RwLockWriteGuard<'a, Storage>;
 
 impl Storage {
     pub(crate) fn binary(
@@ -176,29 +172,6 @@ impl Storage {
                     add,
                 )?))
             }
-        }
-    }
-
-    pub(crate) fn scatter_set(
-        storage: &mut Self,
-        layout: &Layout,
-        indexes: &Self,
-        indexes_layout: &Layout,
-        source: &Self,
-        source_layout: &Layout,
-        dim: usize,
-        add: bool,
-    ) -> Result<()> {
-        match (storage, indexes, source) {
-            (Self::Cpu(storage), Self::Cpu(indexes), Self::Cpu(source)) => storage.scatter_set(
-                layout,
-                indexes,
-                indexes_layout,
-                source,
-                source_layout,
-                dim,
-                add,
-            ),
         }
     }
 

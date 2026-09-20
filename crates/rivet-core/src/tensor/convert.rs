@@ -1,14 +1,14 @@
 use super::Tensor;
 use crate::storage::Storage;
 use crate::{DType, Result};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 impl Tensor {
     /// Copies the complete backing allocation and preserves this view's layout.
     pub fn copy(&self) -> Result<Self> {
         let storage = self.storage().try_clone(self.layout())?;
         Self::from_parts(
-            Arc::new(RwLock::new(storage)),
+            Arc::new(storage),
             self.layout().clone(),
             self.dtype(),
             self.device().clone(),

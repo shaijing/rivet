@@ -180,40 +180,6 @@ impl Tensor {
         self.scatter_impl(indexes, source, dim, true)
     }
 
-    fn scatter_set_impl(&self, indexes: &Self, source: &Self, dim: usize, add: bool) -> Result<()> {
-        self.validate_scatter(indexes, source, dim)?;
-        if self.same_storage(indexes) || self.same_storage(source) {
-            return Err(Error::StorageAliasConflict {
-                op: if add {
-                    "scatter_add_set"
-                } else {
-                    "scatter_set"
-                },
-            });
-        }
-        let indexes_storage = indexes.storage();
-        let source_storage = source.storage();
-        let mut storage = self.storage_mut();
-        Storage::scatter_set(
-            &mut storage,
-            self.layout(),
-            &indexes_storage,
-            indexes.layout(),
-            &source_storage,
-            source.layout(),
-            dim,
-            add,
-        )
-    }
-
-    pub fn scatter_set(&self, indexes: &Self, source: &Self, dim: usize) -> Result<()> {
-        self.scatter_set_impl(indexes, source, dim, false)
-    }
-
-    pub fn scatter_add_set(&self, indexes: &Self, source: &Self, dim: usize) -> Result<()> {
-        self.scatter_set_impl(indexes, source, dim, true)
-    }
-
     fn validate_index_add(&self, indexes: &Self, source: &Self, dim: usize) -> Result<()> {
         self.dim(dim)?;
         if self.dtype() != source.dtype() {

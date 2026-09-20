@@ -17,6 +17,6 @@ pub use error::{Error, Result};
 pub use layout::Layout;
 pub use ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 pub use shape::Shape;
-pub use storage::{Storage, StorageMutRef, StorageRef};
+pub use storage::Storage;
 pub use strided_index::StridedIndex;
 pub use tensor::{RangeElement, Tensor, TensorId};

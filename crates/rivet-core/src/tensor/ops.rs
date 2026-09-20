@@ -2,7 +2,6 @@ use super::Tensor;
 use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use crate::storage::Storage;
 use crate::{DType, Error, Result, Shape, WithDType};
-use std::sync::Arc;
 
 impl Tensor {
     fn with_two_storage<R>(
@@ -10,22 +9,7 @@ impl Tensor {
         rhs: &Self,
         f: impl FnOnce(&Storage, &Storage) -> Result<R>,
     ) -> Result<R> {
-        let lhs_address = Arc::as_ptr(&lhs.0.storage) as usize;
-        let rhs_address = Arc::as_ptr(&rhs.0.storage) as usize;
-        if lhs_address == rhs_address {
-            let storage = lhs.storage();
-            return f(&storage, &storage);
-        }
-
-        if lhs_address < rhs_address {
-            let lhs_storage = lhs.storage();
-            let rhs_storage = rhs.storage();
-            f(&lhs_storage, &rhs_storage)
-        } else {
-            let rhs_storage = rhs.storage();
-            let lhs_storage = lhs.storage();
-            f(&lhs_storage, &rhs_storage)
-        }
+        f(lhs.storage(), rhs.storage())
     }
 
     fn binary(&self, rhs: &Self, op: BinaryOp) -> Result<Self> {

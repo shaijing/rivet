@@ -4,7 +4,7 @@ use crate::cpu_backend::CpuDevice;
 use crate::storage::{Storage, validate_layout_for_storage};
 use crate::{DType, Device, Error, Layout, Result, Shape, WithDType};
 use std::ops::Add;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 /// Numeric element contract used by [`Tensor::arange`] and
 /// [`Tensor::arange_step`].
@@ -94,24 +94,23 @@ impl RangeElement for half::f16 {
 
 impl Tensor {
     pub(super) fn from_parts(
-        storage: Arc<RwLock<Storage>>,
+        storage: Arc<Storage>,
         layout: Layout,
         dtype: DType,
         device: Device,
     ) -> Result<Self> {
         {
-            let storage_guard = storage.read().expect("tensor storage lock poisoned");
-            if storage_guard.dtype() != dtype || !storage_guard.device().same_device(&device) {
-                return Err(if storage_guard.dtype() != dtype {
+            if storage.dtype() != dtype || !storage.device().same_device(&device) {
+                return Err(if storage.dtype() != dtype {
                     Error::UnexpectedDType {
                         expected: dtype,
-                        actual: storage_guard.dtype(),
+                        actual: storage.dtype(),
                     }
                 } else {
                     Error::DeviceMismatch
                 });
             }
-            validate_layout_for_storage(&layout, storage_guard.len())?;
+            validate_layout_for_storage(&layout, storage.len())?;
         }
         Ok(Self(Arc::new(Tensor_ {
             id: super::TensorId::new(),
@@ -148,7 +147,7 @@ impl Tensor {
         }
         let dtype = storage.dtype();
         Self::from_parts(
-            Arc::new(RwLock::new(storage)),
+            Arc::new(storage),
             Layout::contiguous(shape),
             dtype,
             device.clone(),
