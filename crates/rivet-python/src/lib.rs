@@ -4,6 +4,7 @@ mod dataset;
 mod dlpack;
 mod error;
 mod loader;
+mod numpy;
 mod pipeline;
 
 #[pymodule]

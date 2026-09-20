@@ -1,6 +1,7 @@
 use crate::dataset::PyArrowDataset;
 use crate::dlpack::PyDLPackTensor;
 use crate::error::to_py_err;
+use crate::numpy::tensor_to_numpy;
 use numpy::{
     PyArrayDyn, PyArrayMethods,
     ndarray::{ArrayViewD, IxDyn, ShapeBuilder},
@@ -130,19 +131,7 @@ fn image_array_to_py(py: Python<'_>, images: Tensor) -> PyResult<Py<PyAny>> {
 }
 
 fn tensor_array_to_py(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
-    match tensor.dtype() {
-        DType::U8 => tensor_array_view_u8(py, tensor),
-        DType::U32 => tensor_array_view_u32(py, tensor),
-        DType::I16 => tensor_array_view_i16(py, tensor),
-        DType::I32 => tensor_array_view_i32(py, tensor),
-        DType::F32 => tensor_array_view_f32(py, tensor),
-        DType::F64 => tensor_array_view_f64(py, tensor),
-        DType::I64 => tensor_array_view_i64(py, tensor),
-        dtype => Err(to_py_err(invalid_argument(format!(
-            "Python tensor conversion does not support {:?}",
-            dtype
-        )))),
-    }
+    tensor_to_numpy(py, tensor)
 }
 
 fn tensor_array_view_u8(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
