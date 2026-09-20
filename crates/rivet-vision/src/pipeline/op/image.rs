@@ -15,6 +15,10 @@ use crate::transforms::geometry::{
 use crate::transforms::representation::{
     ConvertImageDtypeConfig, DecodeImageConfig, NormalizeConfig,
 };
+use crate::transforms::{
+    ArbitraryRotateConfig, ElasticTransformConfig, PerspectiveConfig, RandomAffineConfig,
+    RandomPerspectiveConfig,
+};
 use crate::transforms::{GaussianBlurConfig, RandomErasingConfig};
 use rivet_core::DType;
 
@@ -45,6 +49,11 @@ pub enum ImageOp {
     Autocontrast(AutocontrastConfig),
     Equalize(EqualizeConfig),
     Sharpness(SharpnessConfig),
+    ArbitraryRotate(ArbitraryRotateConfig),
+    RandomAffine(RandomAffineConfig),
+    Perspective(PerspectiveConfig),
+    RandomPerspective(RandomPerspectiveConfig),
+    ElasticTransform(ElasticTransformConfig),
     RandomApply { probability: f64, ops: Vec<ImageOp> },
     RandomChoice { choices: Vec<Vec<ImageOp>> },
     RandomOrder { ops: Vec<ImageOp> },
@@ -91,6 +100,11 @@ impl ImageOp {
             | Self::Autocontrast(_)
             | Self::Equalize(_)
             | Self::Sharpness(_)
+            | Self::ArbitraryRotate(_)
+            | Self::RandomAffine(_)
+            | Self::Perspective(_)
+            | Self::RandomPerspective(_)
+            | Self::ElasticTransform(_)
             | Self::RandomApply { .. }
             | Self::RandomChoice { .. }
             | Self::RandomOrder { .. }
@@ -124,6 +138,11 @@ impl ImageOp {
             Self::Autocontrast(_) => "Autocontrast",
             Self::Equalize(_) => "Equalize",
             Self::Sharpness(_) => "Sharpness",
+            Self::ArbitraryRotate(_) => "ArbitraryRotate",
+            Self::RandomAffine(_) => "RandomAffine",
+            Self::Perspective(_) => "Perspective",
+            Self::RandomPerspective(_) => "RandomPerspective",
+            Self::ElasticTransform(_) => "ElasticTransform",
             Self::RandomApply { .. } => "RandomApply",
             Self::RandomChoice { .. } => "RandomChoice",
             Self::RandomOrder { .. } => "RandomOrder",
@@ -170,6 +189,11 @@ impl ImageOp {
             Self::Autocontrast(_) => require_u8_decoded(input, "Autocontrast"),
             Self::Equalize(_) => require_u8_decoded(input, "Equalize"),
             Self::Sharpness(_) => require_u8_decoded(input, "Sharpness"),
+            Self::ArbitraryRotate(_) => require_u8_decoded(input, "ArbitraryRotate"),
+            Self::RandomAffine(_) => require_u8_decoded(input, "RandomAffine"),
+            Self::Perspective(_) => require_u8_decoded(input, "Perspective"),
+            Self::RandomPerspective(_) => require_u8_decoded(input, "RandomPerspective"),
+            Self::ElasticTransform(_) => require_u8_decoded(input, "ElasticTransform"),
             Self::RandomApply { probability, ops } => {
                 validate_probability(*probability, "random_apply")?;
                 let output = transition_sequence(ops, input)?;
@@ -302,6 +326,11 @@ impl ImageOp {
             Self::Autocontrast(op) => op.apply(sample, input_layout),
             Self::Equalize(op) => op.apply(sample, input_layout),
             Self::Sharpness(op) => op.apply(sample, input_layout),
+            Self::ArbitraryRotate(op) => op.apply(sample, input_layout),
+            Self::RandomAffine(op) => op.apply(sample, ctx, input_layout),
+            Self::Perspective(op) => op.apply(sample, input_layout),
+            Self::RandomPerspective(op) => op.apply(sample, ctx, input_layout),
+            Self::ElasticTransform(op) => op.apply(sample, ctx, input_layout),
             Self::RandomApply { probability, ops } => {
                 if ctx.next_rng_f64() >= *probability {
                     Ok(sample)
@@ -472,6 +501,58 @@ impl ImageOp {
         Self::Sharpness(SharpnessConfig::new(amount))
     }
 
+    pub fn arbitrary_rotate(angle: f32) -> Self {
+        Self::ArbitraryRotate(ArbitraryRotateConfig::new(angle))
+    }
+
+    pub fn arbitrary_rotate_with_options(
+        angle: f32,
+        expand: bool,
+        interpolation: InterpolationMode,
+        fill: u8,
+    ) -> Self {
+        Self::ArbitraryRotate(ArbitraryRotateConfig::new(angle).with_options(
+            expand,
+            interpolation,
+            fill,
+        ))
+    }
+
+    pub fn random_affine(degrees: f32) -> Self {
+        Self::RandomAffine(RandomAffineConfig::new(degrees))
+    }
+
+    pub fn random_affine_with_config(config: RandomAffineConfig) -> Self {
+        Self::RandomAffine(config)
+    }
+
+    pub fn perspective(
+        start_points: [crate::transforms::Point2; 4],
+        end_points: [crate::transforms::Point2; 4],
+    ) -> Self {
+        Self::Perspective(PerspectiveConfig::new(start_points, end_points))
+    }
+
+    pub fn perspective_with_config(config: PerspectiveConfig) -> Self {
+        Self::Perspective(config)
+    }
+
+    pub fn random_perspective(distortion_scale: f32, probability: f64) -> Self {
+        Self::RandomPerspective(RandomPerspectiveConfig::new(distortion_scale, probability))
+    }
+
+    pub fn random_perspective_with_config(config: RandomPerspectiveConfig) -> Self {
+        Self::RandomPerspective(config)
+    }
+
+    pub fn elastic_transform(alpha: f32, sigma: f32) -> Self {
+        Self::ElasticTransform(ElasticTransformConfig::new(alpha, sigma))
+    }
+
+    pub fn elastic_transform_with_config(config: ElasticTransformConfig) -> Self {
+        Self::ElasticTransform(config)
+    }
+
     pub fn random_apply(probability: f64, ops: Vec<Self>) -> Self {
         Self::RandomApply { probability, ops }
     }
@@ -577,6 +658,11 @@ impl ImageOp {
             Self::Solarize(_) => Ok(()),
             Self::Autocontrast(_) | Self::Equalize(_) => Ok(()),
             Self::Sharpness(op) => op.validate(),
+            Self::ArbitraryRotate(op) => op.validate(),
+            Self::RandomAffine(op) => op.validate(),
+            Self::Perspective(op) => op.validate(),
+            Self::RandomPerspective(op) => op.validate(),
+            Self::ElasticTransform(op) => op.validate(),
             Self::RandomApply { probability, ops } => {
                 validate_probability(*probability, "random_apply")?;
                 validate_nested_ops(ops, "random_apply")

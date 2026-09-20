@@ -3,7 +3,10 @@ use super::transform::TransformSequence;
 use crate::runtime::RuntimeConfig;
 use crate::sample::image::EncodedImageSample;
 use crate::source::ImageSource;
-use crate::transforms::InterpolationMode;
+use crate::transforms::{
+    ElasticTransformConfig, InterpolationMode, PerspectiveConfig, Point2, RandomAffineConfig,
+    RandomPerspectiveConfig,
+};
 use rivet_core::DType;
 use rivet_data::dataset::Dataset;
 use std::sync::Arc;
@@ -193,6 +196,71 @@ impl ImagePipeline {
 
     pub fn rotate(mut self, angle: crate::transforms::RotationAngle) -> Self {
         self.ops.push(ImageOp::rotate(angle));
+        self
+    }
+
+    pub fn arbitrary_rotate(mut self, angle: f32) -> Self {
+        self.ops.push(ImageOp::arbitrary_rotate(angle));
+        self
+    }
+
+    pub fn arbitrary_rotate_with_options(
+        mut self,
+        angle: f32,
+        expand: bool,
+        interpolation: InterpolationMode,
+        fill: u8,
+    ) -> Self {
+        self.ops.push(ImageOp::arbitrary_rotate_with_options(
+            angle,
+            expand,
+            interpolation,
+            fill,
+        ));
+        self
+    }
+
+    pub fn random_affine(mut self, degrees: f32) -> Self {
+        self.ops.push(ImageOp::random_affine(degrees));
+        self
+    }
+
+    pub fn random_affine_with_config(mut self, config: RandomAffineConfig) -> Self {
+        self.ops.push(ImageOp::random_affine_with_config(config));
+        self
+    }
+
+    pub fn perspective(mut self, start_points: [Point2; 4], end_points: [Point2; 4]) -> Self {
+        self.ops
+            .push(ImageOp::perspective(start_points, end_points));
+        self
+    }
+
+    pub fn perspective_with_config(mut self, config: PerspectiveConfig) -> Self {
+        self.ops.push(ImageOp::perspective_with_config(config));
+        self
+    }
+
+    pub fn random_perspective(mut self, distortion_scale: f32, probability: f64) -> Self {
+        self.ops
+            .push(ImageOp::random_perspective(distortion_scale, probability));
+        self
+    }
+
+    pub fn random_perspective_with_config(mut self, config: RandomPerspectiveConfig) -> Self {
+        self.ops
+            .push(ImageOp::random_perspective_with_config(config));
+        self
+    }
+
+    pub fn elastic_transform(mut self, alpha: f32, sigma: f32) -> Self {
+        self.ops.push(ImageOp::elastic_transform(alpha, sigma));
+        self
+    }
+
+    pub fn elastic_transform_with_config(mut self, config: ElasticTransformConfig) -> Self {
+        self.ops
+            .push(ImageOp::elastic_transform_with_config(config));
         self
     }
 

@@ -37,6 +37,29 @@ def test_resize(arrow_file: Path) -> None:
     assert batch["dtype"] == "uint8"
 
 
+def test_phase5_geometry_facade(arrow_file: Path) -> None:
+    corners = [(0.0, 0.0), (31.0, 0.0), (31.0, 31.0), (0.0, 31.0)]
+    batch = next(
+        scan(arrow_file)
+        .decode_image()
+        .arbitrary_rotate(0.0, expand=False)
+        .random_affine(0.0, scale=(1.0, 1.0))
+        .perspective(corners, corners)
+        .random_perspective(0.5, probability=0.0)
+        .elastic_transform(0.0, 1.0)
+        .batch(2)
+        .execute()
+    )
+
+    assert batch["images"].shape == (2, 32, 32, 3)
+    assert batch["images"].dtype == np.uint8
+
+
+def test_phase5_geometry_rejects_malformed_points(arrow_file: Path) -> None:
+    with pytest.raises(ValueError, match=r"four \(x, y\) points"):
+        scan(arrow_file).decode_image().perspective([(0.0, 0.0)], []).batch(1).execute()
+
+
 @pytest.mark.parametrize("interpolation", ["nearest", "bilinear", "bicubic", "lanczos3"])
 def test_resize_accepts_rivet_interpolation_modes(
     arrow_file: Path, interpolation: str

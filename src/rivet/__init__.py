@@ -382,6 +382,77 @@ class Transform:
     def rotate(self, angle: int) -> Transform:
         return Transform(self._inner.rotate(angle))
 
+    def arbitrary_rotate(
+        self,
+        angle: float,
+        interpolation: str = "bilinear",
+        expand: bool = True,
+        fill: int = 0,
+    ) -> Transform:
+        return Transform(
+            self._inner.arbitrary_rotate(angle, interpolation, expand, fill)
+        )
+
+    def random_affine(
+        self,
+        degrees: float,
+        translate: Iterable[float] | None = None,
+        scale: Iterable[float] | None = None,
+        shear: Iterable[float] | None = None,
+        interpolation: str = "bilinear",
+        fill: int = 0,
+    ) -> Transform:
+        return Transform(
+            self._inner.random_affine(
+                degrees,
+                None if translate is None else list(translate),
+                None if scale is None else list(scale),
+                None if shear is None else list(shear),
+                interpolation,
+                fill,
+            )
+        )
+
+    def perspective(
+        self,
+        start_points: Iterable[Iterable[float]],
+        end_points: Iterable[Iterable[float]],
+        interpolation: str = "bilinear",
+        fill: int = 0,
+    ) -> Transform:
+        return Transform(
+            self._inner.perspective(
+                [list(point) for point in start_points],
+                [list(point) for point in end_points],
+                interpolation,
+                fill,
+            )
+        )
+
+    def random_perspective(
+        self,
+        distortion_scale: float = 0.5,
+        probability: float = 0.5,
+        interpolation: str = "bilinear",
+        fill: int = 0,
+    ) -> Transform:
+        return Transform(
+            self._inner.random_perspective(
+                distortion_scale, probability, interpolation, fill
+            )
+        )
+
+    def elastic_transform(
+        self,
+        alpha: float,
+        sigma: float,
+        interpolation: str = "bilinear",
+        fill: int = 0,
+    ) -> Transform:
+        return Transform(
+            self._inner.elastic_transform(alpha, sigma, interpolation, fill)
+        )
+
     def normalize(self, mean: list[float], std: list[float]) -> Transform:
         return Transform(self._inner.normalize(mean, std))
 
@@ -558,6 +629,82 @@ class Pipeline:
 
     def rotate(self, angle: int) -> Pipeline:
         return Pipeline(self._inner.rotate(angle), as_numpy=self.as_numpy)
+
+    def arbitrary_rotate(
+        self,
+        angle: float,
+        interpolation: str = "bilinear",
+        expand: bool = True,
+        fill: int = 0,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.arbitrary_rotate(angle, interpolation, expand, fill),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_affine(
+        self,
+        degrees: float,
+        translate: Iterable[float] | None = None,
+        scale: Iterable[float] | None = None,
+        shear: Iterable[float] | None = None,
+        interpolation: str = "bilinear",
+        fill: int = 0,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.random_affine(
+                degrees,
+                None if translate is None else list(translate),
+                None if scale is None else list(scale),
+                None if shear is None else list(shear),
+                interpolation,
+                fill,
+            ),
+            as_numpy=self.as_numpy,
+        )
+
+    def perspective(
+        self,
+        start_points: Iterable[Iterable[float]],
+        end_points: Iterable[Iterable[float]],
+        interpolation: str = "bilinear",
+        fill: int = 0,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.perspective(
+                [list(point) for point in start_points],
+                [list(point) for point in end_points],
+                interpolation,
+                fill,
+            ),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_perspective(
+        self,
+        distortion_scale: float = 0.5,
+        probability: float = 0.5,
+        interpolation: str = "bilinear",
+        fill: int = 0,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.random_perspective(
+                distortion_scale, probability, interpolation, fill
+            ),
+            as_numpy=self.as_numpy,
+        )
+
+    def elastic_transform(
+        self,
+        alpha: float,
+        sigma: float,
+        interpolation: str = "bilinear",
+        fill: int = 0,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.elastic_transform(alpha, sigma, interpolation, fill),
+            as_numpy=self.as_numpy,
+        )
 
     def normalize(self, mean: list[float], std: list[float]) -> Pipeline:
         return Pipeline(self._inner.normalize(mean, std), as_numpy=self.as_numpy)

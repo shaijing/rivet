@@ -1,5 +1,9 @@
 //! Geometry and axis-order transform configuration facade.
 
+pub use super::advanced_geometry::{
+    ArbitraryRotateConfig, ElasticTransformConfig, PerspectiveConfig, Point2, RandomAffineConfig,
+    RandomPerspectiveConfig,
+};
 pub use super::crop::{CenterCropConfig, CropConfig, RandomCropConfig};
 pub use super::flip::{FlipConfig, FlipDirection, RandomHorizontalFlipConfig};
 pub use super::layout::LayoutConfig;

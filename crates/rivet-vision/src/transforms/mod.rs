@@ -3,6 +3,7 @@ pub mod filter;
 pub mod geometry;
 pub mod representation;
 
+mod advanced_geometry;
 mod blur;
 mod crop;
 mod decode;
@@ -27,6 +28,10 @@ pub enum PaddingMode {
     Symmetric,
 }
 
+pub use advanced_geometry::{
+    ArbitraryRotateConfig, ElasticTransformConfig, PerspectiveConfig, Point2, RandomAffineConfig,
+    RandomPerspectiveConfig,
+};
 pub use blur::GaussianBlurConfig;
 pub use color::{
     AutocontrastConfig, BrightnessConfig, ColorJitterConfig, ColorJitterParams, ContrastConfig,

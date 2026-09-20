@@ -13,6 +13,7 @@ mod tests {
     use crate::pipeline::op::{ExecutionKind, PipelineImageState};
     use crate::sample::image::{DecodedSample, EncodedImageSample, ImageAxisOrder};
     use crate::source::ImageSource;
+    use crate::transforms::Point2;
     use arrow_buffer::Buffer;
     use rivet_core::{DType, Device, Tensor};
     use rivet_data::dataset::Dataset;
@@ -413,6 +414,66 @@ mod tests {
                 .batch(1, false),
         );
         assert!(err.contains("preserve image state"), "got: {err}");
+    }
+
+    #[test]
+    fn phase5_advanced_geometry_compiles_as_sample_ops() {
+        let points = [
+            Point2::new(0.0, 0.0),
+            Point2::new(7.0, 0.0),
+            Point2::new(7.0, 7.0),
+            Point2::new(0.0, 7.0),
+        ];
+        let loader = stub(1)
+            .decode_image()
+            .arbitrary_rotate(15.0)
+            .random_affine(10.0)
+            .perspective(points, points)
+            .random_perspective(0.2, 0.5)
+            .elastic_transform(1.0, 1.0)
+            .batch(1, false)
+            .compile()
+            .unwrap();
+
+        assert_eq!(loader.plan.sample_ops.len(), 6);
+        assert_eq!(loader.plan.batch_ops.len(), 0);
+        assert_eq!(
+            loader.plan.output_state,
+            PipelineImageState::Decoded {
+                dtype: DType::U8,
+                axis_order: ImageAxisOrder::Hwc,
+            }
+        );
+    }
+
+    #[test]
+    fn phase5_advanced_geometry_rejects_invalid_configs() {
+        let err = compile_err(
+            stub(1)
+                .decode_image()
+                .arbitrary_rotate(f32::NAN)
+                .batch(1, false),
+        );
+        assert!(err.contains("angle must be finite"), "got: {err}");
+
+        let err = compile_err(stub(1).decode_image().random_affine(-1.0).batch(1, false));
+        assert!(err.contains("degrees must be finite"), "got: {err}");
+
+        let err = compile_err(
+            stub(1)
+                .decode_image()
+                .random_perspective(1.1, 0.5)
+                .batch(1, false),
+        );
+        assert!(err.contains("distortion_scale"), "got: {err}");
+
+        let err = compile_err(
+            stub(1)
+                .decode_image()
+                .elastic_transform(1.0, -1.0)
+                .batch(1, false),
+        );
+        assert!(err.contains("sigma must be finite"), "got: {err}");
     }
 
     #[test]

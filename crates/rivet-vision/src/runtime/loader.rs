@@ -360,6 +360,23 @@ mod tests {
     }
 
     #[test]
+    fn phase5_random_geometry_matches_inline_and_workers() {
+        let configure = |workers| {
+            pipeline(19, workers)
+                .epoch(4)
+                .random_affine(12.0)
+                .elastic_transform(1.0, 1.0)
+                .shuffle(23)
+                .batch(4, false)
+        };
+        let mut inline = configure(0).compile().unwrap();
+        let mut pooled = configure(4).prefetch_batches(2).compile().unwrap();
+        let inline = drain(&mut inline);
+        let pooled = drain(&mut pooled);
+        assert_batches_equal(&inline, &pooled);
+    }
+
+    #[test]
     fn workers_preserve_skip_take_and_drop_last() {
         let mut inline = pipeline(50, 0)
             .skip(2)

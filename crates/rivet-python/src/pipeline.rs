@@ -1,9 +1,38 @@
 use crate::error::to_py_err;
 use crate::loader::PyDataLoader;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rivet_vision::api::{
-    DType, ImagePipeline, InterpolationMode, RotationAngle, TransformSequence,
+    DType, ElasticTransformConfig, ImagePipeline, InterpolationMode, PerspectiveConfig, Point2,
+    RandomAffineConfig, RandomPerspectiveConfig, RotationAngle, TransformSequence,
 };
+
+fn parse_pair(values: Option<Vec<f32>>, name: &str, default: [f32; 2]) -> PyResult<[f32; 2]> {
+    let values = values.unwrap_or_else(|| default.to_vec());
+    values.try_into().map_err(|values: Vec<f32>| {
+        PyValueError::new_err(format!(
+            "{name} must contain exactly two values, got {values:?}"
+        ))
+    })
+}
+
+fn parse_points(values: Vec<Vec<f32>>, name: &str) -> PyResult<[Point2; 4]> {
+    if values.len() != 4 || values.iter().any(|point| point.len() != 2) {
+        return Err(PyValueError::new_err(format!(
+            "{name} must contain four (x, y) points"
+        )));
+    }
+    Ok([
+        Point2::new(values[0][0], values[0][1]),
+        Point2::new(values[1][0], values[1][1]),
+        Point2::new(values[2][0], values[2][1]),
+        Point2::new(values[3][0], values[3][1]),
+    ])
+}
+
+fn parse_interpolation(value: &str) -> PyResult<InterpolationMode> {
+    value.parse::<InterpolationMode>().map_err(to_py_err)
+}
 
 #[pyclass(name = "_Transform")]
 pub(crate) struct PyTransform {
@@ -205,6 +234,98 @@ impl PyTransform {
         let angle = RotationAngle::try_from(angle).map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().rotate(angle),
+        })
+    }
+
+    #[pyo3(signature = (angle, interpolation="bilinear", expand=true, fill=0))]
+    fn arbitrary_rotate(
+        &self,
+        angle: f32,
+        interpolation: &str,
+        expand: bool,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let interpolation = parse_interpolation(interpolation)?;
+        Ok(Self {
+            inner: self.inner.clone().arbitrary_rotate_with_options(
+                angle,
+                expand,
+                interpolation,
+                fill,
+            ),
+        })
+    }
+
+    #[pyo3(signature = (degrees, translate=None, scale=None, shear=None, interpolation="bilinear", fill=0))]
+    fn random_affine(
+        &self,
+        degrees: f32,
+        translate: Option<Vec<f32>>,
+        scale: Option<Vec<f32>>,
+        shear: Option<Vec<f32>>,
+        interpolation: &str,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let translate = parse_pair(translate, "translate", [0.0, 0.0])?;
+        let scale = parse_pair(scale, "scale", [1.0, 1.0])?;
+        let shear = parse_pair(shear, "shear", [0.0, 0.0])?;
+        let interpolation = parse_interpolation(interpolation)?;
+        let config = RandomAffineConfig::new(degrees)
+            .with_translate(translate[0], translate[1])
+            .with_scale(scale[0], scale[1])
+            .with_shear(shear[0], shear[1])
+            .with_options(interpolation, fill);
+        Ok(Self {
+            inner: self.inner.clone().random_affine_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (start_points, end_points, interpolation="bilinear", fill=0))]
+    fn perspective(
+        &self,
+        start_points: Vec<Vec<f32>>,
+        end_points: Vec<Vec<f32>>,
+        interpolation: &str,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let start_points = parse_points(start_points, "start_points")?;
+        let end_points = parse_points(end_points, "end_points")?;
+        let interpolation = parse_interpolation(interpolation)?;
+        let config =
+            PerspectiveConfig::new(start_points, end_points).with_options(interpolation, fill);
+        Ok(Self {
+            inner: self.inner.clone().perspective_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (distortion_scale=0.5, probability=0.5, interpolation="bilinear", fill=0))]
+    fn random_perspective(
+        &self,
+        distortion_scale: f32,
+        probability: f64,
+        interpolation: &str,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let interpolation = parse_interpolation(interpolation)?;
+        let config = RandomPerspectiveConfig::new(distortion_scale, probability)
+            .with_options(interpolation, fill);
+        Ok(Self {
+            inner: self.inner.clone().random_perspective_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (alpha, sigma, interpolation="bilinear", fill=0))]
+    fn elastic_transform(
+        &self,
+        alpha: f32,
+        sigma: f32,
+        interpolation: &str,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let interpolation = parse_interpolation(interpolation)?;
+        let config = ElasticTransformConfig::new(alpha, sigma).with_options(interpolation, fill);
+        Ok(Self {
+            inner: self.inner.clone().elastic_transform_with_config(config),
         })
     }
 
@@ -472,6 +593,98 @@ impl PyImagePipeline {
         let angle = RotationAngle::try_from(angle).map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().rotate(angle),
+        })
+    }
+
+    #[pyo3(signature = (angle, interpolation="bilinear", expand=true, fill=0))]
+    fn arbitrary_rotate(
+        &self,
+        angle: f32,
+        interpolation: &str,
+        expand: bool,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let interpolation = parse_interpolation(interpolation)?;
+        Ok(Self {
+            inner: self.inner.clone().arbitrary_rotate_with_options(
+                angle,
+                expand,
+                interpolation,
+                fill,
+            ),
+        })
+    }
+
+    #[pyo3(signature = (degrees, translate=None, scale=None, shear=None, interpolation="bilinear", fill=0))]
+    fn random_affine(
+        &self,
+        degrees: f32,
+        translate: Option<Vec<f32>>,
+        scale: Option<Vec<f32>>,
+        shear: Option<Vec<f32>>,
+        interpolation: &str,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let translate = parse_pair(translate, "translate", [0.0, 0.0])?;
+        let scale = parse_pair(scale, "scale", [1.0, 1.0])?;
+        let shear = parse_pair(shear, "shear", [0.0, 0.0])?;
+        let interpolation = parse_interpolation(interpolation)?;
+        let config = RandomAffineConfig::new(degrees)
+            .with_translate(translate[0], translate[1])
+            .with_scale(scale[0], scale[1])
+            .with_shear(shear[0], shear[1])
+            .with_options(interpolation, fill);
+        Ok(Self {
+            inner: self.inner.clone().random_affine_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (start_points, end_points, interpolation="bilinear", fill=0))]
+    fn perspective(
+        &self,
+        start_points: Vec<Vec<f32>>,
+        end_points: Vec<Vec<f32>>,
+        interpolation: &str,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let start_points = parse_points(start_points, "start_points")?;
+        let end_points = parse_points(end_points, "end_points")?;
+        let interpolation = parse_interpolation(interpolation)?;
+        let config =
+            PerspectiveConfig::new(start_points, end_points).with_options(interpolation, fill);
+        Ok(Self {
+            inner: self.inner.clone().perspective_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (distortion_scale=0.5, probability=0.5, interpolation="bilinear", fill=0))]
+    fn random_perspective(
+        &self,
+        distortion_scale: f32,
+        probability: f64,
+        interpolation: &str,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let interpolation = parse_interpolation(interpolation)?;
+        let config = RandomPerspectiveConfig::new(distortion_scale, probability)
+            .with_options(interpolation, fill);
+        Ok(Self {
+            inner: self.inner.clone().random_perspective_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (alpha, sigma, interpolation="bilinear", fill=0))]
+    fn elastic_transform(
+        &self,
+        alpha: f32,
+        sigma: f32,
+        interpolation: &str,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let interpolation = parse_interpolation(interpolation)?;
+        let config = ElasticTransformConfig::new(alpha, sigma).with_options(interpolation, fill);
+        Ok(Self {
+            inner: self.inner.clone().elastic_transform_with_config(config),
         })
     }
 
