@@ -1,8 +1,8 @@
 use crate::dataset::PyArrowDataset;
 use crate::error::to_py_err;
 use numpy::{
-    PyArray1, PyArrayDyn, PyArrayMethods,
-    ndarray::{ArrayViewD, IxDyn},
+    PyArrayDyn, PyArrayMethods,
+    ndarray::{ArrayViewD, IxDyn, ShapeBuilder},
 };
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -114,13 +114,13 @@ fn image_array_to_py(py: Python<'_>, images: Tensor) -> PyResult<Py<PyAny>> {
 }
 
 fn tensor_array_to_py(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
-    if !tensor.is_contiguous() {
-        return tensor_array_copy_to_py(py, tensor);
-    }
-
     match tensor.dtype() {
         DType::U8 => tensor_array_view_u8(py, tensor),
+        DType::U32 => tensor_array_view_u32(py, tensor),
+        DType::I16 => tensor_array_view_i16(py, tensor),
+        DType::I32 => tensor_array_view_i32(py, tensor),
         DType::F32 => tensor_array_view_f32(py, tensor),
+        DType::F64 => tensor_array_view_f64(py, tensor),
         DType::I64 => tensor_array_view_i64(py, tensor),
         dtype => Err(to_py_err(invalid_argument(format!(
             "Python tensor conversion does not support {:?}",
@@ -130,43 +130,89 @@ fn tensor_array_to_py(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
 }
 
 fn tensor_array_view_u8(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
-    let pointer = contiguous_data_pointer(&tensor, |storage| match storage {
-        CpuStorageRef::U8(values) => Some(values.as_ptr()),
+    let pointer = tensor_data_pointer(&tensor, |storage| match storage {
+        CpuStorageRef::U8(values) => Some((values.as_ptr(), values.len())),
         _ => None,
     })?;
     tensor_array_view_from_pointer::<u8>(py, tensor, pointer)
 }
 
+fn tensor_array_view_u32(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
+    let pointer = tensor_data_pointer(&tensor, |storage| match storage {
+        CpuStorageRef::U32(values) => Some((values.as_ptr(), values.len())),
+        _ => None,
+    })?;
+    tensor_array_view_from_pointer::<u32>(py, tensor, pointer)
+}
+
+fn tensor_array_view_i16(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
+    let pointer = tensor_data_pointer(&tensor, |storage| match storage {
+        CpuStorageRef::I16(values) => Some((values.as_ptr(), values.len())),
+        _ => None,
+    })?;
+    tensor_array_view_from_pointer::<i16>(py, tensor, pointer)
+}
+
+fn tensor_array_view_i32(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
+    let pointer = tensor_data_pointer(&tensor, |storage| match storage {
+        CpuStorageRef::I32(values) => Some((values.as_ptr(), values.len())),
+        _ => None,
+    })?;
+    tensor_array_view_from_pointer::<i32>(py, tensor, pointer)
+}
+
 fn tensor_array_view_f32(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
-    let pointer = contiguous_data_pointer(&tensor, |storage| match storage {
-        CpuStorageRef::F32(values) => Some(values.as_ptr()),
+    let pointer = tensor_data_pointer(&tensor, |storage| match storage {
+        CpuStorageRef::F32(values) => Some((values.as_ptr(), values.len())),
         _ => None,
     })?;
     tensor_array_view_from_pointer::<f32>(py, tensor, pointer)
 }
 
 fn tensor_array_view_i64(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
-    let pointer = contiguous_data_pointer(&tensor, |storage| match storage {
-        CpuStorageRef::I64(values) => Some(values.as_ptr()),
+    let pointer = tensor_data_pointer(&tensor, |storage| match storage {
+        CpuStorageRef::I64(values) => Some((values.as_ptr(), values.len())),
         _ => None,
     })?;
     tensor_array_view_from_pointer::<i64>(py, tensor, pointer)
 }
 
-fn contiguous_data_pointer<T>(
+fn tensor_array_view_f64(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
+    let pointer = tensor_data_pointer(&tensor, |storage| match storage {
+        CpuStorageRef::F64(values) => Some((values.as_ptr(), values.len())),
+        _ => None,
+    })?;
+    tensor_array_view_from_pointer::<f64>(py, tensor, pointer)
+}
+
+fn tensor_data_pointer<T>(
     tensor: &Tensor,
-    storage_pointer: impl FnOnce(CpuStorageRef<'_>) -> Option<*const T>,
+    storage_pointer: impl FnOnce(CpuStorageRef<'_>) -> Option<(*const T, usize)>,
 ) -> PyResult<*const T> {
     tensor
         .with_cpu_storage(|storage, layout| {
-            let Some((start, _)) = layout.contiguous_offsets() else {
+            let Some((pointer, storage_len)) = storage_pointer(storage) else {
                 return Err(rivet_core::Error::StorageOutOfBounds);
             };
-            let pointer = storage_pointer(storage);
-            if pointer.is_none() {
+            if layout.elem_count() == 0 {
+                return Ok(pointer);
+            }
+            let max_offset = layout.dims().iter().zip(layout.stride()).try_fold(
+                layout.start_offset(),
+                |max_offset, (&dim, &stride)| {
+                    let span = dim
+                        .checked_sub(1)
+                        .and_then(|extent| extent.checked_mul(stride))
+                        .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+                    max_offset
+                        .checked_add(span)
+                        .ok_or(rivet_core::Error::StorageOutOfBounds)
+                },
+            )?;
+            if max_offset >= storage_len {
                 return Err(rivet_core::Error::StorageOutOfBounds);
             }
-            Ok(unsafe { pointer.expect("checked above").add(start) })
+            Ok(unsafe { pointer.add(layout.start_offset()) })
         })
         .map_err(|err| to_py_err(invalid_argument(err)))
 }
@@ -177,56 +223,25 @@ fn tensor_array_view_from_pointer<T: numpy::Element>(
     pointer: *const T,
 ) -> PyResult<Py<PyAny>> {
     let shape = tensor.dims().to_vec();
-    let values = unsafe {
-        // The ndarray receives TensorArrayOwner as its base object below, which
-        // retains the Tensor and its allocation. Tensor storage never changes
-        // allocation size after construction, and the returned ndarray is
-        // made read-only before it escapes to Python.
-        std::slice::from_raw_parts(pointer, tensor.elem_count())
+    let strides = tensor.stride().to_vec();
+    if strides.iter().any(|&stride| stride > isize::MAX as usize)
+        || tensor.elem_count() > isize::MAX as usize
+    {
+        return Err(to_py_err(invalid_argument(
+            "tensor layout cannot be represented by NumPy",
+        )));
+    }
+    let view = unsafe {
+        // Layout bounds were verified against the immutable backing allocation
+        // above. ndarray takes element strides; NumPy receives byte strides
+        // through borrow_from_array below. TensorArrayOwner keeps allocation
+        // alive for the exported array's complete lifetime.
+        ArrayViewD::from_shape_ptr(IxDyn(&shape).strides(IxDyn(&strides)), pointer)
     };
-    let view = ArrayViewD::from_shape(IxDyn(&shape), values)
-        .map_err(|err| to_py_err(invalid_argument(err.to_string())))?;
     let owner = Py::new(py, TensorArrayOwner { _tensor: tensor })?;
     let array = unsafe { PyArrayDyn::borrow_from_array(&view, owner.into_bound(py).into_any()) };
-    let _ = array.readwrite().make_nonwriteable();
+    array.readwrite().make_nonwriteable();
     Ok(array.into_any().unbind())
-}
-
-fn tensor_array_copy_to_py(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
-    let shape = tensor.dims().to_vec();
-    match tensor.dtype() {
-        DType::U8 => Ok(PyArray1::from_vec(
-            py,
-            tensor
-                .to_vec::<u8>()
-                .map_err(|err| to_py_err(invalid_argument(err)))?,
-        )
-        .reshape(shape)?
-        .into_any()
-        .unbind()),
-        DType::F32 => Ok(PyArray1::from_vec(
-            py,
-            tensor
-                .to_vec::<f32>()
-                .map_err(|err| to_py_err(invalid_argument(err)))?,
-        )
-        .reshape(shape)?
-        .into_any()
-        .unbind()),
-        DType::I64 => Ok(PyArray1::from_vec(
-            py,
-            tensor
-                .to_vec::<i64>()
-                .map_err(|err| to_py_err(invalid_argument(err)))?,
-        )
-        .reshape(shape)?
-        .into_any()
-        .unbind()),
-        dtype => Err(to_py_err(invalid_argument(format!(
-            "Python tensor conversion does not support {:?}",
-            dtype
-        )))),
-    }
 }
 
 fn dtype_name(dtype: DType) -> &'static str {
@@ -242,5 +257,85 @@ fn batch_layout(shape: &[usize]) -> &'static str {
         "NCHW"
     } else {
         "NHWC"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use numpy::PyUntypedArrayMethods;
+    use rivet_core::Device;
+
+    #[test]
+    fn numpy_export_keeps_permute_narrow_and_broadcast_zero_copy() {
+        Python::initialize();
+        Python::attach(|py| {
+            let permuted = Tensor::from_vec((0u8..24).collect(), (2, 3, 4), &Device::Cpu)
+                .unwrap()
+                .permute(&[2, 0, 1])
+                .unwrap();
+            let array = tensor_array_to_py(py, permuted).unwrap();
+            let array = array.bind(py).cast::<PyArrayDyn<u8>>().unwrap();
+            assert_eq!(array.shape(), &[4, 2, 3]);
+            assert_eq!(array.strides(), &[1, 12, 4]);
+            assert_eq!(
+                array
+                    .readonly()
+                    .as_array()
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                vec![
+                    0, 4, 8, 12, 16, 20, 1, 5, 9, 13, 17, 21, 2, 6, 10, 14, 18, 22, 3, 7, 11, 15,
+                    19, 23
+                ]
+            );
+
+            let narrow = Tensor::from_vec((0i64..20).collect(), (4, 5), &Device::Cpu)
+                .unwrap()
+                .narrow(1, 1, 3)
+                .unwrap();
+            let narrow = tensor_array_to_py(py, narrow).unwrap();
+            let narrow = narrow.bind(py).cast::<PyArrayDyn<i64>>().unwrap();
+            assert_eq!(narrow.strides(), &[40, 8]);
+            assert_eq!(
+                narrow
+                    .readonly()
+                    .as_array()
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                vec![1, 2, 3, 6, 7, 8, 11, 12, 13, 16, 17, 18]
+            );
+
+            let broadcast = Tensor::from_vec(vec![1f32, 2.0, 3.0], (1, 3), &Device::Cpu)
+                .unwrap()
+                .broadcast_as((2, 3))
+                .unwrap();
+            let broadcast = tensor_array_to_py(py, broadcast).unwrap();
+            let broadcast = broadcast.bind(py).cast::<PyArrayDyn<f32>>().unwrap();
+            assert_eq!(broadcast.strides(), &[0, 4]);
+            assert_eq!(
+                broadcast
+                    .readonly()
+                    .as_array()
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]
+            );
+        });
+    }
+
+    #[test]
+    fn numpy_export_handles_empty_layouts() {
+        Python::initialize();
+        Python::attach(|py| {
+            let empty = Tensor::zeros((0, 3), DType::U8, &Device::Cpu).unwrap();
+            let array = tensor_array_to_py(py, empty).unwrap();
+            let array = array.bind(py).cast::<PyArrayDyn<u8>>().unwrap();
+            assert_eq!(array.shape(), &[0, 3]);
+            assert_eq!(array.strides(), &[3, 1]);
+        });
     }
 }
