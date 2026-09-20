@@ -149,30 +149,34 @@ fn py_capsule_result(py: Python<'_>, capsule: *mut ffi::PyObject) -> PyResult<Py
 
 #[pyclass(name = "_DLPackTensor")]
 pub(crate) struct PyDLPackTensor {
-    tensor: Tensor,
+    /// The producer owns this tensor until the first DLPack export. Exporting
+    /// takes it, so the managed capsule becomes the sole Rivet-side owner.
+    tensor: Option<Tensor>,
 }
 
 impl PyDLPackTensor {
     pub(crate) fn new(tensor: Tensor) -> Self {
-        Self { tensor }
-    }
-}
-
-#[pymethods]
-impl PyDLPackTensor {
-    fn __dlpack_device__(&self) -> (i32, i32) {
-        (DL_DEVICE_CPU, 0)
+        Self {
+            tensor: Some(tensor),
+        }
     }
 
-    #[pyo3(signature = (stream=None, max_version=None, dl_device=None, copy=None))]
-    fn __dlpack__(
-        &self,
+    fn consumed_error() -> PyErr {
+        pyo3::exceptions::PyRuntimeError::new_err(
+            "DLPack producer has already transferred ownership",
+        )
+    }
+
+    fn export_dlpack(
+        &mut self,
         py: Python<'_>,
         stream: Option<i64>,
         max_version: Option<(u32, u32)>,
         dl_device: Option<(i32, i32)>,
         copy: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
+        let tensor = self.tensor.as_ref().ok_or_else(Self::consumed_error)?;
+
         if let Some(stream) = stream
             && stream != 0
         {
@@ -203,15 +207,13 @@ impl PyDLPackTensor {
             ));
         }
 
-        let shape: Vec<i64> = self
-            .tensor
+        let shape: Vec<i64> = tensor
             .dims()
             .iter()
             .map(|value| i64::try_from(*value))
             .collect::<Result<_, _>>()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("shape exceeds DLPack range"))?;
-        let strides: Vec<i64> = self
-            .tensor
+        let strides: Vec<i64> = tensor
             .stride()
             .iter()
             .map(|value| i64::try_from(*value))
@@ -219,9 +221,12 @@ impl PyDLPackTensor {
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("stride exceeds DLPack range"))?;
         let ndim = i32::try_from(shape.len())
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("rank exceeds DLPack range"))?;
-        let (code, bits) = dtype::dlpack_code_bits(self.tensor.dtype());
-        let data = cpu_data_pointer(&self.tensor)
+        let (code, bits) = dtype::dlpack_code_bits(tensor.dtype());
+        let data = cpu_data_pointer(tensor)
             .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        // Move the Tensor into the managed owner. No Tensor clone remains in
+        // this producer after a successful export.
+        let tensor = self.tensor.take().ok_or_else(Self::consumed_error)?;
 
         if versioned {
             let mut owner = Box::new(ManagedTensorVersioned {
@@ -250,7 +255,7 @@ impl PyDLPackTensor {
                         byte_offset: 0,
                     },
                 },
-                _tensor: self.tensor.clone(),
+                _tensor: tensor,
                 _shape: shape,
                 _strides: strides,
             });
@@ -291,7 +296,7 @@ impl PyDLPackTensor {
                     manager_ctx: std::ptr::null_mut(),
                     deleter: Some(dlpack_deleter),
                 },
-                _tensor: self.tensor.clone(),
+                _tensor: tensor,
                 _shape: shape,
                 _strides: strides,
             });
@@ -314,13 +319,47 @@ impl PyDLPackTensor {
     }
 }
 
+#[pymethods]
+impl PyDLPackTensor {
+    fn __dlpack_device__(&self) -> PyResult<(i32, i32)> {
+        if self.tensor.is_none() {
+            return Err(Self::consumed_error());
+        }
+        Ok((DL_DEVICE_CPU, 0))
+    }
+
+    #[pyo3(signature = (stream=None, max_version=None, dl_device=None, copy=None))]
+    fn __dlpack__(
+        &mut self,
+        py: Python<'_>,
+        stream: Option<i64>,
+        max_version: Option<(u32, u32)>,
+        dl_device: Option<(i32, i32)>,
+        copy: Option<bool>,
+    ) -> PyResult<Py<PyAny>> {
+        self.export_dlpack(py, stream, max_version, dl_device, copy)
+    }
+
+    #[pyo3(signature = (stream=None, max_version=None, dl_device=None, copy=None))]
+    fn into_dlpack(
+        &mut self,
+        py: Python<'_>,
+        stream: Option<i64>,
+        max_version: Option<(u32, u32)>,
+        dl_device: Option<(i32, i32)>,
+        copy: Option<bool>,
+    ) -> PyResult<Py<PyAny>> {
+        self.export_dlpack(py, stream, max_version, dl_device, copy)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rivet_core::{DType, Device};
 
     fn capsule_tensor<'py>(py: Python<'py>, tensor: Tensor) -> (Py<PyAny>, &'py DLTensor) {
-        let producer = PyDLPackTensor::new(tensor);
+        let mut producer = PyDLPackTensor::new(tensor);
         let capsule = producer.__dlpack__(py, None, None, None, None).unwrap();
         let managed = unsafe {
             ffi::PyCapsule_GetPointer(
@@ -405,13 +444,8 @@ mod tests {
     fn dlpack_validates_stream_device_and_version() {
         Python::initialize();
         Python::attach(|py| {
-            let producer =
+            let mut producer =
                 PyDLPackTensor::new(Tensor::zeros((2,), DType::U8, &Device::Cpu).unwrap());
-            assert!(
-                producer
-                    .__dlpack__(py, Some(0), None, Some((DL_DEVICE_CPU, 0)), Some(false))
-                    .is_ok()
-            );
             assert!(producer.__dlpack__(py, Some(1), None, None, None).is_err());
             assert!(
                 producer
@@ -423,6 +457,19 @@ mod tests {
                     .__dlpack__(py, None, Some((0, 9)), None, None)
                     .is_err()
             );
+
+            let mut accepted =
+                PyDLPackTensor::new(Tensor::zeros((2,), DType::U8, &Device::Cpu).unwrap());
+            let accepted_capsule = accepted
+                .__dlpack__(
+                    py,
+                    Some(0),
+                    Some((1, 0)),
+                    Some((DL_DEVICE_CPU, 0)),
+                    Some(false),
+                )
+                .unwrap();
+            drop(accepted_capsule);
 
             let capsule = producer
                 .__dlpack__(py, None, Some((1, 0)), None, None)

@@ -14,7 +14,7 @@ Image = pytest.importorskip("PIL.Image")
 
 def _loader(root: Path, *, channels_first: bool = False) -> tuple[object, np.ndarray]:
     class_dir = root / "class"
-    class_dir.mkdir()
+    class_dir.mkdir(parents=True)
     pixels = np.fromfunction(
         lambda y, x, channel: (11 * y + 17 * x + 31 * channel) % 256,
         (4, 5, 3),
@@ -70,15 +70,23 @@ def test_dlpack_capsule_is_consumed_once(tmp_path: Path) -> None:
         torch.utils.dlpack.from_dlpack(capsule)
 
 
+def test_into_dlpack_transfers_ownership_and_consumes_producer(tmp_path: Path) -> None:
+    loader, _ = _loader(tmp_path)
+    producer = loader.next_dlpack()["images"]
+    capsule = producer.into_dlpack()
+    images = torch.utils.dlpack.from_dlpack(capsule)
+
+    images.add_(1)
+    with pytest.raises(RuntimeError, match="transferred ownership"):
+        producer.into_dlpack()
+    with pytest.raises(RuntimeError, match="transferred ownership"):
+        producer.__dlpack_device__()
+
+
 def test_dlpack_version_and_cpu_argument_validation(tmp_path: Path) -> None:
     loader, _ = _loader(tmp_path)
     producer = loader.next_dlpack()["images"]
 
-    versioned = producer.__dlpack__(max_version=(1, 0))
-    tensor = torch.utils.dlpack.from_dlpack(versioned)
-    assert tensor.dtype == torch.uint8
-
-    assert producer.__dlpack__(stream=0, dl_device=(1, 0), copy=False)
     with pytest.raises(ValueError, match="stream"):
         producer.__dlpack__(stream=1)
     with pytest.raises(BufferError, match="CPU device 0"):
@@ -87,6 +95,14 @@ def test_dlpack_version_and_cpu_argument_validation(tmp_path: Path) -> None:
         producer.__dlpack__(max_version=(0, 9))
     with pytest.raises(BufferError, match="zero-copy"):
         producer.__dlpack__(copy=True)
+
+    accepted_loader, _ = _loader(tmp_path / "accepted")
+    accepted = accepted_loader.next_dlpack()["images"]
+    assert accepted.__dlpack__(stream=0, dl_device=(1, 0), copy=False)
+
+    versioned = producer.__dlpack__(max_version=(1, 0))
+    tensor = torch.utils.dlpack.from_dlpack(versioned)
+    assert tensor.dtype == torch.uint8
 
 
 def test_dlpack_preserves_permuted_strides(tmp_path: Path) -> None:

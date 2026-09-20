@@ -1019,11 +1019,13 @@ class DataLoader:
         return _maybe_numpy_batch(next(self._inner), self.as_numpy)
 
     def next_dlpack(self) -> dict[str, Any]:
-        """Return the next batch through public zero-copy DLPack objects.
+        """Return the next batch through public zero-copy DLPack handles.
 
-        The ``images`` and ``labels`` values are one-shot DLPack producers;
-        pass each directly to a consumer such as
-        ``torch.utils.dlpack.from_dlpack``.
+        The ``images`` and ``labels`` values are one-shot ownership-transfer
+        handles. Passing one to ``torch.utils.dlpack.from_dlpack`` invokes its
+        consuming ``__dlpack__`` method; ``into_dlpack()`` can be used when
+        the transfer should be explicit. After either call, Rivet no longer
+        retains that Tensor alias and the handle cannot be exported again.
         """
         batch = self._inner.next_dlpack()
         if batch is None:
