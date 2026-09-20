@@ -70,6 +70,18 @@ def test_dlpack_capsule_is_consumed_once(tmp_path: Path) -> None:
         torch.utils.dlpack.from_dlpack(capsule)
 
 
+def test_dlpack_producer_can_export_multiple_capsules(tmp_path: Path) -> None:
+    loader, pixels = _loader(tmp_path)
+    producer = loader.next_dlpack()["images"]
+
+    first = torch.utils.dlpack.from_dlpack(producer)
+    second = torch.utils.dlpack.from_dlpack(producer)
+    expected = torch.from_numpy(pixels).unsqueeze(0)
+
+    torch.testing.assert_close(first, expected)
+    torch.testing.assert_close(second, expected)
+
+
 def test_into_dlpack_transfers_ownership_and_consumes_producer(tmp_path: Path) -> None:
     loader, _ = _loader(tmp_path)
     producer = loader.next_dlpack()["images"]
@@ -103,6 +115,8 @@ def test_dlpack_version_and_cpu_argument_validation(tmp_path: Path) -> None:
     versioned = producer.__dlpack__(max_version=(1, 0))
     tensor = torch.utils.dlpack.from_dlpack(versioned)
     assert tensor.dtype == torch.uint8
+    repeated = producer.__dlpack__(max_version=(1, 0))
+    torch.utils.dlpack.from_dlpack(repeated)
 
 
 def test_dlpack_preserves_permuted_strides(tmp_path: Path) -> None:
@@ -114,3 +128,23 @@ def test_dlpack_preserves_permuted_strides(tmp_path: Path) -> None:
     assert tuple(images.shape) == (1, 3, 4, 5)
     assert tuple(images.stride()) == (pixels.size, *expected.stride()[1:])
     torch.testing.assert_close(images, expected)
+
+
+def test_jax_dlpack_is_shared_and_repeatable(tmp_path: Path) -> None:
+    jax = pytest.importorskip("jax")
+    loader, pixels = _loader(tmp_path)
+    producer = loader.next_dlpack()["images"]
+    cpu = jax.devices("cpu")[0]
+
+    # JAX may copy CPU buffers that do not meet its 64-byte alignment
+    # requirement; the producer itself must still remain repeatable.
+    first = jax.dlpack.from_dlpack(producer, device=cpu, copy=None)
+    second = jax.dlpack.from_dlpack(producer, device=cpu, copy=None)
+    expected = pixels[None, ...]
+    np.testing.assert_array_equal(np.asarray(first), expected)
+    np.testing.assert_array_equal(np.asarray(second), expected)
+
+    del producer
+    del loader
+    gc.collect()
+    np.testing.assert_array_equal(np.asarray(first), expected)

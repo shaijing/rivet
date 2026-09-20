@@ -8,6 +8,7 @@ const DLTENSOR_VERSIONED: &[u8] = b"dltensor_versioned\0";
 const DL_DEVICE_CPU: i32 = 1;
 const DLPACK_MAJOR_VERSION: u32 = 1;
 const DLPACK_MINOR_VERSION: u32 = 0;
+const DLPACK_FLAG_BITMASK_READ_ONLY: u64 = 1 << 0;
 
 #[repr(C)]
 struct DLDevice {
@@ -65,6 +66,25 @@ struct ManagedTensorVersioned {
     _strides: Vec<i64>,
 }
 
+#[derive(Clone, Copy)]
+enum DlpackAbi {
+    Legacy,
+    Versioned,
+}
+
+struct DlpackStorageView {
+    base_ptr: *const u8,
+    byte_offset: u64,
+}
+
+struct DlpackLayout {
+    ndim: i32,
+    shape: Vec<i64>,
+    strides: Vec<i64>,
+    data: *mut c_void,
+    byte_offset: u64,
+}
+
 unsafe extern "C" fn dlpack_deleter(managed: *mut DLManagedTensor) {
     if !managed.is_null() {
         unsafe { drop(Box::from_raw(managed.cast::<ManagedTensor>())) };
@@ -96,10 +116,10 @@ unsafe extern "C" fn capsule_destructor(capsule: *mut ffi::PyObject) {
     }
 }
 
-fn cpu_data_pointer(tensor: &Tensor) -> rivet_core::Result<*const u8> {
+fn cpu_storage_view(tensor: &Tensor) -> rivet_core::Result<DlpackStorageView> {
     let itemsize = tensor.dtype().size_in_bytes();
     tensor.with_cpu_storage(|storage, layout| {
-        let (pointer, storage_len): (*const u8, usize) = match storage {
+        let (base_ptr, storage_len): (*const u8, usize) = match storage {
             CpuStorageRef::U8(values) => (values.as_ptr().cast(), values.len()),
             CpuStorageRef::U32(values) => (values.as_ptr().cast(), values.len()),
             CpuStorageRef::I16(values) => (values.as_ptr().cast(), values.len()),
@@ -114,7 +134,10 @@ fn cpu_data_pointer(tensor: &Tensor) -> rivet_core::Result<*const u8> {
         if layout.elem_count() == 0 {
             // Empty views do not dereference their data pointer. In
             // particular, their start offset may legally be one-past-end.
-            return Ok(pointer);
+            return Ok(DlpackStorageView {
+                base_ptr,
+                byte_offset: 0,
+            });
         }
 
         let Some((start_offset, max_offset)) = layout.storage_bounds() else {
@@ -136,8 +159,83 @@ fn cpu_data_pointer(tensor: &Tensor) -> rivet_core::Result<*const u8> {
         if end_offset > storage_bytes || byte_offset >= storage_bytes {
             return Err(rivet_core::Error::StorageOutOfBounds);
         }
-        Ok(unsafe { pointer.add(byte_offset) })
+        Ok(DlpackStorageView {
+            base_ptr,
+            byte_offset: u64::try_from(byte_offset)
+                .map_err(|_| rivet_core::Error::StorageOutOfBounds)?,
+        })
     })
+}
+
+fn dlpack_layout(tensor: &Tensor) -> PyResult<DlpackLayout> {
+    let shape: Vec<i64> = tensor
+        .dims()
+        .iter()
+        .map(|value| i64::try_from(*value))
+        .collect::<Result<_, _>>()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("shape exceeds DLPack range"))?;
+    let strides: Vec<i64> = tensor
+        .stride()
+        .iter()
+        .map(|value| i64::try_from(*value))
+        .collect::<Result<_, _>>()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("stride exceeds DLPack range"))?;
+    let ndim = i32::try_from(shape.len())
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("rank exceeds DLPack range"))?;
+    let storage = cpu_storage_view(tensor)
+        .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+    let (data, byte_offset) = if tensor.elem_count() == 0 {
+        (std::ptr::null_mut(), 0)
+    } else {
+        (storage.base_ptr.cast_mut().cast(), storage.byte_offset)
+    };
+    Ok(DlpackLayout {
+        ndim,
+        shape,
+        strides,
+        data,
+        byte_offset,
+    })
+}
+
+fn negotiate_dlpack_abi(max_version: Option<(u32, u32)>) -> PyResult<DlpackAbi> {
+    let Some((major, minor)) = max_version else {
+        return Ok(DlpackAbi::Legacy);
+    };
+    if (major, minor) < (DLPACK_MAJOR_VERSION, DLPACK_MINOR_VERSION) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "Rivet DLPack export supports version 1.0; max_version is too old",
+        ));
+    }
+    Ok(DlpackAbi::Versioned)
+}
+
+fn validate_dlpack_request(
+    stream: Option<i64>,
+    max_version: Option<(u32, u32)>,
+    dl_device: Option<(i32, i32)>,
+    copy: Option<bool>,
+) -> PyResult<DlpackAbi> {
+    if let Some(stream) = stream
+        && stream != 0
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "Rivet CPU DLPack export only supports stream=None or stream=0",
+        ));
+    }
+    if copy == Some(true) {
+        return Err(pyo3::exceptions::PyBufferError::new_err(
+            "Rivet DLPack export is zero-copy only; copy=True is unsupported",
+        ));
+    }
+    if let Some((device_type, device_id)) = dl_device
+        && (device_type != DL_DEVICE_CPU || device_id != 0)
+    {
+        return Err(pyo3::exceptions::PyBufferError::new_err(
+            "Rivet currently exports DLPack only on CPU device 0",
+        ));
+    }
+    negotiate_dlpack_abi(max_version)
 }
 
 fn py_capsule_result(py: Python<'_>, capsule: *mut ffi::PyObject) -> PyResult<Py<PyAny>> {
@@ -149,8 +247,8 @@ fn py_capsule_result(py: Python<'_>, capsule: *mut ffi::PyObject) -> PyResult<Py
 
 #[pyclass(name = "_DLPackTensor")]
 pub(crate) struct PyDLPackTensor {
-    /// The producer owns this tensor until the first DLPack export. Exporting
-    /// takes it, so the managed capsule becomes the sole Rivet-side owner.
+    /// Standard DLPack exports clone this cheap Tensor handle. Only the
+    /// explicit into_dlpack path takes it and consumes the producer.
     tensor: Option<Tensor>,
 }
 
@@ -167,68 +265,30 @@ impl PyDLPackTensor {
         )
     }
 
-    fn export_dlpack(
+    fn export_owned(
         &mut self,
         py: Python<'_>,
         stream: Option<i64>,
         max_version: Option<(u32, u32)>,
         dl_device: Option<(i32, i32)>,
         copy: Option<bool>,
+        read_only: bool,
     ) -> PyResult<Py<PyAny>> {
         let tensor = self.tensor.as_ref().ok_or_else(Self::consumed_error)?;
-
-        if let Some(stream) = stream
-            && stream != 0
-        {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Rivet CPU DLPack export only supports stream=None or stream=0",
-            ));
-        }
-        let versioned = if let Some((major, minor)) = max_version {
-            if (major, minor) < (DLPACK_MAJOR_VERSION, DLPACK_MINOR_VERSION) {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "Rivet DLPack export supports version 1.0; max_version is too old",
-                ));
-            }
-            true
-        } else {
-            false
-        };
-        if copy == Some(true) {
-            return Err(pyo3::exceptions::PyBufferError::new_err(
-                "Rivet DLPack export is zero-copy only; copy=True is unsupported",
-            ));
-        }
-        if let Some((device_type, device_id)) = dl_device
-            && (device_type != DL_DEVICE_CPU || device_id != 0)
-        {
-            return Err(pyo3::exceptions::PyBufferError::new_err(
-                "Rivet currently exports DLPack only on CPU device 0",
-            ));
-        }
-
-        let shape: Vec<i64> = tensor
-            .dims()
-            .iter()
-            .map(|value| i64::try_from(*value))
-            .collect::<Result<_, _>>()
-            .map_err(|_| pyo3::exceptions::PyValueError::new_err("shape exceeds DLPack range"))?;
-        let strides: Vec<i64> = tensor
-            .stride()
-            .iter()
-            .map(|value| i64::try_from(*value))
-            .collect::<Result<_, _>>()
-            .map_err(|_| pyo3::exceptions::PyValueError::new_err("stride exceeds DLPack range"))?;
-        let ndim = i32::try_from(shape.len())
-            .map_err(|_| pyo3::exceptions::PyValueError::new_err("rank exceeds DLPack range"))?;
+        let abi = validate_dlpack_request(stream, max_version, dl_device, copy)?;
+        let DlpackLayout {
+            ndim,
+            shape,
+            strides,
+            data,
+            byte_offset,
+        } = dlpack_layout(tensor)?;
         let (code, bits) = dtype::dlpack_code_bits(tensor.dtype());
-        let data = cpu_data_pointer(tensor)
-            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
         // Move the Tensor into the managed owner. No Tensor clone remains in
         // this producer after a successful export.
         let tensor = self.tensor.take().ok_or_else(Self::consumed_error)?;
 
-        if versioned {
+        if matches!(abi, DlpackAbi::Versioned) {
             let mut owner = Box::new(ManagedTensorVersioned {
                 managed: DLManagedTensorVersioned {
                     version: DLPackVersion {
@@ -237,9 +297,13 @@ impl PyDLPackTensor {
                     },
                     manager_ctx: std::ptr::null_mut(),
                     deleter: Some(dlpack_versioned_deleter),
-                    flags: 0,
+                    flags: if read_only {
+                        DLPACK_FLAG_BITMASK_READ_ONLY
+                    } else {
+                        0
+                    },
                     dl_tensor: DLTensor {
-                        data: data.cast_mut().cast(),
+                        data,
                         device: DLDevice {
                             device_type: DL_DEVICE_CPU,
                             device_id: 0,
@@ -252,7 +316,7 @@ impl PyDLPackTensor {
                         },
                         shape: std::ptr::null_mut(),
                         strides: std::ptr::null_mut(),
-                        byte_offset: 0,
+                        byte_offset,
                     },
                 },
                 _tensor: tensor,
@@ -278,7 +342,7 @@ impl PyDLPackTensor {
             let mut owner = Box::new(ManagedTensor {
                 managed: DLManagedTensor {
                     dl_tensor: DLTensor {
-                        data: data.cast_mut().cast(),
+                        data,
                         device: DLDevice {
                             device_type: DL_DEVICE_CPU,
                             device_id: 0,
@@ -291,7 +355,7 @@ impl PyDLPackTensor {
                         },
                         shape: std::ptr::null_mut(),
                         strides: std::ptr::null_mut(),
-                        byte_offset: 0,
+                        byte_offset,
                     },
                     manager_ctx: std::ptr::null_mut(),
                     deleter: Some(dlpack_deleter),
@@ -317,6 +381,23 @@ impl PyDLPackTensor {
             py_capsule_result(py, capsule)
         }
     }
+
+    fn export_shared(
+        &self,
+        py: Python<'_>,
+        stream: Option<i64>,
+        max_version: Option<(u32, u32)>,
+        dl_device: Option<(i32, i32)>,
+        copy: Option<bool>,
+    ) -> PyResult<Py<PyAny>> {
+        let tensor = self
+            .tensor
+            .as_ref()
+            .ok_or_else(Self::consumed_error)?
+            .clone();
+        let mut export = Self::new(tensor);
+        export.export_owned(py, stream, max_version, dl_device, copy, true)
+    }
 }
 
 #[pymethods]
@@ -330,14 +411,14 @@ impl PyDLPackTensor {
 
     #[pyo3(signature = (stream=None, max_version=None, dl_device=None, copy=None))]
     fn __dlpack__(
-        &mut self,
+        &self,
         py: Python<'_>,
         stream: Option<i64>,
         max_version: Option<(u32, u32)>,
         dl_device: Option<(i32, i32)>,
         copy: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
-        self.export_dlpack(py, stream, max_version, dl_device, copy)
+        self.export_shared(py, stream, max_version, dl_device, copy)
     }
 
     #[pyo3(signature = (stream=None, max_version=None, dl_device=None, copy=None))]
@@ -349,7 +430,7 @@ impl PyDLPackTensor {
         dl_device: Option<(i32, i32)>,
         copy: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
-        self.export_dlpack(py, stream, max_version, dl_device, copy)
+        self.export_owned(py, stream, max_version, dl_device, copy, false)
     }
 }
 
@@ -359,7 +440,7 @@ mod tests {
     use rivet_core::{DType, Device};
 
     fn capsule_tensor<'py>(py: Python<'py>, tensor: Tensor) -> (Py<PyAny>, &'py DLTensor) {
-        let mut producer = PyDLPackTensor::new(tensor);
+        let producer = PyDLPackTensor::new(tensor);
         let capsule = producer.__dlpack__(py, None, None, None, None).unwrap();
         let managed = unsafe {
             ffi::PyCapsule_GetPointer(
@@ -397,6 +478,7 @@ mod tests {
                 })
                 .unwrap();
             assert_eq!(permuted.data, base_pointer);
+            assert_eq!(permuted.byte_offset, 0);
             drop(permuted_capsule);
 
             let (narrow_capsule, narrow) = capsule_tensor(py, base.narrow(1, 1, 2).unwrap());
@@ -408,7 +490,8 @@ mod tests {
                 unsafe { std::slice::from_raw_parts(narrow.strides, 3) },
                 &[12, 4, 1]
             );
-            assert_eq!(narrow.data, unsafe { base_pointer.byte_add(4) });
+            assert_eq!(narrow.data, base_pointer);
+            assert_eq!(narrow.byte_offset, 4);
             drop(narrow_capsule);
 
             let broadcast = Tensor::from_vec(vec![1u8, 2, 3], (1, 3), &Device::Cpu)
@@ -436,6 +519,8 @@ mod tests {
                 unsafe { std::slice::from_raw_parts(empty.strides, 2) },
                 &[3, 1]
             );
+            assert!(empty.data.is_null());
+            assert_eq!(empty.byte_offset, 0);
             drop(empty_capsule);
         });
     }
@@ -444,7 +529,7 @@ mod tests {
     fn dlpack_validates_stream_device_and_version() {
         Python::initialize();
         Python::attach(|py| {
-            let mut producer =
+            let producer =
                 PyDLPackTensor::new(Tensor::zeros((2,), DType::U8, &Device::Cpu).unwrap());
             assert!(producer.__dlpack__(py, Some(1), None, None, None).is_err());
             assert!(
@@ -458,7 +543,7 @@ mod tests {
                     .is_err()
             );
 
-            let mut accepted =
+            let accepted =
                 PyDLPackTensor::new(Tensor::zeros((2,), DType::U8, &Device::Cpu).unwrap());
             let accepted_capsule = accepted
                 .__dlpack__(
@@ -483,6 +568,12 @@ mod tests {
             };
             assert_eq!(unsafe { (*managed).version.major }, DLPACK_MAJOR_VERSION);
             assert_eq!(unsafe { (*managed).version.minor }, DLPACK_MINOR_VERSION);
+            assert_eq!(unsafe { (*managed).flags }, DLPACK_FLAG_BITMASK_READ_ONLY);
+
+            let repeated = producer
+                .__dlpack__(py, None, Some((1, 0)), None, None)
+                .unwrap();
+            drop(repeated);
         });
     }
 }

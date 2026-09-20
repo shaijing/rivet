@@ -110,12 +110,12 @@ torch_batch = loader.next_torch()
 
 Python batches expose read-only NumPy views by default. The views borrow the
 Rust CPU allocation without copying and keep their owner alive through the
-array base object. Use `DataLoader.next_dlpack()` for one-shot DLPack
-ownership-transfer handles or `DataLoader.next_torch()` for Torch tensors.
-Passing a handle to Torch consumes it; `into_dlpack()` is the explicit form of
-the same transfer, after which Rivet retains no Tensor alias. Rivet currently
-exports CPU tensors only; unsupported dtype/device conversions fail explicitly
-instead of silently copying.
+array base object. Use `DataLoader.next_dlpack()` for repeatable shared
+DLPack producers or `DataLoader.next_torch()` for Torch tensors. Each capsule
+is one-shot; `into_dlpack()` explicitly transfers ownership, after which
+Rivet retains no Tensor alias. Rivet currently exports CPU tensors only;
+unsupported dtype/device conversions fail explicitly instead of silently
+copying.
 
 `rivet` keeps the same names as a compatibility root during the migration;
 new image code should use `rivet.vision`. No placeholder namespace is added
