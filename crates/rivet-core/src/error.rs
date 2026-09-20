@@ -70,6 +70,19 @@ pub enum Error {
 
     #[error("range progression overflowed or stopped making progress")]
     RangeOverflow,
+
+    #[error("cannot apply {op} to an empty reduction along dimension {dim}")]
+    EmptyReduction { op: &'static str, dim: usize },
+
+    #[error(
+        "reduction {op} along dimension {dim} requires at least {minimum} elements, got {actual}"
+    )]
+    InvalidReduction {
+        op: &'static str,
+        dim: usize,
+        minimum: usize,
+        actual: usize,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

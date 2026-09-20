@@ -1,5 +1,5 @@
 use crate::cpu_backend::CpuStorage;
-use crate::ops::{BinaryOp, UnaryOp};
+use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use crate::{DType, Device, Error, Layout, Result, Shape, WithDType};
 use std::sync::{RwLockReadGuard, RwLockWriteGuard};
 
@@ -42,6 +42,99 @@ impl Storage {
     pub(crate) fn unary(storage: &Self, layout: &Layout, op: UnaryOp) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.unary(layout, op)?)),
+        }
+    }
+
+    pub(crate) fn cmp(
+        lhs: &Self,
+        lhs_layout: &Layout,
+        rhs: &Self,
+        rhs_layout: &Layout,
+        op: CmpOp,
+    ) -> Result<Self> {
+        match (lhs, rhs) {
+            (Self::Cpu(lhs), Self::Cpu(rhs)) => {
+                Ok(Self::Cpu(lhs.cmp(lhs_layout, rhs, rhs_layout, op)?))
+            }
+        }
+    }
+
+    pub(crate) fn cmp_scalar<T: WithDType>(
+        storage: &Self,
+        layout: &Layout,
+        scalar: T,
+        op: CmpOp,
+    ) -> Result<Self> {
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.cmp_scalar(layout, scalar, op)?)),
+        }
+    }
+
+    pub(crate) fn where_cond(
+        condition: &Self,
+        condition_layout: &Layout,
+        on_true: &Self,
+        true_layout: &Layout,
+        on_false: &Self,
+        false_layout: &Layout,
+    ) -> Result<Self> {
+        match (condition, on_true, on_false) {
+            (Self::Cpu(condition), Self::Cpu(on_true), Self::Cpu(on_false)) => {
+                Ok(Self::Cpu(CpuStorage::where_cond(
+                    condition,
+                    condition_layout,
+                    on_true,
+                    true_layout,
+                    on_false,
+                    false_layout,
+                )?))
+            }
+        }
+    }
+
+    pub(crate) fn reduce_dim(
+        storage: &Self,
+        layout: &Layout,
+        dim: usize,
+        keepdim: bool,
+        op: ReduceOp,
+    ) -> Result<Self> {
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.reduce_dim(layout, dim, keepdim, op)?)),
+        }
+    }
+
+    pub(crate) fn reduce_all(storage: &Self, layout: &Layout, op: ReduceOp) -> Result<Self> {
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.reduce_all(layout, op)?)),
+        }
+    }
+
+    pub(crate) fn mean_dim(
+        storage: &Self,
+        layout: &Layout,
+        dim: usize,
+        keepdim: bool,
+    ) -> Result<Self> {
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.mean_dim(layout, dim, keepdim)?)),
+        }
+    }
+
+    pub(crate) fn mean_all(storage: &Self, layout: &Layout) -> Result<Self> {
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.mean_all(layout)?)),
+        }
+    }
+
+    pub(crate) fn var_dim(
+        storage: &Self,
+        layout: &Layout,
+        dim: usize,
+        keepdim: bool,
+    ) -> Result<Self> {
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.var_dim(layout, dim, keepdim)?)),
         }
     }
 

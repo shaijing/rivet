@@ -449,3 +449,144 @@ fn phase1_view_composition_preserves_logical_order_and_storage_contracts() {
         offset.to_vec::<u8>().unwrap()
     );
 }
+
+#[test]
+fn phase2_reductions_are_layout_aware_and_keep_the_contract_explicit() {
+    let tensor =
+        Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], (2, 3), &Device::Cpu).unwrap();
+    assert_eq!(tensor.sum_keepdim(0).unwrap().dims(), &[1, 3]);
+    assert_eq!(
+        tensor.sum_keepdim(0).unwrap().to_vec::<f32>().unwrap(),
+        [5.0, 7.0, 9.0]
+    );
+    assert_eq!(tensor.sum(1).unwrap().to_vec::<f32>().unwrap(), [6.0, 15.0]);
+    assert_eq!(tensor.sum_all().unwrap().to_scalar::<f32>().unwrap(), 21.0);
+    assert_eq!(
+        tensor.mean_keepdim(1).unwrap().to_vec::<f32>().unwrap(),
+        [2.0, 5.0]
+    );
+    assert_eq!(tensor.min(1).unwrap().to_vec::<f32>().unwrap(), [1.0, 4.0]);
+    assert_eq!(tensor.min_all().unwrap().to_scalar::<f32>().unwrap(), 1.0);
+    assert_eq!(
+        tensor.max_keepdim(0).unwrap().to_vec::<f32>().unwrap(),
+        [4.0, 5.0, 6.0]
+    );
+    assert_eq!(tensor.max_all().unwrap().to_scalar::<f32>().unwrap(), 6.0);
+
+    let transposed = tensor.transpose(0, 1).unwrap();
+    assert_eq!(
+        transposed.sum(1).unwrap().to_vec::<f32>().unwrap(),
+        [5.0, 7.0, 9.0]
+    );
+    assert_eq!(
+        transposed.argmin(1).unwrap().to_vec::<i64>().unwrap(),
+        [0, 0, 0]
+    );
+    assert_eq!(
+        transposed.argmax(1).unwrap().to_vec::<i64>().unwrap(),
+        [1, 1, 1]
+    );
+    assert_eq!(
+        transposed
+            .argmin_keepdim(1)
+            .unwrap()
+            .to_vec::<i64>()
+            .unwrap(),
+        [0, 0, 0]
+    );
+    assert_eq!(
+        transposed
+            .argmax_keepdim(1)
+            .unwrap()
+            .to_vec::<i64>()
+            .unwrap(),
+        [1, 1, 1]
+    );
+
+    let values = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], 3, &Device::Cpu).unwrap();
+    assert_eq!(values.mean_all().unwrap().to_scalar::<f32>().unwrap(), 2.0);
+    assert_eq!(values.mean(0).unwrap().to_scalar::<f32>().unwrap(), 2.0);
+    assert_eq!(values.var(0).unwrap().to_scalar::<f32>().unwrap(), 1.0);
+    assert_eq!(
+        values.var_keepdim(0).unwrap().to_vec::<f32>().unwrap(),
+        [1.0]
+    );
+
+    let integer_mean = Tensor::from_vec(vec![1u8, 2, 4], 3, &Device::Cpu).unwrap();
+    assert_eq!(
+        integer_mean.mean_all().unwrap().to_scalar::<u8>().unwrap(),
+        2
+    );
+    assert!(matches!(
+        Tensor::zeros([2, 0], DType::F32, &Device::Cpu)
+            .unwrap()
+            .min(1),
+        Err(Error::EmptyReduction { .. })
+    ));
+    assert_eq!(
+        Tensor::zeros([2, 0], DType::F32, &Device::Cpu)
+            .unwrap()
+            .sum_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap(),
+        0.0
+    );
+    assert!(matches!(
+        Tensor::zeros([2, 0], DType::F32, &Device::Cpu)
+            .unwrap()
+            .mean(1),
+        Err(Error::EmptyReduction { .. })
+    ));
+    assert!(matches!(
+        Tensor::ones([2, 1], DType::F32, &Device::Cpu)
+            .unwrap()
+            .var(1),
+        Err(Error::InvalidReduction { .. })
+    ));
+
+    let nan_values = Tensor::from_vec(vec![1.0f32, f32::NAN, 3.0], 3, &Device::Cpu).unwrap();
+    assert!(
+        nan_values
+            .min_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap()
+            .is_nan()
+    );
+    assert_eq!(nan_values.argmax(0).unwrap().to_scalar::<i64>().unwrap(), 1);
+}
+
+#[test]
+fn phase2_comparisons_masks_clamp_and_where_support_broadcasting() {
+    let matrix = Tensor::from_vec(vec![1i32, 2, 3, 4, 5, 6], (2, 3), &Device::Cpu).unwrap();
+    let row = Tensor::from_vec(vec![2i32, 4, 6], 3, &Device::Cpu).unwrap();
+    let mask = matrix.lt(&row).unwrap();
+    assert_eq!(mask.dtype(), DType::U8);
+    assert_eq!(mask.dims(), &[2, 3]);
+    assert_eq!(mask.to_vec::<u8>().unwrap(), [1, 1, 1, 0, 0, 0]);
+    assert_eq!(
+        matrix.ge_scalar(4).unwrap().to_vec::<u8>().unwrap(),
+        [0, 0, 0, 1, 1, 1]
+    );
+    assert_eq!(matrix.eq(&matrix).unwrap().to_vec::<u8>().unwrap(), [1; 6]);
+    assert_eq!(
+        matrix.ne_scalar(3).unwrap().to_vec::<u8>().unwrap(),
+        [1, 1, 0, 1, 1, 1]
+    );
+
+    let clamped = matrix.clamp(2i32, 5i32).unwrap();
+    assert_eq!(clamped.to_vec::<i32>().unwrap(), [2, 2, 3, 4, 5, 5]);
+
+    let condition = Tensor::from_vec(vec![0u8, 1], (2, 1), &Device::Cpu).unwrap();
+    let fallback = Tensor::full(99i32, (), &Device::Cpu).unwrap();
+    let selected = condition.where_cond(&matrix, &fallback).unwrap();
+    assert_eq!(selected.to_vec::<i32>().unwrap(), [99, 99, 99, 4, 5, 6]);
+    assert!(matches!(
+        matrix.where_cond(&matrix, &matrix),
+        Err(Error::UnexpectedDType {
+            expected: DType::U8,
+            actual: DType::I32
+        })
+    ));
+}

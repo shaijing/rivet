@@ -1,10 +1,13 @@
 pub mod utils;
 
 use crate::backend::{BackendDevice, BackendStorage};
-use crate::ops::{BinaryOp, UnaryOp};
+use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use crate::{DType, Error, Layout, Result, Shape, WithDType};
 use half::{bf16, f16};
-use utils::{binary_map, binary_scalar_map, cat_map, copy_logical, unary_map};
+use utils::{
+    arg_reduce_map, binary_map, binary_scalar_map, cat_map, cmp_map, cmp_scalar_map, copy_logical,
+    mean_all_map, mean_map, reduce_all_map, reduce_map, unary_map, var_map, where_map,
+};
 
 #[derive(Debug, Clone)]
 pub enum CpuStorage {
@@ -235,6 +238,256 @@ impl CpuStorage {
             DType::F16 => dispatch!(F16, f16),
             DType::F32 => dispatch!(F32, f32),
             DType::F64 => dispatch!(F64, f64),
+        }
+    }
+
+    pub(crate) fn cmp(
+        &self,
+        lhs_layout: &Layout,
+        rhs: &Self,
+        rhs_layout: &Layout,
+        op: CmpOp,
+    ) -> Result<Self> {
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                match (self, rhs) {
+                    (Self::$variant(lhs), Self::$variant(rhs)) => {
+                        Ok(Self::U8(cmp_map(lhs, lhs_layout, rhs, rhs_layout, op)?))
+                    }
+                    _ => Err(Error::DTypeMismatch {
+                        lhs: self.dtype(),
+                        rhs: rhs.dtype(),
+                    }),
+                }
+            };
+        }
+
+        match self.dtype() {
+            DType::U8 => dispatch!(U8, u8),
+            DType::U32 => dispatch!(U32, u32),
+            DType::I16 => dispatch!(I16, i16),
+            DType::I32 => dispatch!(I32, i32),
+            DType::I64 => dispatch!(I64, i64),
+            DType::BF16 => dispatch!(BF16, bf16),
+            DType::F16 => dispatch!(F16, f16),
+            DType::F32 => dispatch!(F32, f32),
+            DType::F64 => dispatch!(F64, f64),
+        }
+    }
+
+    pub(crate) fn cmp_scalar<T: WithDType>(
+        &self,
+        layout: &Layout,
+        scalar: T,
+        op: CmpOp,
+    ) -> Result<Self> {
+        let scalar = T::into_cpu_storage(vec![scalar]);
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                match (self, scalar) {
+                    (Self::$variant(values), Self::$variant(scalar)) => {
+                        Ok(Self::U8(cmp_scalar_map(values, layout, scalar[0], op)?))
+                    }
+                    _ => Err(Error::DTypeMismatch {
+                        lhs: self.dtype(),
+                        rhs: T::DTYPE,
+                    }),
+                }
+            };
+        }
+
+        match self.dtype() {
+            DType::U8 => dispatch!(U8, u8),
+            DType::U32 => dispatch!(U32, u32),
+            DType::I16 => dispatch!(I16, i16),
+            DType::I32 => dispatch!(I32, i32),
+            DType::I64 => dispatch!(I64, i64),
+            DType::BF16 => dispatch!(BF16, bf16),
+            DType::F16 => dispatch!(F16, f16),
+            DType::F32 => dispatch!(F32, f32),
+            DType::F64 => dispatch!(F64, f64),
+        }
+    }
+
+    pub(crate) fn where_cond(
+        condition: &Self,
+        condition_layout: &Layout,
+        on_true: &Self,
+        true_layout: &Layout,
+        on_false: &Self,
+        false_layout: &Layout,
+    ) -> Result<Self> {
+        let Self::U8(condition) = condition else {
+            return Err(Error::UnexpectedDType {
+                expected: DType::U8,
+                actual: condition.dtype(),
+            });
+        };
+
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                match (on_true, on_false) {
+                    (Self::$variant(on_true), Self::$variant(on_false)) => {
+                        Ok(Self::$variant(where_map(
+                            condition,
+                            condition_layout,
+                            on_true,
+                            true_layout,
+                            on_false,
+                            false_layout,
+                        )?))
+                    }
+                    _ => Err(Error::DTypeMismatch {
+                        lhs: on_true.dtype(),
+                        rhs: on_false.dtype(),
+                    }),
+                }
+            };
+        }
+
+        match on_true.dtype() {
+            DType::U8 => dispatch!(U8, u8),
+            DType::U32 => dispatch!(U32, u32),
+            DType::I16 => dispatch!(I16, i16),
+            DType::I32 => dispatch!(I32, i32),
+            DType::I64 => dispatch!(I64, i64),
+            DType::BF16 => dispatch!(BF16, bf16),
+            DType::F16 => dispatch!(F16, f16),
+            DType::F32 => dispatch!(F32, f32),
+            DType::F64 => dispatch!(F64, f64),
+        }
+    }
+
+    pub(crate) fn reduce_dim(
+        &self,
+        layout: &Layout,
+        dim: usize,
+        keepdim: bool,
+        op: ReduceOp,
+    ) -> Result<Self> {
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                if let Self::$variant(values) = self {
+                    match op {
+                        ReduceOp::ArgMin | ReduceOp::ArgMax => {
+                            Ok(Self::I64(arg_reduce_map(values, layout, dim, keepdim, op)?))
+                        }
+                        ReduceOp::Sum | ReduceOp::Min | ReduceOp::Max => Ok(Self::$variant(
+                            reduce_map(values, layout, dim, keepdim, op)?,
+                        )),
+                    }
+                } else {
+                    unreachable!()
+                }
+            };
+        }
+
+        match self {
+            Self::U8(_) => dispatch!(U8, u8),
+            Self::U32(_) => dispatch!(U32, u32),
+            Self::I16(_) => dispatch!(I16, i16),
+            Self::I32(_) => dispatch!(I32, i32),
+            Self::I64(_) => dispatch!(I64, i64),
+            Self::BF16(_) => dispatch!(BF16, bf16),
+            Self::F16(_) => dispatch!(F16, f16),
+            Self::F32(_) => dispatch!(F32, f32),
+            Self::F64(_) => dispatch!(F64, f64),
+        }
+    }
+
+    pub(crate) fn reduce_all(&self, layout: &Layout, op: ReduceOp) -> Result<Self> {
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                if let Self::$variant(values) = self {
+                    Ok(Self::$variant(reduce_all_map(values, layout, op)?))
+                } else {
+                    unreachable!()
+                }
+            };
+        }
+
+        match self {
+            Self::U8(_) => dispatch!(U8, u8),
+            Self::U32(_) => dispatch!(U32, u32),
+            Self::I16(_) => dispatch!(I16, i16),
+            Self::I32(_) => dispatch!(I32, i32),
+            Self::I64(_) => dispatch!(I64, i64),
+            Self::BF16(_) => dispatch!(BF16, bf16),
+            Self::F16(_) => dispatch!(F16, f16),
+            Self::F32(_) => dispatch!(F32, f32),
+            Self::F64(_) => dispatch!(F64, f64),
+        }
+    }
+
+    pub(crate) fn mean_dim(&self, layout: &Layout, dim: usize, keepdim: bool) -> Result<Self> {
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                if let Self::$variant(values) = self {
+                    Ok(Self::$variant(mean_map(values, layout, dim, keepdim)?))
+                } else {
+                    unreachable!()
+                }
+            };
+        }
+
+        match self {
+            Self::U8(_) => dispatch!(U8, u8),
+            Self::U32(_) => dispatch!(U32, u32),
+            Self::I16(_) => dispatch!(I16, i16),
+            Self::I32(_) => dispatch!(I32, i32),
+            Self::I64(_) => dispatch!(I64, i64),
+            Self::BF16(_) => dispatch!(BF16, bf16),
+            Self::F16(_) => dispatch!(F16, f16),
+            Self::F32(_) => dispatch!(F32, f32),
+            Self::F64(_) => dispatch!(F64, f64),
+        }
+    }
+
+    pub(crate) fn mean_all(&self, layout: &Layout) -> Result<Self> {
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                if let Self::$variant(values) = self {
+                    Ok(Self::$variant(mean_all_map(values, layout)?))
+                } else {
+                    unreachable!()
+                }
+            };
+        }
+
+        match self {
+            Self::U8(_) => dispatch!(U8, u8),
+            Self::U32(_) => dispatch!(U32, u32),
+            Self::I16(_) => dispatch!(I16, i16),
+            Self::I32(_) => dispatch!(I32, i32),
+            Self::I64(_) => dispatch!(I64, i64),
+            Self::BF16(_) => dispatch!(BF16, bf16),
+            Self::F16(_) => dispatch!(F16, f16),
+            Self::F32(_) => dispatch!(F32, f32),
+            Self::F64(_) => dispatch!(F64, f64),
+        }
+    }
+
+    pub(crate) fn var_dim(&self, layout: &Layout, dim: usize, keepdim: bool) -> Result<Self> {
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                if let Self::$variant(values) = self {
+                    Ok(Self::$variant(var_map(values, layout, dim, keepdim)?))
+                } else {
+                    unreachable!()
+                }
+            };
+        }
+
+        match self {
+            Self::U8(_) => dispatch!(U8, u8),
+            Self::U32(_) => dispatch!(U32, u32),
+            Self::I16(_) => dispatch!(I16, i16),
+            Self::I32(_) => dispatch!(I32, i32),
+            Self::I64(_) => dispatch!(I64, i64),
+            Self::BF16(_) => dispatch!(BF16, bf16),
+            Self::F16(_) => dispatch!(F16, f16),
+            Self::F32(_) => dispatch!(F32, f32),
+            Self::F64(_) => dispatch!(F64, f64),
         }
     }
 

@@ -1,7 +1,7 @@
 use super::Tensor;
-use crate::ops::{BinaryOp, UnaryOp};
+use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use crate::storage::Storage;
-use crate::{Error, Result, Shape, WithDType};
+use crate::{DType, Error, Result, Shape, WithDType};
 
 impl Tensor {
     fn binary(&self, rhs: &Self, op: BinaryOp) -> Result<Self> {
@@ -115,6 +115,250 @@ impl Tensor {
 
     pub fn abs(&self) -> Result<Self> {
         self.unary(UnaryOp::Abs)
+    }
+
+    fn reduce_dim(&self, dim: usize, keepdim: bool, op: ReduceOp) -> Result<Self> {
+        self.dim(dim)?;
+        let storage = self.storage();
+        let storage = Storage::reduce_dim(&storage, self.layout(), dim, keepdim, op)?;
+        let mut dims = self.dims().to_vec();
+        if keepdim {
+            dims[dim] = 1;
+        } else {
+            dims.remove(dim);
+        }
+        Self::from_storage(storage, Shape::from(dims), self.device())
+    }
+
+    fn reduce_all(&self, op: ReduceOp) -> Result<Self> {
+        let storage = self.storage();
+        let storage = Storage::reduce_all(&storage, self.layout(), op)?;
+        Self::from_storage(storage, Shape::from(()), self.device())
+    }
+
+    pub fn sum_keepdim(&self, dim: usize) -> Result<Self> {
+        self.reduce_dim(dim, true, ReduceOp::Sum)
+    }
+
+    pub fn sum(&self, dim: usize) -> Result<Self> {
+        self.reduce_dim(dim, false, ReduceOp::Sum)
+    }
+
+    pub fn sum_all(&self) -> Result<Self> {
+        self.reduce_all(ReduceOp::Sum)
+    }
+
+    pub fn mean_keepdim(&self, dim: usize) -> Result<Self> {
+        self.dim(dim)?;
+        let storage = self.storage();
+        let storage = Storage::mean_dim(&storage, self.layout(), dim, true)?;
+        let mut dims = self.dims().to_vec();
+        dims[dim] = 1;
+        Self::from_storage(storage, Shape::from(dims), self.device())
+    }
+
+    pub fn mean(&self, dim: usize) -> Result<Self> {
+        self.dim(dim)?;
+        let storage = self.storage();
+        let storage = Storage::mean_dim(&storage, self.layout(), dim, false)?;
+        let mut dims = self.dims().to_vec();
+        dims.remove(dim);
+        Self::from_storage(storage, Shape::from(dims), self.device())
+    }
+
+    pub fn mean_all(&self) -> Result<Self> {
+        let storage = self.storage();
+        let storage = Storage::mean_all(&storage, self.layout())?;
+        Self::from_storage(storage, Shape::from(()), self.device())
+    }
+
+    pub fn min_keepdim(&self, dim: usize) -> Result<Self> {
+        self.reduce_dim(dim, true, ReduceOp::Min)
+    }
+
+    pub fn min(&self, dim: usize) -> Result<Self> {
+        self.reduce_dim(dim, false, ReduceOp::Min)
+    }
+
+    pub fn min_all(&self) -> Result<Self> {
+        self.reduce_all(ReduceOp::Min)
+    }
+
+    pub fn max_keepdim(&self, dim: usize) -> Result<Self> {
+        self.reduce_dim(dim, true, ReduceOp::Max)
+    }
+
+    pub fn max(&self, dim: usize) -> Result<Self> {
+        self.reduce_dim(dim, false, ReduceOp::Max)
+    }
+
+    pub fn max_all(&self) -> Result<Self> {
+        self.reduce_all(ReduceOp::Max)
+    }
+
+    pub fn argmin_keepdim(&self, dim: usize) -> Result<Self> {
+        self.reduce_dim(dim, true, ReduceOp::ArgMin)
+    }
+
+    pub fn argmin(&self, dim: usize) -> Result<Self> {
+        self.reduce_dim(dim, false, ReduceOp::ArgMin)
+    }
+
+    pub fn argmax_keepdim(&self, dim: usize) -> Result<Self> {
+        self.reduce_dim(dim, true, ReduceOp::ArgMax)
+    }
+
+    pub fn argmax(&self, dim: usize) -> Result<Self> {
+        self.reduce_dim(dim, false, ReduceOp::ArgMax)
+    }
+
+    pub fn var_keepdim(&self, dim: usize) -> Result<Self> {
+        self.dim(dim)?;
+        let storage = self.storage();
+        let storage = Storage::var_dim(&storage, self.layout(), dim, true)?;
+        let mut dims = self.dims().to_vec();
+        dims[dim] = 1;
+        Self::from_storage(storage, Shape::from(dims), self.device())
+    }
+
+    pub fn var(&self, dim: usize) -> Result<Self> {
+        self.dim(dim)?;
+        let storage = self.storage();
+        let storage = Storage::var_dim(&storage, self.layout(), dim, false)?;
+        let mut dims = self.dims().to_vec();
+        dims.remove(dim);
+        Self::from_storage(storage, Shape::from(dims), self.device())
+    }
+
+    fn cmp_tensor(&self, rhs: &Self, op: CmpOp) -> Result<Self> {
+        if self.dtype() != rhs.dtype() {
+            return Err(Error::DTypeMismatch {
+                lhs: self.dtype(),
+                rhs: rhs.dtype(),
+            });
+        }
+        if !self.device().same_device(rhs.device()) {
+            return Err(Error::DeviceMismatch);
+        }
+        let shape = self.shape().broadcast_shape_binary_op(rhs.shape())?;
+        let lhs = self.broadcast_as(shape.clone())?;
+        let rhs = rhs.broadcast_as(shape.clone())?;
+        let lhs_storage = lhs.storage();
+        let rhs_storage = rhs.storage();
+        let storage = Storage::cmp(&lhs_storage, lhs.layout(), &rhs_storage, rhs.layout(), op)?;
+        Self::from_storage(storage, shape, self.device())
+    }
+
+    fn cmp_scalar_tensor<T: WithDType>(&self, scalar: T, op: CmpOp) -> Result<Self> {
+        if self.dtype() != T::DTYPE {
+            return Err(Error::DTypeMismatch {
+                lhs: self.dtype(),
+                rhs: T::DTYPE,
+            });
+        }
+        let storage = self.storage();
+        let storage = Storage::cmp_scalar(&storage, self.layout(), scalar, op)?;
+        Self::from_storage(storage, self.shape().clone(), self.device())
+    }
+
+    pub fn cmp(&self, rhs: &Self, op: CmpOp) -> Result<Self> {
+        self.cmp_tensor(rhs, op)
+    }
+
+    pub fn cmp_scalar<T: WithDType>(&self, scalar: T, op: CmpOp) -> Result<Self> {
+        self.cmp_scalar_tensor(scalar, op)
+    }
+
+    pub fn eq(&self, rhs: &Self) -> Result<Self> {
+        self.cmp_tensor(rhs, CmpOp::Eq)
+    }
+
+    pub fn eq_scalar<T: WithDType>(&self, scalar: T) -> Result<Self> {
+        self.cmp_scalar_tensor(scalar, CmpOp::Eq)
+    }
+
+    pub fn ne(&self, rhs: &Self) -> Result<Self> {
+        self.cmp_tensor(rhs, CmpOp::Ne)
+    }
+
+    pub fn ne_scalar<T: WithDType>(&self, scalar: T) -> Result<Self> {
+        self.cmp_scalar_tensor(scalar, CmpOp::Ne)
+    }
+
+    pub fn lt(&self, rhs: &Self) -> Result<Self> {
+        self.cmp_tensor(rhs, CmpOp::Lt)
+    }
+
+    pub fn lt_scalar<T: WithDType>(&self, scalar: T) -> Result<Self> {
+        self.cmp_scalar_tensor(scalar, CmpOp::Lt)
+    }
+
+    pub fn le(&self, rhs: &Self) -> Result<Self> {
+        self.cmp_tensor(rhs, CmpOp::Le)
+    }
+
+    pub fn le_scalar<T: WithDType>(&self, scalar: T) -> Result<Self> {
+        self.cmp_scalar_tensor(scalar, CmpOp::Le)
+    }
+
+    pub fn gt(&self, rhs: &Self) -> Result<Self> {
+        self.cmp_tensor(rhs, CmpOp::Gt)
+    }
+
+    pub fn gt_scalar<T: WithDType>(&self, scalar: T) -> Result<Self> {
+        self.cmp_scalar_tensor(scalar, CmpOp::Gt)
+    }
+
+    pub fn ge(&self, rhs: &Self) -> Result<Self> {
+        self.cmp_tensor(rhs, CmpOp::Ge)
+    }
+
+    pub fn ge_scalar<T: WithDType>(&self, scalar: T) -> Result<Self> {
+        self.cmp_scalar_tensor(scalar, CmpOp::Ge)
+    }
+
+    pub fn clamp<T: WithDType>(&self, min: T, max: T) -> Result<Self> {
+        self.binary_scalar(min, BinaryOp::Maximum)?
+            .binary_scalar(max, BinaryOp::Minimum)
+    }
+
+    pub fn where_cond(&self, on_true: &Self, on_false: &Self) -> Result<Self> {
+        if self.dtype() != DType::U8 {
+            return Err(Error::UnexpectedDType {
+                expected: DType::U8,
+                actual: self.dtype(),
+            });
+        }
+        if on_true.dtype() != on_false.dtype() {
+            return Err(Error::DTypeMismatch {
+                lhs: on_true.dtype(),
+                rhs: on_false.dtype(),
+            });
+        }
+        if !self.device().same_device(on_true.device())
+            || !self.device().same_device(on_false.device())
+        {
+            return Err(Error::DeviceMismatch);
+        }
+        let shape = self
+            .shape()
+            .broadcast_shape_binary_op(on_true.shape())?
+            .broadcast_shape_binary_op(on_false.shape())?;
+        let condition = self.broadcast_as(shape.clone())?;
+        let on_true = on_true.broadcast_as(shape.clone())?;
+        let on_false = on_false.broadcast_as(shape.clone())?;
+        let condition_storage = condition.storage();
+        let true_storage = on_true.storage();
+        let false_storage = on_false.storage();
+        let storage = Storage::where_cond(
+            &condition_storage,
+            condition.layout(),
+            &true_storage,
+            on_true.layout(),
+            &false_storage,
+            on_false.layout(),
+        )?;
+        Self::from_storage(storage, shape, self.device())
     }
 
     pub fn cat(tensors: &[&Self], dim: usize) -> Result<Self> {

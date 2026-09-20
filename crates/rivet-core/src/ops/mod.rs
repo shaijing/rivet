@@ -5,6 +5,29 @@ pub enum BinaryOp {
     Sub,
     Mul,
     Div,
+    Minimum,
+    Maximum,
+}
+
+/// Element-wise comparison selected by the CPU backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+/// Reduction selected by the CPU backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReduceOp {
+    Sum,
+    Min,
+    Max,
+    ArgMin,
+    ArgMax,
 }
 
 /// Runtime unary operation selected by the small CPU kernels.
