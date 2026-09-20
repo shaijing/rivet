@@ -102,8 +102,10 @@ pub(crate) fn into_rgb_image(sample: DecodedSample, op_name: &str) -> RivetResul
         )));
     }
     // Backend transforms require an owned image buffer, so this is the
-    // deliberate materialization boundary. Read through the borrowed CPU
-    // storage and logical layout rather than flattening the input tensor.
+    // deliberate materialization boundary. Decoded caches expose each HWC
+    // sample as a contiguous view with a storage offset; copying its range
+    // directly keeps that hot path a bulk memcpy. Non-contiguous views still
+    // need logical traversal to preserve their element order.
     let values = sample.image.with_cpu_storage(|storage, layout| {
         let CpuStorageRef::U8(values) = storage else {
             return Err(rivet_core::Error::UnexpectedDType {
@@ -111,6 +113,16 @@ pub(crate) fn into_rgb_image(sample: DecodedSample, op_name: &str) -> RivetResul
                 actual: sample.image.dtype(),
             });
         };
+        if sample.image.is_contiguous() {
+            let end = layout
+                .start_offset()
+                .checked_add(layout.elem_count())
+                .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+            return values
+                .get(layout.start_offset()..end)
+                .map(ToOwned::to_owned)
+                .ok_or(rivet_core::Error::StorageOutOfBounds);
+        }
         layout
             .strided_index()
             .map(|index| {
@@ -162,5 +174,19 @@ mod tests {
         assert_eq!(label, 9);
         assert_eq!(rgb.dimensions(), (2, 2));
         assert_eq!(rgb.into_raw(), [0, 2, 4, 1, 3, 5, 6, 8, 10, 7, 9, 11]);
+    }
+
+    #[test]
+    fn backend_bridge_reads_contiguous_view_at_storage_offset() {
+        let base = Tensor::from_vec((0..24).collect::<Vec<u8>>(), [2, 2, 2, 3], &Device::Cpu)
+            .unwrap();
+        let image = base.get(1).unwrap();
+        assert!(image.is_contiguous());
+
+        let (rgb, label) = into_rgb_image(DecodedSample { image, label: 4 }, "test").unwrap();
+
+        assert_eq!(label, 4);
+        assert_eq!(rgb.dimensions(), (2, 2));
+        assert_eq!(rgb.into_raw(), (12..24).collect::<Vec<u8>>());
     }
 }
