@@ -28,7 +28,7 @@ pub use representation::{DecodeImageConfig, NormalizeConfig};
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::DecodedSample;
 use image::RgbImage;
-use rivet_core::{DType, Device, Tensor};
+use rivet_core::{CpuStorageRef, DType, Device, Tensor};
 
 pub(crate) fn require_u8_hwc(sample: DecodedSample, op_name: &str) -> RivetResult<DecodedSample> {
     let dims = sample.image.dims();
@@ -60,7 +60,26 @@ pub(crate) fn into_rgb_image(sample: DecodedSample, op_name: &str) -> RivetResul
             "{op_name} requires 3 channels, got {channels}"
         )));
     }
-    let values = sample.image.to_vec::<u8>()?;
+    // Backend transforms require an owned image buffer, so this is the
+    // deliberate materialization boundary. Read through the borrowed CPU
+    // storage and logical layout rather than flattening the input tensor.
+    let values = sample.image.with_cpu_storage(|storage, layout| {
+        let CpuStorageRef::U8(values) = storage else {
+            return Err(rivet_core::Error::UnexpectedDType {
+                expected: DType::U8,
+                actual: sample.image.dtype(),
+            });
+        };
+        layout
+            .strided_index()
+            .map(|index| {
+                values
+                    .get(index)
+                    .copied()
+                    .ok_or(rivet_core::Error::StorageOutOfBounds)
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })?;
     let image = RgbImage::from_raw(width, height, values).ok_or_else(|| {
         invalid_shape(format!(
             "{op_name} received invalid image buffer for shape {}x{}x{}",
@@ -83,4 +102,24 @@ pub(crate) fn from_rgb_image(image: RgbImage, label: i64) -> RivetResult<Decoded
         image: tensor,
         label,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::into_rgb_image;
+    use crate::sample::image::DecodedSample;
+    use rivet_core::{Device, Tensor};
+
+    #[test]
+    fn backend_bridge_reads_non_contiguous_input_in_logical_order() {
+        let base = Tensor::from_vec((0..12).collect::<Vec<u8>>(), [2, 3, 2], &Device::Cpu).unwrap();
+        let image = base.permute(&[0, 2, 1]).unwrap();
+        assert!(!image.is_contiguous());
+
+        let (rgb, label) = into_rgb_image(DecodedSample { image, label: 9 }, "test").unwrap();
+
+        assert_eq!(label, 9);
+        assert_eq!(rgb.dimensions(), (2, 2));
+        assert_eq!(rgb.into_raw(), [0, 2, 4, 1, 3, 5, 6, 8, 10, 7, 9, 11]);
+    }
 }
