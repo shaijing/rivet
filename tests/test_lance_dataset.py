@@ -38,6 +38,23 @@ def _write_split(path: Path, labels: list[int], image: bytes = b"encoded") -> No
     )
 
 
+def _write_custom_split(path: Path, labels: list[int]) -> None:
+    schema = pa.schema(
+        [
+            pa.field("jpeg_bytes", pa.binary(), nullable=False),
+            pa.field("target", pa.int64(), nullable=False),
+        ]
+    )
+    lance.write_dataset(
+        pa.RecordBatch.from_pylist(
+            [{"jpeg_bytes": PNG_1X1, "target": label} for label in labels], schema=schema
+        ),
+        str(path),
+        schema=schema,
+        mode="overwrite",
+    )
+
+
 def test_load_dataset_discovers_and_selects_splits(tmp_path: Path) -> None:
     _write_split(tmp_path / "train.lance", [0, 1])
     _write_split(tmp_path / "test.lance", [2])
@@ -81,6 +98,94 @@ def test_manifest_is_authoritative_and_physical_paths_stay_single(
 
     with pytest.raises(ValueError, match="single .lance"):
         rivet.load_dataset(tmp_path / "train.lance", split="train")
+
+
+def test_v2_manifest_binds_semantic_features_to_lance_columns(tmp_path: Path) -> None:
+    _write_custom_split(tmp_path / "train.lance", [4, 7])
+    (tmp_path / "dataset.json").write_text(
+        json.dumps(
+            {
+                "format_version": 2,
+                "dataset": {
+                    "name": "custom-images",
+                    "version": "1.0",
+                    "modality": "image",
+                },
+                "features": {
+                    "input": {
+                        "type": "image",
+                        "column": "jpeg_bytes",
+                        "representation": "encoded",
+                        "encoding": "png",
+                    },
+                    "target": {
+                        "type": "class_label",
+                        "column": "target",
+                        "dtype": "int64",
+                        "num_classes": 10,
+                    },
+                },
+                "splits": {"train": {"uri": "train.lance", "num_rows": 2}},
+                "created_by": {"tool": "rivet", "version": "0.1.0"},
+                "extensions": {"example.vendor": {"enabled": True}},
+            }
+        )
+    )
+
+    dataset = rivet.load_dataset(tmp_path, image_column="ignored", label_column="ignored")
+    assert dataset.keys() == ["train"]
+    assert dataset["train"].get_encoded(1)["label"] == 7
+
+
+def test_v2_manifest_rejects_missing_semantic_binding(tmp_path: Path) -> None:
+    _write_split(tmp_path / "train.lance", [0])
+    (tmp_path / "dataset.json").write_text(
+        json.dumps(
+            {
+                "format_version": 2,
+                "dataset": {"name": "invalid", "modality": "image"},
+                "features": {
+                    "input": {
+                        "type": "image",
+                        "column": "image",
+                        "representation": "encoded",
+                    }
+                },
+                "splits": {"train": {"uri": "train.lance", "num_rows": 1}},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="class_label"):
+        rivet.load_dataset(tmp_path)
+
+
+def test_v2_manifest_validates_class_label_dtype(tmp_path: Path) -> None:
+    _write_split(tmp_path / "train.lance", [0])
+    (tmp_path / "dataset.json").write_text(
+        json.dumps(
+            {
+                "format_version": 2,
+                "dataset": {"name": "invalid", "modality": "image"},
+                "features": {
+                    "input": {
+                        "type": "image",
+                        "column": "image",
+                        "representation": "encoded",
+                    },
+                    "target": {
+                        "type": "class_label",
+                        "column": "label",
+                        "dtype": "int64",
+                    },
+                },
+                "splits": {"train": {"uri": "train.lance", "num_rows": 1}},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="expects int64"):
+        rivet.load_dataset(tmp_path)
 
 
 def test_encoded_cache_is_explicit_and_keeps_original_lazy_dataset(

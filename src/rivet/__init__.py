@@ -918,8 +918,9 @@ def load_dataset(
     """Load one physical Lance dataset or a logical multi-split dataset.
 
     A path ending in .lance is one physical dataset. A directory is resolved
-    as a split collection using dataset.rivet.json when present, or immediate
-    *.lance child directories otherwise.
+    as a split collection using dataset.json when present (with legacy
+    dataset.rivet.json support), or immediate *.lance child directories
+    otherwise.
     """
     path = Path(path)
     _, lance_dataset_dict, load_lance_split = _require_lance()

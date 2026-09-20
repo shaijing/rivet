@@ -8,7 +8,10 @@ pub mod source;
 pub mod lance;
 
 pub use bundle::{DatasetBundle, DatasetLoadResult};
-pub use manifest::{DatasetManifest, MANIFEST_FILE_NAME, SplitManifest};
+pub use manifest::{
+    ClassLabelFeature, DatasetManifest, Feature, ImageFeature, ImageRepresentation,
+    LEGACY_MANIFEST_FILE_NAME, MANIFEST_FILE_NAME, SplitManifest, manifest_path,
+};
 pub use memory::MemoryDataset;
 pub use source::{Dataset, Source};
 

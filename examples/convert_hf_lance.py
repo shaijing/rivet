@@ -35,7 +35,7 @@ import lance
 import pyarrow as pa
 import pyarrow.compute as pc
 
-MANIFEST_NAME = "dataset.rivet.json"
+MANIFEST_NAME = "dataset.json"
 
 
 def _is_lance_path(path: Path) -> bool:
@@ -218,15 +218,28 @@ def _manifest(
 ) -> dict[str, Any]:
     name = input_path.name
     return {
-        "format_version": 1,
-        "name": name,
+        "format_version": 2,
+        "dataset": {"name": name, "modality": "image"},
+        "features": {
+            "image": {
+                "type": "image",
+                "column": "image",
+                "representation": "encoded",
+            },
+            "label": {
+                "type": "class_label",
+                "column": "label",
+                "dtype": "int32",
+            },
+        },
         "splits": {
             split: {
-                "path": output.name,
+                "uri": output.name,
                 "num_rows": rows,
             }
             for split, output, rows in outputs
         },
+        "created_by": {"tool": "rivet", "version": "0.1.0"},
     }
 
 

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import binascii
+import gc
 import struct
 import zlib
 from pathlib import Path
+
+import numpy as np
+import pytest
 
 import rivet
 
@@ -49,3 +53,41 @@ def test_image_folder_pipeline(tmp_path: Path) -> None:
 
     assert batch["images"].shape == (1, 1, 1, 3)
     assert labels(batch) == [0]
+
+
+def test_image_folder_pipeline_returns_readonly_zero_copy_numpy_views(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "cat").mkdir()
+    (tmp_path / "cat" / "one.png").write_bytes(PNG_1X1)
+
+    batch = next(rivet.scan_image_folder(tmp_path).decode_image().batch(1).execute())
+    images = batch["images"]
+    batch_labels = batch["labels"]
+
+    assert isinstance(images, np.ndarray)
+    assert isinstance(batch_labels, np.ndarray)
+    assert not images.flags.owndata
+    assert not batch_labels.flags.owndata
+    assert not images.flags.writeable
+    assert not batch_labels.flags.writeable
+    assert images.base is not None
+    assert batch_labels.base is not None
+    with pytest.raises(ValueError, match="read-only"):
+        images[0, 0, 0, 0] = 0
+
+    del batch
+    gc.collect()
+    np.testing.assert_array_equal(images, np.array([[[[255, 0, 0]]]], dtype=np.uint8))
+    np.testing.assert_array_equal(batch_labels, np.array([0], dtype=np.int64))
+
+    normalized = next(
+        rivet.scan_image_folder(tmp_path)
+        .decode_image()
+        .normalize([0.5], [0.5])
+        .batch(1)
+        .execute()
+    )["images"]
+    assert normalized.dtype == np.float32
+    assert not normalized.flags.owndata
+    assert not normalized.flags.writeable

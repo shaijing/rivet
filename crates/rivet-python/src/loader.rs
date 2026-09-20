@@ -1,9 +1,12 @@
 use crate::dataset::PyArrowDataset;
 use crate::error::to_py_err;
-use numpy::{PyArray1, PyArrayMethods};
+use numpy::{
+    PyArray1, PyArrayDyn, PyArrayMethods,
+    ndarray::{ArrayViewD, IxDyn},
+};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use rivet_core::{DType, Tensor};
+use rivet_core::{CpuStorageRef, DType, Tensor};
 use rivet_vision::api::{
     ArrowImageDataset, ImageBatch, ImageDataLoader, ImagePipeline, empty_image_batch,
     invalid_argument,
@@ -14,6 +17,17 @@ use std::sync::Arc;
 #[pyclass(name = "_DataLoader")]
 pub(crate) struct PyDataLoader {
     pub(crate) inner: ImageDataLoader,
+}
+
+/// Owns a tensor while a NumPy array borrows its immutable CPU allocation.
+///
+/// The object is installed as the ndarray's base object, so the allocation
+/// cannot be released while Python still holds the view. Loader output tensors
+/// are never mutated after crossing this boundary; the array is additionally
+/// marked read-only to prevent Python from racing a Rust reader.
+#[pyclass]
+struct TensorArrayOwner {
+    _tensor: Tensor,
 }
 
 #[pymethods]
@@ -83,12 +97,7 @@ pub(super) fn image_batch_to_py(py: Python<'_>, batch: ImageBatch) -> PyResult<P
     let dtype = images.dtype();
     let shape = images.dims().to_vec();
     let images = image_array_to_py(py, images)?;
-    let labels = PyArray1::from_vec(
-        py,
-        labels
-            .to_vec::<i64>()
-            .map_err(|err| to_py_err(invalid_argument(err)))?,
-    );
+    let labels = tensor_array_to_py(py, labels)?;
 
     let out = PyDict::new(py);
     out.set_item("images", images)?;
@@ -101,11 +110,94 @@ pub(super) fn image_batch_to_py(py: Python<'_>, batch: ImageBatch) -> PyResult<P
 }
 
 fn image_array_to_py(py: Python<'_>, images: Tensor) -> PyResult<Py<PyAny>> {
-    let shape = images.dims().to_vec();
-    match images.dtype() {
+    tensor_array_to_py(py, images)
+}
+
+fn tensor_array_to_py(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
+    if !tensor.is_contiguous() {
+        return tensor_array_copy_to_py(py, tensor);
+    }
+
+    match tensor.dtype() {
+        DType::U8 => tensor_array_view_u8(py, tensor),
+        DType::F32 => tensor_array_view_f32(py, tensor),
+        DType::I64 => tensor_array_view_i64(py, tensor),
+        dtype => Err(to_py_err(invalid_argument(format!(
+            "Python tensor conversion does not support {:?}",
+            dtype
+        )))),
+    }
+}
+
+fn tensor_array_view_u8(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
+    let pointer = contiguous_data_pointer(&tensor, |storage| match storage {
+        CpuStorageRef::U8(values) => Some(values.as_ptr()),
+        _ => None,
+    })?;
+    tensor_array_view_from_pointer::<u8>(py, tensor, pointer)
+}
+
+fn tensor_array_view_f32(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
+    let pointer = contiguous_data_pointer(&tensor, |storage| match storage {
+        CpuStorageRef::F32(values) => Some(values.as_ptr()),
+        _ => None,
+    })?;
+    tensor_array_view_from_pointer::<f32>(py, tensor, pointer)
+}
+
+fn tensor_array_view_i64(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
+    let pointer = contiguous_data_pointer(&tensor, |storage| match storage {
+        CpuStorageRef::I64(values) => Some(values.as_ptr()),
+        _ => None,
+    })?;
+    tensor_array_view_from_pointer::<i64>(py, tensor, pointer)
+}
+
+fn contiguous_data_pointer<T>(
+    tensor: &Tensor,
+    storage_pointer: impl FnOnce(CpuStorageRef<'_>) -> Option<*const T>,
+) -> PyResult<*const T> {
+    tensor
+        .with_cpu_storage(|storage, layout| {
+            let Some((start, _)) = layout.contiguous_offsets() else {
+                return Err(rivet_core::Error::StorageOutOfBounds);
+            };
+            let pointer = storage_pointer(storage);
+            if pointer.is_none() {
+                return Err(rivet_core::Error::StorageOutOfBounds);
+            }
+            Ok(unsafe { pointer.expect("checked above").add(start) })
+        })
+        .map_err(|err| to_py_err(invalid_argument(err)))
+}
+
+fn tensor_array_view_from_pointer<T: numpy::Element>(
+    py: Python<'_>,
+    tensor: Tensor,
+    pointer: *const T,
+) -> PyResult<Py<PyAny>> {
+    let shape = tensor.dims().to_vec();
+    let values = unsafe {
+        // The ndarray receives TensorArrayOwner as its base object below, which
+        // retains the Tensor and its allocation. Tensor storage never changes
+        // allocation size after construction, and the returned ndarray is
+        // made read-only before it escapes to Python.
+        std::slice::from_raw_parts(pointer, tensor.elem_count())
+    };
+    let view = ArrayViewD::from_shape(IxDyn(&shape), values)
+        .map_err(|err| to_py_err(invalid_argument(err.to_string())))?;
+    let owner = Py::new(py, TensorArrayOwner { _tensor: tensor })?;
+    let array = unsafe { PyArrayDyn::borrow_from_array(&view, owner.into_bound(py).into_any()) };
+    let _ = array.readwrite().make_nonwriteable();
+    Ok(array.into_any().unbind())
+}
+
+fn tensor_array_copy_to_py(py: Python<'_>, tensor: Tensor) -> PyResult<Py<PyAny>> {
+    let shape = tensor.dims().to_vec();
+    match tensor.dtype() {
         DType::U8 => Ok(PyArray1::from_vec(
             py,
-            images
+            tensor
                 .to_vec::<u8>()
                 .map_err(|err| to_py_err(invalid_argument(err)))?,
         )
@@ -114,15 +206,24 @@ fn image_array_to_py(py: Python<'_>, images: Tensor) -> PyResult<Py<PyAny>> {
         .unbind()),
         DType::F32 => Ok(PyArray1::from_vec(
             py,
-            images
+            tensor
                 .to_vec::<f32>()
                 .map_err(|err| to_py_err(invalid_argument(err)))?,
         )
         .reshape(shape)?
         .into_any()
         .unbind()),
+        DType::I64 => Ok(PyArray1::from_vec(
+            py,
+            tensor
+                .to_vec::<i64>()
+                .map_err(|err| to_py_err(invalid_argument(err)))?,
+        )
+        .reshape(shape)?
+        .into_any()
+        .unbind()),
         dtype => Err(to_py_err(invalid_argument(format!(
-            "Python image conversion does not support {:?}",
+            "Python tensor conversion does not support {:?}",
             dtype
         )))),
     }
