@@ -3,8 +3,9 @@ use crate::errors::{RivetResult, invalid_argument, invalid_pipeline};
 use crate::sample::image::ImageAxisOrder;
 use crate::sample::image::ImageSample;
 use crate::transforms::color::{
-    BrightnessConfig, ColorJitterConfig, ContrastConfig, GrayscaleConfig, HueConfig,
-    RandomGrayscaleConfig,
+    AutocontrastConfig, BrightnessConfig, ColorJitterConfig, ContrastConfig, EqualizeConfig,
+    GrayscaleConfig, HueConfig, InvertConfig, PosterizeConfig, RandomGrayscaleConfig,
+    SharpnessConfig, SolarizeConfig,
 };
 use crate::transforms::geometry::{
     CenterCropConfig, CropConfig, FlipConfig, InterpolationMode, LayoutConfig, PadConfig,
@@ -38,6 +39,12 @@ pub enum ImageOp {
     Contrast(ContrastConfig),
     Hue(HueConfig),
     ColorJitter(ColorJitterConfig),
+    Invert(InvertConfig),
+    Posterize(PosterizeConfig),
+    Solarize(SolarizeConfig),
+    Autocontrast(AutocontrastConfig),
+    Equalize(EqualizeConfig),
+    Sharpness(SharpnessConfig),
     GaussianBlur(GaussianBlurConfig),
     Grayscale(GrayscaleConfig),
     RandomGrayscale(RandomGrayscaleConfig),
@@ -75,6 +82,12 @@ impl ImageOp {
             | Self::Contrast(_)
             | Self::Hue(_)
             | Self::ColorJitter(_)
+            | Self::Invert(_)
+            | Self::Posterize(_)
+            | Self::Solarize(_)
+            | Self::Autocontrast(_)
+            | Self::Equalize(_)
+            | Self::Sharpness(_)
             | Self::GaussianBlur(_)
             | Self::Grayscale(_)
             | Self::RandomGrayscale(_)
@@ -99,6 +112,12 @@ impl ImageOp {
             Self::Contrast(_) => "Contrast",
             Self::Hue(_) => "Hue",
             Self::ColorJitter(_) => "ColorJitter",
+            Self::Invert(_) => "Invert",
+            Self::Posterize(_) => "Posterize",
+            Self::Solarize(_) => "Solarize",
+            Self::Autocontrast(_) => "Autocontrast",
+            Self::Equalize(_) => "Equalize",
+            Self::Sharpness(_) => "Sharpness",
             Self::GaussianBlur(_) => "GaussianBlur",
             Self::Grayscale(_) => "Grayscale",
             Self::RandomGrayscale(_) => "RandomGrayscale",
@@ -136,6 +155,12 @@ impl ImageOp {
             Self::Contrast(_) => require_u8_hwc(input, "Contrast"),
             Self::Hue(_) => require_u8_hwc(input, "Hue"),
             Self::ColorJitter(_) => require_u8_hwc(input, "ColorJitter"),
+            Self::Invert(_) => require_u8_decoded(input, "Invert"),
+            Self::Posterize(_) => require_u8_decoded(input, "Posterize"),
+            Self::Solarize(_) => require_u8_decoded(input, "Solarize"),
+            Self::Autocontrast(_) => require_u8_decoded(input, "Autocontrast"),
+            Self::Equalize(_) => require_u8_decoded(input, "Equalize"),
+            Self::Sharpness(_) => require_u8_decoded(input, "Sharpness"),
             Self::GaussianBlur(_) => require_u8_hwc(input, "GaussianBlur"),
             Self::Grayscale(_) => require_u8_decoded(input, "Grayscale"),
             Self::RandomGrayscale(_) => require_u8_decoded(input, "RandomGrayscale"),
@@ -198,6 +223,12 @@ impl ImageOp {
             Self::Contrast(op) => op.apply(sample),
             Self::Hue(op) => op.apply(sample),
             Self::ColorJitter(op) => op.apply(sample, ctx),
+            Self::Invert(op) => op.apply(sample, input_layout),
+            Self::Posterize(op) => op.apply(sample, input_layout),
+            Self::Solarize(op) => op.apply(sample, input_layout),
+            Self::Autocontrast(op) => op.apply(sample, input_layout),
+            Self::Equalize(op) => op.apply(sample, input_layout),
+            Self::Sharpness(op) => op.apply(sample, input_layout),
             Self::GaussianBlur(op) => op.apply(sample),
             Self::Grayscale(op) => op.apply(sample, input_layout),
             Self::RandomGrayscale(op) => op.apply(sample, ctx, input_layout),
@@ -320,6 +351,30 @@ impl ImageOp {
         Self::ColorJitter(ColorJitterConfig::new(brightness, contrast, hue))
     }
 
+    pub fn invert() -> Self {
+        Self::Invert(InvertConfig::new())
+    }
+
+    pub fn posterize(bits: u8) -> Self {
+        Self::Posterize(PosterizeConfig::new(bits))
+    }
+
+    pub fn solarize(threshold: u8) -> Self {
+        Self::Solarize(SolarizeConfig::new(threshold))
+    }
+
+    pub fn autocontrast() -> Self {
+        Self::Autocontrast(AutocontrastConfig::new())
+    }
+
+    pub fn equalize() -> Self {
+        Self::Equalize(EqualizeConfig::new())
+    }
+
+    pub fn sharpness(amount: f32) -> Self {
+        Self::Sharpness(SharpnessConfig::new(amount))
+    }
+
     pub fn gaussian_blur(sigma: f32) -> Self {
         Self::GaussianBlur(GaussianBlurConfig::new(sigma))
     }
@@ -408,6 +463,11 @@ impl ImageOp {
             Self::Contrast(op) => op.validate(),
             Self::Hue(_) => Ok(()),
             Self::ColorJitter(op) => op.validate(),
+            Self::Invert(_) => Ok(()),
+            Self::Posterize(op) => op.validate(),
+            Self::Solarize(_) => Ok(()),
+            Self::Autocontrast(_) | Self::Equalize(_) => Ok(()),
+            Self::Sharpness(op) => op.validate(),
             Self::GaussianBlur(op) => op.validate(),
             Self::Grayscale(op) => op.validate(),
             Self::RandomGrayscale(op) => op.validate(),

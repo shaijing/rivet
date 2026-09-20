@@ -16,6 +16,7 @@ mod pad;
 mod resize;
 mod resized_crop;
 mod rotate;
+mod u8_color;
 
 /// Padding semantics shared by geometry transforms.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,8 +29,9 @@ pub enum PaddingMode {
 
 pub use blur::GaussianBlurConfig;
 pub use color::{
-    BrightnessConfig, ColorJitterConfig, ColorJitterParams, ContrastConfig, GrayscaleConfig,
-    HueConfig, RandomGrayscaleConfig,
+    AutocontrastConfig, BrightnessConfig, ColorJitterConfig, ColorJitterParams, ContrastConfig,
+    EqualizeConfig, GrayscaleConfig, HueConfig, InvertConfig, PosterizeConfig,
+    RandomGrayscaleConfig, SharpnessConfig, SolarizeConfig,
 };
 pub use erase::{EraseRegion, RandomErasingConfig};
 pub use geometry::{

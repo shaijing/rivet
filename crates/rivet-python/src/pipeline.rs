@@ -99,6 +99,42 @@ impl PyImagePipeline {
         }
     }
 
+    fn invert(&self) -> Self {
+        Self {
+            inner: self.inner.clone().invert(),
+        }
+    }
+
+    fn posterize(&self, bits: u8) -> Self {
+        Self {
+            inner: self.inner.clone().posterize(bits),
+        }
+    }
+
+    fn solarize(&self, threshold: u8) -> Self {
+        Self {
+            inner: self.inner.clone().solarize(threshold),
+        }
+    }
+
+    fn autocontrast(&self) -> Self {
+        Self {
+            inner: self.inner.clone().autocontrast(),
+        }
+    }
+
+    fn equalize(&self) -> Self {
+        Self {
+            inner: self.inner.clone().equalize(),
+        }
+    }
+
+    fn sharpness(&self, amount: f32) -> Self {
+        Self {
+            inner: self.inner.clone().sharpness(amount),
+        }
+    }
+
     fn gaussian_blur(&self, sigma: f32) -> Self {
         Self {
             inner: self.inner.clone().gaussian_blur(sigma),

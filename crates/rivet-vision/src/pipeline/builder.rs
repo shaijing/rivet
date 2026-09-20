@@ -127,6 +127,36 @@ impl ImagePipeline {
         self
     }
 
+    pub fn invert(mut self) -> Self {
+        self.ops.push(ImageOp::invert());
+        self
+    }
+
+    pub fn posterize(mut self, bits: u8) -> Self {
+        self.ops.push(ImageOp::posterize(bits));
+        self
+    }
+
+    pub fn solarize(mut self, threshold: u8) -> Self {
+        self.ops.push(ImageOp::solarize(threshold));
+        self
+    }
+
+    pub fn autocontrast(mut self) -> Self {
+        self.ops.push(ImageOp::autocontrast());
+        self
+    }
+
+    pub fn equalize(mut self) -> Self {
+        self.ops.push(ImageOp::equalize());
+        self
+    }
+
+    pub fn sharpness(mut self, amount: f32) -> Self {
+        self.ops.push(ImageOp::sharpness(amount));
+        self
+    }
+
     pub fn gaussian_blur(mut self, sigma: f32) -> Self {
         self.ops.push(ImageOp::gaussian_blur(sigma));
         self

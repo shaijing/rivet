@@ -23,12 +23,13 @@ pub use crate::sample::image::{
 };
 pub use crate::source::ImageSource;
 pub use crate::transforms::{
-    BrightnessConfig, CenterCropConfig, ColorJitterConfig, ContrastConfig, ConvertImageDtypeConfig,
-    CropConfig, CropRegion, DecodeImageConfig, EraseRegion, FiveCropConfig, FlipConfig,
-    FlipDirection, GaussianBlurConfig, GrayscaleConfig, HueConfig, InterpolationMode, LayoutConfig,
-    NormalizeConfig, PadConfig, PaddingMode, RandomCropConfig, RandomErasingConfig,
-    RandomGrayscaleConfig, RandomHorizontalFlipConfig, RandomResizedCropConfig, ResizeConfig,
-    RotateConfig, RotationAngle, TenCropConfig,
+    AutocontrastConfig, BrightnessConfig, CenterCropConfig, ColorJitterConfig, ContrastConfig,
+    ConvertImageDtypeConfig, CropConfig, CropRegion, DecodeImageConfig, EqualizeConfig,
+    EraseRegion, FiveCropConfig, FlipConfig, FlipDirection, GaussianBlurConfig, GrayscaleConfig,
+    HueConfig, InterpolationMode, InvertConfig, LayoutConfig, NormalizeConfig, PadConfig,
+    PaddingMode, PosterizeConfig, RandomCropConfig, RandomErasingConfig, RandomGrayscaleConfig,
+    RandomHorizontalFlipConfig, RandomResizedCropConfig, ResizeConfig, RotateConfig, RotationAngle,
+    SharpnessConfig, SolarizeConfig, TenCropConfig,
 };
 pub use rivet_core::DType;
 

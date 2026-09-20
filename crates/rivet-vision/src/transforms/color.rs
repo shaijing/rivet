@@ -4,6 +4,11 @@ use crate::transforms::{from_rgb_image, into_rgb_image};
 use image::imageops::{brighten, contrast, huerotate};
 use rivet_core::{CpuStorageRef, DType, Tensor};
 
+pub use super::u8_color::{
+    AutocontrastConfig, EqualizeConfig, InvertConfig, PosterizeConfig, SharpnessConfig,
+    SolarizeConfig,
+};
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BrightnessConfig {
     pub value: i32,

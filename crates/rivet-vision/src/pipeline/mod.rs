@@ -292,6 +292,64 @@ mod tests {
     }
 
     #[test]
+    fn phase3_u8_color_ops_compile_before_batching() {
+        let loader = stub(1)
+            .decode_image()
+            .invert()
+            .posterize(4)
+            .solarize(100)
+            .autocontrast()
+            .equalize()
+            .sharpness(0.5)
+            .batch(1, false)
+            .compile()
+            .unwrap();
+
+        assert_eq!(loader.plan.sample_ops.len(), 7);
+        assert_eq!(
+            loader.plan.output_state,
+            PipelineImageState::Decoded {
+                dtype: DType::U8,
+                axis_order: ImageAxisOrder::Hwc,
+            }
+        );
+    }
+
+    #[test]
+    fn phase3_u8_color_ops_run_on_decoded_samples() {
+        let mut loader = decoded_stub()
+            .invert()
+            .posterize(4)
+            .solarize(100)
+            .autocontrast()
+            .equalize()
+            .sharpness(0.0)
+            .batch(1, false)
+            .compile()
+            .unwrap();
+        let batch = loader.next_batch().unwrap().unwrap();
+
+        assert_eq!(batch.labels.to_vec::<i64>().unwrap(), [7]);
+        assert_eq!(batch.images.dims(), [1, 1, 1, 3]);
+        assert_eq!(batch.images.to_vec::<u8>().unwrap(), [0, 15, 15]);
+    }
+
+    #[test]
+    fn phase3_invalid_configs_are_rejected_at_compile() {
+        let err = compile_err(stub(1).decode_image().posterize(0).batch(1, false));
+        assert!(
+            err.contains("posterize bits must be in [1, 8]"),
+            "got: {err}"
+        );
+
+        let err = compile_err(stub(1).decode_image().sharpness(-1.0).batch(1, false));
+        assert!(
+            err.contains("sharpness amount must be finite and non-negative"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
     fn zero_batch_size_rejected_at_compile() {
         let err = compile_err(stub(10).decode_image().batch(0, false));
         assert!(

@@ -360,6 +360,24 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def invert(self) -> Pipeline:
+        return Pipeline(self._inner.invert(), as_numpy=self.as_numpy)
+
+    def posterize(self, bits: int) -> Pipeline:
+        return Pipeline(self._inner.posterize(bits), as_numpy=self.as_numpy)
+
+    def solarize(self, threshold: int) -> Pipeline:
+        return Pipeline(self._inner.solarize(threshold), as_numpy=self.as_numpy)
+
+    def autocontrast(self) -> Pipeline:
+        return Pipeline(self._inner.autocontrast(), as_numpy=self.as_numpy)
+
+    def equalize(self) -> Pipeline:
+        return Pipeline(self._inner.equalize(), as_numpy=self.as_numpy)
+
+    def sharpness(self, amount: float) -> Pipeline:
+        return Pipeline(self._inner.sharpness(amount), as_numpy=self.as_numpy)
+
     def gaussian_blur(self, sigma: float) -> Pipeline:
         return Pipeline(self._inner.gaussian_blur(sigma), as_numpy=self.as_numpy)
 
