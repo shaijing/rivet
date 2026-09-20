@@ -1,6 +1,7 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
-use crate::transforms::logical_offset;
+use crate::transforms::{from_rgb_image, into_rgb_image, logical_offset};
+use image::imageops::invert;
 use rivet_core::{CpuStorageRef, DType, Tensor};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -16,7 +17,16 @@ impl InvertConfig {
         sample: ImageSample,
         axis_order: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
-        map_u8(sample, axis_order, "invert", |value| 255 - value)
+        let sample = require_u8_image(sample, "invert")?;
+        if image_dims(sample.image.dims(), axis_order)?.2 == 3 {
+            return Ok(ImageSample::Decoded(invert_rgb(sample, axis_order)?));
+        }
+        map_u8(
+            ImageSample::Decoded(sample),
+            axis_order,
+            "invert",
+            |value| 255 - value,
+        )
     }
 }
 
@@ -322,6 +332,30 @@ fn pixel_coords(axis_order: ImageAxisOrder, channel: usize, y: usize, x: usize) 
     match axis_order {
         ImageAxisOrder::Hwc => [y, x, channel],
         ImageAxisOrder::Chw => [channel, y, x],
+    }
+}
+
+fn invert_rgb(sample: DecodedSample, axis_order: ImageAxisOrder) -> RivetResult<DecodedSample> {
+    let image = match axis_order {
+        ImageAxisOrder::Hwc => sample.image,
+        ImageAxisOrder::Chw => sample.image.permute(&[1, 2, 0])?,
+    };
+    let (mut image, label) = into_rgb_image(
+        DecodedSample {
+            image,
+            label: sample.label,
+        },
+        "invert",
+    )?;
+    invert(&mut image);
+    let output = from_rgb_image(image, label)?;
+    if axis_order == ImageAxisOrder::Hwc {
+        Ok(output)
+    } else {
+        Ok(DecodedSample {
+            image: output.image.permute(&[2, 0, 1])?.contiguous()?,
+            label: output.label,
+        })
     }
 }
 

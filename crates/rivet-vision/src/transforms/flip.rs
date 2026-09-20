@@ -1,5 +1,7 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
+use crate::transforms::{from_rgb_image, into_rgb_image};
+use image::imageops::{flip_horizontal, flip_vertical};
 use rivet_core::{CpuStorageRef, DType, Tensor};
 use rivet_data::random::RandomStream;
 
@@ -106,6 +108,36 @@ fn flip_decoded(
         return Err(invalid_shape(format!(
             "{op_name} does not support zero-sized image dimensions"
         )));
+    }
+
+    // `image` has optimized implementations for the common RGB path. Keep
+    // the generic tensor kernel below for non-RGB tensors, which are still a
+    // supported part of this transform's public contract.
+    if channels == 3 {
+        let image = match axis_order {
+            ImageAxisOrder::Hwc => sample.image,
+            ImageAxisOrder::Chw => sample.image.permute(&[1, 2, 0])?,
+        };
+        let (image, label) = into_rgb_image(
+            DecodedSample {
+                image,
+                label: sample.label,
+            },
+            op_name,
+        )?;
+        let flipped = match direction {
+            FlipDirection::Horizontal => flip_horizontal(&image),
+            FlipDirection::Vertical => flip_vertical(&image),
+        };
+        let output = from_rgb_image(flipped, label)?;
+        return if axis_order == ImageAxisOrder::Hwc {
+            Ok(output)
+        } else {
+            Ok(DecodedSample {
+                image: output.image.permute(&[2, 0, 1])?.contiguous()?,
+                label: output.label,
+            })
+        };
     }
 
     let output = sample.image.with_cpu_storage(|storage, layout| {

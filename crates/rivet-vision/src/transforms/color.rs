@@ -1,8 +1,9 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{ImageAxisOrder, ImageSample};
 use crate::transforms::{from_rgb_image, into_rgb_image};
-use image::imageops::{brighten, contrast, huerotate};
-use rivet_core::{CpuStorageRef, DType, Tensor};
+use image::Rgb;
+use image::imageops::{brighten, contrast, grayscale, grayscale_with_type, huerotate};
+use rivet_core::{DType, Device, Tensor};
 use rivet_data::random::RandomStream;
 
 pub use super::u8_color::{
@@ -133,69 +134,36 @@ impl GrayscaleConfig {
             )));
         }
 
-        let output_channels = usize::from(self.num_output_channels);
-        let values = input.with_cpu_storage(|storage, layout| {
-            let CpuStorageRef::U8(values) = storage else {
-                return Err(rivet_core::Error::UnexpectedDType {
-                    expected: DType::U8,
-                    actual: input.dtype(),
-                });
-            };
-            let stride = layout.stride();
-            let read = |coords: [usize; 3]| {
-                let offset = coords.iter().zip(stride).try_fold(
-                    layout.start_offset(),
-                    |offset, (&coord, &stride)| {
-                        let delta = coord
-                            .checked_mul(stride)
-                            .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-                        offset
-                            .checked_add(delta)
-                            .ok_or(rivet_core::Error::StorageOutOfBounds)
-                    },
-                )?;
-                values
-                    .get(offset)
-                    .copied()
-                    .ok_or(rivet_core::Error::StorageOutOfBounds)
-            };
-            let mut output = Vec::with_capacity(input.elem_count() / 3 * output_channels);
-            let luma = |red: u8, green: u8, blue: u8| {
-                ((2126 * u32::from(red) + 7152 * u32::from(green) + 722 * u32::from(blue)) / 10_000)
-                    as u8
-            };
-            match axis_order {
-                ImageAxisOrder::Hwc => {
-                    for y in 0..height {
-                        for x in 0..width {
-                            let gray = luma(read([y, x, 0])?, read([y, x, 1])?, read([y, x, 2])?);
-                            output.extend(std::iter::repeat_n(gray, output_channels));
-                        }
-                    }
-                }
-                ImageAxisOrder::Chw => {
-                    for channel in 0..output_channels {
-                        for y in 0..height {
-                            for x in 0..width {
-                                let gray =
-                                    luma(read([0, y, x])?, read([1, y, x])?, read([2, y, x])?);
-                                let _ = channel;
-                                output.push(gray);
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(output)
-        })?;
-        let output_dims = match axis_order {
-            ImageAxisOrder::Hwc => vec![height, width, output_channels],
-            ImageAxisOrder::Chw => vec![output_channels, height, width],
+        let image = match axis_order {
+            ImageAxisOrder::Hwc => input.clone(),
+            ImageAxisOrder::Chw => input.permute(&[1, 2, 0])?,
         };
-        Ok(ImageSample::Decoded(crate::sample::image::DecodedSample {
-            image: Tensor::from_vec(values, output_dims, input.device())?,
-            label: sample.label,
-        }))
+        let (image, label) = into_rgb_image(
+            crate::sample::image::DecodedSample {
+                image,
+                label: sample.label,
+            },
+            "grayscale",
+        )?;
+        let output = if self.num_output_channels == 1 {
+            let gray = grayscale(&image);
+            crate::sample::image::DecodedSample {
+                image: Tensor::from_vec(gray.into_raw(), [height, width, 1], &Device::Cpu)?,
+                label,
+            }
+        } else {
+            let rgb = grayscale_with_type::<Rgb<u8>, _>(&image);
+            from_rgb_image(rgb, label)?
+        };
+        let output = if axis_order == ImageAxisOrder::Hwc {
+            output
+        } else {
+            crate::sample::image::DecodedSample {
+                image: output.image.permute(&[2, 0, 1])?.contiguous()?,
+                label: output.label,
+            }
+        };
+        Ok(ImageSample::Decoded(output))
     }
 }
 

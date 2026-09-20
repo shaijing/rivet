@@ -1,6 +1,8 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{ImageAxisOrder, ImageSample};
-use crate::transforms::{PaddingMode, logical_offset};
+use crate::transforms::{PaddingMode, from_rgb_image, into_rgb_image, logical_offset};
+use image::imageops::replace;
+use image::{Rgb, RgbImage};
 use rivet_core::{CpuStorageRef, DType, Tensor};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -89,6 +91,45 @@ impl PadConfig {
             ImageAxisOrder::Hwc => vec![output_height, output_width, channels],
             ImageAxisOrder::Chw => vec![channels, output_height, output_width],
         };
+
+        // Use the image backend for the common RGB/u8 path. The generic
+        // tensor kernel below remains necessary for float images and for
+        // arbitrary channel counts/layouts.
+        if input.dtype() == DType::U8 && channels == 3 {
+            let output_width = u32::try_from(output_width)
+                .map_err(|_| invalid_shape("pad output width is too large for image backend"))?;
+            let output_height = u32::try_from(output_height)
+                .map_err(|_| invalid_shape("pad output height is too large for image backend"))?;
+            let image = match axis_order {
+                ImageAxisOrder::Hwc => input.clone(),
+                ImageAxisOrder::Chw => input.permute(&[1, 2, 0])?,
+            };
+            let (image, label) = into_rgb_image(
+                crate::sample::image::DecodedSample {
+                    image,
+                    label: sample.label,
+                },
+                "pad",
+            )?;
+            let fill = self.value.clamp(0.0, 255.0).round() as u8;
+            let mut padded = RgbImage::from_pixel(output_width, output_height, Rgb([fill; 3]));
+            replace(
+                &mut padded,
+                &image,
+                i64::from(self.left),
+                i64::from(self.top),
+            );
+            let output = from_rgb_image(padded, label)?;
+            let output = if axis_order == ImageAxisOrder::Hwc {
+                output
+            } else {
+                crate::sample::image::DecodedSample {
+                    image: output.image.permute(&[2, 0, 1])?.contiguous()?,
+                    label: output.label,
+                }
+            };
+            return Ok(ImageSample::Decoded(output));
+        }
 
         let output = match input.dtype() {
             DType::U8 => {
