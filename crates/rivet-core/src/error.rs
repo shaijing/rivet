@@ -92,6 +92,30 @@ pub enum Error {
 
     #[error("unsupported matmul layout")]
     UnsupportedMatmulLayout,
+
+    #[error("{op} received negative index {value}")]
+    NegativeIndex { op: &'static str, value: i64 },
+
+    #[error("{op} index {index} is out of bounds for dimension size {size}")]
+    InvalidIndex {
+        op: &'static str,
+        index: usize,
+        size: usize,
+    },
+
+    #[error("{op} requires a non-empty tensor")]
+    EmptyTensorForOp { op: &'static str },
+
+    #[error("{op} cannot use tensors that share storage")]
+    StorageAliasConflict { op: &'static str },
+
+    #[error("invalid unfold: dim={dim}, size={size}, step={step}, dim_size={dim_size}")]
+    InvalidUnfold {
+        dim: usize,
+        size: usize,
+        step: usize,
+        dim_size: usize,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

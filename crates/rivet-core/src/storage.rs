@@ -52,6 +52,110 @@ impl Storage {
         }
     }
 
+    pub(crate) fn flip(storage: &Self, layout: &Layout, dims: &[usize]) -> Result<Self> {
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.flip(layout, dims)?)),
+        }
+    }
+
+    pub(crate) fn gather(
+        storage: &Self,
+        layout: &Layout,
+        indexes: &Self,
+        indexes_layout: &Layout,
+        dim: usize,
+    ) -> Result<Self> {
+        match (storage, indexes) {
+            (Self::Cpu(storage), Self::Cpu(indexes)) => Ok(Self::Cpu(storage.gather(
+                layout,
+                indexes,
+                indexes_layout,
+                dim,
+            )?)),
+        }
+    }
+
+    pub(crate) fn index_select(
+        storage: &Self,
+        layout: &Layout,
+        indexes: &Self,
+        indexes_layout: &Layout,
+        dim: usize,
+    ) -> Result<Self> {
+        match (storage, indexes) {
+            (Self::Cpu(storage), Self::Cpu(indexes)) => Ok(Self::Cpu(storage.index_select(
+                layout,
+                indexes,
+                indexes_layout,
+                dim,
+            )?)),
+        }
+    }
+
+    pub(crate) fn scatter(
+        storage: &Self,
+        layout: &Layout,
+        indexes: &Self,
+        indexes_layout: &Layout,
+        source: &Self,
+        source_layout: &Layout,
+        dim: usize,
+        add: bool,
+    ) -> Result<Self> {
+        match (storage, indexes, source) {
+            (Self::Cpu(storage), Self::Cpu(indexes), Self::Cpu(source)) => {
+                Ok(Self::Cpu(storage.scatter(
+                    layout,
+                    indexes,
+                    indexes_layout,
+                    source,
+                    source_layout,
+                    dim,
+                    add,
+                )?))
+            }
+        }
+    }
+
+    pub(crate) fn scatter_set(
+        storage: &mut Self,
+        layout: &Layout,
+        indexes: &Self,
+        indexes_layout: &Layout,
+        source: &Self,
+        source_layout: &Layout,
+        dim: usize,
+        add: bool,
+    ) -> Result<()> {
+        match (storage, indexes, source) {
+            (Self::Cpu(storage), Self::Cpu(indexes), Self::Cpu(source)) => storage.scatter_set(
+                layout,
+                indexes,
+                indexes_layout,
+                source,
+                source_layout,
+                dim,
+                add,
+            ),
+        }
+    }
+
+    pub(crate) fn index_add(
+        storage: &Self,
+        layout: &Layout,
+        indexes: &Self,
+        indexes_layout: &Layout,
+        source: &Self,
+        source_layout: &Layout,
+        dim: usize,
+    ) -> Result<Self> {
+        match (storage, indexes, source) {
+            (Self::Cpu(storage), Self::Cpu(indexes), Self::Cpu(source)) => Ok(Self::Cpu(
+                storage.index_add(layout, indexes, indexes_layout, source, source_layout, dim)?,
+            )),
+        }
+    }
+
     pub(crate) fn unary(storage: &Self, layout: &Layout, op: UnaryOp) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.unary(layout, op)?)),

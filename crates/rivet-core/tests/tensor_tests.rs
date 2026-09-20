@@ -650,3 +650,173 @@ fn phase_gemm_reports_phase1_shape_dtype_layout_and_empty_contracts() {
     assert_eq!(empty_result.dims(), &[0, 2]);
     assert!(empty_result.to_vec::<f32>().unwrap().is_empty());
 }
+
+#[test]
+fn phase3_unfold_flip_and_padding_preserve_index_contracts() {
+    let tensor = Tensor::from_vec((0u8..6).collect(), (2, 3), &Device::Cpu).unwrap();
+    let windows = tensor.unfold(1, 2, 1).unwrap();
+    assert_eq!(windows.dims(), &[2, 2, 2]);
+    assert_eq!(windows.stride(), &[3, 1, 1]);
+    assert!(windows.same_storage(&tensor));
+    assert_eq!(windows.to_vec::<u8>().unwrap(), [0, 1, 1, 2, 3, 4, 4, 5]);
+    assert!(matches!(
+        tensor.unfold(1, 2, 0),
+        Err(Error::InvalidUnfold { .. })
+    ));
+    assert!(matches!(
+        tensor.unfold(1, 4, 1),
+        Err(Error::InvalidUnfold { .. })
+    ));
+
+    let flipped = tensor.flip(&[0, 1]).unwrap();
+    assert!(!flipped.same_storage(&tensor));
+    assert_eq!(flipped.to_vec::<u8>().unwrap(), [5, 4, 3, 2, 1, 0]);
+    assert_eq!(
+        tensor.flip(&[0]).unwrap().to_vec::<u8>().unwrap(),
+        [3, 4, 5, 0, 1, 2]
+    );
+
+    let padded = tensor.pad_with_zeros(1, 1, 2).unwrap();
+    assert_eq!(padded.dims(), &[2, 6]);
+    assert_eq!(
+        padded.to_vec::<u8>().unwrap(),
+        [0, 0, 1, 2, 0, 0, 0, 3, 4, 5, 0, 0]
+    );
+    let same = tensor.pad_with_same(0, 1, 1).unwrap();
+    assert_eq!(
+        same.to_vec::<u8>().unwrap(),
+        [0, 1, 2, 0, 1, 2, 3, 4, 5, 3, 4, 5]
+    );
+    assert!(matches!(
+        Tensor::zeros([2, 0], DType::U8, &Device::Cpu)
+            .unwrap()
+            .pad_with_same(1, 1, 0),
+        Err(Error::EmptyTensorForOp {
+            op: "pad_with_same"
+        })
+    ));
+}
+
+#[test]
+fn phase3_gather_index_select_and_embedding_are_layout_aware() {
+    let values = Tensor::from_vec((0i32..6).collect(), (2, 3), &Device::Cpu).unwrap();
+    let indexes = Tensor::from_vec(vec![2i64, 0, 1, 2], (2, 2), &Device::Cpu).unwrap();
+    assert_eq!(
+        values.gather(&indexes, 1).unwrap().to_vec::<i32>().unwrap(),
+        [2, 0, 4, 5]
+    );
+
+    let selected_rows = Tensor::from_vec(vec![1i64, 0], 2, &Device::Cpu).unwrap();
+    assert_eq!(
+        values
+            .index_select(&selected_rows, 0)
+            .unwrap()
+            .to_vec::<i32>()
+            .unwrap(),
+        [3, 4, 5, 0, 1, 2]
+    );
+    let selected_columns = Tensor::from_vec(vec![2u32, 0], 2, &Device::Cpu).unwrap();
+    assert_eq!(
+        values
+            .index_select(&selected_columns, 1)
+            .unwrap()
+            .to_vec::<i32>()
+            .unwrap(),
+        [2, 0, 5, 3]
+    );
+
+    let embedding =
+        Tensor::from_vec(vec![0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0], (3, 2), &Device::Cpu).unwrap();
+    let ids = Tensor::from_vec(vec![2i64, 1], 2, &Device::Cpu).unwrap();
+    assert_eq!(
+        embedding.embedding(&ids).unwrap().to_vec::<f32>().unwrap(),
+        [4.0, 5.0, 2.0, 3.0]
+    );
+
+    let bad = Tensor::from_vec(vec![3i64], 1, &Device::Cpu).unwrap();
+    assert!(matches!(
+        values.index_select(&bad, 0),
+        Err(Error::InvalidIndex {
+            op: "index_select",
+            index: 3,
+            size: 2
+        })
+    ));
+    let negative = Tensor::from_vec(vec![-1i32], 1, &Device::Cpu).unwrap();
+    assert!(matches!(
+        values.index_select(&negative, 0),
+        Err(Error::NegativeIndex {
+            op: "index_select",
+            value: -1
+        })
+    ));
+}
+
+#[test]
+fn phase3_scatter_index_add_and_slice_scatter_define_duplicate_and_aliasing_behavior() {
+    let base = Tensor::zeros((1, 3), DType::I32, &Device::Cpu).unwrap();
+    let indexes = Tensor::from_vec(vec![1i64, 1], (1, 2), &Device::Cpu).unwrap();
+    let source = Tensor::from_vec(vec![2i32, 3], (1, 2), &Device::Cpu).unwrap();
+    assert_eq!(
+        base.scatter(&indexes, &source, 1)
+            .unwrap()
+            .to_vec::<i32>()
+            .unwrap(),
+        [0, 3, 0]
+    );
+    assert_eq!(
+        base.scatter_add(&indexes, &source, 1)
+            .unwrap()
+            .to_vec::<i32>()
+            .unwrap(),
+        [0, 5, 0]
+    );
+
+    let inplace = Tensor::zeros((1, 3), DType::I32, &Device::Cpu).unwrap();
+    inplace.scatter_set(&indexes, &source, 1).unwrap();
+    assert_eq!(inplace.to_vec::<i32>().unwrap(), [0, 3, 0]);
+    inplace.scatter_add_set(&indexes, &source, 1).unwrap();
+    assert_eq!(inplace.to_vec::<i32>().unwrap(), [0, 8, 0]);
+    assert!(matches!(
+        inplace.scatter_set(
+            &Tensor::from_vec(vec![0i64, 1, 2], (1, 3), &Device::Cpu).unwrap(),
+            &inplace,
+            1
+        ),
+        Err(Error::StorageAliasConflict { op: "scatter_set" })
+    ));
+
+    let target = Tensor::from_vec(vec![1i32, 1, 1, 1], (2, 2), &Device::Cpu).unwrap();
+    let add_indexes = Tensor::from_vec(vec![1i64, 0, 1], 3, &Device::Cpu).unwrap();
+    let add_source = Tensor::from_vec(vec![2i32, 3, 4, 5, 6, 7], (3, 2), &Device::Cpu).unwrap();
+    assert_eq!(
+        target
+            .index_add(&add_indexes, &add_source, 0)
+            .unwrap()
+            .to_vec::<i32>()
+            .unwrap(),
+        [5, 6, 9, 11]
+    );
+
+    let destination = Tensor::zeros((2, 4), DType::I32, &Device::Cpu).unwrap();
+    let slice = Tensor::from_vec(vec![1i32, 2, 3, 4], (2, 2), &Device::Cpu).unwrap();
+    assert_eq!(
+        destination
+            .slice_scatter(&slice, 1, 1)
+            .unwrap()
+            .to_vec::<i32>()
+            .unwrap(),
+        [0, 1, 2, 0, 0, 3, 4, 0]
+    );
+    assert_eq!(
+        destination
+            .slice_scatter0(
+                &Tensor::from_vec(vec![7i32, 8, 9, 10], (1, 4), &Device::Cpu).unwrap(),
+                1
+            )
+            .unwrap()
+            .to_vec::<i32>()
+            .unwrap(),
+        [0, 0, 0, 0, 7, 8, 9, 10]
+    );
+}

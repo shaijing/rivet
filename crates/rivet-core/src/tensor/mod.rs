@@ -6,6 +6,7 @@ use std::sync::{Arc, RwLock};
 mod access;
 mod construction;
 mod convert;
+mod index;
 mod ops;
 mod view;
 

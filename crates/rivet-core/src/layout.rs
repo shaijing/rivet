@@ -201,6 +201,32 @@ impl Layout {
         Self::new(Shape::from(dims), stride, self.start_offset)
     }
 
+    /// Creates an overlapping sliding-window view along `dim`.
+    pub fn unfold(&self, dim: usize, size: usize, step: usize) -> Result<Self> {
+        let dim_size = *self.dims().get(dim).ok_or(Error::InvalidDim {
+            dim,
+            rank: self.shape.rank(),
+        })?;
+        if step == 0 || size > dim_size {
+            return Err(Error::InvalidUnfold {
+                dim,
+                size,
+                step,
+                dim_size,
+            });
+        }
+        let window_count = (dim_size - size) / step + 1;
+        let mut dims = self.dims().to_vec();
+        dims[dim] = window_count;
+        dims.push(size);
+        let mut stride = self.stride.clone();
+        stride[dim] = stride[dim]
+            .checked_mul(step)
+            .ok_or(Error::StorageOutOfBounds)?;
+        stride.push(self.stride[dim]);
+        Self::new(Shape::from(dims), stride, self.start_offset)
+    }
+
     pub fn strided_index(&self) -> StridedIndex<'_> {
         StridedIndex::new(self.dims(), self.stride(), self.start_offset())
     }
