@@ -590,3 +590,63 @@ fn phase2_comparisons_masks_clamp_and_where_support_broadcasting() {
         })
     ));
 }
+
+#[test]
+fn phase_gemm_rank2_f32_produces_fresh_contiguous_output() {
+    let lhs =
+        Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], (2, 3), &Device::Cpu).unwrap();
+    let rhs = Tensor::from_vec(
+        vec![
+            7.0f32, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0,
+        ],
+        (3, 4),
+        &Device::Cpu,
+    )
+    .unwrap();
+
+    let result = lhs.matmul(&rhs).unwrap();
+    assert_eq!(result.dims(), &[2, 4]);
+    assert!(result.is_contiguous());
+    assert!(!result.same_storage(&lhs));
+    assert_eq!(
+        result.to_vec::<f32>().unwrap(),
+        [74.0, 80.0, 86.0, 92.0, 173.0, 188.0, 203.0, 218.0]
+    );
+
+    let shared_rhs = lhs.reshape((3, 2)).unwrap();
+    let shared_result = lhs.matmul(&shared_rhs).unwrap();
+    assert_eq!(
+        shared_result.to_vec::<f32>().unwrap(),
+        [22.0, 28.0, 49.0, 64.0]
+    );
+}
+
+#[test]
+fn phase_gemm_reports_phase1_shape_dtype_layout_and_empty_contracts() {
+    let lhs = Tensor::ones((2, 3), DType::F32, &Device::Cpu).unwrap();
+    let rhs = Tensor::ones((4, 2), DType::F32, &Device::Cpu).unwrap();
+    assert!(matches!(
+        lhs.matmul(&rhs),
+        Err(Error::MatmulShapeMismatch { .. })
+    ));
+
+    let f64_lhs = Tensor::ones((2, 2), DType::F64, &Device::Cpu).unwrap();
+    let f64_rhs = Tensor::ones((2, 2), DType::F64, &Device::Cpu).unwrap();
+    assert!(matches!(
+        f64_lhs.matmul(&f64_rhs),
+        Err(Error::UnsupportedMatmulDType { dtype: DType::F64 })
+    ));
+
+    let transposed = lhs.transpose(0, 1).unwrap();
+    let compatible_rhs = Tensor::ones((2, 2), DType::F32, &Device::Cpu).unwrap();
+    assert!(matches!(
+        transposed.matmul(&compatible_rhs),
+        Err(Error::UnsupportedMatmulLayout)
+    ));
+
+    let empty_lhs = Tensor::zeros((0, 3), DType::F32, &Device::Cpu).unwrap();
+    let empty_rhs = Tensor::ones((3, 2), DType::F32, &Device::Cpu).unwrap();
+    let empty_result = empty_lhs.matmul(&empty_rhs).unwrap();
+    assert_eq!(empty_result.dims(), &[0, 2]);
+    assert!(empty_result.to_vec::<f32>().unwrap().is_empty());
+}

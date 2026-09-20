@@ -2,8 +2,32 @@ use super::Tensor;
 use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use crate::storage::Storage;
 use crate::{DType, Error, Result, Shape, WithDType};
+use std::sync::Arc;
 
 impl Tensor {
+    fn with_two_storage<R>(
+        lhs: &Self,
+        rhs: &Self,
+        f: impl FnOnce(&Storage, &Storage) -> Result<R>,
+    ) -> Result<R> {
+        let lhs_address = Arc::as_ptr(&lhs.0.storage) as usize;
+        let rhs_address = Arc::as_ptr(&rhs.0.storage) as usize;
+        if lhs_address == rhs_address {
+            let storage = lhs.storage();
+            return f(&storage, &storage);
+        }
+
+        if lhs_address < rhs_address {
+            let lhs_storage = lhs.storage();
+            let rhs_storage = rhs.storage();
+            f(&lhs_storage, &rhs_storage)
+        } else {
+            let rhs_storage = rhs.storage();
+            let lhs_storage = lhs.storage();
+            f(&lhs_storage, &rhs_storage)
+        }
+    }
+
     fn binary(&self, rhs: &Self, op: BinaryOp) -> Result<Self> {
         if self.shape() != rhs.shape() {
             return Err(Error::ShapeMismatchBinary {
@@ -115,6 +139,34 @@ impl Tensor {
 
     pub fn abs(&self) -> Result<Self> {
         self.unary(UnaryOp::Abs)
+    }
+
+    /// Computes a rank-2 F32 matrix product using the CPU GEMM backend.
+    ///
+    /// Phase 1 deliberately accepts only contiguous rank-2 inputs. The
+    /// output is always a fresh row-major contiguous tensor.
+    pub fn matmul(&self, rhs: &Self) -> Result<Self> {
+        if self.dtype() != rhs.dtype() {
+            return Err(Error::DTypeMismatch {
+                lhs: self.dtype(),
+                rhs: rhs.dtype(),
+            });
+        }
+        if !self.device().same_device(rhs.device()) {
+            return Err(Error::DeviceMismatch);
+        }
+        if self.rank() != 2 || rhs.rank() != 2 || self.dims()[1] != rhs.dims()[0] {
+            return Err(Error::MatmulShapeMismatch {
+                lhs: self.dims().to_vec(),
+                rhs: rhs.dims().to_vec(),
+            });
+        }
+
+        let output_shape = Shape::from([self.dims()[0], rhs.dims()[1]]);
+        let storage = Self::with_two_storage(self, rhs, |lhs_storage, rhs_storage| {
+            Storage::matmul(lhs_storage, self.layout(), rhs_storage, rhs.layout())
+        })?;
+        Self::from_storage(storage, output_shape, self.device())
     }
 
     fn reduce_dim(&self, dim: usize, keepdim: bool, op: ReduceOp) -> Result<Self> {

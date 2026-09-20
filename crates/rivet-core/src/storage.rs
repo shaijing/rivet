@@ -39,6 +39,19 @@ impl Storage {
         }
     }
 
+    pub(crate) fn matmul(
+        lhs: &Self,
+        lhs_layout: &Layout,
+        rhs: &Self,
+        rhs_layout: &Layout,
+    ) -> Result<Self> {
+        match (lhs, rhs) {
+            (Self::Cpu(lhs), Self::Cpu(rhs)) => {
+                Ok(Self::Cpu(lhs.matmul(lhs_layout, rhs, rhs_layout)?))
+            }
+        }
+    }
+
     pub(crate) fn unary(storage: &Self, layout: &Layout, op: UnaryOp) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.unary(layout, op)?)),

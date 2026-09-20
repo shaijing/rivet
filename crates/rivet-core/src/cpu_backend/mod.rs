@@ -1,3 +1,4 @@
+pub(crate) mod matmul;
 pub mod utils;
 
 use crate::backend::{BackendDevice, BackendStorage};
@@ -180,6 +181,28 @@ impl CpuStorage {
             DType::F16 => dispatch!(F16, f16),
             DType::F32 => dispatch!(F32, f32),
             DType::F64 => dispatch!(F64, f64),
+        }
+    }
+
+    pub(crate) fn matmul(
+        &self,
+        lhs_layout: &Layout,
+        rhs: &Self,
+        rhs_layout: &Layout,
+    ) -> Result<Self> {
+        if self.dtype() != rhs.dtype() {
+            return Err(Error::DTypeMismatch {
+                lhs: self.dtype(),
+                rhs: rhs.dtype(),
+            });
+        }
+        match (self, rhs) {
+            (Self::F32(lhs), Self::F32(rhs)) => {
+                Ok(Self::F32(matmul::f32(lhs, lhs_layout, rhs, rhs_layout)?))
+            }
+            _ => Err(Error::UnsupportedMatmulDType {
+                dtype: self.dtype(),
+            }),
         }
     }
 

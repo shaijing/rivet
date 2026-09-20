@@ -83,6 +83,15 @@ pub enum Error {
         minimum: usize,
         actual: usize,
     },
+
+    #[error("matmul shape mismatch: lhs={lhs:?}, rhs={rhs:?}")]
+    MatmulShapeMismatch { lhs: Vec<usize>, rhs: Vec<usize> },
+
+    #[error("unsupported matmul dtype {dtype:?}")]
+    UnsupportedMatmulDType { dtype: DType },
+
+    #[error("unsupported matmul layout")]
+    UnsupportedMatmulLayout,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

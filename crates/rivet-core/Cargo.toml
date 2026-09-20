@@ -7,5 +7,6 @@ repository.workspace = true
 description = "Core tensor types, storage, layouts, and operations for Rivet"
 
 [dependencies]
+gemm.workspace = true
 half.workspace = true
 thiserror.workspace = true
