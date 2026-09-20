@@ -320,6 +320,25 @@ mod tests {
     }
 
     #[test]
+    fn phase2_random_ops_match_inline_and_workers() {
+        let configure = |workers| {
+            pipeline(19, workers)
+                .pad(1)
+                .random_resized_crop(1, 1)
+                .color_jitter(4, 0.2, 10)
+                .random_grayscale(0.5, 3)
+                .random_erasing(0.5)
+                .shuffle(17)
+                .batch(4, false)
+        };
+        let mut inline = configure(0).compile().unwrap();
+        let mut pooled = configure(4).prefetch_batches(2).compile().unwrap();
+        let inline = drain(&mut inline);
+        let pooled = drain(&mut pooled);
+        assert_batches_equal(&inline, &pooled);
+    }
+
+    #[test]
     fn workers_preserve_skip_take_and_drop_last() {
         let mut inline = pipeline(50, 0)
             .skip(2)

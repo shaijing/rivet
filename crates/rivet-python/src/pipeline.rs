@@ -41,6 +41,13 @@ impl PyImagePipeline {
         }
     }
 
+    #[pyo3(signature = (padding, fill=0.0))]
+    fn pad(&self, padding: u32, fill: f32) -> Self {
+        Self {
+            inner: self.inner.clone().pad_with_fill(padding, fill),
+        }
+    }
+
     fn horizontal_flip(&self) -> Self {
         Self {
             inner: self.inner.clone().horizontal_flip(),
@@ -57,6 +64,12 @@ impl PyImagePipeline {
     fn random_crop(&self, width: u32, height: u32, padding: u32) -> Self {
         Self {
             inner: self.inner.clone().random_crop(width, height, padding),
+        }
+    }
+
+    fn random_resized_crop(&self, width: u32, height: u32) -> Self {
+        Self {
+            inner: self.inner.clone().random_resized_crop(width, height),
         }
     }
 
@@ -79,6 +92,19 @@ impl PyImagePipeline {
         }
     }
 
+    #[pyo3(signature = (brightness=0, contrast=0.0, hue=0))]
+    fn color_jitter(&self, brightness: i32, contrast: f32, hue: i32) -> Self {
+        Self {
+            inner: self.inner.clone().color_jitter(brightness, contrast, hue),
+        }
+    }
+
+    fn gaussian_blur(&self, sigma: f32) -> Self {
+        Self {
+            inner: self.inner.clone().gaussian_blur(sigma),
+        }
+    }
+
     fn hue(&self, degrees: i32) -> Self {
         Self {
             inner: self.inner.clone().hue(degrees),
@@ -89,6 +115,23 @@ impl PyImagePipeline {
     fn grayscale(&self, num_output_channels: u8) -> Self {
         Self {
             inner: self.inner.clone().grayscale(num_output_channels),
+        }
+    }
+
+    #[pyo3(signature = (probability=0.1, num_output_channels=1))]
+    fn random_grayscale(&self, probability: f64, num_output_channels: u8) -> Self {
+        Self {
+            inner: self
+                .inner
+                .clone()
+                .random_grayscale(probability, num_output_channels),
+        }
+    }
+
+    #[pyo3(signature = (probability=0.5))]
+    fn random_erasing(&self, probability: f64) -> Self {
+        Self {
+            inner: self.inner.clone().random_erasing(probability),
         }
     }
 

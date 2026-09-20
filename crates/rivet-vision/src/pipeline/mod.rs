@@ -240,6 +240,58 @@ mod tests {
     }
 
     #[test]
+    fn phase2_sample_ops_compile_before_batching() {
+        let loader = stub(1)
+            .decode_image()
+            .pad(1)
+            .random_resized_crop(8, 8)
+            .color_jitter(4, 0.2, 10)
+            .gaussian_blur(0.5)
+            .random_grayscale(0.0, 3)
+            .random_erasing(0.0)
+            .batch(1, false)
+            .compile()
+            .unwrap();
+
+        assert_eq!(loader.plan.sample_ops.len(), 7);
+        assert_eq!(
+            loader.plan.output_state,
+            PipelineImageState::Decoded {
+                dtype: DType::U8,
+                axis_order: ImageAxisOrder::Hwc,
+            }
+        );
+    }
+
+    #[test]
+    fn phase2_invalid_configs_are_rejected_at_compile() {
+        let err = compile_err(
+            stub(1)
+                .decode_image()
+                .random_resized_crop(0, 8)
+                .batch(1, false),
+        );
+        assert!(
+            err.contains("width and height must be greater than 0"),
+            "got: {err}"
+        );
+
+        let err = compile_err(stub(1).decode_image().gaussian_blur(-1.0).batch(1, false));
+        assert!(err.contains("finite and non-negative"), "got: {err}");
+
+        let err = compile_err(
+            stub(1)
+                .decode_image()
+                .color_jitter(-1, 0.0, 0)
+                .batch(1, false),
+        );
+        assert!(
+            err.contains("brightness/hue must be non-negative"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
     fn zero_batch_size_rejected_at_compile() {
         let err = compile_err(stub(10).decode_image().batch(0, false));
         assert!(

@@ -1,14 +1,20 @@
 pub mod color;
+pub mod filter;
 pub mod geometry;
 pub mod representation;
 
+mod blur;
 mod crop;
 mod decode;
 mod dtype;
+mod erase;
 mod flip;
 mod layout;
+mod multi_crop;
 mod normalize;
+mod pad;
 mod resize;
+mod resized_crop;
 mod rotate;
 
 /// Padding semantics shared by geometry transforms.
@@ -20,17 +26,43 @@ pub enum PaddingMode {
     Symmetric,
 }
 
-pub use color::{BrightnessConfig, ContrastConfig, GrayscaleConfig, HueConfig};
+pub use blur::GaussianBlurConfig;
+pub use color::{
+    BrightnessConfig, ColorJitterConfig, ColorJitterParams, ContrastConfig, GrayscaleConfig,
+    HueConfig, RandomGrayscaleConfig,
+};
+pub use erase::{EraseRegion, RandomErasingConfig};
 pub use geometry::{
-    CenterCropConfig, CropConfig, FlipConfig, FlipDirection, InterpolationMode, LayoutConfig,
-    RandomCropConfig, RandomHorizontalFlipConfig, ResizeConfig, RotateConfig, RotationAngle,
+    CenterCropConfig, CropConfig, CropRegion, FiveCropConfig, FlipConfig, FlipDirection,
+    InterpolationMode, LayoutConfig, PadConfig, RandomCropConfig, RandomHorizontalFlipConfig,
+    RandomResizedCropConfig, ResizeConfig, RotateConfig, RotationAngle, TenCropConfig,
 };
 pub use representation::{ConvertImageDtypeConfig, DecodeImageConfig, NormalizeConfig};
 
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::DecodedSample;
 use image::RgbImage;
-use rivet_core::{CpuStorageRef, DType, Device, Tensor};
+use rivet_core::{CpuStorageRef, DType, Device, Layout, Tensor};
+
+pub(crate) fn logical_offset(layout: &Layout, coords: &[usize]) -> rivet_core::Result<usize> {
+    if coords.len() != layout.dims().len() {
+        return Err(rivet_core::Error::InvalidRank {
+            expected: layout.dims().len(),
+            actual: coords.len(),
+        });
+    }
+    coords.iter().zip(layout.stride()).try_fold(
+        layout.start_offset(),
+        |offset, (&coord, &stride)| {
+            let delta = coord
+                .checked_mul(stride)
+                .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+            offset
+                .checked_add(delta)
+                .ok_or(rivet_core::Error::StorageOutOfBounds)
+        },
+    )
+}
 
 pub(crate) fn require_u8_hwc(sample: DecodedSample, op_name: &str) -> RivetResult<DecodedSample> {
     let dims = sample.image.dims();

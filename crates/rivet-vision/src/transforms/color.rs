@@ -193,9 +193,147 @@ impl GrayscaleConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColorJitterConfig {
+    pub brightness: i32,
+    pub contrast: f32,
+    pub hue: i32,
+}
+
+impl ColorJitterConfig {
+    /// Construct a stochastic jitter policy. Brightness is sampled from
+    /// `[-brightness, brightness]`, contrast from
+    /// `[max(0, 1-contrast), 1+contrast]`, and hue from
+    /// `[-hue, hue]` degrees.
+    pub const fn new(brightness: i32, contrast: f32, hue: i32) -> Self {
+        Self {
+            brightness,
+            contrast,
+            hue,
+        }
+    }
+
+    pub fn validate(&self) -> RivetResult<()> {
+        if self.brightness < 0 || self.hue < 0 || !self.contrast.is_finite() || self.contrast < 0.0
+        {
+            return Err(invalid_argument(
+                "color_jitter brightness/hue must be non-negative and contrast must be finite",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn resolve(&self, ctx: &mut crate::pipeline::op::SampleContext) -> ColorJitterParams {
+        let brightness = sample_i32(ctx.next_rng_u64(), -self.brightness, self.brightness);
+        let contrast_min = (1.0 - self.contrast).max(0.0);
+        let contrast = sample_f32(ctx.next_rng_u64(), contrast_min, 1.0 + self.contrast);
+        let hue = sample_i32(ctx.next_rng_u64(), -self.hue, self.hue);
+        ColorJitterParams {
+            brightness,
+            contrast,
+            hue,
+        }
+    }
+
+    pub fn apply(
+        &self,
+        sample: ImageSample,
+        ctx: &mut crate::pipeline::op::SampleContext,
+    ) -> RivetResult<ImageSample> {
+        self.validate()?;
+        self.resolve(ctx).apply(sample)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColorJitterParams {
+    pub brightness: i32,
+    pub contrast: f32,
+    pub hue: i32,
+}
+
+impl ColorJitterParams {
+    pub fn validate(&self) -> RivetResult<()> {
+        if !self.contrast.is_finite() {
+            return Err(invalid_argument("color_jitter contrast must be finite"));
+        }
+        Ok(())
+    }
+
+    pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
+        self.validate()?;
+        let sample = sample.into_decoded()?;
+        let (image, label) = into_rgb_image(sample, "color_jitter")?;
+        let image = brighten(&image, self.brightness);
+        let image = contrast(&image, self.contrast);
+        let image = huerotate(&image, self.hue);
+        Ok(ImageSample::Decoded(from_rgb_image(image, label)?))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RandomGrayscaleConfig {
+    pub probability: f64,
+    pub num_output_channels: u8,
+}
+
+impl RandomGrayscaleConfig {
+    pub const fn new(probability: f64) -> Self {
+        Self {
+            probability,
+            num_output_channels: 1,
+        }
+    }
+
+    pub const fn with_output_channels(mut self, num_output_channels: u8) -> Self {
+        self.num_output_channels = num_output_channels;
+        self
+    }
+
+    pub fn validate(&self) -> RivetResult<()> {
+        if !(0.0..=1.0).contains(&self.probability) {
+            return Err(invalid_argument(
+                "random_grayscale probability must be in [0.0, 1.0]",
+            ));
+        }
+        GrayscaleConfig::new(self.num_output_channels).validate()
+    }
+
+    pub fn apply(
+        &self,
+        sample: ImageSample,
+        ctx: &mut crate::pipeline::op::SampleContext,
+        axis_order: ImageAxisOrder,
+    ) -> RivetResult<ImageSample> {
+        self.validate()?;
+        let draw = (ctx.next_rng_u64() >> 11) as f64 * (1.0 / (1u64 << 53) as f64);
+        if draw >= self.probability {
+            return Ok(sample);
+        }
+        GrayscaleConfig::new(self.num_output_channels).apply(sample, axis_order)
+    }
+}
+
+fn sample_f32(bits: u64, min: f32, max: f32) -> f32 {
+    let unit = (bits >> 11) as f32 * (1.0 / (1u64 << 53) as f32);
+    min + (max - min) * unit
+}
+
+fn sample_i32(bits: u64, min: i32, max: i32) -> i32 {
+    if min == max {
+        return min;
+    }
+    let span = i64::from(max) - i64::from(min) + 1;
+    (i64::from(min) + (bits % span as u64) as i64) as i32
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BrightnessConfig, ContrastConfig, GrayscaleConfig, HueConfig};
+    use super::{
+        BrightnessConfig, ColorJitterConfig, ContrastConfig, GrayscaleConfig, HueConfig,
+        RandomGrayscaleConfig,
+    };
+    use crate::pipeline::op::SampleContext;
     use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
     use rivet_core::{DType, Device, Tensor};
 
@@ -264,5 +402,49 @@ mod tests {
             chw.image.to_vec::<u8>().unwrap(),
             [54, 182, 54, 182, 54, 182]
         );
+    }
+
+    #[test]
+    fn color_jitter_is_seeded_and_keeps_rgb_contract() {
+        let config = ColorJitterConfig::new(10, 0.25, 20);
+        let mut left = SampleContext::new(3);
+        left.global_seed = 9;
+        let mut right = SampleContext::new(3);
+        right.global_seed = 9;
+        let left = config
+            .apply(sample(), &mut left)
+            .unwrap()
+            .into_decoded()
+            .unwrap();
+        let right = config
+            .apply(sample(), &mut right)
+            .unwrap()
+            .into_decoded()
+            .unwrap();
+        assert_eq!(left.image.dims(), [1, 2, 3]);
+        assert_eq!(left.image.dtype(), DType::U8);
+        assert_eq!(
+            left.image.to_vec::<u8>().unwrap(),
+            right.image.to_vec::<u8>().unwrap()
+        );
+    }
+
+    #[test]
+    fn random_grayscale_probability_zero_and_one_are_exact() {
+        let mut ctx = SampleContext::new(0);
+        let unchanged = RandomGrayscaleConfig::new(0.0)
+            .apply(sample(), &mut ctx, ImageAxisOrder::Hwc)
+            .unwrap()
+            .into_decoded()
+            .unwrap();
+        assert_eq!(unchanged.image.dims(), [1, 2, 3]);
+
+        let mut ctx = SampleContext::new(0);
+        let changed = RandomGrayscaleConfig::new(1.0)
+            .apply(sample(), &mut ctx, ImageAxisOrder::Hwc)
+            .unwrap()
+            .into_decoded()
+            .unwrap();
+        assert_eq!(changed.image.dims(), [1, 2, 1]);
     }
 }

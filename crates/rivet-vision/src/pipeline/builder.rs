@@ -68,6 +68,16 @@ impl ImagePipeline {
         self
     }
 
+    pub fn pad(mut self, padding: u32) -> Self {
+        self.ops.push(ImageOp::pad(padding));
+        self
+    }
+
+    pub fn pad_with_fill(mut self, padding: u32, value: f32) -> Self {
+        self.ops.push(ImageOp::pad_with_fill(padding, value));
+        self
+    }
+
     pub fn horizontal_flip(mut self) -> Self {
         self.ops.push(ImageOp::horizontal_flip());
         self
@@ -89,6 +99,11 @@ impl ImagePipeline {
         self
     }
 
+    pub fn random_resized_crop(mut self, width: u32, height: u32) -> Self {
+        self.ops.push(ImageOp::random_resized_crop(width, height));
+        self
+    }
+
     /// Randomly flip each decoded image horizontally with `probability`,
     /// per sample, from the pipeline's stochastic seed.
     pub fn random_horizontal_flip(mut self, probability: f64) -> Self {
@@ -106,6 +121,17 @@ impl ImagePipeline {
         self
     }
 
+    pub fn color_jitter(mut self, brightness: i32, contrast: f32, hue: i32) -> Self {
+        self.ops
+            .push(ImageOp::color_jitter(brightness, contrast, hue));
+        self
+    }
+
+    pub fn gaussian_blur(mut self, sigma: f32) -> Self {
+        self.ops.push(ImageOp::gaussian_blur(sigma));
+        self
+    }
+
     pub fn hue(mut self, degrees: i32) -> Self {
         self.ops.push(ImageOp::hue(degrees));
         self
@@ -113,6 +139,17 @@ impl ImagePipeline {
 
     pub fn grayscale(mut self, num_output_channels: u8) -> Self {
         self.ops.push(ImageOp::grayscale(num_output_channels));
+        self
+    }
+
+    pub fn random_grayscale(mut self, probability: f64, num_output_channels: u8) -> Self {
+        self.ops
+            .push(ImageOp::random_grayscale(probability, num_output_channels));
+        self
+    }
+
+    pub fn random_erasing(mut self, probability: f64) -> Self {
+        self.ops.push(ImageOp::random_erasing(probability));
         self
     }
 

@@ -301,6 +301,9 @@ class Pipeline:
     def center_crop(self, width: int, height: int) -> Pipeline:
         return Pipeline(self._inner.center_crop(width, height), as_numpy=self.as_numpy)
 
+    def pad(self, padding: int, fill: float = 0.0) -> Pipeline:
+        return Pipeline(self._inner.pad(padding, fill), as_numpy=self.as_numpy)
+
     def horizontal_flip(self) -> Pipeline:
         return Pipeline(self._inner.horizontal_flip(), as_numpy=self.as_numpy)
 
@@ -328,6 +331,11 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def random_resized_crop(self, width: int, height: int) -> Pipeline:
+        return Pipeline(
+            self._inner.random_resized_crop(width, height), as_numpy=self.as_numpy
+        )
+
     def random_horizontal_flip(self, probability: float = 0.5) -> Pipeline:
         """Randomly flip each image horizontally with `probability`
         (one draw per sample from the pipeline seed, see `random_crop`).
@@ -344,12 +352,36 @@ class Pipeline:
     def contrast(self, value: float) -> Pipeline:
         return Pipeline(self._inner.contrast(value), as_numpy=self.as_numpy)
 
+    def color_jitter(
+        self, brightness: int = 0, contrast: float = 0.0, hue: int = 0
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.color_jitter(brightness, contrast, hue),
+            as_numpy=self.as_numpy,
+        )
+
+    def gaussian_blur(self, sigma: float) -> Pipeline:
+        return Pipeline(self._inner.gaussian_blur(sigma), as_numpy=self.as_numpy)
+
     def hue(self, degrees: int) -> Pipeline:
         return Pipeline(self._inner.hue(degrees), as_numpy=self.as_numpy)
 
     def grayscale(self, num_output_channels: int = 1) -> Pipeline:
         return Pipeline(
             self._inner.grayscale(num_output_channels), as_numpy=self.as_numpy
+        )
+
+    def random_grayscale(
+        self, probability: float = 0.1, num_output_channels: int = 1
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.random_grayscale(probability, num_output_channels),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_erasing(self, probability: float = 0.5) -> Pipeline:
+        return Pipeline(
+            self._inner.random_erasing(probability), as_numpy=self.as_numpy
         )
 
     def convert_image_dtype(self, dtype: str) -> Pipeline:
