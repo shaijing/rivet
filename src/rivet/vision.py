@@ -7,11 +7,13 @@ reserve placeholder namespaces.
 
 from . import (
     ArrowDataset,
+    Compose,
     DataLoader,
     DatasetDict,
     ImageFolder,
     LanceDataset,
     Pipeline,
+    Transform,
     dataset,
     hf_arrow_files,
     load_dataset,
@@ -27,11 +29,13 @@ from . import (
 
 __all__ = [
     "ArrowDataset",
+    "Compose",
     "DataLoader",
     "DatasetDict",
     "ImageFolder",
     "LanceDataset",
     "Pipeline",
+    "Transform",
     "dataset",
     "hf_arrow_files",
     "load_dataset",

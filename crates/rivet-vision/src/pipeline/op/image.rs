@@ -45,6 +45,9 @@ pub enum ImageOp {
     Autocontrast(AutocontrastConfig),
     Equalize(EqualizeConfig),
     Sharpness(SharpnessConfig),
+    RandomApply { probability: f64, ops: Vec<ImageOp> },
+    RandomChoice { choices: Vec<Vec<ImageOp>> },
+    RandomOrder { ops: Vec<ImageOp> },
     GaussianBlur(GaussianBlurConfig),
     Grayscale(GrayscaleConfig),
     RandomGrayscale(RandomGrayscaleConfig),
@@ -88,6 +91,9 @@ impl ImageOp {
             | Self::Autocontrast(_)
             | Self::Equalize(_)
             | Self::Sharpness(_)
+            | Self::RandomApply { .. }
+            | Self::RandomChoice { .. }
+            | Self::RandomOrder { .. }
             | Self::GaussianBlur(_)
             | Self::Grayscale(_)
             | Self::RandomGrayscale(_)
@@ -118,6 +124,9 @@ impl ImageOp {
             Self::Autocontrast(_) => "Autocontrast",
             Self::Equalize(_) => "Equalize",
             Self::Sharpness(_) => "Sharpness",
+            Self::RandomApply { .. } => "RandomApply",
+            Self::RandomChoice { .. } => "RandomChoice",
+            Self::RandomOrder { .. } => "RandomOrder",
             Self::GaussianBlur(_) => "GaussianBlur",
             Self::Grayscale(_) => "Grayscale",
             Self::RandomGrayscale(_) => "RandomGrayscale",
@@ -161,6 +170,50 @@ impl ImageOp {
             Self::Autocontrast(_) => require_u8_decoded(input, "Autocontrast"),
             Self::Equalize(_) => require_u8_decoded(input, "Equalize"),
             Self::Sharpness(_) => require_u8_decoded(input, "Sharpness"),
+            Self::RandomApply { probability, ops } => {
+                validate_probability(*probability, "random_apply")?;
+                let output = transition_sequence(ops, input)?;
+                if output != input {
+                    return Err(invalid_pipeline(
+                        "RandomApply nested transforms must preserve image state",
+                    ));
+                }
+                Ok(input)
+            }
+            Self::RandomChoice { choices } => {
+                if choices.is_empty() {
+                    return Err(invalid_argument(
+                        "random_choice requires at least one choice",
+                    ));
+                }
+                let mut output = None;
+                for choice in choices {
+                    let choice_output = transition_sequence(choice, input)?;
+                    if let Some(expected) = output {
+                        if expected != choice_output {
+                            return Err(invalid_pipeline(
+                                "random_choice choices must produce the same image state",
+                            ));
+                        }
+                    } else {
+                        output = Some(choice_output);
+                    }
+                }
+                Ok(output.expect("random_choice choices is non-empty"))
+            }
+            Self::RandomOrder { ops } => {
+                let mut state = input;
+                for op in ops {
+                    let output = transition_sequence(std::slice::from_ref(op), input)?;
+                    if output != input {
+                        return Err(invalid_pipeline(
+                            "RandomOrder nested transforms must preserve image state",
+                        ));
+                    }
+                    state = output;
+                }
+                Ok(state)
+            }
             Self::GaussianBlur(_) => require_u8_hwc(input, "GaussianBlur"),
             Self::Grayscale(_) => require_u8_decoded(input, "Grayscale"),
             Self::RandomGrayscale(_) => require_u8_decoded(input, "RandomGrayscale"),
@@ -209,6 +262,26 @@ impl ImageOp {
         ctx: &mut SampleContext,
         input_layout: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
+        self.apply_with_state(
+            sample,
+            ctx,
+            PipelineImageState::Decoded {
+                dtype: DType::U8,
+                axis_order: input_layout,
+            },
+        )
+    }
+
+    fn apply_with_state(
+        &self,
+        sample: ImageSample,
+        ctx: &mut SampleContext,
+        input_state: PipelineImageState,
+    ) -> RivetResult<ImageSample> {
+        let input_layout = match input_state {
+            PipelineImageState::Encoded => ImageAxisOrder::Hwc,
+            PipelineImageState::Decoded { axis_order, .. } => axis_order,
+        };
         match self {
             Self::Decode(op) => op.apply(sample),
             Self::Resize(op) => op.apply(sample),
@@ -229,6 +302,30 @@ impl ImageOp {
             Self::Autocontrast(op) => op.apply(sample, input_layout),
             Self::Equalize(op) => op.apply(sample, input_layout),
             Self::Sharpness(op) => op.apply(sample, input_layout),
+            Self::RandomApply { probability, ops } => {
+                if ctx.next_rng_f64() >= *probability {
+                    Ok(sample)
+                } else {
+                    apply_sequence(sample, ops, ctx, input_state).map(|(sample, _)| sample)
+                }
+            }
+            Self::RandomChoice { choices } => {
+                let index = ctx.choose_index(choices.len()).ok_or_else(|| {
+                    invalid_argument("random_choice requires at least one choice")
+                })?;
+                apply_sequence(sample, &choices[index], ctx, input_state).map(|(sample, _)| sample)
+            }
+            Self::RandomOrder { ops } => {
+                let mut order: Vec<usize> = (0..ops.len()).collect();
+                ctx.shuffle(&mut order);
+                let mut sample = sample;
+                let mut state = input_state;
+                for index in order {
+                    (sample, state) =
+                        apply_sequence(sample, std::slice::from_ref(&ops[index]), ctx, state)?;
+                }
+                Ok(sample)
+            }
             Self::GaussianBlur(op) => op.apply(sample),
             Self::Grayscale(op) => op.apply(sample, input_layout),
             Self::RandomGrayscale(op) => op.apply(sample, ctx, input_layout),
@@ -247,7 +344,7 @@ impl ImageOp {
         &self,
         sample: ImageSample,
         ctx: &mut SampleContext,
-        input_layout: ImageAxisOrder,
+        input_state: PipelineImageState,
     ) -> RivetResult<ImageSample> {
         if self.execution_kind() != ExecutionKind::Sample {
             return Err(invalid_pipeline(format!(
@@ -255,7 +352,7 @@ impl ImageOp {
                 self.name()
             )));
         }
-        self.apply(sample, ctx, input_layout)
+        self.apply_with_state(sample, ctx, input_state)
     }
 
     pub fn apply_batch(
@@ -375,6 +472,18 @@ impl ImageOp {
         Self::Sharpness(SharpnessConfig::new(amount))
     }
 
+    pub fn random_apply(probability: f64, ops: Vec<Self>) -> Self {
+        Self::RandomApply { probability, ops }
+    }
+
+    pub fn random_choice(choices: Vec<Vec<Self>>) -> Self {
+        Self::RandomChoice { choices }
+    }
+
+    pub fn random_order(ops: Vec<Self>) -> Self {
+        Self::RandomOrder { ops }
+    }
+
     pub fn gaussian_blur(sigma: f32) -> Self {
         Self::GaussianBlur(GaussianBlurConfig::new(sigma))
     }
@@ -468,6 +577,22 @@ impl ImageOp {
             Self::Solarize(_) => Ok(()),
             Self::Autocontrast(_) | Self::Equalize(_) => Ok(()),
             Self::Sharpness(op) => op.validate(),
+            Self::RandomApply { probability, ops } => {
+                validate_probability(*probability, "random_apply")?;
+                validate_nested_ops(ops, "random_apply")
+            }
+            Self::RandomChoice { choices } => {
+                if choices.is_empty() {
+                    return Err(invalid_argument(
+                        "random_choice requires at least one choice",
+                    ));
+                }
+                for choice in choices {
+                    validate_nested_ops(choice, "random_choice")?;
+                }
+                Ok(())
+            }
+            Self::RandomOrder { ops } => validate_nested_ops(ops, "random_order"),
             Self::GaussianBlur(op) => op.validate(),
             Self::Grayscale(op) => op.validate(),
             Self::RandomGrayscale(op) => op.validate(),
@@ -478,6 +603,59 @@ impl ImageOp {
             Self::NormalizeToChw(op) => op.validate(),
         }
     }
+}
+
+fn validate_probability(probability: f64, op_name: &str) -> RivetResult<()> {
+    if probability.is_finite() && (0.0..=1.0).contains(&probability) {
+        Ok(())
+    } else {
+        Err(invalid_argument(format!(
+            "{op_name} probability must be finite and in [0.0, 1.0]"
+        )))
+    }
+}
+
+fn validate_nested_ops(ops: &[ImageOp], op_name: &str) -> RivetResult<()> {
+    for op in ops {
+        op.validate()?;
+        if op.execution_kind() != ExecutionKind::Sample {
+            return Err(invalid_pipeline(format!(
+                "{op_name} nested transforms must be sample-stage operations; {} is batch-stage",
+                op.name()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn transition_sequence(
+    ops: &[ImageOp],
+    mut state: PipelineImageState,
+) -> RivetResult<PipelineImageState> {
+    for op in ops {
+        op.validate()?;
+        if op.execution_kind() != ExecutionKind::Sample {
+            return Err(invalid_pipeline(format!(
+                "{} nested transforms must be sample-stage operations",
+                op.name()
+            )));
+        }
+        state = op.transition(state)?;
+    }
+    Ok(state)
+}
+
+fn apply_sequence(
+    mut sample: ImageSample,
+    ops: &[ImageOp],
+    ctx: &mut SampleContext,
+    mut state: PipelineImageState,
+) -> RivetResult<(ImageSample, PipelineImageState)> {
+    for op in ops {
+        sample = op.apply_sample(sample, ctx, state)?;
+        state = op.transition(state)?;
+    }
+    Ok((sample, state))
 }
 
 fn require_u8_decoded(input: PipelineImageState, op_name: &str) -> RivetResult<PipelineImageState> {

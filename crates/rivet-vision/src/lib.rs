@@ -17,7 +17,7 @@ pub mod sampler {
 pub use batch::ImageBatchBuilder;
 pub use cache::{DecodedImageMemoryDataset, DenseImageMemoryDataset, VariableImageMemoryDataset};
 pub use errors::{RivetError, RivetResult, VisionError, VisionResult};
-pub use pipeline::ImagePipeline;
+pub use pipeline::{Compose, ImagePipeline, ImageTransform, TransformSequence};
 pub use runtime::ImageDataLoader;
 pub use sample::image::{
     DecodedSample, EncodedImageSample, ImageAxisOrder, ImageBatch, ImageSample,

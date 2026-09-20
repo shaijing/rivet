@@ -16,7 +16,8 @@ pub use crate::errors::{
     RivetError, RivetResult, VisionError, VisionResult, invalid_argument, invalid_pipeline,
     invalid_shape,
 };
-pub use crate::pipeline::ImagePipeline;
+pub use crate::pipeline::op::ImageOp;
+pub use crate::pipeline::{Compose, ImagePipeline, ImageTransform, TransformSequence};
 pub use crate::runtime::{ImageDataLoader, RuntimeConfig};
 pub use crate::sample::image::{
     DecodedSample, EncodedImageSample, ImageAxisOrder, ImageBatch, ImageSample,

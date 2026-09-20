@@ -374,6 +374,46 @@ def test_random_ops_deterministic_across_workers(arrow_file: Path) -> None:
         assert serial_batch["labels"].tolist() == pooled_batch["labels"].tolist()
 
 
+def test_composition_controls_deterministic_across_workers(arrow_file: Path) -> None:
+    def collect(loader: object) -> list[dict[str, object]]:
+        out = []
+        while True:
+            try:
+                out.append(next(loader))  # type: ignore[arg-type]
+            except StopIteration:
+                return out
+
+    augment = rivet.vision.Transform().brightness(10)
+    choices = [
+        rivet.vision.Transform().invert(),
+        rivet.vision.Transform().brightness(3),
+    ]
+    order = rivet.vision.Transform().contrast(0.8).invert()
+
+    def build(workers: int, prefetch: int) -> object:
+        return (
+            scan(arrow_file)
+            .take(16)
+            .decode_image()
+            .random_apply(0.5, augment)
+            .random_choice(choices)
+            .random_order(order)
+            .shuffle(29)
+            .epoch(4)
+            .workers(workers)
+            .prefetch_batches(prefetch)
+            .batch(4)
+            .execute()
+        )
+
+    serial = collect(build(0, 0))
+    pooled = collect(build(4, 2))
+    assert len(serial) == len(pooled) == 4
+    for serial_batch, pooled_batch in zip(serial, pooled):
+        assert np.array_equal(serial_batch["images"], pooled_batch["images"])
+        assert serial_batch["labels"].tolist() == pooled_batch["labels"].tolist()
+
+
 def test_random_horizontal_flip_probability_range(arrow_file: Path) -> None:
     # Builders are infallible; validation surfaces at execute/compile.
     with pytest.raises(ValueError, match="probability"):

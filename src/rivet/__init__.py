@@ -15,6 +15,7 @@ from ._rivet import (
     _ArrowDataset,
     _ImageFolderDataset,
     _ImagePipeline,
+    _Transform,
 )
 from ._rivet import read_image_batch as _read_image_batch
 
@@ -22,6 +23,8 @@ try:
     from ._rivet import (
         _LanceDataset,
         _LanceDatasetDict,
+    )
+    from ._rivet import (
         load_lance_split as _load_lance_split,
     )
 except ImportError:
@@ -31,11 +34,13 @@ except ImportError:
 
 __all__ = [
     "ArrowDataset",
+    "Compose",
     "DataLoader",
     "DatasetDict",
     "ImageFolder",
     "LanceDataset",
     "Pipeline",
+    "Transform",
     "dataset",
     "hf_arrow_files",
     "load_dataset",
@@ -278,6 +283,129 @@ class LanceDataset:
         return Pipeline(self._inner.pipeline())
 
 
+class Transform:
+    """Reusable ordered image transforms for pipeline composition."""
+
+    def __init__(self, inner: _Transform | None = None) -> None:
+        self._inner = _Transform() if inner is None else inner
+
+    def compose(self, other: Transform) -> Transform:
+        return Transform(self._inner.compose(other._inner))
+
+    def decode_image(self) -> Transform:
+        return Transform(self._inner.decode_image())
+
+    def resize(
+        self, width: int, height: int, interpolation: str = "bilinear"
+    ) -> Transform:
+        return Transform(
+            self._inner.resize(width, height, interpolation)
+        )
+
+    def crop(self, x: int, y: int, width: int, height: int) -> Transform:
+        return Transform(self._inner.crop(x, y, width, height))
+
+    def center_crop(self, width: int, height: int) -> Transform:
+        return Transform(self._inner.center_crop(width, height))
+
+    def pad(self, padding: int, fill: float = 0.0) -> Transform:
+        return Transform(self._inner.pad(padding, fill))
+
+    def horizontal_flip(self) -> Transform:
+        return Transform(self._inner.horizontal_flip())
+
+    def vertical_flip(self) -> Transform:
+        return Transform(self._inner.vertical_flip())
+
+    def random_crop(
+        self, width: int, height: int, padding: int = 0
+    ) -> Transform:
+        return Transform(self._inner.random_crop(width, height, padding))
+
+    def random_resized_crop(self, width: int, height: int) -> Transform:
+        return Transform(self._inner.random_resized_crop(width, height))
+
+    def random_horizontal_flip(self, probability: float = 0.5) -> Transform:
+        return Transform(self._inner.random_horizontal_flip(probability))
+
+    def brightness(self, value: int) -> Transform:
+        return Transform(self._inner.brightness(value))
+
+    def contrast(self, value: float) -> Transform:
+        return Transform(self._inner.contrast(value))
+
+    def color_jitter(
+        self, brightness: int = 0, contrast: float = 0.0, hue: int = 0
+    ) -> Transform:
+        return Transform(self._inner.color_jitter(brightness, contrast, hue))
+
+    def invert(self) -> Transform:
+        return Transform(self._inner.invert())
+
+    def posterize(self, bits: int) -> Transform:
+        return Transform(self._inner.posterize(bits))
+
+    def solarize(self, threshold: int) -> Transform:
+        return Transform(self._inner.solarize(threshold))
+
+    def autocontrast(self) -> Transform:
+        return Transform(self._inner.autocontrast())
+
+    def equalize(self) -> Transform:
+        return Transform(self._inner.equalize())
+
+    def sharpness(self, amount: float) -> Transform:
+        return Transform(self._inner.sharpness(amount))
+
+    def gaussian_blur(self, sigma: float) -> Transform:
+        return Transform(self._inner.gaussian_blur(sigma))
+
+    def hue(self, degrees: int) -> Transform:
+        return Transform(self._inner.hue(degrees))
+
+    def grayscale(self, num_output_channels: int = 1) -> Transform:
+        return Transform(self._inner.grayscale(num_output_channels))
+
+    def random_grayscale(
+        self, probability: float = 0.1, num_output_channels: int = 1
+    ) -> Transform:
+        return Transform(
+            self._inner.random_grayscale(probability, num_output_channels)
+        )
+
+    def random_erasing(self, probability: float = 0.5) -> Transform:
+        return Transform(self._inner.random_erasing(probability))
+
+    def convert_image_dtype(self, dtype: str) -> Transform:
+        return Transform(self._inner.convert_image_dtype(dtype))
+
+    def rotate(self, angle: int) -> Transform:
+        return Transform(self._inner.rotate(angle))
+
+    def normalize(self, mean: list[float], std: list[float]) -> Transform:
+        return Transform(self._inner.normalize(mean, std))
+
+    def hwc_to_chw(self) -> Transform:
+        return Transform(self._inner.hwc_to_chw())
+
+    def chw_to_hwc(self) -> Transform:
+        return Transform(self._inner.chw_to_hwc())
+
+    def random_apply(self, probability: float, nested: Transform) -> Transform:
+        return Transform(self._inner.random_apply(probability, nested._inner))
+
+    def random_choice(self, choices: Iterable[Transform]) -> Transform:
+        return Transform(
+            self._inner.random_choice([choice._inner for choice in choices])
+        )
+
+    def random_order(self, nested: Transform) -> Transform:
+        return Transform(self._inner.random_order(nested._inner))
+
+
+Compose = Transform
+
+
 class Pipeline:
     """Lazy image input pipeline."""
 
@@ -322,8 +450,8 @@ class Pipeline:
         Stochastic ops are seeded by the pipeline seed: when the pipeline
         shuffles (``.shuffle(seed)``), the same seed reproduces the same
         sample order *and* the same augmentations at any worker count; use
-        per-epoch seeds (``seed + epoch``) for fresh augmentations per
-        epoch. Without a shuffle the augmentations are deterministic too.
+        ``.epoch(epoch)`` for a fresh augmentation stream per epoch. Without
+        a shuffle the augmentations are still deterministic.
         Requires decoded uint8 HWC input.
         """
         return Pipeline(
@@ -357,6 +485,27 @@ class Pipeline:
     ) -> Pipeline:
         return Pipeline(
             self._inner.color_jitter(brightness, contrast, hue),
+            as_numpy=self.as_numpy,
+        )
+
+    def compose(self, sequence: Transform) -> Pipeline:
+        return Pipeline(self._inner.compose(sequence._inner), as_numpy=self.as_numpy)
+
+    def random_apply(self, probability: float, sequence: Transform) -> Pipeline:
+        return Pipeline(
+            self._inner.random_apply(probability, sequence._inner),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_choice(self, choices: Iterable[Transform]) -> Pipeline:
+        return Pipeline(
+            self._inner.random_choice([choice._inner for choice in choices]),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_order(self, sequence: Transform) -> Pipeline:
+        return Pipeline(
+            self._inner.random_order(sequence._inner),
             as_numpy=self.as_numpy,
         )
 
@@ -434,16 +583,19 @@ class Pipeline:
     def shuffle(self, seed: int) -> Pipeline:
         """Deterministically shuffle the sampled window with `seed`.
 
-        The same seed reproduces the same order at any worker count; use
-        per-epoch seeds (``seed + epoch``) for reproducible shuffling.
-        Stochastic ops (``random_crop``, ``random_horizontal_flip``) draw
-        from this seed as well, so one ``(seed, epoch)`` reproduces both
-        order and augmentations.
+        The same seed reproduces the same order at any worker count.
+        Stochastic ops draw from this seed and the explicit ``.epoch(epoch)``
+        value, so one ``(seed, epoch)`` reproduces both order and
+        augmentations.
         """
         return Pipeline(
             self._inner.shuffle(seed),
             as_numpy=self.as_numpy,
         )
+
+    def epoch(self, epoch: int) -> Pipeline:
+        """Set the deterministic augmentation epoch without reordering data."""
+        return Pipeline(self._inner.epoch(epoch), as_numpy=self.as_numpy)
 
     def workers(self, num_workers: int) -> Pipeline:
         """Load samples on a persistent pool of `num_workers` threads.

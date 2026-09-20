@@ -1,12 +1,14 @@
 mod builder;
 mod compile;
 pub mod op;
+mod transform;
 
 pub use builder::ImagePipeline;
+pub use transform::{Compose, ImageTransform, TransformSequence};
 
 #[cfg(test)]
 mod tests {
-    use super::ImagePipeline;
+    use super::{ImagePipeline, TransformSequence};
     use crate::cache::DenseImageMemoryDataset;
     use crate::pipeline::op::{ExecutionKind, PipelineImageState};
     use crate::sample::image::{DecodedSample, EncodedImageSample, ImageAxisOrder};
@@ -347,6 +349,70 @@ mod tests {
             err.contains("sharpness amount must be finite and non-negative"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn phase4_composition_controls_compile_into_sample_stage() {
+        let loader = stub(1)
+            .decode_image()
+            .compose(TransformSequence::new().brightness(2).invert())
+            .random_apply(0.5, TransformSequence::new().horizontal_flip())
+            .random_choice(vec![
+                TransformSequence::new().contrast(1.0),
+                TransformSequence::new().solarize(100),
+            ])
+            .random_order(TransformSequence::new().brightness(1).invert())
+            .batch(1, false)
+            .compile()
+            .unwrap();
+
+        assert_eq!(loader.plan.sample_ops.len(), 6);
+        assert_eq!(loader.plan.batch_ops.len(), 0);
+        assert_eq!(
+            loader.plan.output_state,
+            PipelineImageState::Decoded {
+                dtype: DType::U8,
+                axis_order: ImageAxisOrder::Hwc,
+            }
+        );
+    }
+
+    #[test]
+    fn phase4_composition_controls_validate_nested_contracts() {
+        let err = compile_err(
+            stub(1)
+                .decode_image()
+                .random_apply(1.5, TransformSequence::new().invert())
+                .batch(1, false),
+        );
+        assert!(err.contains("random_apply probability"), "got: {err}");
+
+        let err = compile_err(
+            stub(1)
+                .decode_image()
+                .random_choice(Vec::new())
+                .batch(1, false),
+        );
+        assert!(err.contains("at least one choice"), "got: {err}");
+
+        let err = compile_err(
+            stub(1)
+                .decode_image()
+                .random_order(TransformSequence::new().normalize(vec![0.0; 3], vec![1.0; 3]))
+                .batch(1, false),
+        );
+        assert!(err.contains("sample-stage operations"), "got: {err}");
+
+        let err = compile_err(
+            stub(1)
+                .decode_image()
+                .random_apply(
+                    0.5,
+                    TransformSequence::new().convert_image_dtype(DType::F32),
+                )
+                .batch(1, false),
+        );
+        assert!(err.contains("preserve image state"), "got: {err}");
     }
 
     #[test]

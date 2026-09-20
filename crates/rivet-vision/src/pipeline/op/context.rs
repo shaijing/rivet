@@ -33,6 +33,31 @@ impl SampleContext {
         }
         splitmix64(self.rng_state.as_mut().unwrap())
     }
+
+    /// Draw a deterministic value in `[0, 1)` from this sample's stream.
+    pub fn next_rng_f64(&mut self) -> f64 {
+        (self.next_rng_u64() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
+    }
+
+    /// Choose an index uniformly enough for deterministic control flow.
+    ///
+    /// The transform controls only need a stable choice, not cryptographic
+    /// randomness; the stream is still isolated per `(seed, epoch, sample)`.
+    pub fn choose_index(&mut self, len: usize) -> Option<usize> {
+        if len == 0 {
+            None
+        } else {
+            Some((self.next_rng_u64() % len as u64) as usize)
+        }
+    }
+
+    /// Deterministically shuffle a small control sequence in place.
+    pub fn shuffle<T>(&mut self, values: &mut [T]) {
+        for index in (1..values.len()).rev() {
+            let swap = (self.next_rng_u64() % (index as u64 + 1)) as usize;
+            values.swap(index, swap);
+        }
+    }
 }
 
 /// SplitMix64 stream step: advance the state and return a mixed output.

@@ -1,4 +1,5 @@
 use super::op::{BatchConfig, ImageOp, IndexOp, SourceOp};
+use super::transform::TransformSequence;
 use crate::runtime::RuntimeConfig;
 use crate::sample::image::EncodedImageSample;
 use crate::source::ImageSource;
@@ -14,6 +15,7 @@ pub struct ImagePipeline {
     pub ops: Vec<ImageOp>,
     pub batch: Option<BatchConfig>,
     pub runtime: RuntimeConfig,
+    pub epoch: u64,
 }
 
 impl ImagePipeline {
@@ -31,6 +33,7 @@ impl ImagePipeline {
             ops: Vec::new(),
             batch: None,
             runtime: RuntimeConfig::default(),
+            epoch: 0,
         }
     }
 
@@ -208,6 +211,33 @@ impl ImagePipeline {
         self
     }
 
+    /// Append a reusable transform sequence to this pipeline.
+    pub fn compose(mut self, sequence: TransformSequence) -> Self {
+        self.ops.extend(sequence.into_ops());
+        self
+    }
+
+    pub fn random_apply(mut self, probability: f64, sequence: TransformSequence) -> Self {
+        self.ops
+            .push(ImageOp::random_apply(probability, sequence.into_ops()));
+        self
+    }
+
+    pub fn random_choice(mut self, choices: Vec<TransformSequence>) -> Self {
+        self.ops.push(ImageOp::random_choice(
+            choices
+                .into_iter()
+                .map(TransformSequence::into_ops)
+                .collect(),
+        ));
+        self
+    }
+
+    pub fn random_order(mut self, sequence: TransformSequence) -> Self {
+        self.ops.push(ImageOp::random_order(sequence.into_ops()));
+        self
+    }
+
     pub fn skip(mut self, count: usize) -> Self {
         self.index_ops.push(IndexOp::Skip { count });
         self
@@ -219,11 +249,18 @@ impl ImagePipeline {
     }
 
     /// Deterministically shuffle the sampled window with `seed`; the same
-    /// seed reproduces the same order at any worker count. Use per-epoch
-    /// seeds (e.g. `base_seed + epoch`) for reproducible shuffling across
-    /// epochs.
+    /// seed reproduces the same order at any worker count. Use `.epoch(epoch)`
+    /// to change the augmentation stream without changing sample order.
     pub fn shuffle(mut self, seed: u64) -> Self {
         self.index_ops.push(IndexOp::Shuffle { seed });
+        self
+    }
+
+    /// Set the deterministic augmentation epoch without changing sample
+    /// ordering. Use the same epoch with different worker counts to reproduce
+    /// exactly; changing it produces a fresh per-sample RNG stream.
+    pub fn epoch(mut self, epoch: u64) -> Self {
+        self.epoch = epoch;
         self
     }
 

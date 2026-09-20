@@ -152,7 +152,7 @@ impl<'a> IntoIterator for &'a mut ImageDataLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::ImagePipeline;
+    use crate::pipeline::{ImagePipeline, TransformSequence};
     use crate::sample::image::EncodedImageSample;
     use arrow_buffer::Buffer;
     use rivet_core::DType;
@@ -329,6 +329,27 @@ mod tests {
                 .random_grayscale(0.5, 3)
                 .random_erasing(0.5)
                 .shuffle(17)
+                .batch(4, false)
+        };
+        let mut inline = configure(0).compile().unwrap();
+        let mut pooled = configure(4).prefetch_batches(2).compile().unwrap();
+        let inline = drain(&mut inline);
+        let pooled = drain(&mut pooled);
+        assert_batches_equal(&inline, &pooled);
+    }
+
+    #[test]
+    fn phase4_control_ops_match_inline_and_workers() {
+        let configure = |workers| {
+            pipeline(19, workers)
+                .epoch(4)
+                .random_apply(0.5, TransformSequence::new().brightness(10))
+                .random_choice(vec![
+                    TransformSequence::new().invert(),
+                    TransformSequence::new().brightness(3),
+                ])
+                .random_order(TransformSequence::new().contrast(0.8).invert())
+                .shuffle(23)
                 .batch(4, false)
         };
         let mut inline = configure(0).compile().unwrap();

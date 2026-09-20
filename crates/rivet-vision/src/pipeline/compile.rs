@@ -41,6 +41,7 @@ impl ImagePipeline {
             batch_ops: compiled_ops.batch_ops,
             batch,
             random_seed,
+            epoch: self.epoch,
             input_state,
             pre_batch_state: compiled_ops.pre_batch_state,
             output_state: compiled_ops.output_state,

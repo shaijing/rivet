@@ -39,6 +39,10 @@ pub struct ExecutionPlan {
     /// the shuffle seed, so one `(seed, epoch)` reproduces both the sample
     /// order and every random augmentation.
     pub random_seed: u64,
+    /// Epoch mixed into the per-sample augmentation stream. It does not alter
+    /// the sampler order; callers can use it to request a fresh augmentation
+    /// stream for the same dataset window.
+    pub epoch: u64,
     /// Image state at the source boundary, before any operation executes.
     pub input_state: PipelineImageState,
     /// Image state after sample operations and before stacking into a batch.
@@ -60,13 +64,10 @@ impl ExecutionPlan {
     ) -> RivetResult<DecodedSample> {
         let mut ctx = SampleContext::new(sample_index);
         ctx.global_seed = self.random_seed;
+        ctx.epoch = self.epoch;
         let mut state = self.input_state;
         for op in &self.sample_ops {
-            let input_layout = match state {
-                PipelineImageState::Decoded { axis_order, .. } => axis_order,
-                PipelineImageState::Encoded => ImageAxisOrder::Hwc,
-            };
-            sample = op.apply_sample(sample, &mut ctx, input_layout)?;
+            sample = op.apply_sample(sample, &mut ctx, state)?;
             state = op.transition(state)?;
         }
 
