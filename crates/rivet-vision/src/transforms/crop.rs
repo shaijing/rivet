@@ -1,6 +1,6 @@
 use crate::errors::{RivetResult, invalid_shape};
 use crate::pipeline::op::SampleContext;
-use crate::sample::image::{ImageLayout, ImageSample};
+use crate::sample::image::{ImageAxisOrder, ImageSample};
 use crate::transforms::{from_rgb_image, into_rgb_image};
 use image::imageops::crop_imm;
 use image::{Rgb, RgbImage};
@@ -23,7 +23,7 @@ impl CropConfig {
         }
     }
 
-    pub fn apply(&self, sample: ImageSample, layout: ImageLayout) -> RivetResult<ImageSample> {
+    pub fn apply(&self, sample: ImageSample, layout: ImageAxisOrder) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
         if sample.image.rank() != 3 {
             return Err(invalid_shape(format!(
@@ -32,8 +32,8 @@ impl CropConfig {
             )));
         }
         let (height, width) = match layout {
-            ImageLayout::Hwc => (sample.image.dims()[0], sample.image.dims()[1]),
-            ImageLayout::Chw => (sample.image.dims()[1], sample.image.dims()[2]),
+            ImageAxisOrder::Hwc => (sample.image.dims()[0], sample.image.dims()[1]),
+            ImageAxisOrder::Chw => (sample.image.dims()[1], sample.image.dims()[2]),
         };
         let x = self.x as usize;
         let y = self.y as usize;
@@ -48,11 +48,11 @@ impl CropConfig {
             )));
         }
         let image = match layout {
-            ImageLayout::Hwc => sample
+            ImageAxisOrder::Hwc => sample
                 .image
                 .narrow(0, y, crop_height)?
                 .narrow(1, x, crop_width)?,
-            ImageLayout::Chw => sample
+            ImageAxisOrder::Chw => sample
                 .image
                 .narrow(1, y, crop_height)?
                 .narrow(2, x, crop_width)?,
@@ -75,11 +75,11 @@ impl CenterCropConfig {
         Self { width, height }
     }
 
-    pub fn apply(&self, sample: ImageSample, layout: ImageLayout) -> RivetResult<ImageSample> {
+    pub fn apply(&self, sample: ImageSample, layout: ImageAxisOrder) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
         let (image_height, image_width) = match layout {
-            ImageLayout::Hwc => (sample.image.dims()[0], sample.image.dims()[1]),
-            ImageLayout::Chw => (sample.image.dims()[1], sample.image.dims()[2]),
+            ImageAxisOrder::Hwc => (sample.image.dims()[0], sample.image.dims()[1]),
+            ImageAxisOrder::Chw => (sample.image.dims()[1], sample.image.dims()[2]),
         };
         if self.width as usize > image_width || self.height as usize > image_height {
             return Err(invalid_shape(format!(
@@ -118,10 +118,10 @@ impl RandomCropConfig {
         &self,
         sample: ImageSample,
         ctx: &mut SampleContext,
-        layout: ImageLayout,
+        layout: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
-        if layout != ImageLayout::Hwc {
+        if layout != ImageAxisOrder::Hwc {
             return Err(crate::errors::invalid_argument(
                 "random_crop currently requires uint8 HWC input",
             ));
@@ -178,7 +178,7 @@ impl RandomCropConfig {
 mod tests {
     use super::{RandomCropConfig, SampleContext};
     use crate::sample::image::ImageSample::Decoded;
-    use crate::sample::image::{DecodedSample, ImageLayout};
+    use crate::sample::image::{DecodedSample, ImageAxisOrder};
     use rivet_core::{Device, Tensor};
 
     /// 4x4 RGB image where every pixel is unique, so any crop offset
@@ -195,7 +195,7 @@ mod tests {
         let mut ctx = SampleContext::new(index);
         ctx.global_seed = seed;
         let out = RandomCropConfig::new(4, 4, 2)
-            .apply(Decoded(unique_image()), &mut ctx, ImageLayout::Hwc)
+            .apply(Decoded(unique_image()), &mut ctx, ImageAxisOrder::Hwc)
             .unwrap()
             .into_decoded()
             .unwrap();
@@ -228,7 +228,7 @@ mod tests {
         let mut ctx = SampleContext::new(0);
         ctx.global_seed = 99;
         let sample = RandomCropConfig::new(4, 4, 2)
-            .apply(Decoded(unique_image()), &mut ctx, ImageLayout::Hwc)
+            .apply(Decoded(unique_image()), &mut ctx, ImageAxisOrder::Hwc)
             .unwrap();
         let out = sample.into_decoded().unwrap();
         assert_eq!(out.image.dims(), [4, 4, 3]);
@@ -242,7 +242,7 @@ mod tests {
         let result = RandomCropConfig::new(9, 4, 2).apply(
             Decoded(unique_image()),
             &mut ctx,
-            ImageLayout::Hwc,
+            ImageAxisOrder::Hwc,
         );
         assert!(result.is_err(), "oversized random crop must fail");
     }

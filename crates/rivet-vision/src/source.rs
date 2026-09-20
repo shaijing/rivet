@@ -5,7 +5,7 @@ use crate::cache::{
 };
 use crate::errors::{RivetResult, VisionResult, invalid_argument};
 use crate::pipeline::op::PipelineImageState;
-use crate::sample::image::ImageLayout;
+use crate::sample::image::ImageAxisOrder;
 use crate::sample::image::{DecodedSample, EncodedImageSample, ImageBatch, ImageSample};
 use rivet_core::DType;
 use rivet_data::dataset::{Dataset, Source};
@@ -58,7 +58,7 @@ impl ImageSource {
             Self::Encoded(_) => PipelineImageState::Encoded,
             Self::Decoded(_) | Self::DenseDecoded(..) => PipelineImageState::Decoded {
                 dtype: DType::U8,
-                layout: ImageLayout::Hwc,
+                axis_order: ImageAxisOrder::Hwc,
             },
         }
     }
@@ -237,7 +237,7 @@ mod tests {
             cached.state(),
             PipelineImageState::Decoded {
                 dtype: DType::U8,
-                layout: crate::sample::image::ImageLayout::Hwc,
+                axis_order: crate::sample::image::ImageAxisOrder::Hwc,
             }
         );
         let samples = cached.get_many(&[0, 0]).unwrap();

@@ -67,8 +67,7 @@ Rust namespace migration:
 - Use `rivet_vision::datasets`, `rivet_vision::transforms`, and
   `rivet_vision::pipeline` for the image implementation APIs.
 - `rivet_vision::api` is the supported cross-module facade for integrations
-  such as PyO3. The singular `rivet_vision::dataset` and `rivet_vision::image`
-  modules remain deprecated compatibility shims.
+  such as PyO3.
 - Arrow storage types are scoped to
   `rivet_data::dataset::arrow::{ArrowRow, MmapArrowTable}`; they are not
   re-exported from the `rivet-data` crate root.

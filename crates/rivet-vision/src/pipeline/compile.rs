@@ -84,11 +84,12 @@ fn compile_image_ops(
                 state,
                 PipelineImageState::Decoded {
                     dtype: rivet_core::DType::U8,
-                    layout: crate::sample::image::ImageLayout::Hwc,
+                    axis_order: crate::sample::image::ImageAxisOrder::Hwc,
                 }
             ) && matches!(
                 ops.peek(),
-                Some(ImageOp::Layout(layout)) if layout.layout == crate::sample::image::ImageLayout::Chw
+                Some(ImageOp::Layout(layout))
+                    if layout.axis_order == crate::sample::image::ImageAxisOrder::Chw
             );
             if can_fuse {
                 let layout = ops.next().expect("peeked fused layout operation");
@@ -107,8 +108,10 @@ fn compile_image_ops(
         if let ImageOp::Layout(layout) = &op {
             if matches!(
                 state,
-                PipelineImageState::Decoded { layout: current, .. }
-                    if current == layout.layout
+                PipelineImageState::Decoded {
+                    axis_order: current,
+                    ..
+                } if current == layout.axis_order
             ) {
                 continue;
             }

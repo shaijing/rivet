@@ -1,14 +1,13 @@
 use super::context::SampleContext;
 use crate::errors::{RivetResult, invalid_argument, invalid_pipeline};
-use crate::sample::image::ImageLayout;
+use crate::sample::image::ImageAxisOrder;
 use crate::sample::image::ImageSample;
 use crate::transforms::color::{BrightnessConfig, ContrastConfig};
-use crate::transforms::crop::{CenterCropConfig, CropConfig, RandomCropConfig};
-use crate::transforms::decode::DecodeImageConfig;
-use crate::transforms::flip::{FlipConfig, RandomHorizontalFlipConfig};
-use crate::transforms::layout::LayoutConfig;
-use crate::transforms::normalize::NormalizeConfig;
-use crate::transforms::resize::{InterpolationMode, ResizeConfig};
+use crate::transforms::geometry::{
+    CenterCropConfig, CropConfig, FlipConfig, InterpolationMode, LayoutConfig, RandomCropConfig,
+    RandomHorizontalFlipConfig, ResizeConfig,
+};
+use crate::transforms::representation::{DecodeImageConfig, NormalizeConfig};
 use rivet_core::DType;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,7 +35,10 @@ pub enum ImageOp {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PipelineImageState {
     Encoded,
-    Decoded { dtype: DType, layout: ImageLayout },
+    Decoded {
+        dtype: DType,
+        axis_order: ImageAxisOrder,
+    },
 }
 
 impl ImageOp {
@@ -79,7 +81,7 @@ impl ImageOp {
             Self::Decode(_) => match input {
                 Encoded => Ok(Decoded {
                     dtype: DType::U8,
-                    layout: ImageLayout::Hwc,
+                    axis_order: ImageAxisOrder::Hwc,
                 }),
                 Decoded { .. } => Err(invalid_pipeline(
                     "Decode requires an encoded image, current state is decoded",
@@ -97,16 +99,16 @@ impl ImageOp {
                 Encoded => Err(invalid_pipeline(
                     "Normalize requires a decoded image, current state is encoded",
                 )),
-                Decoded { layout, .. } => Ok(Decoded {
+                Decoded { axis_order, .. } => Ok(Decoded {
                     dtype: DType::F32,
-                    layout,
+                    axis_order,
                 }),
             },
             Self::NormalizeToChw(_) => {
                 require_u8_hwc(input, "NormalizeToChw")?;
                 Ok(PipelineImageState::Decoded {
                     dtype: DType::F32,
-                    layout: ImageLayout::Chw,
+                    axis_order: ImageAxisOrder::Chw,
                 })
             }
             Self::Layout(op) => match input {
@@ -115,7 +117,7 @@ impl ImageOp {
                 )),
                 Decoded { dtype, .. } => Ok(Decoded {
                     dtype,
-                    layout: op.layout,
+                    axis_order: op.axis_order,
                 }),
             },
         }
@@ -125,7 +127,7 @@ impl ImageOp {
         &self,
         sample: ImageSample,
         ctx: &mut SampleContext,
-        input_layout: ImageLayout,
+        input_layout: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
         match self {
             Self::Decode(op) => op.apply(sample),
@@ -149,7 +151,7 @@ impl ImageOp {
         &self,
         sample: ImageSample,
         ctx: &mut SampleContext,
-        input_layout: ImageLayout,
+        input_layout: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
         if self.execution_kind() != ExecutionKind::Sample {
             return Err(invalid_pipeline(format!(
@@ -163,12 +165,12 @@ impl ImageOp {
     pub fn apply_batch(
         &self,
         batch: rivet_core::Tensor,
-        input_layout: ImageLayout,
+        input_layout: ImageAxisOrder,
     ) -> RivetResult<rivet_core::Tensor> {
         match self {
             Self::Normalize(op) => op.apply_batch(batch, input_layout),
             Self::NormalizeToChw(op) => {
-                if input_layout != ImageLayout::Hwc {
+                if input_layout != ImageAxisOrder::Hwc {
                     return Err(invalid_pipeline("NormalizeToChw requires HWC batch input"));
                 }
                 op.apply_batch_to_chw(batch)
@@ -238,11 +240,11 @@ impl ImageOp {
     }
 
     pub fn hwc_to_chw() -> Self {
-        Self::Layout(LayoutConfig::new(ImageLayout::Chw))
+        Self::Layout(LayoutConfig::new(ImageAxisOrder::Chw))
     }
 
     pub fn chw_to_hwc() -> Self {
-        Self::Layout(LayoutConfig::new(ImageLayout::Hwc))
+        Self::Layout(LayoutConfig::new(ImageAxisOrder::Hwc))
     }
 
     /// Validate the op's own configuration (not its position in the
@@ -307,12 +309,12 @@ fn require_u8_hwc(input: PipelineImageState, op_name: &str) -> RivetResult<Pipel
         ))),
         PipelineImageState::Decoded {
             dtype: DType::U8,
-            layout: ImageLayout::Hwc,
+            axis_order: ImageAxisOrder::Hwc,
         } => Ok(input),
-        PipelineImageState::Decoded { dtype, layout } => Err(invalid_pipeline(format!(
+        PipelineImageState::Decoded { dtype, axis_order } => Err(invalid_pipeline(format!(
             "{op_name} requires uint8 HWC input, current state is {:?} {}",
             dtype,
-            layout.as_str()
+            axis_order.as_str()
         ))),
     }
 }

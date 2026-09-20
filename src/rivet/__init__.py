@@ -609,7 +609,7 @@ def read_image_batch(
 ) -> dict[str, Any]:
     """Read decoded RGB images from Arrow files through the Rust backend.
 
-    The returned image layout is NHWC and dtype is uint8.
+    The returned image axis order is NHWC and dtype is uint8.
     """
     result = _read_image_batch(
         _normalize_arrow_files(arrow_files),

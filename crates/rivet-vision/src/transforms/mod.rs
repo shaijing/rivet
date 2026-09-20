@@ -1,18 +1,29 @@
 pub mod color;
-pub mod crop;
-pub mod decode;
-pub mod flip;
-pub mod layout;
-pub mod normalize;
-pub mod resize;
+pub mod geometry;
+pub mod representation;
+
+mod crop;
+mod decode;
+mod flip;
+mod layout;
+mod normalize;
+mod resize;
+
+/// Padding semantics shared by geometry transforms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaddingMode {
+    Constant,
+    Edge,
+    Reflect,
+    Symmetric,
+}
 
 pub use color::{BrightnessConfig, ContrastConfig};
-pub use crop::{CenterCropConfig, CropConfig, RandomCropConfig};
-pub use decode::DecodeImageConfig;
-pub use flip::{FlipConfig, FlipDirection, RandomHorizontalFlipConfig};
-pub use layout::LayoutConfig;
-pub use normalize::NormalizeConfig;
-pub use resize::{InterpolationMode, ResizeConfig};
+pub use geometry::{
+    CenterCropConfig, CropConfig, FlipConfig, FlipDirection, InterpolationMode, LayoutConfig,
+    RandomCropConfig, RandomHorizontalFlipConfig, ResizeConfig,
+};
+pub use representation::{DecodeImageConfig, NormalizeConfig};
 
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::DecodedSample;

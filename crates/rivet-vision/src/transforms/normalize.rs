@@ -1,5 +1,5 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
-use crate::sample::image::{DecodedSample, ImageLayout, ImageSample};
+use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
 use rivet_core::{CpuStorageRef, DType, Device, Tensor};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -29,7 +29,7 @@ impl NormalizeConfig {
         Ok(())
     }
 
-    pub fn apply(&self, sample: ImageSample, layout: ImageLayout) -> RivetResult<ImageSample> {
+    pub fn apply(&self, sample: ImageSample, layout: ImageAxisOrder) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
         let dims = sample.image.dims();
         if dims.len() != 3 {
@@ -39,8 +39,8 @@ impl NormalizeConfig {
             )));
         }
         let channel_count = match layout {
-            ImageLayout::Hwc => dims[2],
-            ImageLayout::Chw => dims[0],
+            ImageAxisOrder::Hwc => dims[2],
+            ImageAxisOrder::Chw => dims[0],
         };
         if self.mean.len() != 1 && self.mean.len() != channel_count {
             return Err(invalid_argument(format!(
@@ -66,8 +66,8 @@ impl NormalizeConfig {
         };
 
         let stats_shape = match layout {
-            ImageLayout::Hwc => [1, 1, self.mean.len()],
-            ImageLayout::Chw => [self.mean.len(), 1, 1],
+            ImageAxisOrder::Hwc => [1, 1, self.mean.len()],
+            ImageAxisOrder::Chw => [self.mean.len(), 1, 1],
         };
         let mean = Tensor::from_vec(self.mean.clone(), stats_shape, &Device::Cpu)?;
         let std = Tensor::from_vec(self.std.clone(), stats_shape, &Device::Cpu)?;
@@ -80,7 +80,7 @@ impl NormalizeConfig {
     }
 
     /// Apply normalization to a stacked rank-4 image batch.
-    pub fn apply_batch(&self, input: Tensor, layout: ImageLayout) -> RivetResult<Tensor> {
+    pub fn apply_batch(&self, input: Tensor, layout: ImageAxisOrder) -> RivetResult<Tensor> {
         self.validate_batch_input(&input, layout)?;
 
         let values = match input.dtype() {
@@ -97,8 +97,8 @@ impl NormalizeConfig {
         };
 
         let stats_shape = match layout {
-            ImageLayout::Hwc => vec![1, 1, 1, self.mean.len()],
-            ImageLayout::Chw => vec![1, self.mean.len(), 1, 1],
+            ImageAxisOrder::Hwc => vec![1, 1, 1, self.mean.len()],
+            ImageAxisOrder::Chw => vec![1, self.mean.len(), 1, 1],
         };
         let mean = Tensor::from_vec(self.mean.clone(), stats_shape.clone(), &Device::Cpu)?;
         let std = Tensor::from_vec(self.std.clone(), stats_shape, &Device::Cpu)?;
@@ -111,7 +111,7 @@ impl NormalizeConfig {
     /// emits it for that exact adjacent operation pair, so unsupported input
     /// states retain the ordinary normalize/layout path.
     pub fn apply_batch_to_chw(&self, input: Tensor) -> RivetResult<Tensor> {
-        self.validate_batch_input(&input, ImageLayout::Hwc)?;
+        self.validate_batch_input(&input, ImageAxisOrder::Hwc)?;
         if input.dtype() != DType::U8 {
             return Err(invalid_argument(format!(
                 "normalize_to_chw requires uint8 input, got {:?}",
@@ -122,7 +122,7 @@ impl NormalizeConfig {
         normalize_u8_batch_to_nchw_f32(&input, &self.mean, &self.std)
     }
 
-    fn validate_batch_input(&self, input: &Tensor, layout: ImageLayout) -> RivetResult<()> {
+    fn validate_batch_input(&self, input: &Tensor, layout: ImageAxisOrder) -> RivetResult<()> {
         if input.rank() != 4 {
             return Err(invalid_shape(format!(
                 "batch normalize requires a rank-4 image batch, got shape {:?}",
@@ -142,8 +142,8 @@ impl NormalizeConfig {
         }
 
         let channel_count = match layout {
-            ImageLayout::Hwc => input.dims()[3],
-            ImageLayout::Chw => input.dims()[1],
+            ImageAxisOrder::Hwc => input.dims()[3],
+            ImageAxisOrder::Chw => input.dims()[1],
         };
         if self.mean.len() != 1 && self.mean.len() != channel_count {
             return Err(invalid_argument(format!(
@@ -169,7 +169,7 @@ pub fn normalize_u8_batch_to_f32(
     input: &Tensor,
     mean: &[f32],
     std: &[f32],
-    axis_order: ImageLayout,
+    axis_order: ImageAxisOrder,
 ) -> RivetResult<Tensor> {
     if input.dtype() != DType::U8 {
         return Err(invalid_argument(format!(
@@ -196,8 +196,8 @@ pub fn normalize_u8_batch_to_f32(
     }
 
     let channel_count = match axis_order {
-        ImageLayout::Hwc => input.dims()[3],
-        ImageLayout::Chw => input.dims()[1],
+        ImageAxisOrder::Hwc => input.dims()[3],
+        ImageAxisOrder::Chw => input.dims()[1],
     };
     if mean.len() != 1 && mean.len() != channel_count {
         return Err(invalid_argument(format!(
@@ -263,8 +263,8 @@ pub fn normalize_u8_batch_to_f32(
                             .get(physical_index)
                             .ok_or(rivet_core::Error::StorageOutOfBounds)?;
                         let channel = match axis_order {
-                            ImageLayout::Hwc => index3,
-                            ImageLayout::Chw => index1,
+                            ImageAxisOrder::Hwc => index3,
+                            ImageAxisOrder::Chw => index1,
                         };
                         let stats_index = if mean.len() == 1 { 0 } else { channel };
                         output.push((value as f32 / 255.0 - mean[stats_index]) / std[stats_index]);
@@ -384,7 +384,7 @@ pub fn normalize_u8_to_f32(
     input: &Tensor,
     mean: &[f32],
     std: &[f32],
-    axis_order: ImageLayout,
+    axis_order: ImageAxisOrder,
 ) -> RivetResult<Tensor> {
     if input.dtype() != DType::U8 {
         return Err(invalid_argument(format!(
@@ -411,8 +411,8 @@ pub fn normalize_u8_to_f32(
     }
 
     let channel_count = match axis_order {
-        ImageLayout::Hwc => input.dims()[2],
-        ImageLayout::Chw => input.dims()[0],
+        ImageAxisOrder::Hwc => input.dims()[2],
+        ImageAxisOrder::Chw => input.dims()[0],
     };
     if mean.len() != 1 && mean.len() != channel_count {
         return Err(invalid_argument(format!(
@@ -423,8 +423,8 @@ pub fn normalize_u8_to_f32(
     }
 
     let spatial_size = match axis_order {
-        ImageLayout::Hwc => 1,
-        ImageLayout::Chw => input.dims()[1]
+        ImageAxisOrder::Hwc => 1,
+        ImageAxisOrder::Chw => input.dims()[1]
             .checked_mul(input.dims()[2])
             .ok_or_else(|| invalid_shape("normalize image dimensions overflow"))?,
     };
@@ -445,8 +445,8 @@ pub fn normalize_u8_to_f32(
                 .get(physical_index)
                 .ok_or(rivet_core::Error::StorageOutOfBounds)?;
             let channel = match axis_order {
-                ImageLayout::Hwc => logical_index % channel_count,
-                ImageLayout::Chw => logical_index / spatial_size,
+                ImageAxisOrder::Hwc => logical_index % channel_count,
+                ImageAxisOrder::Chw => logical_index / spatial_size,
             };
             let stats_index = if mean.len() == 1 { 0 } else { channel };
             output.push((value as f32 / 255.0 - mean[stats_index]) / std[stats_index]);
@@ -462,7 +462,7 @@ mod tests {
         NormalizeConfig, normalize_u8_batch_to_f32, normalize_u8_batch_to_nchw_f32,
         normalize_u8_to_f32,
     };
-    use crate::sample::image::{DecodedSample, ImageLayout, ImageSample};
+    use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
     use rivet_core::{DType, Device, Tensor};
 
     #[test]
@@ -470,7 +470,7 @@ mod tests {
         let image = Tensor::from_vec(vec![0u8, 255, 128], [1, 1, 3], &Device::Cpu).unwrap();
         let sample = ImageSample::Decoded(DecodedSample { image, label: 0 });
         let out = NormalizeConfig::new(vec![0.5], vec![0.5])
-            .apply(sample, ImageLayout::Hwc)
+            .apply(sample, ImageAxisOrder::Hwc)
             .unwrap()
             .into_decoded()
             .unwrap();
@@ -486,8 +486,13 @@ mod tests {
         let hwc =
             Tensor::from_vec(vec![0u8, 64, 128, 255, 32, 96], [1, 2, 3], &Device::Cpu).unwrap();
         let chw = hwc.permute(&[2, 0, 1]).unwrap();
-        let out = normalize_u8_to_f32(&chw, &[0.0, 0.5, 1.0], &[1.0, 0.5, 0.25], ImageLayout::Chw)
-            .unwrap();
+        let out = normalize_u8_to_f32(
+            &chw,
+            &[0.0, 0.5, 1.0],
+            &[1.0, 0.5, 0.25],
+            ImageAxisOrder::Chw,
+        )
+        .unwrap();
 
         assert_eq!(out.dims(), [3, 1, 2]);
         let values = out.to_vec::<f32>().unwrap();
@@ -507,35 +512,37 @@ mod tests {
         .unwrap();
         let config = NormalizeConfig::new(vec![0.0, 0.5, 1.0], vec![1.0, 0.5, 0.25]);
 
-        let nhwc = config.apply_batch(input.clone(), ImageLayout::Hwc).unwrap();
+        let nhwc = config
+            .apply_batch(input.clone(), ImageAxisOrder::Hwc)
+            .unwrap();
         assert_eq!(nhwc.dims(), [2, 1, 2, 3]);
-        assert_batch_values(&input, &nhwc, ImageLayout::Hwc, &config);
+        assert_batch_values(&input, &nhwc, ImageAxisOrder::Hwc, &config);
 
         let nchw_input = input.permute(&[0, 3, 1, 2]).unwrap();
         assert!(!nchw_input.is_contiguous());
         let nchw = config
-            .apply_batch(nchw_input.clone(), ImageLayout::Chw)
+            .apply_batch(nchw_input.clone(), ImageAxisOrder::Chw)
             .unwrap();
         assert_eq!(nchw.dims(), [2, 3, 1, 2]);
-        assert_batch_values(&nchw_input, &nchw, ImageLayout::Chw, &config);
+        assert_batch_values(&nchw_input, &nchw, ImageAxisOrder::Chw, &config);
     }
 
     fn assert_batch_values(
         input: &Tensor,
         output: &Tensor,
-        layout: ImageLayout,
+        layout: ImageAxisOrder,
         config: &NormalizeConfig,
     ) {
         let source = input.to_vec::<u8>().unwrap();
         let actual = output.to_vec::<f32>().unwrap();
         let spatial_size = match layout {
-            ImageLayout::Hwc => input.dims()[1] * input.dims()[2],
-            ImageLayout::Chw => input.dims()[2] * input.dims()[3],
+            ImageAxisOrder::Hwc => input.dims()[1] * input.dims()[2],
+            ImageAxisOrder::Chw => input.dims()[2] * input.dims()[3],
         };
         for (logical_index, (&value, &actual)) in source.iter().zip(&actual).enumerate() {
             let channel = match layout {
-                ImageLayout::Hwc => logical_index % input.dims()[3],
-                ImageLayout::Chw => (logical_index / spatial_size) % input.dims()[1],
+                ImageAxisOrder::Hwc => logical_index % input.dims()[3],
+                ImageAxisOrder::Chw => (logical_index / spatial_size) % input.dims()[1],
             };
             let expected = (value as f32 / 255.0 - config.mean[channel]) / config.std[channel];
             assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
@@ -545,7 +552,8 @@ mod tests {
     #[test]
     fn batch_fused_normalize_supports_scalar_statistics() {
         let input = Tensor::from_vec(vec![0u8, 255], [1, 1, 2, 1], &Device::Cpu).unwrap();
-        let output = normalize_u8_batch_to_f32(&input, &[0.5], &[0.5], ImageLayout::Hwc).unwrap();
+        let output =
+            normalize_u8_batch_to_f32(&input, &[0.5], &[0.5], ImageAxisOrder::Hwc).unwrap();
 
         assert_eq!(output.dims(), [1, 1, 2, 1]);
         assert_eq!(output.dtype(), DType::F32);
@@ -559,7 +567,7 @@ mod tests {
             &input,
             &[0.0, 0.5, 1.0],
             &[1.0, 0.5, 0.25],
-            ImageLayout::Hwc,
+            ImageAxisOrder::Hwc,
         )
         .unwrap();
 
@@ -571,8 +579,8 @@ mod tests {
     #[test]
     fn batch_fused_normalize_rejects_non_u8_input() {
         let input = Tensor::from_vec(vec![0.0f32; 3], [1, 1, 1, 3], &Device::Cpu).unwrap();
-        let err =
-            normalize_u8_batch_to_f32(&input, &[0.0; 3], &[1.0; 3], ImageLayout::Hwc).unwrap_err();
+        let err = normalize_u8_batch_to_f32(&input, &[0.0; 3], &[1.0; 3], ImageAxisOrder::Hwc)
+            .unwrap_err();
         assert!(
             err.to_string().contains("requires uint8 input"),
             "got: {err}"
@@ -592,7 +600,7 @@ mod tests {
         let config = NormalizeConfig::new(vec![0.0, 0.5, 1.0], vec![1.0, 0.5, 0.25]);
 
         let expected = config
-            .apply_batch(input.clone(), ImageLayout::Hwc)
+            .apply_batch(input.clone(), ImageAxisOrder::Hwc)
             .unwrap()
             .permute(&[0, 3, 1, 2])
             .unwrap();

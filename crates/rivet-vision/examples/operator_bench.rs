@@ -17,12 +17,10 @@ use rivet_data::dataset::Dataset;
 use rivet_vision::cache::{DecodedImageMemoryDataset, DenseImageMemoryDataset};
 use rivet_vision::datasets::ArrowImageDataset;
 use rivet_vision::pipeline::ImagePipeline;
-use rivet_vision::sample::image::{DecodedSample, ImageLayout, ImageSample};
-use rivet_vision::transforms::crop::CropConfig;
-use rivet_vision::transforms::decode::decode_rgb;
-use rivet_vision::transforms::layout::LayoutConfig;
-use rivet_vision::transforms::normalize::{
-    normalize_u8_batch_to_f32, normalize_u8_batch_to_nchw_f32, normalize_u8_to_f32,
+use rivet_vision::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
+use rivet_vision::transforms::geometry::{CropConfig, LayoutConfig};
+use rivet_vision::transforms::representation::{
+    decode_rgb, normalize_u8_batch_to_f32, normalize_u8_batch_to_nchw_f32, normalize_u8_to_f32,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::env;
@@ -258,16 +256,16 @@ fn main() -> BenchResult<()> {
     let crop = CropConfig::new(0, 0, WIDTH as u32, HEIGHT as u32);
     let measurement = measure(iterations, || {
         for sample in &samples {
-            let output = crop.apply(ImageSample::Decoded(sample.clone()), ImageLayout::Hwc)?;
+            let output = crop.apply(ImageSample::Decoded(sample.clone()), ImageAxisOrder::Hwc)?;
             black_box(output);
         }
         Ok(())
     })?;
     print_measurement("crop_view", &measurement, iterations, 0);
 
-    let layout = LayoutConfig::new(ImageLayout::Chw);
+    let layout = LayoutConfig::new(ImageAxisOrder::Chw);
     let measurement = measure(iterations, || {
-        let output = layout.apply_batch(batch_images.clone(), ImageLayout::Hwc)?;
+        let output = layout.apply_batch(batch_images.clone(), ImageAxisOrder::Hwc)?;
         black_box(output);
         Ok(())
     })?;
@@ -303,7 +301,7 @@ fn main() -> BenchResult<()> {
 
     let measurement = measure(iterations, || {
         for sample in &samples {
-            let output = normalize_u8_to_f32(&sample.image, &MEAN, &STD, ImageLayout::Hwc)?;
+            let output = normalize_u8_to_f32(&sample.image, &MEAN, &STD, ImageAxisOrder::Hwc)?;
             black_box(output);
         }
         Ok(())
@@ -311,14 +309,15 @@ fn main() -> BenchResult<()> {
     print_measurement("sample_normalize", &measurement, iterations, 0);
 
     let measurement = measure(iterations, || {
-        let output = normalize_u8_batch_to_f32(&batch_images, &MEAN, &STD, ImageLayout::Hwc)?;
+        let output = normalize_u8_batch_to_f32(&batch_images, &MEAN, &STD, ImageAxisOrder::Hwc)?;
         black_box(output);
         Ok(())
     })?;
     print_measurement("batch_normalize", &measurement, iterations, 0);
 
     let measurement = measure(iterations, || {
-        let normalized = normalize_u8_batch_to_f32(&batch_images, &MEAN, &STD, ImageLayout::Hwc)?;
+        let normalized =
+            normalize_u8_batch_to_f32(&batch_images, &MEAN, &STD, ImageAxisOrder::Hwc)?;
         let output = normalized.permute(&[0, 3, 1, 2])?;
         black_box(output);
         Ok(())

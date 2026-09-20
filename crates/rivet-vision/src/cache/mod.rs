@@ -2,7 +2,7 @@ mod decoded;
 
 use crate::errors::{VisionResult, invalid_argument};
 use crate::sample::image::EncodedImageSample;
-use crate::transforms::decode::decode_rgb;
+use crate::transforms::representation::decode_rgb;
 use rivet_data::dataset::Dataset;
 
 pub use decoded::{DecodedImageMemoryDataset, DenseImageMemoryDataset, VariableImageMemoryDataset};

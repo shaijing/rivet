@@ -2,7 +2,7 @@ use super::context::SampleContext;
 use super::image::{ImageOp, PipelineImageState};
 use super::source::SourceOp;
 use crate::errors::RivetResult;
-use crate::sample::image::{DecodedSample, ImageBatch, ImageLayout, ImageSample};
+use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageBatch, ImageSample};
 use crate::sampler::SamplerPlan;
 
 #[derive(Clone, Copy)]
@@ -63,8 +63,8 @@ impl ExecutionPlan {
         let mut state = self.input_state;
         for op in &self.sample_ops {
             let input_layout = match state {
-                PipelineImageState::Decoded { layout, .. } => layout,
-                PipelineImageState::Encoded => ImageLayout::Hwc,
+                PipelineImageState::Decoded { axis_order, .. } => axis_order,
+                PipelineImageState::Encoded => ImageAxisOrder::Hwc,
             };
             sample = op.apply_sample(sample, &mut ctx, input_layout)?;
             state = op.transition(state)?;
@@ -79,8 +79,8 @@ impl ExecutionPlan {
 
         for op in &self.batch_ops {
             let input_layout = match state {
-                PipelineImageState::Decoded { layout, .. } => layout,
-                PipelineImageState::Encoded => ImageLayout::Hwc,
+                PipelineImageState::Decoded { axis_order, .. } => axis_order,
+                PipelineImageState::Encoded => ImageAxisOrder::Hwc,
             };
             images = op.apply_batch(images, input_layout)?;
             state = op.transition(state)?;

@@ -19,19 +19,21 @@ pub use crate::errors::{
 pub use crate::pipeline::ImagePipeline;
 pub use crate::runtime::{ImageDataLoader, RuntimeConfig};
 pub use crate::sample::image::{
-    DecodedSample, EncodedImageSample, ImageBatch, ImageLayout, ImageSample,
+    DecodedSample, EncodedImageSample, ImageAxisOrder, ImageBatch, ImageSample,
 };
 pub use crate::source::ImageSource;
 pub use crate::transforms::{
     BrightnessConfig, CenterCropConfig, ContrastConfig, CropConfig, DecodeImageConfig, FlipConfig,
-    FlipDirection, InterpolationMode, LayoutConfig, NormalizeConfig, RandomCropConfig,
+    FlipDirection, InterpolationMode, LayoutConfig, NormalizeConfig, PaddingMode, RandomCropConfig,
     RandomHorizontalFlipConfig, ResizeConfig,
 };
 
 /// Decode one encoded image and expose it as the standard one-item batch
 /// returned by the Python binding.
 pub fn decode_image_batch(encoded: &[u8], label: i64) -> VisionResult<ImageBatch> {
-    single_sample_batch(crate::transforms::decode::decode_rgb(encoded, label)?)
+    single_sample_batch(crate::transforms::representation::decode_rgb(
+        encoded, label,
+    )?)
 }
 
 /// Turn one decoded sample into the standard image batch representation.

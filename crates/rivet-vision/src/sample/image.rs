@@ -6,12 +6,12 @@ use crate::errors::{RivetResult, invalid_argument};
 /// Semantic image axis order. The tensor itself remains the source of truth
 /// for shape, dtype, strides, and storage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ImageLayout {
+pub enum ImageAxisOrder {
     Hwc,
     Chw,
 }
 
-impl ImageLayout {
+impl ImageAxisOrder {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Hwc => "HWC",

@@ -6,8 +6,8 @@
 //! ```
 
 use rivet_core::{Device, Tensor};
-use rivet_vision::sample::image::ImageLayout;
-use rivet_vision::transforms::normalize::{normalize_u8_batch_to_f32, normalize_u8_to_f32};
+use rivet_vision::sample::image::ImageAxisOrder;
+use rivet_vision::transforms::representation::{normalize_u8_batch_to_f32, normalize_u8_to_f32};
 use std::env;
 use std::hint::black_box;
 use std::time::Instant;
@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sample_bytes = 0usize;
     for _ in 0..iterations {
         for sample in &samples {
-            let output = normalize_u8_to_f32(sample, &mean, &std, ImageLayout::Hwc)?;
+            let output = normalize_u8_to_f32(sample, &mean, &std, ImageAxisOrder::Hwc)?;
             sample_bytes = sample_bytes.wrapping_add(output.storage_bytes());
             black_box(&output);
         }
@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let mut batch_bytes = 0usize;
     for _ in 0..iterations {
-        let output = normalize_u8_batch_to_f32(&batch, &mean, &std, ImageLayout::Hwc)?;
+        let output = normalize_u8_batch_to_f32(&batch, &mean, &std, ImageAxisOrder::Hwc)?;
         batch_bytes = batch_bytes.wrapping_add(output.storage_bytes());
         black_box(&output);
     }

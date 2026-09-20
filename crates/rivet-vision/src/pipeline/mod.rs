@@ -9,7 +9,7 @@ mod tests {
     use super::ImagePipeline;
     use crate::cache::DenseImageMemoryDataset;
     use crate::pipeline::op::{ExecutionKind, PipelineImageState};
-    use crate::sample::image::{DecodedSample, EncodedImageSample, ImageLayout};
+    use crate::sample::image::{DecodedSample, EncodedImageSample, ImageAxisOrder};
     use crate::source::ImageSource;
     use arrow_buffer::Buffer;
     use rivet_core::{DType, Device, Tensor};
@@ -234,7 +234,7 @@ mod tests {
             loader.plan.output_state,
             PipelineImageState::Decoded {
                 dtype: DType::F32,
-                layout: ImageLayout::Chw,
+                axis_order: ImageAxisOrder::Chw,
             }
         );
     }
@@ -257,14 +257,14 @@ mod tests {
             loader.plan.pre_batch_state,
             PipelineImageState::Decoded {
                 dtype: DType::U8,
-                layout: ImageLayout::Hwc,
+                axis_order: ImageAxisOrder::Hwc,
             }
         );
         assert_eq!(
             loader.plan.output_state,
             PipelineImageState::Decoded {
                 dtype: DType::F32,
-                layout: ImageLayout::Chw,
+                axis_order: ImageAxisOrder::Chw,
             }
         );
         assert_eq!(

@@ -7,8 +7,8 @@
 //! ```
 
 use rivet_core::{Device, Tensor};
-use rivet_vision::sample::image::ImageLayout;
-use rivet_vision::transforms::normalize::{
+use rivet_vision::sample::image::ImageAxisOrder;
+use rivet_vision::transforms::representation::{
     normalize_u8_batch_to_f32, normalize_u8_batch_to_nchw_f32,
 };
 use std::env;
@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let mut unfused_bytes = 0usize;
     for _ in 0..iterations {
-        let normalized = normalize_u8_batch_to_f32(&batch, &mean, &std, ImageLayout::Hwc)?;
+        let normalized = normalize_u8_batch_to_f32(&batch, &mean, &std, ImageAxisOrder::Hwc)?;
         let output = normalized.permute(&[0, 3, 1, 2])?;
         unfused_bytes = unfused_bytes.wrapping_add(output.storage_bytes());
         black_box(&output);
