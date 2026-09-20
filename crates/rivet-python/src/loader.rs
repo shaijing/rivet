@@ -1,4 +1,5 @@
 use crate::dataset::PyArrowDataset;
+use crate::dlpack::PyDLPackTensor;
 use crate::error::to_py_err;
 use numpy::{
     PyArrayDyn, PyArrayMethods,
@@ -54,6 +55,13 @@ impl PyDataLoader {
 
         batch.map(|batch| image_batch_to_py(py, batch)).transpose()
     }
+
+    fn next_dlpack(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
+        let batch = py.detach(|| self.inner.next_batch()).map_err(to_py_err)?;
+        batch
+            .map(|batch| image_batch_to_dlpack(py, batch))
+            .transpose()
+    }
 }
 
 /// Read Hugging Face Arrow IPC files and return a decoded RGB image batch.
@@ -106,6 +114,14 @@ pub(super) fn image_batch_to_py(py: Python<'_>, batch: ImageBatch) -> PyResult<P
     out.set_item("dtype", dtype_name(dtype))?;
     out.set_item("layout", batch_layout(&shape))?;
 
+    Ok(out.into())
+}
+
+fn image_batch_to_dlpack(py: Python<'_>, batch: ImageBatch) -> PyResult<Py<PyDict>> {
+    let ImageBatch { images, labels } = batch;
+    let out = PyDict::new(py);
+    out.set_item("images", Py::new(py, PyDLPackTensor::new(images))?)?;
+    out.set_item("labels", Py::new(py, PyDLPackTensor::new(labels))?)?;
     Ok(out.into())
 }
 

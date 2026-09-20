@@ -1,12 +1,14 @@
 use pyo3::prelude::*;
 
 mod dataset;
+mod dlpack;
 mod error;
 mod loader;
 mod pipeline;
 
 #[pymodule]
 fn _rivet(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<dlpack::PyDLPackTensor>()?;
     m.add_class::<dataset::PyArrowDataset>()?;
     #[cfg(feature = "lance")]
     m.add_class::<dataset::PyLanceDataset>()?;
