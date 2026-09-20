@@ -1,0 +1,268 @@
+use super::utils::ReduceElement;
+use crate::{Error, Layout, Result};
+
+/// Floating-point element contract for model-oriented math kernels.
+///
+/// The backend computes transcendental operations in `f64` and casts back to
+/// the storage dtype. This gives all supported floating dtypes one explicit
+/// implementation while preserving the tensor's dtype at the API boundary.
+pub trait FloatElement: Copy + Send + Sync + 'static {
+    fn to_f64(self) -> f64;
+    fn from_f64(value: f64) -> Self;
+}
+
+macro_rules! impl_float_element {
+    ($ty:ty) => {
+        impl FloatElement for $ty {
+            fn to_f64(self) -> f64 {
+                self as f64
+            }
+
+            fn from_f64(value: f64) -> Self {
+                value as $ty
+            }
+        }
+    };
+}
+
+impl_float_element!(f32);
+impl_float_element!(f64);
+
+impl FloatElement for half::f16 {
+    fn to_f64(self) -> f64 {
+        self.to_f64()
+    }
+
+    fn from_f64(value: f64) -> Self {
+        Self::from_f64(value)
+    }
+}
+
+impl FloatElement for half::bf16 {
+    fn to_f64(self) -> f64 {
+        self.to_f64()
+    }
+
+    fn from_f64(value: f64) -> Self {
+        Self::from_f64(value)
+    }
+}
+
+fn checked_value<T: Copy>(values: &[T], index: usize) -> Result<T> {
+    values.get(index).copied().ok_or(Error::StorageOutOfBounds)
+}
+
+fn logical_index(layout: &Layout, coordinates: &[usize]) -> Result<usize> {
+    let mut index = layout.start_offset();
+    for (&coordinate, &stride) in coordinates.iter().zip(layout.stride()) {
+        index = index
+            .checked_add(
+                coordinate
+                    .checked_mul(stride)
+                    .ok_or(Error::StorageOutOfBounds)?,
+            )
+            .ok_or(Error::StorageOutOfBounds)?;
+    }
+    Ok(index)
+}
+
+fn output_coordinates(dims: &[usize], mut index: usize) -> Vec<usize> {
+    let mut coordinates = vec![0; dims.len()];
+    for axis in (0..dims.len()).rev() {
+        coordinates[axis] = index % dims[axis];
+        index /= dims[axis];
+    }
+    coordinates
+}
+
+fn output_dims_for_dim(dims: &[usize], dim: usize) -> Vec<usize> {
+    dims.iter()
+        .enumerate()
+        .filter_map(|(axis, &size)| (axis != dim).then_some(size))
+        .collect()
+}
+
+fn input_base_index(layout: &Layout, dim: usize, output_coordinates: &[usize]) -> Result<usize> {
+    let mut input_coordinates = vec![0; layout.dims().len()];
+    let mut output_axis = 0;
+    for (axis, coordinate) in input_coordinates.iter_mut().enumerate() {
+        if axis != dim {
+            *coordinate = output_coordinates[output_axis];
+            output_axis += 1;
+        }
+    }
+    logical_index(layout, &input_coordinates)
+}
+
+pub fn affine_map<T: Copy>(values: &[T], layout: &Layout, map: impl Fn(T) -> T) -> Result<Vec<T>> {
+    layout
+        .strided_index()
+        .map(|index| Ok(map(checked_value(values, index)?)))
+        .collect()
+}
+
+pub fn elu_map<T: FloatElement>(values: &[T], layout: &Layout, alpha: f64) -> Result<Vec<T>> {
+    layout
+        .strided_index()
+        .map(|index| {
+            let value = checked_value(values, index)?.to_f64();
+            let output = if value > 0.0 {
+                value
+            } else {
+                alpha * value.exp_m1()
+            };
+            Ok(T::from_f64(output))
+        })
+        .collect()
+}
+
+pub fn powf_map<T: FloatElement>(values: &[T], layout: &Layout, exponent: f64) -> Result<Vec<T>> {
+    layout
+        .strided_index()
+        .map(|index| {
+            Ok(T::from_f64(
+                checked_value(values, index)?.to_f64().powf(exponent),
+            ))
+        })
+        .collect()
+}
+
+pub fn pow_map<T: FloatElement>(
+    lhs: &[T],
+    lhs_layout: &Layout,
+    rhs: &[T],
+    rhs_layout: &Layout,
+) -> Result<Vec<T>> {
+    if lhs_layout.shape() != rhs_layout.shape() {
+        return Err(Error::ShapeMismatchBinary {
+            lhs: lhs_layout.dims().to_vec(),
+            rhs: rhs_layout.dims().to_vec(),
+        });
+    }
+    lhs_layout
+        .strided_index()
+        .zip(rhs_layout.strided_index())
+        .map(|(lhs_index, rhs_index)| {
+            let base = checked_value(lhs, lhs_index)?.to_f64();
+            let exponent = checked_value(rhs, rhs_index)?.to_f64();
+            Ok(T::from_f64(base.powf(exponent)))
+        })
+        .collect()
+}
+
+pub fn dot_map<T: FloatElement>(
+    lhs: &[T],
+    lhs_layout: &Layout,
+    rhs: &[T],
+    rhs_layout: &Layout,
+) -> Result<Vec<T>> {
+    if lhs_layout.dims().len() != 1
+        || rhs_layout.dims().len() != 1
+        || lhs_layout.shape() != rhs_layout.shape()
+    {
+        return Err(Error::ShapeMismatchBinary {
+            lhs: lhs_layout.dims().to_vec(),
+            rhs: rhs_layout.dims().to_vec(),
+        });
+    }
+    let mut sum = 0.0;
+    for (lhs_index, rhs_index) in lhs_layout.strided_index().zip(rhs_layout.strided_index()) {
+        sum += checked_value(lhs, lhs_index)?.to_f64() * checked_value(rhs, rhs_index)?.to_f64();
+    }
+    Ok(vec![T::from_f64(sum)])
+}
+
+pub fn norm_map<T: FloatElement>(values: &[T], layout: &Layout) -> Result<Vec<T>> {
+    let mut sum = 0.0;
+    for index in layout.strided_index() {
+        let value = checked_value(values, index)?.to_f64();
+        sum += value * value;
+    }
+    Ok(vec![T::from_f64(sum.sqrt())])
+}
+
+pub fn cumsum_map<T: ReduceElement>(values: &[T], layout: &Layout, dim: usize) -> Result<Vec<T>> {
+    if dim >= layout.dims().len() {
+        return Err(Error::InvalidDim {
+            dim,
+            rank: layout.dims().len(),
+        });
+    }
+
+    let mut output = Vec::with_capacity(layout.elem_count());
+    for output_index in 0..layout.elem_count() {
+        let coordinates = output_coordinates(layout.dims(), output_index);
+        let mut sum = T::zero();
+        for end in 0..=coordinates[dim] {
+            let mut input_coordinates = coordinates.clone();
+            input_coordinates[dim] = end;
+            let index = logical_index(layout, &input_coordinates)?;
+            sum = sum.add(checked_value(values, index)?);
+        }
+        output.push(sum);
+    }
+    Ok(output)
+}
+
+pub fn log_sum_exp_map<T: FloatElement>(
+    values: &[T],
+    layout: &Layout,
+    dim: usize,
+) -> Result<Vec<T>> {
+    if dim >= layout.dims().len() {
+        return Err(Error::InvalidDim {
+            dim,
+            rank: layout.dims().len(),
+        });
+    }
+    let reduce_len = layout.dims()[dim];
+    if reduce_len == 0 {
+        return Err(Error::EmptyReduction {
+            op: "log_sum_exp",
+            dim,
+        });
+    }
+
+    let output_dims = output_dims_for_dim(layout.dims(), dim);
+    let output_len = output_dims.iter().product::<usize>();
+    let mut output = Vec::with_capacity(output_len);
+    for output_index in 0..output_len {
+        let coordinates = output_coordinates(&output_dims, output_index);
+        let base = input_base_index(layout, dim, &coordinates)?;
+        let mut maximum = f64::NEG_INFINITY;
+        let mut has_nan = false;
+        for offset in 0..reduce_len {
+            let index = base
+                .checked_add(
+                    offset
+                        .checked_mul(layout.stride()[dim])
+                        .ok_or(Error::StorageOutOfBounds)?,
+                )
+                .ok_or(Error::StorageOutOfBounds)?;
+            let value = checked_value(values, index)?.to_f64();
+            has_nan |= value.is_nan();
+            maximum = maximum.max(value);
+        }
+
+        let result = if has_nan {
+            f64::NAN
+        } else if maximum == f64::NEG_INFINITY {
+            f64::NEG_INFINITY
+        } else {
+            let mut sum = 0.0;
+            for offset in 0..reduce_len {
+                let index = base
+                    .checked_add(
+                        offset
+                            .checked_mul(layout.stride()[dim])
+                            .ok_or(Error::StorageOutOfBounds)?,
+                    )
+                    .ok_or(Error::StorageOutOfBounds)?;
+                sum += (checked_value(values, index)?.to_f64() - maximum).exp();
+            }
+            maximum + sum.ln()
+        };
+        output.push(T::from_f64(result));
+    }
+    Ok(output)
+}

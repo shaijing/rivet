@@ -141,6 +141,106 @@ impl Tensor {
         self.unary(UnaryOp::Abs)
     }
 
+    /// Applies `value * mul + add` element-wise in the tensor's dtype.
+    pub fn affine(&self, mul: f64, add: f64) -> Result<Self> {
+        if self.elem_count() == 0 {
+            return Ok(self.clone());
+        }
+        let storage = self.storage();
+        let storage = Storage::affine(&storage, self.layout(), mul, add)?;
+        Self::from_storage(storage, self.shape().clone(), self.device())
+    }
+
+    /// Applies the Exponential Linear Unit function element-wise.
+    pub fn elu(&self, alpha: f64) -> Result<Self> {
+        if self.elem_count() == 0 {
+            return Ok(self.clone());
+        }
+        let storage = self.storage();
+        let storage = Storage::elu(&storage, self.layout(), alpha)?;
+        Self::from_storage(storage, self.shape().clone(), self.device())
+    }
+
+    /// Raises every element to a scalar floating-point exponent.
+    pub fn powf(&self, exponent: f64) -> Result<Self> {
+        if self.elem_count() == 0 {
+            return Ok(self.clone());
+        }
+        let storage = self.storage();
+        let storage = Storage::powf(&storage, self.layout(), exponent)?;
+        Self::from_storage(storage, self.shape().clone(), self.device())
+    }
+
+    /// Raises each element of `self` to the matching element of `rhs`.
+    pub fn pow(&self, rhs: &Self) -> Result<Self> {
+        if self.shape() != rhs.shape() {
+            return Err(Error::ShapeMismatchBinary {
+                lhs: self.dims().to_vec(),
+                rhs: rhs.dims().to_vec(),
+            });
+        }
+        if self.dtype() != rhs.dtype() {
+            return Err(Error::DTypeMismatch {
+                lhs: self.dtype(),
+                rhs: rhs.dtype(),
+            });
+        }
+        if !self.device().same_device(rhs.device()) {
+            return Err(Error::DeviceMismatch);
+        }
+        let storage = Self::with_two_storage(self, rhs, |lhs_storage, rhs_storage| {
+            Storage::pow(lhs_storage, self.layout(), rhs_storage, rhs.layout())
+        })?;
+        Self::from_storage(storage, self.shape().clone(), self.device())
+    }
+
+    /// Broadcasting version of [`Tensor::pow`].
+    pub fn broadcast_pow(&self, rhs: &Self) -> Result<Self> {
+        if self.dtype() != rhs.dtype() {
+            return Err(Error::DTypeMismatch {
+                lhs: self.dtype(),
+                rhs: rhs.dtype(),
+            });
+        }
+        if !self.device().same_device(rhs.device()) {
+            return Err(Error::DeviceMismatch);
+        }
+        let shape = self.shape().broadcast_shape_binary_op(rhs.shape())?;
+        let lhs = self.broadcast_as(shape.clone())?;
+        let rhs = rhs.broadcast_as(shape.clone())?;
+        lhs.pow(&rhs)
+    }
+
+    /// Computes the dot product of two same-shaped floating-point vectors.
+    pub fn dot(&self, rhs: &Self) -> Result<Self> {
+        if self.rank() != 1 || rhs.rank() != 1 || self.shape() != rhs.shape() {
+            return Err(Error::ShapeMismatchBinary {
+                lhs: self.dims().to_vec(),
+                rhs: rhs.dims().to_vec(),
+            });
+        }
+        if self.dtype() != rhs.dtype() {
+            return Err(Error::DTypeMismatch {
+                lhs: self.dtype(),
+                rhs: rhs.dtype(),
+            });
+        }
+        if !self.device().same_device(rhs.device()) {
+            return Err(Error::DeviceMismatch);
+        }
+        let storage = Self::with_two_storage(self, rhs, |lhs_storage, rhs_storage| {
+            Storage::dot(lhs_storage, self.layout(), rhs_storage, rhs.layout())
+        })?;
+        Self::from_storage(storage, Shape::from(()), self.device())
+    }
+
+    /// Computes the Frobenius/L2 norm of all elements.
+    pub fn norm(&self) -> Result<Self> {
+        let storage = self.storage();
+        let storage = Storage::norm(&storage, self.layout())?;
+        Self::from_storage(storage, Shape::from(()), self.device())
+    }
+
     /// Computes a rank-2 F32 matrix product using the CPU GEMM backend.
     ///
     /// Phase 1 deliberately accepts only contiguous rank-2 inputs. The
@@ -167,6 +267,78 @@ impl Tensor {
             Storage::matmul(lhs_storage, self.layout(), rhs_storage, rhs.layout())
         })?;
         Self::from_storage(storage, output_shape, self.device())
+    }
+
+    /// Performs strict matrix-vector multiplication: `[m, n] * [n] = [m]`.
+    pub fn mv(&self, rhs: &Self) -> Result<Self> {
+        if self.rank() != 2 || rhs.rank() != 1 || self.dims()[1] != rhs.dims()[0] {
+            return Err(Error::MatmulShapeMismatch {
+                lhs: self.dims().to_vec(),
+                rhs: rhs.dims().to_vec(),
+            });
+        }
+        self.matmul(&rhs.unsqueeze(1)?)?.squeeze(1)
+    }
+
+    /// Performs matrix multiplication after broadcasting leading batch
+    /// dimensions. Matrix dimensions remain strict: `[... , m, k]` times
+    /// `[... , k, n]` produces `[broadcast(...), m, n]`.
+    pub fn broadcast_matmul(&self, rhs: &Self) -> Result<Self> {
+        if self.dtype() != rhs.dtype() {
+            return Err(Error::DTypeMismatch {
+                lhs: self.dtype(),
+                rhs: rhs.dtype(),
+            });
+        }
+        if !self.device().same_device(rhs.device()) {
+            return Err(Error::DeviceMismatch);
+        }
+        if self.rank() < 2 || rhs.rank() < 2 {
+            return Err(Error::MatmulShapeMismatch {
+                lhs: self.dims().to_vec(),
+                rhs: rhs.dims().to_vec(),
+            });
+        }
+
+        let lhs_dims = self.dims();
+        let rhs_dims = rhs.dims();
+        let lhs_matrix = [lhs_dims[lhs_dims.len() - 2], lhs_dims[lhs_dims.len() - 1]];
+        let rhs_matrix = [rhs_dims[rhs_dims.len() - 2], rhs_dims[rhs_dims.len() - 1]];
+        if lhs_matrix[1] != rhs_matrix[0] {
+            return Err(Error::MatmulShapeMismatch {
+                lhs: self.dims().to_vec(),
+                rhs: rhs.dims().to_vec(),
+            });
+        }
+
+        let lhs_batch = Shape::from(lhs_dims[..lhs_dims.len() - 2].to_vec());
+        let rhs_batch = Shape::from(rhs_dims[..rhs_dims.len() - 2].to_vec());
+        let batch = lhs_batch.broadcast_shape_binary_op(&rhs_batch)?;
+        let mut lhs_broadcast_dims = batch.dims().to_vec();
+        lhs_broadcast_dims.extend_from_slice(&lhs_matrix);
+        let mut rhs_broadcast_dims = batch.dims().to_vec();
+        rhs_broadcast_dims.extend_from_slice(&rhs_matrix);
+
+        let lhs = self
+            .broadcast_as(lhs_broadcast_dims.clone())?
+            .contiguous()?;
+        let rhs = rhs.broadcast_as(rhs_broadcast_dims.clone())?.contiguous()?;
+        let batch_count = batch.elem_count();
+        let mut output_dims = batch.dims().to_vec();
+        output_dims.extend_from_slice(&[lhs_matrix[0], rhs_matrix[1]]);
+        if batch_count == 0 {
+            return Self::zeros(output_dims, self.dtype(), self.device());
+        }
+
+        let lhs = lhs.reshape((batch_count, lhs_matrix[0], lhs_matrix[1]))?;
+        let rhs = rhs.reshape((batch_count, rhs_matrix[0], rhs_matrix[1]))?;
+        let mut products = Vec::with_capacity(batch_count);
+        for batch_index in 0..batch_count {
+            products.push(lhs.get(batch_index)?.matmul(&rhs.get(batch_index)?)?);
+        }
+        let product_refs = products.iter().collect::<Vec<_>>();
+        let result = Self::stack(&product_refs, 0)?;
+        result.reshape(output_dims)
     }
 
     fn reduce_dim(&self, dim: usize, keepdim: bool, op: ReduceOp) -> Result<Self> {
@@ -222,6 +394,45 @@ impl Tensor {
         let storage = self.storage();
         let storage = Storage::mean_all(&storage, self.layout())?;
         Self::from_storage(storage, Shape::from(()), self.device())
+    }
+
+    /// Computes cumulative sums along one dimension.
+    pub fn cumsum(&self, dim: usize) -> Result<Self> {
+        if self.rank() == 0 {
+            return Ok(self.clone());
+        }
+        self.dim(dim)?;
+        let storage = self.storage();
+        let storage = Storage::cumsum(&storage, self.layout(), dim)?;
+        Self::from_storage(storage, self.shape().clone(), self.device())
+    }
+
+    fn log_sum_exp_dim(&self, dim: usize) -> Result<Self> {
+        self.dim(dim)?;
+        let storage = self.storage();
+        let storage = Storage::log_sum_exp(&storage, self.layout(), dim)?;
+        let mut dims = self.dims().to_vec();
+        dims.remove(dim);
+        Self::from_storage(storage, Shape::from(dims), self.device())
+    }
+
+    /// Computes a numerically stable log-sum-exp over the listed dimensions.
+    /// Dimensions are reduced in descending order and the result removes them.
+    pub fn log_sum_exp(&self, dims: &[usize]) -> Result<Self> {
+        if dims.is_empty() {
+            return Ok(self.clone());
+        }
+        let mut dims = dims.to_vec();
+        dims.sort_unstable();
+        dims.dedup();
+        for &dim in &dims {
+            self.dim(dim)?;
+        }
+        let mut result = self.clone();
+        for dim in dims.into_iter().rev() {
+            result = result.log_sum_exp_dim(dim)?;
+        }
+        Ok(result)
     }
 
     pub fn min_keepdim(&self, dim: usize) -> Result<Self> {

@@ -1,4 +1,5 @@
 pub(crate) mod index;
+pub(crate) mod math;
 pub(crate) mod matmul;
 pub mod utils;
 
@@ -202,6 +203,220 @@ impl CpuStorage {
                 Ok(Self::F32(matmul::f32(lhs, lhs_layout, rhs, rhs_layout)?))
             }
             _ => Err(Error::UnsupportedMatmulDType {
+                dtype: self.dtype(),
+            }),
+        }
+    }
+
+    pub(crate) fn affine(&self, layout: &Layout, mul: f64, add: f64) -> Result<Self> {
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty, $convert:expr) => {
+                if let Self::$variant(values) = self {
+                    Ok(Self::$variant(math::affine_map(values, layout, $convert)?))
+                } else {
+                    unreachable!()
+                }
+            };
+        }
+
+        match self {
+            Self::U8(_) => dispatch!(U8, u8, |value: u8| {
+                value.wrapping_mul(mul as u8).wrapping_add(add as u8)
+            }),
+            Self::U32(_) => dispatch!(U32, u32, |value: u32| {
+                value.wrapping_mul(mul as u32).wrapping_add(add as u32)
+            }),
+            Self::I16(_) => dispatch!(I16, i16, |value: i16| {
+                value.wrapping_mul(mul as i16).wrapping_add(add as i16)
+            }),
+            Self::I32(_) => dispatch!(I32, i32, |value: i32| {
+                value.wrapping_mul(mul as i32).wrapping_add(add as i32)
+            }),
+            Self::I64(_) => dispatch!(I64, i64, |value: i64| {
+                value.wrapping_mul(mul as i64).wrapping_add(add as i64)
+            }),
+            Self::BF16(_) => dispatch!(BF16, bf16, |value: bf16| {
+                value * bf16::from_f64(mul) + bf16::from_f64(add)
+            }),
+            Self::F16(_) => dispatch!(F16, f16, |value: f16| {
+                value * f16::from_f64(mul) + f16::from_f64(add)
+            }),
+            Self::F32(_) => dispatch!(F32, f32, |value: f32| { value * mul as f32 + add as f32 }),
+            Self::F64(_) => dispatch!(F64, f64, |value: f64| value * mul + add),
+        }
+    }
+
+    pub(crate) fn elu(&self, layout: &Layout, alpha: f64) -> Result<Self> {
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                if let Self::$variant(values) = self {
+                    Ok(Self::$variant(math::elu_map(values, layout, alpha)?))
+                } else {
+                    unreachable!()
+                }
+            };
+        }
+
+        match self {
+            Self::BF16(_) => dispatch!(BF16, bf16),
+            Self::F16(_) => dispatch!(F16, f16),
+            Self::F32(_) => dispatch!(F32, f32),
+            Self::F64(_) => dispatch!(F64, f64),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "elu",
+                dtype: self.dtype(),
+            }),
+        }
+    }
+
+    pub(crate) fn powf(&self, layout: &Layout, exponent: f64) -> Result<Self> {
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                if let Self::$variant(values) = self {
+                    Ok(Self::$variant(math::powf_map(values, layout, exponent)?))
+                } else {
+                    unreachable!()
+                }
+            };
+        }
+
+        match self {
+            Self::BF16(_) => dispatch!(BF16, bf16),
+            Self::F16(_) => dispatch!(F16, f16),
+            Self::F32(_) => dispatch!(F32, f32),
+            Self::F64(_) => dispatch!(F64, f64),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "powf",
+                dtype: self.dtype(),
+            }),
+        }
+    }
+
+    pub(crate) fn pow(&self, lhs_layout: &Layout, rhs: &Self, rhs_layout: &Layout) -> Result<Self> {
+        if self.dtype() != rhs.dtype() {
+            return Err(Error::DTypeMismatch {
+                lhs: self.dtype(),
+                rhs: rhs.dtype(),
+            });
+        }
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                match (self, rhs) {
+                    (Self::$variant(lhs), Self::$variant(rhs)) => Ok(Self::$variant(
+                        math::pow_map(lhs, lhs_layout, rhs, rhs_layout)?,
+                    )),
+                    _ => unreachable!(),
+                }
+            };
+        }
+
+        match self {
+            Self::BF16(_) => dispatch!(BF16, bf16),
+            Self::F16(_) => dispatch!(F16, f16),
+            Self::F32(_) => dispatch!(F32, f32),
+            Self::F64(_) => dispatch!(F64, f64),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "pow",
+                dtype: self.dtype(),
+            }),
+        }
+    }
+
+    pub(crate) fn dot(&self, lhs_layout: &Layout, rhs: &Self, rhs_layout: &Layout) -> Result<Self> {
+        if self.dtype() != rhs.dtype() {
+            return Err(Error::DTypeMismatch {
+                lhs: self.dtype(),
+                rhs: rhs.dtype(),
+            });
+        }
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                match (self, rhs) {
+                    (Self::$variant(lhs), Self::$variant(rhs)) => Ok(Self::$variant(
+                        math::dot_map(lhs, lhs_layout, rhs, rhs_layout)?,
+                    )),
+                    _ => unreachable!(),
+                }
+            };
+        }
+
+        match self {
+            Self::BF16(_) => dispatch!(BF16, bf16),
+            Self::F16(_) => dispatch!(F16, f16),
+            Self::F32(_) => dispatch!(F32, f32),
+            Self::F64(_) => dispatch!(F64, f64),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "dot",
+                dtype: self.dtype(),
+            }),
+        }
+    }
+
+    pub(crate) fn norm(&self, layout: &Layout) -> Result<Self> {
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                if let Self::$variant(values) = self {
+                    Ok(Self::$variant(math::norm_map(values, layout)?))
+                } else {
+                    unreachable!()
+                }
+            };
+        }
+
+        match self {
+            Self::BF16(_) => dispatch!(BF16, bf16),
+            Self::F16(_) => dispatch!(F16, f16),
+            Self::F32(_) => dispatch!(F32, f32),
+            Self::F64(_) => dispatch!(F64, f64),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "norm",
+                dtype: self.dtype(),
+            }),
+        }
+    }
+
+    pub(crate) fn cumsum(&self, layout: &Layout, dim: usize) -> Result<Self> {
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                if let Self::$variant(values) = self {
+                    Ok(Self::$variant(math::cumsum_map(values, layout, dim)?))
+                } else {
+                    unreachable!()
+                }
+            };
+        }
+
+        match self {
+            Self::U8(_) => dispatch!(U8, u8),
+            Self::U32(_) => dispatch!(U32, u32),
+            Self::I16(_) => dispatch!(I16, i16),
+            Self::I32(_) => dispatch!(I32, i32),
+            Self::I64(_) => dispatch!(I64, i64),
+            Self::BF16(_) => dispatch!(BF16, bf16),
+            Self::F16(_) => dispatch!(F16, f16),
+            Self::F32(_) => dispatch!(F32, f32),
+            Self::F64(_) => dispatch!(F64, f64),
+        }
+    }
+
+    pub(crate) fn log_sum_exp(&self, layout: &Layout, dim: usize) -> Result<Self> {
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                if let Self::$variant(values) = self {
+                    Ok(Self::$variant(math::log_sum_exp_map(values, layout, dim)?))
+                } else {
+                    unreachable!()
+                }
+            };
+        }
+
+        match self {
+            Self::BF16(_) => dispatch!(BF16, bf16),
+            Self::F16(_) => dispatch!(F16, f16),
+            Self::F32(_) => dispatch!(F32, f32),
+            Self::F64(_) => dispatch!(F64, f64),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "log_sum_exp",
                 dtype: self.dtype(),
             }),
         }

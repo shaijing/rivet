@@ -52,6 +52,68 @@ impl Storage {
         }
     }
 
+    pub(crate) fn affine(storage: &Self, layout: &Layout, mul: f64, add: f64) -> Result<Self> {
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.affine(layout, mul, add)?)),
+        }
+    }
+
+    pub(crate) fn elu(storage: &Self, layout: &Layout, alpha: f64) -> Result<Self> {
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.elu(layout, alpha)?)),
+        }
+    }
+
+    pub(crate) fn powf(storage: &Self, layout: &Layout, exponent: f64) -> Result<Self> {
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.powf(layout, exponent)?)),
+        }
+    }
+
+    pub(crate) fn pow(
+        lhs: &Self,
+        lhs_layout: &Layout,
+        rhs: &Self,
+        rhs_layout: &Layout,
+    ) -> Result<Self> {
+        match (lhs, rhs) {
+            (Self::Cpu(lhs), Self::Cpu(rhs)) => {
+                Ok(Self::Cpu(lhs.pow(lhs_layout, rhs, rhs_layout)?))
+            }
+        }
+    }
+
+    pub(crate) fn dot(
+        lhs: &Self,
+        lhs_layout: &Layout,
+        rhs: &Self,
+        rhs_layout: &Layout,
+    ) -> Result<Self> {
+        match (lhs, rhs) {
+            (Self::Cpu(lhs), Self::Cpu(rhs)) => {
+                Ok(Self::Cpu(lhs.dot(lhs_layout, rhs, rhs_layout)?))
+            }
+        }
+    }
+
+    pub(crate) fn norm(storage: &Self, layout: &Layout) -> Result<Self> {
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.norm(layout)?)),
+        }
+    }
+
+    pub(crate) fn cumsum(storage: &Self, layout: &Layout, dim: usize) -> Result<Self> {
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.cumsum(layout, dim)?)),
+        }
+    }
+
+    pub(crate) fn log_sum_exp(storage: &Self, layout: &Layout, dim: usize) -> Result<Self> {
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.log_sum_exp(layout, dim)?)),
+        }
+    }
+
     pub(crate) fn flip(storage: &Self, layout: &Layout, dims: &[usize]) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.flip(layout, dims)?)),

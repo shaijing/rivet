@@ -652,6 +652,128 @@ fn phase_gemm_reports_phase1_shape_dtype_layout_and_empty_contracts() {
 }
 
 #[test]
+fn phase4_math_ops_are_layout_aware_and_float_scoped() {
+    let values = Tensor::from_vec(vec![-1.0f32, 0.0, 2.0], 3, &Device::Cpu).unwrap();
+    assert_eq!(
+        values.affine(2.0, 1.0).unwrap().to_vec::<f32>().unwrap(),
+        [-1.0, 1.0, 5.0]
+    );
+    let integer_affine = Tensor::from_vec(vec![1i32, 2, 3], 3, &Device::Cpu).unwrap();
+    assert_eq!(
+        integer_affine
+            .affine(2.0, 1.0)
+            .unwrap()
+            .to_vec::<i32>()
+            .unwrap(),
+        [3, 5, 7]
+    );
+    let elu = values.elu(1.0).unwrap().to_vec::<f32>().unwrap();
+    assert!((elu[0] - (-1.0f32).exp_m1()).abs() < 1e-6);
+    assert_eq!(elu[1..], [0.0, 2.0]);
+    assert_eq!(
+        values.powf(2.0).unwrap().to_vec::<f32>().unwrap(),
+        [1.0, 0.0, 4.0]
+    );
+
+    let exponents = Tensor::from_vec(vec![2.0f32, 3.0, 1.0], 3, &Device::Cpu).unwrap();
+    assert_eq!(
+        values
+            .abs()
+            .unwrap()
+            .pow(&exponents)
+            .unwrap()
+            .to_vec::<f32>()
+            .unwrap(),
+        [1.0, 0.0, 2.0]
+    );
+    let bases = Tensor::from_vec(vec![1.0f32, 2.0], (2, 1), &Device::Cpu).unwrap();
+    let exponents = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], (1, 3), &Device::Cpu).unwrap();
+    assert_eq!(
+        bases
+            .broadcast_pow(&exponents)
+            .unwrap()
+            .to_vec::<f32>()
+            .unwrap(),
+        [1.0, 1.0, 1.0, 2.0, 4.0, 8.0]
+    );
+
+    let lhs = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], 3, &Device::Cpu).unwrap();
+    let rhs = Tensor::from_vec(vec![4.0f32, 5.0, 6.0], 3, &Device::Cpu).unwrap();
+    assert_eq!(lhs.dot(&rhs).unwrap().to_scalar::<f32>().unwrap(), 32.0);
+    let norm = Tensor::from_vec(vec![3.0f32, 4.0], (1, 2), &Device::Cpu).unwrap();
+    assert_eq!(norm.norm().unwrap().to_scalar::<f32>().unwrap(), 5.0);
+
+    let integer = Tensor::from_vec(vec![1i32, 2], 2, &Device::Cpu).unwrap();
+    assert!(matches!(
+        integer.powf(2.0),
+        Err(Error::UnsupportedDTypeForOp {
+            op: "powf",
+            dtype: DType::I32
+        })
+    ));
+}
+
+#[test]
+fn phase4_broadcast_matmul_mv_cumsum_and_log_sum_exp_work() {
+    let matrix =
+        Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], (2, 3), &Device::Cpu).unwrap();
+    let vector = Tensor::ones(3, DType::F32, &Device::Cpu).unwrap();
+    assert_eq!(
+        matrix.mv(&vector).unwrap().to_vec::<f32>().unwrap(),
+        [6.0, 15.0]
+    );
+
+    let batched = Tensor::from_vec(
+        vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+        (2, 2, 2),
+        &Device::Cpu,
+    )
+    .unwrap();
+    let identity = Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], (1, 2, 2), &Device::Cpu).unwrap();
+    assert_eq!(
+        batched
+            .broadcast_matmul(&identity)
+            .unwrap()
+            .to_vec::<f32>()
+            .unwrap(),
+        [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+    );
+
+    let transposed = matrix.transpose(0, 1).unwrap();
+    assert_eq!(
+        transposed.cumsum(1).unwrap().to_vec::<f32>().unwrap(),
+        [1.0, 5.0, 2.0, 7.0, 3.0, 9.0]
+    );
+
+    let log_sum_exp = Tensor::from_vec(vec![0.0f32, 1.0, 2.0, 3.0], (2, 2), &Device::Cpu)
+        .unwrap()
+        .log_sum_exp(&[1])
+        .unwrap();
+    let expected = [
+        (1.0f32.exp() + 1.0).ln(),
+        (3.0f32.exp() + 2.0f32.exp()).ln(),
+    ];
+    let actual = log_sum_exp.to_vec::<f32>().unwrap();
+    assert!(
+        actual
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| (actual - expected).abs() < 1e-6)
+    );
+
+    let all = Tensor::from_vec(vec![0.0f32, 1.0, 2.0, 3.0], (2, 2), &Device::Cpu)
+        .unwrap()
+        .log_sum_exp(&[0, 1])
+        .unwrap();
+    assert!(
+        (all.to_scalar::<f32>().unwrap()
+            - (0.0f32.exp() + 1.0f32.exp() + 2.0f32.exp() + 3.0f32.exp()).ln())
+        .abs()
+            < 1e-6
+    );
+}
+
+#[test]
 fn phase3_unfold_flip_and_padding_preserve_index_contracts() {
     let tensor = Tensor::from_vec((0u8..6).collect(), (2, 3), &Device::Cpu).unwrap();
     let windows = tensor.unfold(1, 2, 1).unwrap();
