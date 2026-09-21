@@ -1,5 +1,36 @@
 use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
+use crate::storage::validate_layout_for_storage;
 use crate::{DType, Error, Layout, Result};
+
+/// A typed view over storage whose layout has been checked once.
+///
+/// The backend iterators only produce offsets addressed by the validated
+/// layout. Keeping the unchecked read here prevents bounds-check branches from
+/// being repeated in every element of strided kernels.
+struct ValidatedValues<'a, T> {
+    values: &'a [T],
+}
+
+impl<'a, T: Copy> ValidatedValues<'a, T> {
+    fn new(values: &'a [T], layout: &Layout) -> Result<Self> {
+        validate_layout_for_storage(layout, values.len())?;
+        Ok(Self { values })
+    }
+
+    #[inline]
+    fn as_slice(&self) -> &[T] {
+        self.values
+    }
+
+    #[inline]
+    fn read(&self, index: usize) -> T {
+        debug_assert!(index < self.values.len());
+        // SAFETY: construction validates that every offset addressable by the
+        // corresponding layout is within `values`. Callers pass offsets from
+        // that layout's strided iterator or coordinate calculations.
+        unsafe { *self.values.get_unchecked(index) }
+    }
+}
 
 pub trait BinaryElement: Copy + Send + Sync + 'static {
     fn apply(op: BinaryOp, lhs: Self, rhs: Self) -> Result<Self>;
@@ -368,13 +399,15 @@ pub fn binary_map<T: BinaryElement>(
             rhs: rhs_layout.dims().to_vec(),
         });
     }
+    let lhs_values = ValidatedValues::new(lhs, lhs_layout)?;
+    let rhs_values = ValidatedValues::new(rhs, rhs_layout)?;
 
     if let (Some((lhs_start, lhs_end)), Some((rhs_start, rhs_end))) = (
         lhs_layout.contiguous_offsets(),
         rhs_layout.contiguous_offsets(),
     ) {
-        let lhs = checked_slice(lhs, lhs_start, lhs_end)?;
-        let rhs = checked_slice(rhs, rhs_start, rhs_end)?;
+        let lhs = checked_slice(lhs_values.as_slice(), lhs_start, lhs_end)?;
+        let rhs = checked_slice(rhs_values.as_slice(), rhs_start, rhs_end)?;
         if lhs.len() != rhs.len() {
             return Err(Error::ShapeMismatchBinary {
                 lhs: vec![lhs.len()],
@@ -390,8 +423,8 @@ pub fn binary_map<T: BinaryElement>(
 
     let mut output = Vec::with_capacity(lhs_layout.elem_count());
     for (lhs_index, rhs_index) in lhs_layout.strided_index().zip(rhs_layout.strided_index()) {
-        let lhs = *lhs.get(lhs_index).ok_or(Error::StorageOutOfBounds)?;
-        let rhs = *rhs.get(rhs_index).ok_or(Error::StorageOutOfBounds)?;
+        let lhs = lhs_values.read(lhs_index);
+        let rhs = rhs_values.read(rhs_index);
         output.push(T::apply(op, lhs, rhs)?);
     }
     Ok(output)
@@ -403,8 +436,9 @@ pub fn binary_scalar_map<T: BinaryElement>(
     scalar: T,
     op: BinaryOp,
 ) -> Result<Vec<T>> {
+    let values = ValidatedValues::new(values, layout)?;
     if let Some((start, end)) = layout.contiguous_offsets() {
-        return checked_slice(values, start, end)?
+        return checked_slice(values.as_slice(), start, end)?
             .iter()
             .map(|&value| T::apply(op, value, scalar))
             .collect();
@@ -412,21 +446,22 @@ pub fn binary_scalar_map<T: BinaryElement>(
 
     let mut output = Vec::with_capacity(layout.elem_count());
     for index in layout.strided_index() {
-        let value = *values.get(index).ok_or(Error::StorageOutOfBounds)?;
+        let value = values.read(index);
         output.push(T::apply(op, value, scalar)?);
     }
     Ok(output)
 }
 
 pub fn unary_map<T: UnaryElement>(values: &[T], layout: &Layout, op: UnaryOp) -> Result<Vec<T>> {
+    let values = ValidatedValues::new(values, layout)?;
     if let Some((start, end)) = layout.contiguous_offsets() {
-        return checked_slice(values, start, end)
+        return checked_slice(values.as_slice(), start, end)
             .map(|values| values.iter().map(|&value| T::apply(op, value)).collect());
     }
 
     let mut output = Vec::with_capacity(layout.elem_count());
     for index in layout.strided_index() {
-        let value = *values.get(index).ok_or(Error::StorageOutOfBounds)?;
+        let value = values.read(index);
         output.push(T::apply(op, value));
     }
     Ok(output)
@@ -445,11 +480,13 @@ pub fn cmp_map<T: CmpElement>(
             rhs: rhs_layout.dims().to_vec(),
         });
     }
+    let lhs_values = ValidatedValues::new(lhs, lhs_layout)?;
+    let rhs_values = ValidatedValues::new(rhs, rhs_layout)?;
 
     let mut output = Vec::with_capacity(lhs_layout.elem_count());
     for (lhs_index, rhs_index) in lhs_layout.strided_index().zip(rhs_layout.strided_index()) {
-        let lhs = *lhs.get(lhs_index).ok_or(Error::StorageOutOfBounds)?;
-        let rhs = *rhs.get(rhs_index).ok_or(Error::StorageOutOfBounds)?;
+        let lhs = lhs_values.read(lhs_index);
+        let rhs = rhs_values.read(rhs_index);
         output.push(T::compare(op, lhs, rhs));
     }
     Ok(output)
@@ -461,9 +498,10 @@ pub fn cmp_scalar_map<T: CmpElement>(
     scalar: T,
     op: CmpOp,
 ) -> Result<Vec<u8>> {
+    let values = ValidatedValues::new(values, layout)?;
     let mut output = Vec::with_capacity(layout.elem_count());
     for index in layout.strided_index() {
-        let value = *values.get(index).ok_or(Error::StorageOutOfBounds)?;
+        let value = values.read(index);
         output.push(T::compare(op, value, scalar));
     }
     Ok(output)
@@ -485,6 +523,9 @@ pub fn where_map<T: Copy>(
             rhs: true_layout.dims().to_vec(),
         });
     }
+    let condition = ValidatedValues::new(condition, condition_layout)?;
+    let on_true = ValidatedValues::new(on_true, true_layout)?;
+    let on_false = ValidatedValues::new(on_false, false_layout)?;
 
     let mut output = Vec::with_capacity(condition_layout.elem_count());
     for ((condition_index, true_index), false_index) in condition_layout
@@ -492,13 +533,11 @@ pub fn where_map<T: Copy>(
         .zip(true_layout.strided_index())
         .zip(false_layout.strided_index())
     {
-        let condition = *condition
-            .get(condition_index)
-            .ok_or(Error::StorageOutOfBounds)?;
+        let condition = condition.read(condition_index);
         let value = if condition != 0 {
-            *on_true.get(true_index).ok_or(Error::StorageOutOfBounds)?
+            on_true.read(true_index)
         } else {
-            *on_false.get(false_index).ok_or(Error::StorageOutOfBounds)?
+            on_false.read(false_index)
         };
         output.push(value);
     }
@@ -590,6 +629,7 @@ pub fn reduce_map<T: ReduceElement>(
             dim,
         });
     }
+    let values = ValidatedValues::new(values, layout)?;
     let mut output = Vec::with_capacity(output_len);
     for output_index in 0..output_len {
         let coordinates = output_coordinates(&output_dims, output_index);
@@ -599,21 +639,17 @@ pub fn reduce_map<T: ReduceElement>(
                 let mut value = T::zero();
                 for offset in 0..reduce_len {
                     let index = base + offset * layout.stride()[dim];
-                    value = value.add(*values.get(index).ok_or(Error::StorageOutOfBounds)?);
+                    value = value.add(values.read(index));
                 }
                 output.push(value);
             }
             ReduceOp::Min | ReduceOp::Max => {
                 let use_min = op == ReduceOp::Min;
-                let first = *values.get(base).ok_or(Error::StorageOutOfBounds)?;
+                let first = values.read(base);
                 let mut value = first;
                 for offset in 1..reduce_len {
                     let index = base + offset * layout.stride()[dim];
-                    value = select_extreme(
-                        value,
-                        *values.get(index).ok_or(Error::StorageOutOfBounds)?,
-                        use_min,
-                    );
+                    value = select_extreme(value, values.read(index), use_min);
                 }
                 output.push(value);
             }
@@ -651,16 +687,17 @@ pub fn arg_reduce_map<T: ReduceElement>(
             dim,
         });
     }
+    let values = ValidatedValues::new(values, layout)?;
     let mut output = Vec::with_capacity(output_len);
     for output_index in 0..output_len {
         let coordinates = output_coordinates(&output_dims, output_index);
         let base = input_base_index(layout, dim, &coordinates, keepdim);
         let use_min = op == ReduceOp::ArgMin;
         let mut best_index = 0usize;
-        let mut best = *values.get(base).ok_or(Error::StorageOutOfBounds)?;
+        let mut best = values.read(base);
         for offset in 1..reduce_len {
             let index = base + offset * layout.stride()[dim];
-            let candidate = *values.get(index).ok_or(Error::StorageOutOfBounds)?;
+            let candidate = values.read(index);
             let candidate_is_better = if best.is_nan() {
                 false
             } else if candidate.is_nan() {
@@ -686,11 +723,12 @@ pub fn reduce_all_map<T: ReduceElement>(
     layout: &Layout,
     op: ReduceOp,
 ) -> Result<Vec<T>> {
+    let values = ValidatedValues::new(values, layout)?;
     match op {
         ReduceOp::Sum => {
             let mut value = T::zero();
             for index in layout.strided_index() {
-                value = value.add(*values.get(index).ok_or(Error::StorageOutOfBounds)?);
+                value = value.add(values.read(index));
             }
             Ok(vec![value])
         }
@@ -704,14 +742,10 @@ pub fn reduce_all_map<T: ReduceElement>(
                 },
                 dim: 0,
             })?;
-            let mut value = *values.get(first_index).ok_or(Error::StorageOutOfBounds)?;
+            let mut value = values.read(first_index);
             let use_min = op == ReduceOp::Min;
             for index in indices {
-                value = select_extreme(
-                    value,
-                    *values.get(index).ok_or(Error::StorageOutOfBounds)?,
-                    use_min,
-                );
+                value = select_extreme(value, values.read(index), use_min);
             }
             Ok(vec![value])
         }
@@ -769,6 +803,7 @@ fn reduce_f64_map<T: ReduceElement>(
             actual: reduce_len,
         });
     }
+    let values = ValidatedValues::new(values, layout)?;
     let mut output = Vec::with_capacity(output_len);
     for output_index in 0..output_len {
         let coordinates = output_coordinates(&output_dims, output_index);
@@ -776,14 +811,14 @@ fn reduce_f64_map<T: ReduceElement>(
         let mut sum = 0.0;
         for offset in 0..reduce_len {
             let index = base + offset * layout.stride()[dim];
-            sum += values.get(index).ok_or(Error::StorageOutOfBounds)?.to_f64();
+            sum += values.read(index).to_f64();
         }
         let mean = sum / reduce_len as f64;
         let value = if variance {
             let mut squared_error = 0.0;
             for offset in 0..reduce_len {
                 let index = base + offset * layout.stride()[dim];
-                let delta = values.get(index).ok_or(Error::StorageOutOfBounds)?.to_f64() - mean;
+                let delta = values.read(index).to_f64() - mean;
                 squared_error += delta * delta;
             }
             squared_error / (reduce_len - 1) as f64
@@ -796,10 +831,11 @@ fn reduce_f64_map<T: ReduceElement>(
 }
 
 pub fn mean_all_map<T: ReduceElement>(values: &[T], layout: &Layout) -> Result<Vec<T>> {
+    let values = ValidatedValues::new(values, layout)?;
     let mut count = 0usize;
     let mut sum = 0.0;
     for index in layout.strided_index() {
-        sum += values.get(index).ok_or(Error::StorageOutOfBounds)?.to_f64();
+        sum += values.read(index).to_f64();
         count += 1;
     }
     if count == 0 {
@@ -812,13 +848,14 @@ pub fn mean_all_map<T: ReduceElement>(values: &[T], layout: &Layout) -> Result<V
 }
 
 pub fn copy_logical<T: Copy>(values: &[T], layout: &Layout) -> Result<Vec<T>> {
+    let values = ValidatedValues::new(values, layout)?;
     if let Some((start, end)) = layout.contiguous_offsets() {
-        return checked_slice(values, start, end).map(ToOwned::to_owned);
+        return checked_slice(values.as_slice(), start, end).map(ToOwned::to_owned);
     }
 
     layout
         .strided_index()
-        .map(|index| values.get(index).copied().ok_or(Error::StorageOutOfBounds))
+        .map(|index| Ok(values.read(index)))
         .collect()
 }
 
@@ -831,6 +868,10 @@ pub fn cat_map<T: Copy>(
     if dim >= rank {
         return Err(Error::InvalidConcatDim { dim, rank });
     }
+    let inputs = inputs
+        .iter()
+        .map(|(values, layout)| Ok((ValidatedValues::new(values, layout)?, *layout)))
+        .collect::<Result<Vec<_>>>()?;
     let inner = output_shape[dim + 1..].iter().product::<usize>();
     let outer = output_shape[..dim].iter().product::<usize>();
     let mut output = Vec::with_capacity(output_shape.iter().product());
@@ -844,7 +885,7 @@ pub fn cat_map<T: Copy>(
             let input_block = layout.dims()[dim] * inner;
             for _ in 0..input_block {
                 let index = logical_index.next().ok_or(Error::StorageOutOfBounds)?;
-                output.push(*values.get(index).ok_or(Error::StorageOutOfBounds)?);
+                output.push(values.read(index));
             }
         }
     }
