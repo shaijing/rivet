@@ -1,7 +1,7 @@
 use super::buffer::{AlignedBuffer, AlignedBufferBuilder};
 use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use crate::storage::validate_layout_for_storage;
-use crate::{DType, Error, Layout, Result};
+use crate::{DType, Error, Layout, Result, Shape};
 
 fn aligned_try_iter<T, I>(iter: I) -> Result<AlignedBuffer<T>>
 where
@@ -25,23 +25,23 @@ fn aligned_one<T>(value: T) -> Result<AlignedBuffer<T>> {
 /// The backend iterators only produce offsets addressed by the validated
 /// layout. Keeping the unchecked read here prevents bounds-check branches from
 /// being repeated in every element of strided kernels.
-struct ValidatedValues<'a, T> {
+pub(crate) struct ValidatedValues<'a, T> {
     values: &'a [T],
 }
 
 impl<'a, T: Copy> ValidatedValues<'a, T> {
-    fn new(values: &'a [T], layout: &Layout) -> Result<Self> {
+    pub(crate) fn new(values: &'a [T], layout: &Layout) -> Result<Self> {
         validate_layout_for_storage(layout, values.len())?;
         Ok(Self { values })
     }
 
     #[inline]
-    fn as_slice(&self) -> &[T] {
+    pub(crate) fn as_slice(&self) -> &[T] {
         self.values
     }
 
     #[inline]
-    fn read(&self, index: usize) -> T {
+    pub(crate) fn read(&self, index: usize) -> T {
         debug_assert!(index < self.values.len());
         // SAFETY: construction validates that every offset addressable by the
         // corresponding layout is within `values`. Callers pass offsets from
@@ -596,7 +596,7 @@ fn input_base_index(
     dim: usize,
     output_coordinates: &[usize],
     keepdim: bool,
-) -> usize {
+) -> Result<usize> {
     let mut output_axis = 0;
     let mut index = layout.start_offset();
     for axis in 0..layout.dims().len() {
@@ -610,9 +610,15 @@ fn input_base_index(
             output_axis += 1;
             coordinate
         };
-        index += coordinate * layout.stride()[axis];
+        index = index
+            .checked_add(
+                coordinate
+                    .checked_mul(layout.stride()[axis])
+                    .ok_or(Error::StorageOutOfBounds)?,
+            )
+            .ok_or(Error::StorageOutOfBounds)?;
     }
-    index
+    Ok(index)
 }
 
 fn select_extreme<T: ReduceElement>(current: T, candidate: T, use_min: bool) -> T {
@@ -646,7 +652,7 @@ pub(crate) fn reduce_map<T: ReduceElement>(
         });
     }
     let output_dims = output_dims_for_dim(layout.dims(), dim, keepdim);
-    let output_len = output_dims.iter().product::<usize>();
+    let output_len = Shape::from(output_dims.clone()).checked_elem_count()?;
     let reduce_len = layout.dims()[dim];
     if reduce_len == 0 && matches!(op, ReduceOp::Min | ReduceOp::Max) {
         return Err(Error::EmptyReduction {
@@ -658,12 +664,18 @@ pub(crate) fn reduce_map<T: ReduceElement>(
     let mut builder = AlignedBufferBuilder::new(output_len)?;
     for output_index in 0..output_len {
         let coordinates = output_coordinates(&output_dims, output_index);
-        let base = input_base_index(layout, dim, &coordinates, keepdim);
+        let base = input_base_index(layout, dim, &coordinates, keepdim)?;
         match op {
             ReduceOp::Sum => {
                 let mut value = T::zero();
                 for offset in 0..reduce_len {
-                    let index = base + offset * layout.stride()[dim];
+                    let index = base
+                        .checked_add(
+                            offset
+                                .checked_mul(layout.stride()[dim])
+                                .ok_or(Error::StorageOutOfBounds)?,
+                        )
+                        .ok_or(Error::StorageOutOfBounds)?;
                     value = value.add(values.read(index));
                 }
                 builder.write_next(value)?;
@@ -673,7 +685,13 @@ pub(crate) fn reduce_map<T: ReduceElement>(
                 let first = values.read(base);
                 let mut value = first;
                 for offset in 1..reduce_len {
-                    let index = base + offset * layout.stride()[dim];
+                    let index = base
+                        .checked_add(
+                            offset
+                                .checked_mul(layout.stride()[dim])
+                                .ok_or(Error::StorageOutOfBounds)?,
+                        )
+                        .ok_or(Error::StorageOutOfBounds)?;
                     value = select_extreme(value, values.read(index), use_min);
                 }
                 builder.write_next(value)?;
@@ -700,7 +718,7 @@ pub(crate) fn arg_reduce_map<T: ReduceElement>(
         });
     }
     let output_dims = output_dims_for_dim(layout.dims(), dim, keepdim);
-    let output_len = output_dims.iter().product::<usize>();
+    let output_len = Shape::from(output_dims.clone()).checked_elem_count()?;
     let reduce_len = layout.dims()[dim];
     if reduce_len == 0 {
         return Err(Error::EmptyReduction {
@@ -716,12 +734,18 @@ pub(crate) fn arg_reduce_map<T: ReduceElement>(
     let mut builder = AlignedBufferBuilder::new(output_len)?;
     for output_index in 0..output_len {
         let coordinates = output_coordinates(&output_dims, output_index);
-        let base = input_base_index(layout, dim, &coordinates, keepdim);
+        let base = input_base_index(layout, dim, &coordinates, keepdim)?;
         let use_min = op == ReduceOp::ArgMin;
         let mut best_index = 0usize;
         let mut best = values.read(base);
         for offset in 1..reduce_len {
-            let index = base + offset * layout.stride()[dim];
+            let index = base
+                .checked_add(
+                    offset
+                        .checked_mul(layout.stride()[dim])
+                        .ok_or(Error::StorageOutOfBounds)?,
+                )
+                .ok_or(Error::StorageOutOfBounds)?;
             let candidate = values.read(index);
             let candidate_is_better = if best.is_nan() {
                 false
@@ -812,7 +836,7 @@ fn reduce_f64_map<T: ReduceElement>(
         });
     }
     let output_dims = output_dims_for_dim(layout.dims(), dim, keepdim);
-    let output_len = output_dims.iter().product::<usize>();
+    let output_len = Shape::from(output_dims.clone()).checked_elem_count()?;
     let reduce_len = layout.dims()[dim];
     if reduce_len == 0 {
         return Err(Error::EmptyReduction {
@@ -832,17 +856,29 @@ fn reduce_f64_map<T: ReduceElement>(
     let mut builder = AlignedBufferBuilder::new(output_len)?;
     for output_index in 0..output_len {
         let coordinates = output_coordinates(&output_dims, output_index);
-        let base = input_base_index(layout, dim, &coordinates, keepdim);
+        let base = input_base_index(layout, dim, &coordinates, keepdim)?;
         let mut sum = 0.0;
         for offset in 0..reduce_len {
-            let index = base + offset * layout.stride()[dim];
+            let index = base
+                .checked_add(
+                    offset
+                        .checked_mul(layout.stride()[dim])
+                        .ok_or(Error::StorageOutOfBounds)?,
+                )
+                .ok_or(Error::StorageOutOfBounds)?;
             sum += values.read(index).to_f64();
         }
         let mean = sum / reduce_len as f64;
         let value = if variance {
             let mut squared_error = 0.0;
             for offset in 0..reduce_len {
-                let index = base + offset * layout.stride()[dim];
+                let index = base
+                    .checked_add(
+                        offset
+                            .checked_mul(layout.stride()[dim])
+                            .ok_or(Error::StorageOutOfBounds)?,
+                    )
+                    .ok_or(Error::StorageOutOfBounds)?;
                 let delta = values.read(index).to_f64() - mean;
                 squared_error += delta * delta;
             }
@@ -898,8 +934,8 @@ pub(crate) fn cat_map<T: Copy>(
         .iter()
         .map(|(values, layout)| Ok((ValidatedValues::new(values, layout)?, *layout)))
         .collect::<Result<Vec<_>>>()?;
-    let inner = output_shape[dim + 1..].iter().product::<usize>();
-    let outer = output_shape[..dim].iter().product::<usize>();
+    let inner = Shape::from(output_shape[dim + 1..].to_vec()).checked_elem_count()?;
+    let outer = Shape::from(output_shape[..dim].to_vec()).checked_elem_count()?;
     let mut logical_indices = inputs
         .iter()
         .map(|(_, layout)| layout.strided_index())
@@ -907,7 +943,9 @@ pub(crate) fn cat_map<T: Copy>(
 
     for _ in 0..outer {
         for ((values, layout), logical_index) in inputs.iter().zip(&mut logical_indices) {
-            let input_block = layout.dims()[dim] * inner;
+            let input_block = layout.dims()[dim]
+                .checked_mul(inner)
+                .ok_or(Error::StorageOutOfBounds)?;
             for _ in 0..input_block {
                 let index = logical_index.next().ok_or(Error::StorageOutOfBounds)?;
                 write(values.read(index))?;

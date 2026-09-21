@@ -18,7 +18,10 @@ impl<'a> StridedIndex<'a> {
             stride,
             index: vec![0; dims.len()],
             next_storage_index: start_offset,
-            remaining: dims.iter().product(),
+            remaining: dims
+                .iter()
+                .try_fold(1usize, |count, &dim| count.checked_mul(dim))
+                .unwrap_or(usize::MAX),
         }
     }
 

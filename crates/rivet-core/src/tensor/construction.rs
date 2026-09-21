@@ -94,7 +94,22 @@ impl RangeElement for half::f16 {
 }
 
 impl Tensor {
-    pub(super) fn from_parts(
+    fn from_validated_parts(
+        storage: Arc<Storage>,
+        layout: Layout,
+        dtype: DType,
+        device: Device,
+    ) -> Self {
+        Self(Arc::new(Tensor_ {
+            id: super::TensorId::new(),
+            storage,
+            layout,
+            dtype,
+            device,
+        }))
+    }
+
+    pub(super) fn from_parts_checked(
         storage: Arc<Storage>,
         layout: Layout,
         dtype: DType,
@@ -113,26 +128,42 @@ impl Tensor {
             }
             validate_layout_for_storage(&layout, storage.len())?;
         }
-        Ok(Self(Arc::new(Tensor_ {
-            id: super::TensorId::new(),
-            storage,
-            layout,
-            dtype,
-            device,
-        })))
+        Ok(Self::from_validated_parts(storage, layout, dtype, device))
     }
 
     /// Creates a view from a layout derived from this tensor's already-valid
     /// layout. Callers must only pass layouts produced by checked view
     /// transformations such as narrow, permute, or reshape.
-    pub(super) fn from_validated_shared_storage(&self, layout: Layout) -> Self {
-        Self(Arc::new(Tensor_ {
-            id: super::TensorId::new(),
-            storage: Arc::clone(&self.0.storage),
+    pub(super) fn from_validated_shared_storage(&self, layout: Layout) -> Result<Self> {
+        layout.checked_elem_count()?;
+        Ok(Self::from_validated_parts(
+            Arc::clone(&self.0.storage),
             layout,
-            dtype: self.0.dtype,
-            device: self.0.device.clone(),
-        }))
+            self.0.dtype,
+            self.0.device.clone(),
+        ))
+    }
+
+    /// Wraps storage produced by an exact-size backend output.
+    ///
+    /// The backend has already validated the input layouts and allocated an
+    /// output whose length is the checked element count of `shape`. This
+    /// constructor derives dtype/device from storage and avoids rechecking
+    /// those invariants at every Tensor operation boundary.
+    pub(super) fn from_exact_owned_storage(storage: Storage, shape: Shape) -> Result<Self> {
+        let expected = shape.checked_elem_count()?;
+        let actual = storage.len();
+        if expected != actual {
+            return Err(Error::ShapeMismatch { expected, actual });
+        }
+        let dtype = storage.dtype();
+        let device = storage.device();
+        Ok(Self::from_validated_parts(
+            Arc::new(storage),
+            Layout::contiguous(shape),
+            dtype,
+            device,
+        ))
     }
 
     /// Creates a tensor from an owned, exactly-sized storage allocation.
@@ -142,7 +173,7 @@ impl Tensor {
         device: &Device,
     ) -> Result<Self> {
         let shape = shape.into();
-        let expected = shape.elem_count();
+        let expected = shape.checked_elem_count()?;
         let actual = storage.len();
         if expected != actual {
             return Err(Error::ShapeMismatch { expected, actual });
@@ -151,12 +182,12 @@ impl Tensor {
             return Err(Error::DeviceMismatch);
         }
         let dtype = storage.dtype();
-        Self::from_parts(
+        Ok(Self::from_validated_parts(
             Arc::new(storage),
             Layout::contiguous(shape),
             dtype,
             device.clone(),
-        )
+        ))
     }
 
     /// Creates a CPU tensor from an already aligned, exactly-sized buffer.
@@ -170,14 +201,12 @@ impl Tensor {
         T: IntoCpuStorageBuffer,
         S: Into<Shape>,
     {
+        let shape = shape.into();
+        shape.checked_elem_count()?;
         if !matches!(device, Device::Cpu) {
             return Err(Error::DeviceMismatch);
         }
-        Self::from_storage(
-            Storage::Cpu(CpuStorage::from_aligned_buffer(buffer)),
-            shape,
-            device,
-        )
+        Self::from_exact_owned_storage(Storage::Cpu(CpuStorage::from_aligned_buffer(buffer)), shape)
     }
 
     pub fn from_vec<T, S>(data: Vec<T>, shape: S, device: &Device) -> Result<Self>
@@ -185,10 +214,12 @@ impl Tensor {
         T: WithDType,
         S: Into<Shape>,
     {
+        let shape = shape.into();
+        shape.checked_elem_count()?;
         let storage = match device {
             Device::Cpu => CpuDevice.storage_from_vec(data)?,
         };
-        Self::from_storage(Storage::Cpu(storage), shape, device)
+        Self::from_exact_owned_storage(Storage::Cpu(storage), shape)
     }
 
     pub fn from_slice<T, S>(data: &[T], shape: S, device: &Device) -> Result<Self>
@@ -196,10 +227,12 @@ impl Tensor {
         T: WithDType,
         S: Into<Shape>,
     {
+        let shape = shape.into();
+        shape.checked_elem_count()?;
         let storage = match device {
             Device::Cpu => CpuDevice.storage_from_slice(data)?,
         };
-        Self::from_storage(Storage::Cpu(storage), shape, device)
+        Self::from_exact_owned_storage(Storage::Cpu(storage), shape)
     }
 
     pub fn zeros<S>(shape: S, dtype: DType, device: &Device) -> Result<Self>
@@ -207,10 +240,11 @@ impl Tensor {
         S: Into<Shape>,
     {
         let shape = shape.into();
+        shape.checked_elem_count()?;
         let storage = match device {
             Device::Cpu => CpuDevice.zeros(&shape, dtype)?,
         };
-        Self::from_storage(Storage::Cpu(storage), shape, device)
+        Self::from_exact_owned_storage(Storage::Cpu(storage), shape)
     }
 
     pub fn ones<S>(shape: S, dtype: DType, device: &Device) -> Result<Self>
@@ -218,10 +252,11 @@ impl Tensor {
         S: Into<Shape>,
     {
         let shape = shape.into();
+        shape.checked_elem_count()?;
         let storage = match device {
             Device::Cpu => CpuDevice.ones(&shape, dtype)?,
         };
-        Self::from_storage(Storage::Cpu(storage), shape, device)
+        Self::from_exact_owned_storage(Storage::Cpu(storage), shape)
     }
 
     /// Creates a tensor filled with one scalar value.
@@ -231,7 +266,8 @@ impl Tensor {
         S: Into<Shape>,
     {
         let shape = shape.into();
-        Self::from_vec(vec![value; shape.elem_count()], shape, device)
+        let count = shape.checked_elem_count()?;
+        Self::from_vec(vec![value; count], shape, device)
     }
 
     /// Creates a one-dimensional tensor from an iterator.
@@ -257,7 +293,7 @@ impl Tensor {
     {
         let shape = shape.into();
         let iter = iter.into_iter();
-        let expected = shape.elem_count();
+        let expected = shape.checked_elem_count()?;
         let actual = iter.len();
         if expected != actual {
             return Err(Error::ShapeMismatch { expected, actual });
@@ -265,7 +301,7 @@ impl Tensor {
         let storage = match device {
             Device::Cpu => T::into_cpu_storage_iter(iter)?,
         };
-        Self::from_storage(Storage::Cpu(storage), shape, device)
+        Self::from_exact_owned_storage(Storage::Cpu(storage), shape)
     }
 
     /// Creates a tensor directly from an exact-size fallible iterator.
@@ -278,7 +314,7 @@ impl Tensor {
     {
         let shape = shape.into();
         let iter = iter.into_iter();
-        let expected = shape.elem_count();
+        let expected = shape.checked_elem_count()?;
         let actual = iter.len();
         if expected != actual {
             return Err(Error::ShapeMismatch { expected, actual });
@@ -286,7 +322,7 @@ impl Tensor {
         let storage = match device {
             Device::Cpu => T::try_into_cpu_storage_iter(iter)?,
         };
-        Self::from_storage(Storage::Cpu(storage), shape, device)
+        Self::from_exact_owned_storage(Storage::Cpu(storage), shape)
     }
 
     /// Creates a tensor by writing exactly one value per shape element.
@@ -299,10 +335,11 @@ impl Tensor {
         F: FnOnce(&mut dyn FnMut(T) -> Result<()>) -> Result<()>,
     {
         let shape = shape.into();
+        let count = shape.checked_elem_count()?;
         let storage = match device {
-            Device::Cpu => T::into_cpu_storage_with(shape.elem_count(), fill)?,
+            Device::Cpu => T::into_cpu_storage_with(count, fill)?,
         };
-        Self::from_storage(Storage::Cpu(storage), shape, device)
+        Self::from_exact_owned_storage(Storage::Cpu(storage), shape)
     }
 
     /// Creates a tensor through a statically dispatched writer into the final
@@ -314,10 +351,11 @@ impl Tensor {
         F: FnOnce(&mut ExactOutput<T>) -> Result<()>,
     {
         let shape = shape.into();
+        let count = shape.checked_elem_count()?;
         let storage = match device {
-            Device::Cpu => T::into_cpu_storage_writer(shape.elem_count(), fill)?,
+            Device::Cpu => T::into_cpu_storage_writer(count, fill)?,
         };
-        Self::from_storage(Storage::Cpu(storage), shape, device)
+        Self::from_exact_owned_storage(Storage::Cpu(storage), shape)
     }
 
     /// Creates values in the half-open interval `[start, end)` with step one.

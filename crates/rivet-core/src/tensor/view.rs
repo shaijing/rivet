@@ -6,7 +6,7 @@ impl Tensor {
         if self.dims().get(dim).copied() == Some(len) && start == 0 {
             return Ok(self.clone());
         }
-        Ok(self.from_validated_shared_storage(self.layout().narrow(dim, start, len)?))
+        self.from_validated_shared_storage(self.layout().narrow(dim, start, len)?)
     }
 
     /// Returns one row of the first dimension without constructing an
@@ -39,7 +39,7 @@ impl Tensor {
             self.stride()[1..].to_vec(),
             offset,
         )?;
-        Ok(self.from_validated_shared_storage(layout))
+        self.from_validated_shared_storage(layout)
     }
 
     /// Returns the slice at index `i` on the first dimension.
@@ -60,11 +60,11 @@ impl Tensor {
     }
 
     pub fn transpose(&self, dim1: usize, dim2: usize) -> Result<Self> {
-        Ok(self.from_validated_shared_storage(self.layout().transpose(dim1, dim2)?))
+        self.from_validated_shared_storage(self.layout().transpose(dim1, dim2)?)
     }
 
     pub fn permute(&self, dims: &[usize]) -> Result<Self> {
-        Ok(self.from_validated_shared_storage(self.layout().permute(dims)?))
+        self.from_validated_shared_storage(self.layout().permute(dims)?)
     }
 
     /// Swaps the last two dimensions.
@@ -82,7 +82,7 @@ impl Tensor {
     where
         S: Into<Shape>,
     {
-        Ok(self.from_validated_shared_storage(self.layout().broadcast_as(shape.into())?))
+        self.from_validated_shared_storage(self.layout().broadcast_as(shape.into())?)
     }
 
     /// Inserts broadcast dimensions on the left of the current shape.
@@ -108,12 +108,12 @@ impl Tensor {
         if layout == *self.layout() {
             Ok(self.clone())
         } else {
-            Ok(self.from_validated_shared_storage(layout))
+            self.from_validated_shared_storage(layout)
         }
     }
 
     pub fn unsqueeze(&self, dim: usize) -> Result<Self> {
-        Ok(self.from_validated_shared_storage(self.layout().unsqueeze(dim)?))
+        self.from_validated_shared_storage(self.layout().unsqueeze(dim)?)
     }
 
     pub fn reshape<S>(&self, shape: S) -> Result<Self>
@@ -121,19 +121,17 @@ impl Tensor {
         S: Into<Shape>,
     {
         let shape = shape.into();
-        if shape.elem_count() != self.elem_count() {
+        if shape.checked_elem_count()? != self.elem_count() {
             return Err(Error::InvalidReshape {
                 from: self.dims().to_vec(),
                 to: shape.dims().to_vec(),
             });
         }
         if self.is_contiguous() {
-            return Ok(
-                self.from_validated_shared_storage(Layout::contiguous_with_offset(
-                    shape,
-                    self.layout().start_offset(),
-                )),
-            );
+            return self.from_validated_shared_storage(Layout::contiguous_with_offset(
+                shape,
+                self.layout().start_offset(),
+            ));
         }
         self.contiguous()?.reshape(shape)
     }
@@ -215,7 +213,11 @@ impl Tensor {
         }
 
         let mut dims = self.dims()[..start].to_vec();
-        dims.push(self.dims()[start..=end].iter().product());
+        let flattened = self.dims()[start..=end]
+            .iter()
+            .try_fold(1usize, |count, &dim| count.checked_mul(dim))
+            .ok_or(Error::ShapeElementCountOverflow)?;
+        dims.push(flattened);
         dims.extend_from_slice(&self.dims()[end + 1..]);
         self.reshape(dims)
     }

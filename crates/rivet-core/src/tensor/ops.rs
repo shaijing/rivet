@@ -32,7 +32,7 @@ impl Tensor {
         let lhs_storage = self.storage();
         let rhs_storage = rhs.storage();
         let storage = Storage::binary(&lhs_storage, self.layout(), &rhs_storage, rhs.layout(), op)?;
-        Self::from_storage(storage, self.shape().clone(), self.device())
+        Self::from_exact_owned_storage(storage, self.shape().clone())
     }
 
     fn broadcast_binary(&self, rhs: &Self, op: BinaryOp) -> Result<Self> {
@@ -54,7 +54,7 @@ impl Tensor {
     fn unary(&self, op: UnaryOp) -> Result<Self> {
         let storage = self.storage();
         let storage = Storage::unary(&storage, self.layout(), op)?;
-        Self::from_storage(storage, self.shape().clone(), self.device())
+        Self::from_exact_owned_storage(storage, self.shape().clone())
     }
 
     fn binary_scalar<T: WithDType>(&self, scalar: T, op: BinaryOp) -> Result<Self> {
@@ -66,7 +66,7 @@ impl Tensor {
         }
         let storage = self.storage();
         let storage = Storage::binary_scalar(&storage, self.layout(), scalar, op)?;
-        Self::from_storage(storage, self.shape().clone(), self.device())
+        Self::from_exact_owned_storage(storage, self.shape().clone())
     }
 
     pub fn add(&self, rhs: &Self) -> Result<Self> {
@@ -132,7 +132,7 @@ impl Tensor {
         }
         let storage = self.storage();
         let storage = Storage::affine(&storage, self.layout(), mul, add)?;
-        Self::from_storage(storage, self.shape().clone(), self.device())
+        Self::from_exact_owned_storage(storage, self.shape().clone())
     }
 
     /// Applies the Exponential Linear Unit function element-wise.
@@ -142,7 +142,7 @@ impl Tensor {
         }
         let storage = self.storage();
         let storage = Storage::elu(&storage, self.layout(), alpha)?;
-        Self::from_storage(storage, self.shape().clone(), self.device())
+        Self::from_exact_owned_storage(storage, self.shape().clone())
     }
 
     /// Raises every element to a scalar floating-point exponent.
@@ -152,7 +152,7 @@ impl Tensor {
         }
         let storage = self.storage();
         let storage = Storage::powf(&storage, self.layout(), exponent)?;
-        Self::from_storage(storage, self.shape().clone(), self.device())
+        Self::from_exact_owned_storage(storage, self.shape().clone())
     }
 
     /// Raises each element of `self` to the matching element of `rhs`.
@@ -175,7 +175,7 @@ impl Tensor {
         let storage = Self::with_two_storage(self, rhs, |lhs_storage, rhs_storage| {
             Storage::pow(lhs_storage, self.layout(), rhs_storage, rhs.layout())
         })?;
-        Self::from_storage(storage, self.shape().clone(), self.device())
+        Self::from_exact_owned_storage(storage, self.shape().clone())
     }
 
     /// Broadcasting version of [`Tensor::pow`].
@@ -215,14 +215,14 @@ impl Tensor {
         let storage = Self::with_two_storage(self, rhs, |lhs_storage, rhs_storage| {
             Storage::dot(lhs_storage, self.layout(), rhs_storage, rhs.layout())
         })?;
-        Self::from_storage(storage, Shape::from(()), self.device())
+        Self::from_exact_owned_storage(storage, Shape::from(()))
     }
 
     /// Computes the Frobenius/L2 norm of all elements.
     pub fn norm(&self) -> Result<Self> {
         let storage = self.storage();
         let storage = Storage::norm(&storage, self.layout())?;
-        Self::from_storage(storage, Shape::from(()), self.device())
+        Self::from_exact_owned_storage(storage, Shape::from(()))
     }
 
     /// Computes a rank-2 F32 matrix product using the CPU GEMM backend.
@@ -250,7 +250,7 @@ impl Tensor {
         let storage = Self::with_two_storage(self, rhs, |lhs_storage, rhs_storage| {
             Storage::matmul(lhs_storage, self.layout(), rhs_storage, rhs.layout())
         })?;
-        Self::from_storage(storage, output_shape, self.device())
+        Self::from_exact_owned_storage(storage, output_shape)
     }
 
     /// Performs strict matrix-vector multiplication: `[m, n] * [n] = [m]`.
@@ -335,13 +335,13 @@ impl Tensor {
         } else {
             dims.remove(dim);
         }
-        Self::from_storage(storage, Shape::from(dims), self.device())
+        Self::from_exact_owned_storage(storage, Shape::from(dims))
     }
 
     fn reduce_all(&self, op: ReduceOp) -> Result<Self> {
         let storage = self.storage();
         let storage = Storage::reduce_all(&storage, self.layout(), op)?;
-        Self::from_storage(storage, Shape::from(()), self.device())
+        Self::from_exact_owned_storage(storage, Shape::from(()))
     }
 
     pub fn sum_keepdim(&self, dim: usize) -> Result<Self> {
@@ -362,7 +362,7 @@ impl Tensor {
         let storage = Storage::mean_dim(&storage, self.layout(), dim, true)?;
         let mut dims = self.dims().to_vec();
         dims[dim] = 1;
-        Self::from_storage(storage, Shape::from(dims), self.device())
+        Self::from_exact_owned_storage(storage, Shape::from(dims))
     }
 
     pub fn mean(&self, dim: usize) -> Result<Self> {
@@ -371,13 +371,13 @@ impl Tensor {
         let storage = Storage::mean_dim(&storage, self.layout(), dim, false)?;
         let mut dims = self.dims().to_vec();
         dims.remove(dim);
-        Self::from_storage(storage, Shape::from(dims), self.device())
+        Self::from_exact_owned_storage(storage, Shape::from(dims))
     }
 
     pub fn mean_all(&self) -> Result<Self> {
         let storage = self.storage();
         let storage = Storage::mean_all(&storage, self.layout())?;
-        Self::from_storage(storage, Shape::from(()), self.device())
+        Self::from_exact_owned_storage(storage, Shape::from(()))
     }
 
     /// Computes cumulative sums along one dimension.
@@ -388,7 +388,7 @@ impl Tensor {
         self.dim(dim)?;
         let storage = self.storage();
         let storage = Storage::cumsum(&storage, self.layout(), dim)?;
-        Self::from_storage(storage, self.shape().clone(), self.device())
+        Self::from_exact_owned_storage(storage, self.shape().clone())
     }
 
     fn log_sum_exp_dim(&self, dim: usize) -> Result<Self> {
@@ -397,7 +397,7 @@ impl Tensor {
         let storage = Storage::log_sum_exp(&storage, self.layout(), dim)?;
         let mut dims = self.dims().to_vec();
         dims.remove(dim);
-        Self::from_storage(storage, Shape::from(dims), self.device())
+        Self::from_exact_owned_storage(storage, Shape::from(dims))
     }
 
     /// Computes a numerically stable log-sum-exp over the listed dimensions.
@@ -465,7 +465,7 @@ impl Tensor {
         let storage = Storage::var_dim(&storage, self.layout(), dim, true)?;
         let mut dims = self.dims().to_vec();
         dims[dim] = 1;
-        Self::from_storage(storage, Shape::from(dims), self.device())
+        Self::from_exact_owned_storage(storage, Shape::from(dims))
     }
 
     pub fn var(&self, dim: usize) -> Result<Self> {
@@ -474,7 +474,7 @@ impl Tensor {
         let storage = Storage::var_dim(&storage, self.layout(), dim, false)?;
         let mut dims = self.dims().to_vec();
         dims.remove(dim);
-        Self::from_storage(storage, Shape::from(dims), self.device())
+        Self::from_exact_owned_storage(storage, Shape::from(dims))
     }
 
     fn cmp_tensor(&self, rhs: &Self, op: CmpOp) -> Result<Self> {
@@ -493,7 +493,7 @@ impl Tensor {
         let lhs_storage = lhs.storage();
         let rhs_storage = rhs.storage();
         let storage = Storage::cmp(&lhs_storage, lhs.layout(), &rhs_storage, rhs.layout(), op)?;
-        Self::from_storage(storage, shape, self.device())
+        Self::from_exact_owned_storage(storage, shape)
     }
 
     fn cmp_scalar_tensor<T: WithDType>(&self, scalar: T, op: CmpOp) -> Result<Self> {
@@ -505,7 +505,7 @@ impl Tensor {
         }
         let storage = self.storage();
         let storage = Storage::cmp_scalar(&storage, self.layout(), scalar, op)?;
-        Self::from_storage(storage, self.shape().clone(), self.device())
+        Self::from_exact_owned_storage(storage, self.shape().clone())
     }
 
     pub fn cmp(&self, rhs: &Self, op: CmpOp) -> Result<Self> {
@@ -605,7 +605,7 @@ impl Tensor {
             &false_storage,
             on_false.layout(),
         )?;
-        Self::from_storage(storage, shape, self.device())
+        Self::from_exact_owned_storage(storage, shape)
     }
 
     pub fn cat(tensors: &[&Self], dim: usize) -> Result<Self> {
@@ -654,7 +654,7 @@ impl Tensor {
             .collect();
         let output_shape = Shape::from(output_dims);
         let storage = Storage::cat(&inputs, &output_shape, dim)?;
-        Self::from_storage(storage, output_shape, first.device())
+        Self::from_exact_owned_storage(storage, output_shape)
     }
 
     pub fn stack(tensors: &[&Self], dim: usize) -> Result<Self> {
@@ -684,7 +684,7 @@ impl Tensor {
                 .map(|(storage, tensor)| (&**storage, tensor.layout()))
                 .collect();
             let storage = Storage::stack_dim0(&inputs, &output_shape)?;
-            return Self::from_storage(storage, output_shape, first.device());
+            return Self::from_exact_owned_storage(storage, output_shape);
         }
 
         let expanded: Vec<Self> = tensors

@@ -1,7 +1,7 @@
 use super::buffer::{AlignedBuffer, AlignedBufferBuilder};
-use super::utils::{BinaryElement, copy_logical};
+use super::utils::{BinaryElement, ValidatedValues, copy_logical};
 use crate::ops::BinaryOp;
-use crate::{Error, Layout, Result};
+use crate::{Error, Layout, Result, Shape};
 
 fn aligned_from_iter<T, I>(iter: I) -> Result<AlignedBuffer<T>>
 where
@@ -69,11 +69,16 @@ fn coordinates(dims: &[usize], mut linear: usize) -> Vec<usize> {
     output
 }
 
-fn row_major_index(coordinates: &[usize], dims: &[usize]) -> usize {
+fn row_major_index(coordinates: &[usize], dims: &[usize]) -> Result<usize> {
     coordinates
         .iter()
         .zip(dims)
-        .fold(0, |index, (&coordinate, &dim)| index * dim + coordinate)
+        .try_fold(0usize, |index, (&coordinate, &dim)| {
+            index
+                .checked_mul(dim)
+                .and_then(|index| index.checked_add(coordinate))
+                .ok_or(Error::StorageOutOfBounds)
+        })
 }
 
 fn physical_index(layout: &Layout, coordinates: &[usize]) -> Result<usize> {
@@ -95,14 +100,14 @@ fn physical_index(layout: &Layout, coordinates: &[usize]) -> Result<usize> {
 }
 
 fn read_index<I: IndexElement>(
-    indexes: &[I],
+    indexes: &ValidatedValues<'_, I>,
     indexes_layout: &Layout,
     coordinates: &[usize],
     size: usize,
     op: &'static str,
 ) -> Result<usize> {
     let physical = physical_index(indexes_layout, coordinates)?;
-    let index = *indexes.get(physical).ok_or(Error::StorageOutOfBounds)?;
+    let index = indexes.read(physical);
     let index = index.to_index(op)?;
     if index >= size {
         return Err(Error::InvalidIndex { op, index, size });
@@ -115,6 +120,8 @@ pub(crate) fn flip_map<T: Copy>(
     layout: &Layout,
     dims: &[usize],
 ) -> Result<AlignedBuffer<T>> {
+    let values = ValidatedValues::new(values, layout)?;
+    let output_len = layout.checked_elem_count()?;
     let mut reverse = vec![false; layout.dims().len()];
     for &dim in dims {
         if dim >= reverse.len() {
@@ -126,7 +133,7 @@ pub(crate) fn flip_map<T: Copy>(
         reverse[dim] = !reverse[dim];
     }
 
-    aligned_from_iter((0..layout.elem_count()).map(|linear| {
+    aligned_from_iter((0..output_len).map(|linear| {
         let mut coordinates = coordinates(layout.dims(), linear);
         for (axis, coordinate) in coordinates.iter_mut().enumerate() {
             if reverse[axis] {
@@ -134,7 +141,7 @@ pub(crate) fn flip_map<T: Copy>(
             }
         }
         let physical = physical_index(layout, &coordinates)?;
-        Ok(*values.get(physical).ok_or(Error::StorageOutOfBounds)?)
+        Ok(values.read(physical))
     }))
 }
 
@@ -154,10 +161,14 @@ pub fn gather_map<T: Copy, I: IndexElement>(
         });
     }
 
-    aligned_from_iter((0..indexes_layout.elem_count()).map(|linear| {
+    let values = ValidatedValues::new(values, values_layout)?;
+    let indexes = ValidatedValues::new(indexes, indexes_layout)?;
+    let output_len = indexes_layout.checked_elem_count()?;
+
+    aligned_from_iter((0..output_len).map(|linear| {
         let coordinates = coordinates(indexes_layout.dims(), linear);
         let index = read_index(
-            indexes,
+            &indexes,
             indexes_layout,
             &coordinates,
             values_layout.dims()[dim],
@@ -166,7 +177,7 @@ pub fn gather_map<T: Copy, I: IndexElement>(
         let mut source_coordinates = coordinates;
         source_coordinates[dim] = index;
         let physical = physical_index(values_layout, &source_coordinates)?;
-        Ok(*values.get(physical).ok_or(Error::StorageOutOfBounds)?)
+        Ok(values.read(physical))
     }))
 }
 
@@ -185,11 +196,13 @@ pub fn index_select_map<T: Copy, I: IndexElement>(
     }
     let mut output_dims = values_layout.dims().to_vec();
     output_dims[dim] = indexes_layout.dims()[0];
-    let output_len = output_dims.iter().product::<usize>();
+    let values = ValidatedValues::new(values, values_layout)?;
+    let indexes = ValidatedValues::new(indexes, indexes_layout)?;
+    let output_len = Shape::from(output_dims.clone()).checked_elem_count()?;
     aligned_from_iter((0..output_len).map(|linear| {
         let coordinates = coordinates(&output_dims, linear);
         let index = read_index(
-            indexes,
+            &indexes,
             indexes_layout,
             &[coordinates[dim]],
             values_layout.dims()[dim],
@@ -198,7 +211,7 @@ pub fn index_select_map<T: Copy, I: IndexElement>(
         let mut source_coordinates = coordinates;
         source_coordinates[dim] = index;
         let physical = physical_index(values_layout, &source_coordinates)?;
-        Ok(*values.get(physical).ok_or(Error::StorageOutOfBounds)?)
+        Ok(values.read(physical))
     }))
 }
 
@@ -221,11 +234,14 @@ pub fn scatter_map<T: Copy + BinaryElement, I: IndexElement>(
             rhs: source_layout.dims().to_vec(),
         });
     }
+    let indexes = ValidatedValues::new(indexes, indexes_layout)?;
+    let source = ValidatedValues::new(source, source_layout)?;
     let mut output = copy_logical(values, values_layout)?;
-    for linear in 0..source_layout.elem_count() {
+    let source_len = source_layout.checked_elem_count()?;
+    for linear in 0..source_len {
         let coordinates = coordinates(source_layout.dims(), linear);
         let index = read_index(
-            indexes,
+            &indexes,
             indexes_layout,
             &coordinates,
             values_layout.dims()[dim],
@@ -234,10 +250,8 @@ pub fn scatter_map<T: Copy + BinaryElement, I: IndexElement>(
         let source_physical = physical_index(source_layout, &coordinates)?;
         let mut target_coordinates = coordinates;
         target_coordinates[dim] = index;
-        let target = row_major_index(&target_coordinates, values_layout.dims());
-        let source_value = *source
-            .get(source_physical)
-            .ok_or(Error::StorageOutOfBounds)?;
+        let target = row_major_index(&target_coordinates, values_layout.dims())?;
+        let source_value = source.read(source_physical);
         if add {
             output.as_mut_slice()[target] =
                 T::apply(BinaryOp::Add, output.as_slice()[target], source_value)?;
@@ -269,11 +283,14 @@ pub fn index_add_map<T: Copy + BinaryElement, I: IndexElement>(
             rhs: source_layout.dims().to_vec(),
         });
     }
+    let indexes = ValidatedValues::new(indexes, indexes_layout)?;
+    let source = ValidatedValues::new(source, source_layout)?;
     let mut output = copy_logical(values, values_layout)?;
-    for linear in 0..source_layout.elem_count() {
+    let source_len = source_layout.checked_elem_count()?;
+    for linear in 0..source_len {
         let coordinates = coordinates(source_layout.dims(), linear);
         let index = read_index(
-            indexes,
+            &indexes,
             indexes_layout,
             &[coordinates[dim]],
             values_layout.dims()[dim],
@@ -282,10 +299,8 @@ pub fn index_add_map<T: Copy + BinaryElement, I: IndexElement>(
         let source_physical = physical_index(source_layout, &coordinates)?;
         let mut target_coordinates = coordinates;
         target_coordinates[dim] = index;
-        let target = row_major_index(&target_coordinates, values_layout.dims());
-        let source_value = *source
-            .get(source_physical)
-            .ok_or(Error::StorageOutOfBounds)?;
+        let target = row_major_index(&target_coordinates, values_layout.dims())?;
+        let source_value = source.read(source_physical);
         output.as_mut_slice()[target] =
             T::apply(BinaryOp::Add, output.as_slice()[target], source_value)?;
     }

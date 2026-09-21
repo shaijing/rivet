@@ -365,7 +365,7 @@ impl Storage {
 /// allocation. Empty layouts do not address any element and are therefore
 /// valid even when their offset is at the end of the allocation.
 pub(crate) fn validate_layout_for_storage(layout: &Layout, storage_len: usize) -> Result<()> {
-    if layout.elem_count() == 0 {
+    if layout.checked_elem_count()? == 0 {
         return Ok(());
     }
 

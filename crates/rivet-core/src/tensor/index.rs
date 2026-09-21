@@ -5,14 +5,14 @@ use crate::{Error, Result, Shape};
 impl Tensor {
     /// Returns an overlapping sliding-window view along `dim`.
     pub fn unfold(&self, dim: usize, size: usize, step: usize) -> Result<Self> {
-        Ok(self.from_validated_shared_storage(self.layout().unfold(dim, size, step)?))
+        self.from_validated_shared_storage(self.layout().unfold(dim, size, step)?)
     }
 
     /// Reverses values along the selected dimensions into a fresh contiguous tensor.
     pub fn flip(&self, dims: &[usize]) -> Result<Self> {
         let storage = self.storage();
         let storage = Storage::flip(&storage, self.layout(), dims)?;
-        Self::from_storage(storage, self.shape().clone(), self.device())
+        Self::from_exact_owned_storage(storage, self.shape().clone())
     }
 
     pub fn pad_with_zeros(&self, dim: usize, left: usize, right: usize) -> Result<Self> {
@@ -80,7 +80,7 @@ impl Tensor {
         )?;
         let mut dims = self.dims().to_vec();
         dims[dim] = indexes.dims()[0];
-        Self::from_storage(storage, Shape::from(dims), self.device())
+        Self::from_exact_owned_storage(storage, Shape::from(dims))
     }
 
     pub fn gather(&self, indexes: &Self, dim: usize) -> Result<Self> {
@@ -111,7 +111,7 @@ impl Tensor {
             indexes.layout(),
             dim,
         )?;
-        Self::from_storage(storage, indexes.shape().clone(), self.device())
+        Self::from_exact_owned_storage(storage, indexes.shape().clone())
     }
 
     pub fn embedding(&self, indexes: &Self) -> Result<Self> {
@@ -169,7 +169,7 @@ impl Tensor {
             dim,
             add,
         )?;
-        Self::from_storage(storage, self.shape().clone(), self.device())
+        Self::from_exact_owned_storage(storage, self.shape().clone())
     }
 
     pub fn scatter(&self, indexes: &Self, source: &Self, dim: usize) -> Result<Self> {
@@ -227,7 +227,7 @@ impl Tensor {
             source.layout(),
             dim,
         )?;
-        Self::from_storage(storage, self.shape().clone(), self.device())
+        Self::from_exact_owned_storage(storage, self.shape().clone())
     }
 
     pub fn slice_scatter(&self, source: &Self, dim: usize, start: usize) -> Result<Self> {

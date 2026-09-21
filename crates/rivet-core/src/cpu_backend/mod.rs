@@ -13,8 +13,9 @@ use crate::{DType, Error, Layout, Result, Shape, WithDType};
 use buffer::{AlignedBuffer, AlignedBufferBuilder};
 use half::{bf16, f16};
 use utils::{
-    arg_reduce_map, binary_map, binary_scalar_map, cat_map, cmp_map, cmp_scalar_map, copy_logical,
-    mean_all_map, mean_map, reduce_all_map, reduce_map, unary_map, var_map, where_map,
+    ValidatedValues, arg_reduce_map, binary_map, binary_scalar_map, cat_map, cmp_map,
+    cmp_scalar_map, copy_logical, mean_all_map, mean_map, reduce_all_map, reduce_map, unary_map,
+    var_map, where_map,
 };
 
 trait IntoAlignedBuffer<T> {
@@ -172,7 +173,7 @@ impl CpuStorage {
     /// a non-zero element offset.
     pub fn effective_alignment(&self, layout: &Layout) -> Result<usize> {
         crate::storage::validate_layout_for_storage(layout, self.len())?;
-        if layout.elem_count() == 0 {
+        if layout.checked_elem_count()? == 0 {
             return Ok(self.base_alignment());
         }
         let byte_offset = layout
@@ -230,9 +231,10 @@ impl CpuStorage {
 
     /// Materializes a logical layout into a new contiguous storage.
     pub fn to_dtype(&self, layout: &Layout, dtype: DType) -> Result<Self> {
+        crate::storage::validate_layout_for_storage(layout, self.len())?;
         macro_rules! convert {
             ($variant:ident, $ty:ty, $convert:expr) => {{
-                let mut builder = AlignedBufferBuilder::new(layout.elem_count())?;
+                let mut builder = AlignedBufferBuilder::new(layout.checked_elem_count()?)?;
                 for index in layout.strided_index() {
                     builder.write_next($convert(self.value_at(index)?.to_f64()))?;
                 }
@@ -1264,7 +1266,7 @@ impl CpuStorage {
                         }
                     }
                 }
-                let mut builder = AlignedBufferBuilder::new(output_shape.elem_count())?;
+                let mut builder = AlignedBufferBuilder::new(output_shape.checked_elem_count()?)?;
                 cat_map(&typed, output_shape.dims(), dim, |value| {
                     builder.write_next(value)
                 })?;
@@ -1292,7 +1294,7 @@ impl CpuStorage {
 
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {{
-                let mut builder = AlignedBufferBuilder::new(output_shape.elem_count())?;
+                let mut builder = AlignedBufferBuilder::new(output_shape.checked_elem_count()?)?;
                 for (storage, layout) in inputs {
                     let Self::$variant(values) = storage else {
                         return Err(Error::DTypeMismatch {
@@ -1300,17 +1302,20 @@ impl CpuStorage {
                             rhs: storage.dtype(),
                         });
                     };
-                    if layout.elem_count() == 0 {
+                    let values = ValidatedValues::new(values.as_slice(), layout)?;
+                    if layout.checked_elem_count()? == 0 {
                         continue;
                     }
                     if let Some((start, end)) = layout.contiguous_offsets() {
                         builder.extend_from_slice(
-                            values.get(start..end).ok_or(Error::StorageOutOfBounds)?,
+                            values
+                                .as_slice()
+                                .get(start..end)
+                                .ok_or(Error::StorageOutOfBounds)?,
                         )?;
                     } else {
                         for index in layout.strided_index() {
-                            builder
-                                .write_next(*values.get(index).ok_or(Error::StorageOutOfBounds)?)?;
+                            builder.write_next(values.read(index))?;
                         }
                     }
                 }
@@ -1390,7 +1395,7 @@ impl BackendDevice for CpuDevice {
     type Storage = CpuStorage;
 
     fn zeros(&self, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
-        let count = shape.elem_count();
+        let count = shape.checked_elem_count()?;
         Ok(match dtype {
             DType::U8 => CpuStorage::U8(AlignedBuffer::from_vec(vec![0; count])?),
             DType::U32 => CpuStorage::U32(AlignedBuffer::from_vec(vec![0; count])?),
@@ -1409,7 +1414,7 @@ impl BackendDevice for CpuDevice {
     }
 
     fn ones(&self, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
-        let count = shape.elem_count();
+        let count = shape.checked_elem_count()?;
         Ok(match dtype {
             DType::U8 => CpuStorage::U8(AlignedBuffer::from_vec(vec![1; count])?),
             DType::U32 => CpuStorage::U32(AlignedBuffer::from_vec(vec![1; count])?),

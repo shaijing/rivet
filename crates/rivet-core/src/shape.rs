@@ -1,3 +1,5 @@
+use crate::{Error, Result};
+
 /// The dimensions of a tensor. An empty shape represents a scalar.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Shape {
@@ -18,7 +20,19 @@ impl Shape {
     }
 
     pub fn elem_count(&self) -> usize {
-        self.dims.iter().product()
+        self.dims
+            .iter()
+            .try_fold(1usize, |count, &dim| count.checked_mul(dim))
+            .unwrap_or(usize::MAX)
+    }
+
+    /// Computes the number of logical elements without allowing overflow to
+    /// enter an allocation or shape transformation boundary.
+    pub fn checked_elem_count(&self) -> Result<usize> {
+        self.dims
+            .iter()
+            .try_fold(1usize, |count, &dim| count.checked_mul(dim))
+            .ok_or(Error::ShapeElementCountOverflow)
     }
 
     /// Row-major element strides for this shape.

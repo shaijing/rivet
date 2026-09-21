@@ -6,6 +6,9 @@ pub enum Error {
     #[error("shape mismatch: expected {expected} elements, got {actual}")]
     ShapeMismatch { expected: usize, actual: usize },
 
+    #[error("shape element count overflowed usize")]
+    ShapeElementCountOverflow,
+
     #[error("shape mismatch: lhs={lhs:?}, rhs={rhs:?}")]
     ShapeMismatchBinary { lhs: Vec<usize>, rhs: Vec<usize> },
 

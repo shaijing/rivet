@@ -5,6 +5,11 @@ use rivet_core::{
 #[test]
 fn shape_and_layout_metadata_match_candle_semantics() {
     assert_eq!(Shape::from(()).elem_count(), 1);
+    assert_eq!(Shape::from((2, 3, 4)).checked_elem_count().unwrap(), 24);
+    assert!(matches!(
+        Shape::from([usize::MAX, 2]).checked_elem_count(),
+        Err(Error::ShapeElementCountOverflow)
+    ));
     assert_eq!(Shape::from((2, 3, 4)).stride_contiguous(), vec![12, 4, 1]);
     assert_eq!(Shape::from([0, 3]).elem_count(), 0);
     assert!(Shape::from([1, 3]).is_contiguous(&[100, 1]));
@@ -28,6 +33,16 @@ fn shape_and_layout_metadata_match_candle_semantics() {
         .unwrap();
     assert_eq!(broadcast.stride(), &[0, 1]);
     assert_eq!(broadcast.storage_bounds(), Some((0, 2)));
+
+    let scalar = Tensor::from_vec(vec![1u8], (), &Device::Cpu).unwrap();
+    assert!(matches!(
+        scalar.broadcast_as([usize::MAX, 2]),
+        Err(Error::ShapeElementCountOverflow)
+    ));
+    assert!(matches!(
+        Tensor::zeros([usize::MAX, 2], DType::U8, &Device::Cpu),
+        Err(Error::ShapeElementCountOverflow)
+    ));
 }
 
 #[test]

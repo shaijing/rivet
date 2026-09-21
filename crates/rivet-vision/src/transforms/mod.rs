@@ -113,10 +113,19 @@ pub(crate) fn into_rgb_image(sample: DecodedSample, op_name: &str) -> RivetResul
                 actual: sample.image.dtype(),
             });
         };
+        let element_count = layout.checked_elem_count()?;
+        if element_count != 0 {
+            let Some((_, max_offset)) = layout.storage_bounds() else {
+                return Err(rivet_core::Error::StorageOutOfBounds);
+            };
+            if max_offset >= values.len() {
+                return Err(rivet_core::Error::StorageOutOfBounds);
+            }
+        }
         if sample.image.is_contiguous() {
             let end = layout
                 .start_offset()
-                .checked_add(layout.elem_count())
+                .checked_add(element_count)
                 .ok_or(rivet_core::Error::StorageOutOfBounds)?;
             return values
                 .get(layout.start_offset()..end)
@@ -126,10 +135,10 @@ pub(crate) fn into_rgb_image(sample: DecodedSample, op_name: &str) -> RivetResul
         layout
             .strided_index()
             .map(|index| {
-                values
-                    .get(index)
-                    .copied()
-                    .ok_or(rivet_core::Error::StorageOutOfBounds)
+                // SAFETY: the non-empty layout's maximum offset was checked
+                // against `values.len()` above; strided_index only yields
+                // offsets from that same layout.
+                Ok(unsafe { *values.get_unchecked(index) })
             })
             .collect::<Result<Vec<_>, _>>()
     })?;
@@ -178,8 +187,8 @@ mod tests {
 
     #[test]
     fn backend_bridge_reads_contiguous_view_at_storage_offset() {
-        let base = Tensor::from_vec((0..24).collect::<Vec<u8>>(), [2, 2, 2, 3], &Device::Cpu)
-            .unwrap();
+        let base =
+            Tensor::from_vec((0..24).collect::<Vec<u8>>(), [2, 2, 2, 3], &Device::Cpu).unwrap();
         let image = base.get(1).unwrap();
         assert!(image.is_contiguous());
 

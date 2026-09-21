@@ -128,7 +128,7 @@ fn cpu_storage_view(tensor: &Tensor) -> rivet_core::Result<DlpackStorageView> {
     let base_ptr = tensor.storage_base_ptr();
     let storage_len = tensor.storage_len();
     tensor.with_cpu_storage(|_, layout| {
-        if layout.elem_count() == 0 {
+        if layout.checked_elem_count()? == 0 {
             // Empty views do not dereference their data pointer. In
             // particular, their start offset may legally be one-past-end.
             return Ok(DlpackStorageView {

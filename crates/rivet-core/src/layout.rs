@@ -59,6 +59,10 @@ impl Layout {
         self.shape.elem_count()
     }
 
+    pub fn checked_elem_count(&self) -> Result<usize> {
+        self.shape.checked_elem_count()
+    }
+
     pub fn is_contiguous(&self) -> bool {
         self.shape.is_contiguous(&self.stride)
     }
