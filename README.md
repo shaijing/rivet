@@ -21,6 +21,14 @@ cargo test -j 8 -p rivet-data --lib
 cargo test -j 8 -p rivet-vision --lib
 ```
 
+The aligned-buffer microbenchmarks compare `Vec` construction and access
+paths against the exact-size builder and validated Rivet kernels at five
+scales from 3 KiB to 12 MiB:
+
+```bash
+cargo bench -j 12 -p rivet-core --bench aligned_buffer --features bench-internals
+```
+
 The image pipeline can be assembled from a dataset and compiled into a loader:
 
 ```rust

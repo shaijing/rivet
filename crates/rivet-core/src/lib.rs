@@ -1,4 +1,6 @@
 pub mod backend;
+#[cfg(feature = "bench-internals")]
+pub mod bench;
 pub mod cpu_backend;
 pub mod device;
 pub mod dtype;

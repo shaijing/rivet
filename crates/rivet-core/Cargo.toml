@@ -10,3 +10,16 @@ description = "Core tensor types, storage, layouts, and operations for Rivet"
 gemm.workspace = true
 half.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+criterion = "0.8.2"
+
+[features]
+# Makes narrowly scoped internal measurement helpers available to Criterion
+# targets without committing them to the normal public API.
+bench-internals = []
+
+[[bench]]
+name = "aligned_buffer"
+harness = false
+required-features = ["bench-internals"]
