@@ -124,4 +124,16 @@ impl ExecutionPlan {
         }
         self.apply_batch_ops(builder.finish()?)
     }
+
+    pub fn stack_and_apply_batch_results(
+        &self,
+        samples: impl IntoIterator<Item = RivetResult<DecodedSample>>,
+        capacity: usize,
+    ) -> RivetResult<ImageBatch> {
+        let mut builder = crate::batch::ImageBatchBuilder::with_capacity(capacity);
+        for sample in samples {
+            builder.push(sample?)?;
+        }
+        self.apply_batch_ops(builder.finish()?)
+    }
 }

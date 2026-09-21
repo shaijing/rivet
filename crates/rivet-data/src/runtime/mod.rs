@@ -3,7 +3,7 @@ mod reorder;
 mod work;
 
 pub use pool::WorkerPool;
-pub use reorder::{PendingBatch, PrefetchCoordinator};
+pub use reorder::{PendingBatch, PendingSamples, PrefetchCoordinator};
 pub use work::{WorkItem, WorkResult};
 
 #[derive(Debug, thiserror::Error)]

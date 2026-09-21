@@ -4,8 +4,47 @@ use std::collections::BTreeMap;
 
 /// One in-flight logical batch being filled by workers.
 pub struct PendingBatch<R> {
+    batch_id: u64,
     samples: Vec<Option<R>>,
     remaining: usize,
+}
+
+/// Consumes the completed slots of a pending batch without rebuilding them
+/// into a second `Vec<R>`.
+pub struct PendingSamples<R> {
+    batch_id: u64,
+    next_position: usize,
+    samples: std::vec::IntoIter<Option<R>>,
+}
+
+impl<R> PendingBatch<R> {
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    pub fn into_results(self) -> PendingSamples<R> {
+        PendingSamples {
+            batch_id: self.batch_id,
+            next_position: 0,
+            samples: self.samples.into_iter(),
+        }
+    }
+}
+
+impl<R> Iterator for PendingSamples<R> {
+    type Item = RuntimeResult<R>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let position = self.next_position;
+        let sample = self.samples.next()?;
+        self.next_position += 1;
+        Some(sample.ok_or_else(|| {
+            runtime_error(format!(
+                "missing result position {position} for batch {}",
+                self.batch_id
+            ))
+        }))
+    }
 }
 
 /// Tracks submitted-but-not-yet-delivered batches so several batches can run
@@ -58,6 +97,7 @@ impl<R> PrefetchCoordinator<R> {
         self.pending.insert(
             batch_id,
             PendingBatch {
+                batch_id,
                 samples: std::iter::repeat_with(|| None)
                     .take(indices.len())
                     .collect(),
@@ -98,7 +138,7 @@ impl<R> PrefetchCoordinator<R> {
     }
 
     /// Take the next completed batch in submission order.
-    pub fn take_ready(&mut self) -> RuntimeResult<Option<Vec<R>>> {
+    pub fn take_ready(&mut self) -> RuntimeResult<Option<PendingBatch<R>>> {
         let batch_id = self.next_deliver_id;
         let Some(batch) = self.pending.get(&batch_id) else {
             return Ok(None);
@@ -113,19 +153,7 @@ impl<R> PrefetchCoordinator<R> {
         self.in_flight -= 1;
         self.next_deliver_id += 1;
 
-        let samples = batch
-            .samples
-            .into_iter()
-            .enumerate()
-            .map(|(position, sample)| {
-                sample.ok_or_else(|| {
-                    runtime_error(format!(
-                        "missing result position {position} for batch {batch_id}"
-                    ))
-                })
-            })
-            .collect::<RuntimeResult<Vec<_>>>()?;
-        Ok(Some(samples))
+        Ok(Some(batch))
     }
 }
 
@@ -139,6 +167,7 @@ mod tests {
         coordinator.pending.insert(
             0,
             PendingBatch {
+                batch_id: 0,
                 samples: std::iter::repeat_with(|| None).take(2).collect(),
                 remaining: 2,
             },
@@ -158,6 +187,7 @@ mod tests {
         coordinator.pending.insert(
             0,
             PendingBatch {
+                batch_id: 0,
                 samples: vec![Some(10), Some(11)],
                 remaining: 0,
             },
@@ -165,14 +195,31 @@ mod tests {
         coordinator.pending.insert(
             1,
             PendingBatch {
+                batch_id: 1,
                 samples: vec![Some(20)],
                 remaining: 0,
             },
         );
         coordinator.in_flight = 2;
 
-        assert_eq!(coordinator.take_ready().unwrap(), Some(vec![10, 11]));
-        assert_eq!(coordinator.take_ready().unwrap(), Some(vec![20]));
+        let first = coordinator.take_ready().unwrap().unwrap();
+        assert_eq!(first.len(), 2);
+        assert_eq!(
+            first
+                .into_results()
+                .collect::<super::RuntimeResult<Vec<_>>>()
+                .unwrap(),
+            vec![10, 11]
+        );
+        let second = coordinator.take_ready().unwrap().unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(
+            second
+                .into_results()
+                .collect::<super::RuntimeResult<Vec<_>>>()
+                .unwrap(),
+            vec![20]
+        );
         assert_eq!(coordinator.take_ready().unwrap(), None);
     }
 }

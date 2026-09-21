@@ -199,6 +199,35 @@ impl Tensor {
         f(cpu_storage, self.layout())
     }
 
+    /// Reads one element from a rank-1 tensor without constructing a scalar
+    /// view or allocating a temporary vector.
+    pub fn read_scalar_at<T: WithDType>(&self, index: usize) -> Result<T> {
+        if self.rank() != 1 {
+            return Err(Error::InvalidRank {
+                expected: 1,
+                actual: self.rank(),
+            });
+        }
+        if index >= self.dims()[0] {
+            return Err(Error::StorageOutOfBounds);
+        }
+        let physical_index = self
+            .layout()
+            .start_offset()
+            .checked_add(
+                index
+                    .checked_mul(self.stride()[0])
+                    .ok_or(Error::StorageOutOfBounds)?,
+            )
+            .ok_or(Error::StorageOutOfBounds)?;
+        self.with_cpu_storage(|storage, _| {
+            T::cpu_storage_ref_as_slice(storage)?
+                .get(physical_index)
+                .copied()
+                .ok_or(Error::StorageOutOfBounds)
+        })
+    }
+
     pub fn to_vec0<T: WithDType>(&self) -> Result<T> {
         self.to_scalar()
     }

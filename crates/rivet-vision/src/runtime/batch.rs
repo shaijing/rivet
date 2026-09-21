@@ -11,6 +11,14 @@ pub(super) fn finish_samples(
     plan.stack_and_apply_batch_ops(samples, capacity)
 }
 
+pub(super) fn finish_sample_results(
+    plan: &ExecutionPlan,
+    samples: impl IntoIterator<Item = RivetResult<DecodedSample>>,
+    capacity: usize,
+) -> RivetResult<ImageBatch> {
+    plan.stack_and_apply_batch_results(samples, capacity)
+}
+
 pub(super) fn next_batch_inline(
     plan: &ExecutionPlan,
     sampler: &mut IndexSampler,

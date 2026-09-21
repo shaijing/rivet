@@ -5,7 +5,7 @@ use crate::{Error, Result, Shape};
 impl Tensor {
     /// Returns an overlapping sliding-window view along `dim`.
     pub fn unfold(&self, dim: usize, size: usize, step: usize) -> Result<Self> {
-        self.from_shared_storage(self.layout().unfold(dim, size, step)?)
+        Ok(self.from_validated_shared_storage(self.layout().unfold(dim, size, step)?))
     }
 
     /// Reverses values along the selected dimensions into a fresh contiguous tensor.

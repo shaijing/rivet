@@ -69,12 +69,8 @@ impl DenseImageMemoryDataset {
     }
 
     fn get_one(&self, index: usize) -> RivetResult<DecodedSample> {
-        let image = self.images.narrow(0, index, 1)?.squeeze(0)?;
-        let label = self
-            .labels
-            .narrow(0, index, 1)?
-            .squeeze(0)?
-            .to_vec0::<i64>()?;
+        let image = self.images.get(index)?;
+        let label = self.labels.read_scalar_at::<i64>(index)?;
         Ok(DecodedSample { image, label })
     }
 }

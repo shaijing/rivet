@@ -6,7 +6,40 @@ impl Tensor {
         if self.dims().get(dim).copied() == Some(len) && start == 0 {
             return Ok(self.clone());
         }
-        self.from_shared_storage(self.layout().narrow(dim, start, len)?)
+        Ok(self.from_validated_shared_storage(self.layout().narrow(dim, start, len)?))
+    }
+
+    /// Returns one row of the first dimension without constructing an
+    /// intermediate singleton view.
+    pub(crate) fn row_view(&self, index: usize) -> Result<Self> {
+        let dim_size = self.dims().first().copied().ok_or(Error::InvalidRank {
+            expected: 1,
+            actual: self.rank(),
+        })?;
+        if index >= dim_size {
+            return Err(Error::InvalidNarrow {
+                dim: 0,
+                start: index,
+                len: 1,
+                dim_size,
+            });
+        }
+
+        let offset = self
+            .layout()
+            .start_offset()
+            .checked_add(
+                index
+                    .checked_mul(self.stride()[0])
+                    .ok_or(Error::StorageOutOfBounds)?,
+            )
+            .ok_or(Error::StorageOutOfBounds)?;
+        let layout = Layout::new(
+            Shape::from(self.dims()[1..].to_vec()),
+            self.stride()[1..].to_vec(),
+            offset,
+        )?;
+        Ok(self.from_validated_shared_storage(layout))
     }
 
     /// Returns the slice at index `i` on the first dimension.
@@ -14,7 +47,11 @@ impl Tensor {
         if self.rank() == 0 {
             return Ok(self.clone());
         }
-        self.narrow(0, i, 1)?.reshape(&self.dims()[1..])
+        if self.is_contiguous() {
+            self.row_view(i)
+        } else {
+            self.narrow(0, i, 1)?.reshape(&self.dims()[1..])
+        }
     }
 
     /// Returns the slice at `index` on `dim`, removing that dimension.
@@ -23,11 +60,11 @@ impl Tensor {
     }
 
     pub fn transpose(&self, dim1: usize, dim2: usize) -> Result<Self> {
-        self.from_shared_storage(self.layout().transpose(dim1, dim2)?)
+        Ok(self.from_validated_shared_storage(self.layout().transpose(dim1, dim2)?))
     }
 
     pub fn permute(&self, dims: &[usize]) -> Result<Self> {
-        self.from_shared_storage(self.layout().permute(dims)?)
+        Ok(self.from_validated_shared_storage(self.layout().permute(dims)?))
     }
 
     /// Swaps the last two dimensions.
@@ -45,7 +82,7 @@ impl Tensor {
     where
         S: Into<Shape>,
     {
-        self.from_shared_storage(self.layout().broadcast_as(shape.into())?)
+        Ok(self.from_validated_shared_storage(self.layout().broadcast_as(shape.into())?))
     }
 
     /// Inserts broadcast dimensions on the left of the current shape.
@@ -71,12 +108,12 @@ impl Tensor {
         if layout == *self.layout() {
             Ok(self.clone())
         } else {
-            self.from_shared_storage(layout)
+            Ok(self.from_validated_shared_storage(layout))
         }
     }
 
     pub fn unsqueeze(&self, dim: usize) -> Result<Self> {
-        self.from_shared_storage(self.layout().unsqueeze(dim)?)
+        Ok(self.from_validated_shared_storage(self.layout().unsqueeze(dim)?))
     }
 
     pub fn reshape<S>(&self, shape: S) -> Result<Self>
@@ -91,10 +128,12 @@ impl Tensor {
             });
         }
         if self.is_contiguous() {
-            return self.from_shared_storage(Layout::contiguous_with_offset(
-                shape,
-                self.layout().start_offset(),
-            ));
+            return Ok(
+                self.from_validated_shared_storage(Layout::contiguous_with_offset(
+                    shape,
+                    self.layout().start_offset(),
+                )),
+            );
         }
         self.contiguous()?.reshape(shape)
     }

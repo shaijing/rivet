@@ -121,13 +121,17 @@ impl Tensor {
         })))
     }
 
-    pub(super) fn from_shared_storage(&self, layout: Layout) -> Result<Self> {
-        Self::from_parts(
-            Arc::clone(&self.0.storage),
+    /// Creates a view from a layout derived from this tensor's already-valid
+    /// layout. Callers must only pass layouts produced by checked view
+    /// transformations such as narrow, permute, or reshape.
+    pub(super) fn from_validated_shared_storage(&self, layout: Layout) -> Self {
+        Self(Arc::new(Tensor_ {
+            id: super::TensorId::new(),
+            storage: Arc::clone(&self.0.storage),
             layout,
-            self.0.dtype,
-            self.0.device.clone(),
-        )
+            dtype: self.0.dtype,
+            device: self.0.device.clone(),
+        }))
     }
 
     /// Creates a tensor from an owned, exactly-sized storage allocation.
