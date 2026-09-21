@@ -125,6 +125,38 @@ impl Tensor {
             .saturating_mul(self.dtype().size_in_bytes())
     }
 
+    /// Number of elements in the backing allocation, including elements
+    /// outside this view's logical region.
+    pub fn storage_len(&self) -> usize {
+        self.storage().len()
+    }
+
+    /// Returns the backing allocation base address.
+    ///
+    /// The pointer is valid only while this tensor keeps the backing storage
+    /// alive. For an empty storage it is dangling and must not be dereferenced.
+    pub fn storage_base_ptr(&self) -> *const u8 {
+        match self.storage() {
+            Storage::Cpu(storage) => storage.base_ptr(),
+        }
+    }
+
+    /// Returns the alignment guaranteed for the backing allocation.
+    pub fn storage_alignment(&self) -> usize {
+        match self.storage() {
+            Storage::Cpu(storage) => storage.base_alignment(),
+        }
+    }
+
+    /// Returns the guaranteed alignment of this view's first logical element.
+    /// A non-zero view offset can reduce alignment even when its backing
+    /// allocation remains highly aligned.
+    pub fn effective_alignment(&self) -> Result<usize> {
+        match self.storage() {
+            Storage::Cpu(storage) => storage.effective_alignment(self.layout()),
+        }
+    }
+
     /// Returns whether two tensor handles refer to the same backing storage.
     pub fn same_storage(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0.storage, &other.0.storage)

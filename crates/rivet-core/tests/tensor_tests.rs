@@ -1,4 +1,6 @@
-use rivet_core::{CpuStorageRef, DType, Device, Error, Layout, Shape, Tensor};
+use rivet_core::{
+    CPU_STORAGE_ALIGNMENT, CpuStorageRef, DType, Device, Error, Layout, Shape, Tensor,
+};
 
 #[test]
 fn shape_and_layout_metadata_match_candle_semantics() {
@@ -727,6 +729,33 @@ fn phase_gemm_rank2_f32_produces_fresh_contiguous_output() {
         shared_result.to_vec::<f32>().unwrap(),
         [22.0, 28.0, 49.0, 64.0]
     );
+
+    let offset_base = Tensor::from_vec(
+        (0..9).map(|value| value as f32).collect(),
+        (3, 3),
+        &Device::Cpu,
+    )
+    .unwrap();
+    let offset_lhs = offset_base.narrow(0, 1, 2).unwrap();
+    let offset_rhs =
+        Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0, 1.0, 1.0], (3, 2), &Device::Cpu).unwrap();
+    assert_eq!(offset_lhs.storage_alignment(), CPU_STORAGE_ALIGNMENT);
+    assert_eq!(offset_lhs.effective_alignment().unwrap(), 4);
+    assert_eq!(
+        offset_lhs.storage_base_ptr(),
+        offset_base.storage_base_ptr()
+    );
+    assert_eq!(
+        offset_lhs
+            .matmul(&offset_rhs)
+            .unwrap()
+            .to_vec::<f32>()
+            .unwrap(),
+        [8.0, 9.0, 14.0, 15.0]
+    );
+
+    let empty = Tensor::zeros((0, 3), DType::F32, &Device::Cpu).unwrap();
+    assert_eq!(empty.effective_alignment().unwrap(), CPU_STORAGE_ALIGNMENT);
 }
 
 #[test]

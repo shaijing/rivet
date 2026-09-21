@@ -10,6 +10,7 @@ pub mod storage;
 pub mod strided_index;
 pub mod tensor;
 
+pub use cpu_backend::CPU_STORAGE_ALIGNMENT;
 pub use cpu_backend::{CpuDevice, CpuStorage, CpuStorageMutRef, CpuStorageRef};
 pub use device::{Device, DeviceLocation};
 pub use dtype::{DType, ExactOutput, WithDType};

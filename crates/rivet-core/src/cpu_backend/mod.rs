@@ -4,6 +4,8 @@ pub(crate) mod math;
 pub(crate) mod matmul;
 pub mod utils;
 
+pub use buffer::CPU_STORAGE_ALIGNMENT;
+
 use crate::backend::{BackendDevice, BackendStorage};
 use crate::dtype::IntoCpuStorageBuffer;
 use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
@@ -129,6 +131,58 @@ impl CpuStorage {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Returns the backing allocation base address.
+    ///
+    /// For an empty storage no allocation exists, so the returned dangling
+    /// address must not be dereferenced. Non-empty Rivet-owned allocations
+    /// satisfy [`CPU_STORAGE_ALIGNMENT`].
+    pub fn base_ptr(&self) -> *const u8 {
+        match self {
+            Self::U8(data) => data.base_ptr(),
+            Self::U32(data) => data.base_ptr(),
+            Self::I16(data) => data.base_ptr(),
+            Self::I32(data) => data.base_ptr(),
+            Self::I64(data) => data.base_ptr(),
+            Self::BF16(data) => data.base_ptr(),
+            Self::F16(data) => data.base_ptr(),
+            Self::F32(data) => data.base_ptr(),
+            Self::F64(data) => data.base_ptr(),
+        }
+    }
+
+    /// Returns the alignment guaranteed for the backing allocation.
+    pub fn base_alignment(&self) -> usize {
+        match self {
+            Self::U8(data) => data.alignment(),
+            Self::U32(data) => data.alignment(),
+            Self::I16(data) => data.alignment(),
+            Self::I32(data) => data.alignment(),
+            Self::I64(data) => data.alignment(),
+            Self::BF16(data) => data.alignment(),
+            Self::F16(data) => data.alignment(),
+            Self::F32(data) => data.alignment(),
+            Self::F64(data) => data.alignment(),
+        }
+    }
+
+    /// Returns the guaranteed alignment of the first logical element in a
+    /// view. This can be lower than [`Self::base_alignment`] when the view has
+    /// a non-zero element offset.
+    pub fn effective_alignment(&self, layout: &Layout) -> Result<usize> {
+        crate::storage::validate_layout_for_storage(layout, self.len())?;
+        if layout.elem_count() == 0 {
+            return Ok(self.base_alignment());
+        }
+        let byte_offset = layout
+            .start_offset()
+            .checked_mul(self.dtype().size_in_bytes())
+            .ok_or(Error::StorageOutOfBounds)?;
+        Ok(buffer::alignment_after_offset(
+            self.base_alignment(),
+            byte_offset,
+        ))
     }
 
     pub fn as_ref(&self) -> CpuStorageRef<'_> {

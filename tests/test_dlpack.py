@@ -136,10 +136,10 @@ def test_jax_dlpack_is_shared_and_repeatable(tmp_path: Path) -> None:
     producer = loader.next_dlpack()["images"]
     cpu = jax.devices("cpu")[0]
 
-    # JAX may copy CPU buffers that do not meet its 64-byte alignment
-    # requirement; the producer itself must still remain repeatable.
-    first = jax.dlpack.from_dlpack(producer, device=cpu, copy=None)
-    second = jax.dlpack.from_dlpack(producer, device=cpu, copy=None)
+    # This is a materialized contiguous tensor with byte_offset == 0 and a
+    # 256-byte aligned backing allocation, so JAX must accept copy=False.
+    first = jax.dlpack.from_dlpack(producer, device=cpu, copy=False)
+    second = jax.dlpack.from_dlpack(producer, device=cpu, copy=False)
     expected = pixels[None, ...]
     np.testing.assert_array_equal(np.asarray(first), expected)
     np.testing.assert_array_equal(np.asarray(second), expected)

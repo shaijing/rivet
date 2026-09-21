@@ -1,6 +1,6 @@
 use crate::dtype;
 use pyo3::{ffi, prelude::*};
-use rivet_core::{CpuStorageRef, ExclusiveTensor, Tensor};
+use rivet_core::{ExclusiveTensor, Tensor};
 use std::ffi::{c_char, c_void};
 
 const DLTENSOR: &[u8] = b"dltensor\0";
@@ -125,19 +125,9 @@ unsafe extern "C" fn capsule_destructor(capsule: *mut ffi::PyObject) {
 
 fn cpu_storage_view(tensor: &Tensor) -> rivet_core::Result<DlpackStorageView> {
     let itemsize = tensor.dtype().size_in_bytes();
-    tensor.with_cpu_storage(|storage, layout| {
-        let (base_ptr, storage_len): (*const u8, usize) = match storage {
-            CpuStorageRef::U8(values) => (values.as_ptr().cast(), values.len()),
-            CpuStorageRef::U32(values) => (values.as_ptr().cast(), values.len()),
-            CpuStorageRef::I16(values) => (values.as_ptr().cast(), values.len()),
-            CpuStorageRef::I32(values) => (values.as_ptr().cast(), values.len()),
-            CpuStorageRef::I64(values) => (values.as_ptr().cast(), values.len()),
-            CpuStorageRef::BF16(values) => (values.as_ptr().cast(), values.len()),
-            CpuStorageRef::F16(values) => (values.as_ptr().cast(), values.len()),
-            CpuStorageRef::F32(values) => (values.as_ptr().cast(), values.len()),
-            CpuStorageRef::F64(values) => (values.as_ptr().cast(), values.len()),
-        };
-
+    let base_ptr = tensor.storage_base_ptr();
+    let storage_len = tensor.storage_len();
+    tensor.with_cpu_storage(|_, layout| {
         if layout.elem_count() == 0 {
             // Empty views do not dereference their data pointer. In
             // particular, their start offset may legally be one-past-end.
@@ -492,12 +482,8 @@ mod tests {
                 unsafe { std::slice::from_raw_parts(permuted.strides, 3) },
                 &[1, 12, 4]
             );
-            let base_pointer = base
-                .with_cpu_storage(|storage, _| match storage {
-                    CpuStorageRef::U8(values) => Ok(values.as_ptr().cast_mut().cast()),
-                    _ => unreachable!(),
-                })
-                .unwrap();
+            let base_pointer = base.storage_base_ptr().cast_mut().cast();
+            assert_eq!(base.storage_alignment(), rivet_core::CPU_STORAGE_ALIGNMENT);
             assert_eq!(permuted.data, base_pointer);
             assert_eq!(permuted.byte_offset, 0);
             drop(permuted_capsule);
@@ -514,6 +500,20 @@ mod tests {
             assert_eq!(narrow.data, base_pointer);
             assert_eq!(narrow.byte_offset, 4);
             drop(narrow_capsule);
+
+            let f32_base =
+                Tensor::from_vec((0..8).map(|value| value as f32).collect(), 8, &Device::Cpu)
+                    .unwrap();
+            let f32_view = f32_base.narrow(0, 1, 4).unwrap();
+            assert_eq!(f32_view.storage_base_ptr(), f32_base.storage_base_ptr());
+            assert_eq!(f32_view.effective_alignment().unwrap(), 4);
+            let (f32_capsule, f32_tensor) = capsule_tensor(py, f32_view);
+            assert_eq!(
+                f32_tensor.data,
+                f32_base.storage_base_ptr().cast_mut().cast()
+            );
+            assert_eq!(f32_tensor.byte_offset, std::mem::size_of::<f32>() as u64);
+            drop(f32_capsule);
 
             let broadcast = Tensor::from_vec(vec![1u8, 2, 3], (1, 3), &Device::Cpu)
                 .unwrap()

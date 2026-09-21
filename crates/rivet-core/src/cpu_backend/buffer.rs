@@ -5,7 +5,7 @@ use std::ops::Deref;
 use std::ptr::{self, NonNull};
 
 /// Alignment guaranteed for every non-empty Rivet-owned CPU allocation.
-pub(crate) const CPU_STORAGE_ALIGNMENT: usize = 256;
+pub const CPU_STORAGE_ALIGNMENT: usize = 256;
 
 /// A fixed-length, fully initialized, immutable-after-publication allocation.
 ///
@@ -52,6 +52,10 @@ impl<T> AlignedBuffer<T> {
 
     pub(crate) fn as_ptr(&self) -> *const T {
         self.ptr.as_ptr()
+    }
+
+    pub(crate) fn base_ptr(&self) -> *const u8 {
+        self.as_ptr().cast()
     }
 
     pub(crate) fn as_slice(&self) -> &[T] {
@@ -241,6 +245,13 @@ impl<T> Drop for AlignedBufferBuilder<T> {
 
 fn allocation_alignment<T>() -> usize {
     CPU_STORAGE_ALIGNMENT.max(mem::align_of::<T>())
+}
+
+pub(crate) fn alignment_after_offset(base_alignment: usize, byte_offset: usize) -> usize {
+    if byte_offset == 0 {
+        return base_alignment;
+    }
+    base_alignment.min(byte_offset & byte_offset.wrapping_neg())
 }
 
 fn allocation_layout<T>(len: usize) -> Result<Layout> {
