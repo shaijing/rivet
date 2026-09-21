@@ -262,13 +262,46 @@ unsafe fn allocation_layout_unchecked<T>(len: usize) -> Layout {
 mod tests {
     use super::{AlignedBuffer, AlignedBufferBuilder, CPU_STORAGE_ALIGNMENT};
     use crate::Error;
+    use half::{bf16, f16};
+    use std::fmt::Debug;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::{Arc, atomic::AtomicUsize, atomic::Ordering};
+
+    fn assert_dtype<T>(sample: T)
+    where
+        T: Copy + Debug + PartialEq,
+    {
+        let lengths = [0, 1, 2, 3, 31, 32, 63, 64, 65, 1024];
+        for len in lengths {
+            let values = vec![sample; len];
+            let from_slice = AlignedBuffer::from_slice(&values).unwrap();
+            assert_eq!(from_slice.len(), len);
+            assert_eq!(from_slice.as_slice(), values.as_slice());
+            assert_eq!(from_slice.alignment(), CPU_STORAGE_ALIGNMENT);
+            assert!(from_slice.is_aligned_to(CPU_STORAGE_ALIGNMENT));
+            if len > 0 {
+                assert!(!from_slice.is_aligned_to(0));
+            }
+
+            let from_vec = AlignedBuffer::from_vec(values.clone()).unwrap();
+            assert_eq!(from_vec.as_slice(), values.as_slice());
+
+            let cloned = from_slice.try_clone().unwrap();
+            assert_eq!(cloned.as_slice(), values.as_slice());
+        }
+    }
 
     #[test]
-    fn aligned_buffer_preserves_values_and_alignment() {
-        let buffer = AlignedBuffer::from_slice(&[1u8, 2, 3, 4]).unwrap();
-        assert_eq!(buffer.as_slice(), &[1, 2, 3, 4]);
-        assert_eq!(buffer.alignment(), CPU_STORAGE_ALIGNMENT);
-        assert!(buffer.is_aligned_to(CPU_STORAGE_ALIGNMENT));
+    fn every_supported_dtype_preserves_values_and_alignment() {
+        assert_dtype(7u8);
+        assert_dtype(7u32);
+        assert_dtype(7i16);
+        assert_dtype(7i32);
+        assert_dtype(7i64);
+        assert_dtype(bf16::from_f32(7.0));
+        assert_dtype(f16::from_f32(7.0));
+        assert_dtype(7.0f32);
+        assert_dtype(7.0f64);
     }
 
     #[test]
@@ -284,8 +317,14 @@ mod tests {
     fn empty_buffer_does_not_allocate() {
         let buffer = AlignedBuffer::<u64>::from_slice(&[]).unwrap();
         assert!(buffer.is_empty());
+        assert_eq!(buffer.len(), 0);
         assert!(buffer.as_slice().is_empty());
         assert!(buffer.is_aligned_to(CPU_STORAGE_ALIGNMENT));
+
+        let mut builder = AlignedBufferBuilder::<u64>::new(0).unwrap();
+        builder.extend_from_slice(&[]).unwrap();
+        assert_eq!(builder.remaining(), 0);
+        assert!(builder.finish().unwrap().is_empty());
     }
 
     #[test]
@@ -303,6 +342,12 @@ mod tests {
         let mut full = AlignedBufferBuilder::<u8>::new(1).unwrap();
         full.write_next(1).unwrap();
         assert!(matches!(full.write_next(2), Err(Error::StorageOutOfBounds)));
+
+        let mut bulk = AlignedBufferBuilder::<u8>::new(2).unwrap();
+        assert!(matches!(
+            bulk.extend_from_slice(&[1, 2, 3]),
+            Err(Error::StorageOutOfBounds)
+        ));
     }
 
     #[test]
@@ -315,5 +360,55 @@ mod tests {
             AlignedBufferBuilder::<u64>::new(usize::MAX),
             Err(Error::StorageOutOfBounds | Error::AllocationFailed { .. })
         ));
+    }
+
+    #[derive(Debug)]
+    struct DropProbe(Arc<AtomicUsize>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn builder_and_finished_buffer_drop_initialized_values() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        {
+            let mut builder = AlignedBufferBuilder::<DropProbe>::new(3).unwrap();
+            for _ in 0..2 {
+                builder.write_next(DropProbe(Arc::clone(&drops))).unwrap();
+            }
+        }
+        assert_eq!(drops.load(Ordering::Relaxed), 2);
+
+        {
+            let mut builder = AlignedBufferBuilder::<DropProbe>::new(2).unwrap();
+            for _ in 0..2 {
+                builder.write_next(DropProbe(Arc::clone(&drops))).unwrap();
+            }
+            let buffer = builder.finish().unwrap();
+            assert_eq!(drops.load(Ordering::Relaxed), 2);
+            drop(buffer);
+        }
+        assert_eq!(drops.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn builder_drop_is_panic_safe_for_initialized_prefix() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let panic_result = catch_unwind(AssertUnwindSafe({
+            let drops = Arc::clone(&drops);
+            move || {
+                let mut builder = AlignedBufferBuilder::<DropProbe>::new(2).unwrap();
+                builder
+                    .write_next(DropProbe(drops))
+                    .expect("first write should fit");
+                panic!("abort construction");
+            }
+        }));
+
+        assert!(panic_result.is_err());
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
     }
 }
