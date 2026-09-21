@@ -1,9 +1,9 @@
 use super::builder::ImagePipeline;
 use super::op::{
-    compile_sampler, BatchKernel, CompiledNormalize, CompiledSampleOp, ExecutionKind,
-    ExecutionPlan, ImageOp, IndexOp, PipelineImageState, SampleKernel,
+    BatchKernel, CompiledNormalize, CompiledProgram, CompiledSampleOp, ExecutionKind,
+    ExecutionPlan, ImageOp, IndexOp, PipelineImageState, SampleKernel, compile_sampler,
 };
-use crate::errors::{invalid_pipeline, RivetResult};
+use crate::errors::{RivetResult, invalid_pipeline};
 use crate::runtime::ImageDataLoader;
 use crate::sample::image::ImageAxisOrder;
 use crate::sampler::IndexSampler;
@@ -156,13 +156,10 @@ fn compile_image_ops(
                     )));
                 }
                 let input_state = state;
-                state = op.transition(input_state)?;
-                let random_key = assign_random_key(&op, &mut random_occurrences);
-                sample_ops.push(CompiledSampleOp {
-                    kernel: SampleKernel::Semantic(op),
-                    random_key,
-                    input_state,
-                });
+                let (compiled_op, output_state) =
+                    compile_sample_op(op, input_state, None, &mut random_occurrences)?;
+                state = output_state;
+                sample_ops.push(compiled_op);
             }
             ExecutionKind::Batch => {
                 if !batch_stage_started {
@@ -210,6 +207,131 @@ fn compile_image_ops(
     })
 }
 
+fn compile_sample_program(
+    ops: Vec<ImageOp>,
+    initial_state: PipelineImageState,
+    parent_key: OpKey,
+) -> RivetResult<(CompiledProgram, PipelineImageState)> {
+    let mut state = initial_state;
+    let mut occurrences = HashMap::<&'static str, u32>::new();
+    let mut compiled_ops = Vec::with_capacity(ops.len());
+
+    for op in ops {
+        let (compiled_op, output_state) =
+            compile_sample_op(op, state, Some(parent_key), &mut occurrences)?;
+        state = output_state;
+        compiled_ops.push(compiled_op);
+    }
+
+    Ok((CompiledProgram { ops: compiled_ops }, state))
+}
+
+fn compile_sample_op(
+    op: ImageOp,
+    input_state: PipelineImageState,
+    parent_key: Option<OpKey>,
+    occurrences: &mut HashMap<&'static str, u32>,
+) -> RivetResult<(CompiledSampleOp, PipelineImageState)> {
+    op.validate()?;
+    if op.execution_kind() != ExecutionKind::Sample {
+        return Err(invalid_pipeline(format!(
+            "{} cannot be compiled as a sample-stage operation",
+            op.name()
+        )));
+    }
+
+    let random_key = assign_random_key(&op, occurrences, parent_key);
+    let (kernel, output_state, stored_random_key) = match op {
+        ImageOp::RandomApply { probability, ops } => {
+            let key = random_key.expect("RandomApply must have a random key");
+            let (body, output_state) = compile_sample_program(ops, input_state, key)?;
+            if output_state != input_state {
+                return Err(invalid_pipeline(
+                    "RandomApply nested transforms must preserve image state",
+                ));
+            }
+            (
+                SampleKernel::RandomApply {
+                    probability,
+                    key,
+                    body,
+                },
+                input_state,
+                None,
+            )
+        }
+        ImageOp::RandomChoice { choices } => {
+            let key = random_key.expect("RandomChoice must have a random key");
+            if choices.is_empty() {
+                return Err(invalid_pipeline(
+                    "RandomChoice requires at least one choice",
+                ));
+            }
+
+            let mut branches = Vec::with_capacity(choices.len());
+            let mut output_state = None;
+            for (index, choice) in choices.into_iter().enumerate() {
+                let branch_key = key.derive(OpKey::from_parts("RandomChoiceBranch", index as u32));
+                let (branch, branch_output_state) =
+                    compile_sample_program(choice, input_state, branch_key)?;
+                if let Some(expected_state) = output_state {
+                    if expected_state != branch_output_state {
+                        return Err(invalid_pipeline(
+                            "random_choice choices must produce the same image state",
+                        ));
+                    }
+                } else {
+                    output_state = Some(branch_output_state);
+                }
+                branches.push(branch);
+            }
+
+            (
+                SampleKernel::RandomChoice { key, branches },
+                output_state.expect("RandomChoice choices cannot be empty"),
+                None,
+            )
+        }
+        ImageOp::RandomOrder { ops } => {
+            let key = random_key.expect("RandomOrder must have a random key");
+            let mut child_occurrences = HashMap::<&'static str, u32>::new();
+            let mut compiled_ops = Vec::with_capacity(ops.len());
+            for op in ops {
+                let (compiled_op, output_state) =
+                    compile_sample_op(op, input_state, Some(key), &mut child_occurrences)?;
+                if output_state != input_state {
+                    return Err(invalid_pipeline(
+                        "RandomOrder nested transforms must preserve image state",
+                    ));
+                }
+                compiled_ops.push(compiled_op);
+            }
+
+            (
+                SampleKernel::RandomOrder {
+                    key,
+                    ops: compiled_ops,
+                },
+                input_state,
+                None,
+            )
+        }
+        op => {
+            let output_state = op.transition(input_state)?;
+            (SampleKernel::Semantic(op), output_state, random_key)
+        }
+    };
+
+    Ok((
+        CompiledSampleOp {
+            kernel,
+            random_key: stored_random_key,
+            input_state,
+        },
+        output_state,
+    ))
+}
+
 fn state_axis_order(state: PipelineImageState) -> ImageAxisOrder {
     match state {
         PipelineImageState::Encoded => ImageAxisOrder::Hwc,
@@ -217,10 +339,17 @@ fn state_axis_order(state: PipelineImageState) -> ImageAxisOrder {
     }
 }
 
-fn assign_random_key(op: &ImageOp, occurrences: &mut HashMap<&'static str, u32>) -> Option<OpKey> {
+fn assign_random_key(
+    op: &ImageOp,
+    occurrences: &mut HashMap<&'static str, u32>,
+    parent_key: Option<OpKey>,
+) -> Option<OpKey> {
     let kind = op.random_key_kind()?;
     let occurrence = occurrences.entry(kind).or_default();
-    let key = OpKey::from_parts(kind, *occurrence);
+    let local_key = OpKey::from_parts(kind, *occurrence);
     *occurrence += 1;
-    Some(key)
+    Some(match parent_key {
+        Some(parent_key) => parent_key.derive(local_key),
+        None => local_key,
+    })
 }

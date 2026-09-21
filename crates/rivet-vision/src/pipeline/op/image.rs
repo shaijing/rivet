@@ -1,5 +1,5 @@
 use super::context::SampleContext;
-use crate::errors::{invalid_argument, invalid_pipeline, RivetResult};
+use crate::errors::{RivetResult, invalid_argument, invalid_pipeline};
 use crate::sample::image::ImageAxisOrder;
 use crate::sample::image::ImageSample;
 use crate::transforms::color::{
@@ -837,8 +837,8 @@ fn apply_sequence(
     mut state: PipelineImageState,
     parent_key: OpKey,
 ) -> RivetResult<(ImageSample, PipelineImageState)> {
-    let random_keys = nested_random_keys(ops, parent_key);
-    for (op, random_key) in ops.iter().zip(random_keys) {
+    for (index, op) in ops.iter().enumerate() {
+        let random_key = nested_random_key(ops, index, parent_key);
         sample = op.apply_sample_with_key(sample, ctx, state, random_key)?;
         state = op.transition(state)?;
     }
@@ -853,27 +853,22 @@ fn apply_ordered_sequence(
     mut state: PipelineImageState,
     parent_key: OpKey,
 ) -> RivetResult<(ImageSample, PipelineImageState)> {
-    let random_keys = nested_random_keys(ops, parent_key);
     for &index in order {
         let op = &ops[index];
-        sample = op.apply_sample_with_key(sample, ctx, state, random_keys[index])?;
+        let random_key = nested_random_key(ops, index, parent_key);
+        sample = op.apply_sample_with_key(sample, ctx, state, random_key)?;
         state = op.transition(state)?;
     }
     Ok((sample, state))
 }
 
-fn nested_random_keys(ops: &[ImageOp], parent_key: OpKey) -> Vec<Option<OpKey>> {
-    let mut occurrences = std::collections::HashMap::<&'static str, u32>::new();
-    ops.iter()
-        .map(|op| {
-            op.random_key_kind().map(|kind| {
-                let occurrence = occurrences.entry(kind).or_default();
-                let key = parent_key.derive(OpKey::from_parts(kind, *occurrence));
-                *occurrence += 1;
-                key
-            })
-        })
-        .collect()
+fn nested_random_key(ops: &[ImageOp], index: usize, parent_key: OpKey) -> Option<OpKey> {
+    let kind = ops[index].random_key_kind()?;
+    let occurrence = ops[..index]
+        .iter()
+        .filter(|op| op.random_key_kind() == Some(kind))
+        .count() as u32;
+    Some(parent_key.derive(OpKey::from_parts(kind, occurrence)))
 }
 
 fn required_rng(

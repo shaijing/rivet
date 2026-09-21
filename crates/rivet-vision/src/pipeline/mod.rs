@@ -10,7 +10,7 @@ pub use transform::{Compose, ImageTransform, TransformSequence};
 mod tests {
     use super::{ImagePipeline, TransformSequence};
     use crate::cache::DenseImageMemoryDataset;
-    use crate::pipeline::op::{ExecutionKind, PipelineImageState};
+    use crate::pipeline::op::{ExecutionKind, PipelineImageState, SampleKernel};
     use crate::sample::image::{DecodedSample, EncodedImageSample, ImageAxisOrder};
     use crate::source::ImageSource;
     use crate::transforms::Point2;
@@ -376,6 +376,43 @@ mod tests {
                 dtype: DType::U8,
                 axis_order: ImageAxisOrder::Hwc,
             }
+        );
+    }
+
+    #[test]
+    fn phase3_nested_controls_lower_to_compiled_programs() {
+        let loader = stub(1)
+            .decode_image()
+            .random_apply(
+                0.5,
+                TransformSequence::new().random_choice(vec![
+                    TransformSequence::new().brightness(2),
+                    TransformSequence::new()
+                        .random_order(TransformSequence::new().invert().contrast(1.0)),
+                ]),
+            )
+            .batch(1, false)
+            .compile()
+            .unwrap();
+
+        let SampleKernel::RandomApply { body, .. } = &loader.plan.sample_ops[1].kernel else {
+            panic!("expected RandomApply compiled kernel");
+        };
+        let SampleKernel::RandomChoice { branches, .. } = &body.ops[0].kernel else {
+            panic!("expected RandomChoice compiled kernel");
+        };
+        assert!(matches!(
+            &branches[0].ops[0].kernel,
+            SampleKernel::Semantic(_)
+        ));
+
+        let SampleKernel::RandomOrder { ops, .. } = &branches[1].ops[0].kernel else {
+            panic!("expected RandomOrder compiled kernel");
+        };
+        assert_eq!(ops.len(), 2);
+        assert!(
+            ops.iter()
+                .all(|op| matches!(&op.kernel, SampleKernel::Semantic(_)))
         );
     }
 

@@ -1,7 +1,7 @@
 use super::context::SampleContext;
 use super::image::{ImageOp, PipelineImageState};
 use super::source::SourceOp;
-use crate::errors::{invalid_pipeline, RivetResult};
+use crate::errors::{RivetResult, invalid_pipeline};
 use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageBatch, ImageSample};
 use crate::sampler::SamplerPlan;
 use crate::transforms::geometry::LayoutConfig;
@@ -42,6 +42,19 @@ pub(crate) struct CompiledNormalize {
 pub(crate) enum SampleKernel {
     Semantic(ImageOp),
     SampleNormalize(CompiledNormalize),
+    RandomApply {
+        probability: f64,
+        key: OpKey,
+        body: CompiledProgram,
+    },
+    RandomChoice {
+        key: OpKey,
+        branches: Vec<CompiledProgram>,
+    },
+    RandomOrder {
+        key: OpKey,
+        ops: Vec<CompiledSampleOp>,
+    },
 }
 
 #[derive(Clone)]
@@ -65,11 +78,29 @@ pub(crate) struct CompiledSampleOp {
     pub(crate) input_state: PipelineImageState,
 }
 
+#[derive(Clone)]
+pub(crate) struct CompiledProgram {
+    pub(crate) ops: Vec<CompiledSampleOp>,
+}
+
+impl CompiledProgram {
+    pub(crate) fn execute(
+        &self,
+        mut sample: ImageSample,
+        ctx: &SampleContext,
+    ) -> RivetResult<ImageSample> {
+        for op in &self.ops {
+            sample = op.execute(sample, ctx)?;
+        }
+        Ok(sample)
+    }
+}
+
 #[allow(dead_code)]
 impl CompiledSampleOp {
     pub(crate) fn execute(
         &self,
-        sample: ImageSample,
+        mut sample: ImageSample,
         ctx: &SampleContext,
     ) -> RivetResult<ImageSample> {
         match &self.kernel {
@@ -78,6 +109,40 @@ impl CompiledSampleOp {
             }
             SampleKernel::SampleNormalize(kernel) => {
                 kernel.config.apply_trusted(sample, kernel.input_layout)
+            }
+            SampleKernel::RandomApply {
+                probability,
+                key,
+                body,
+            } => {
+                debug_assert!(
+                    probability.is_finite() && (0.0..=1.0).contains(probability),
+                    "RandomApply probability must be finite and in [0, 1]"
+                );
+                let mut rng = ctx.stream(*key);
+                if rng.next_f64() < *probability {
+                    body.execute(sample, ctx)
+                } else {
+                    Ok(sample)
+                }
+            }
+            SampleKernel::RandomChoice { key, branches } => {
+                debug_assert!(!branches.is_empty(), "RandomChoice must have branches");
+                let mut rng = ctx.stream(*key);
+                let branch = rng.gen_range_usize(0..branches.len())?;
+                branches[branch].execute(sample, ctx)
+            }
+            SampleKernel::RandomOrder { key, ops } => {
+                let mut order: Vec<usize> = (0..ops.len()).collect();
+                let mut rng = ctx.stream(*key);
+                for index in (1..order.len()).rev() {
+                    let swap = rng.gen_range_usize(0..index + 1)?;
+                    order.swap(index, swap);
+                }
+                for index in order {
+                    sample = ops[index].execute(sample, ctx)?;
+                }
+                Ok(sample)
             }
         }
     }
@@ -90,6 +155,9 @@ impl CompiledSampleOp {
         match &self.kernel {
             SampleKernel::Semantic(op) => op.name(),
             SampleKernel::SampleNormalize(_) => "NormalizeSample",
+            SampleKernel::RandomApply { .. } => "RandomApply",
+            SampleKernel::RandomChoice { .. } => "RandomChoice",
+            SampleKernel::RandomOrder { .. } => "RandomOrder",
         }
     }
 }
