@@ -28,6 +28,7 @@ arrow-ipc.workspace = true
 bytes.workspace = true
 futures.workspace = true
 memmap2.workspace = true
+num_cpus = "1.17"
 
 [[example]]
 name = "lance"

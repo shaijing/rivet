@@ -1,6 +1,6 @@
 use super::batch::next_batch_inline;
 use super::scheduler::{next_batch_workers, validate_worker_capacity};
-use super::{ImagePrefetchCoordinator, ImageWorkerPool, runtime_error};
+use super::{runtime_error, ImagePrefetchCoordinator, ImageWorkerPool};
 use crate::errors::{RivetError, RivetResult};
 use crate::pipeline::op::ExecutionPlan;
 use crate::sample::image::ImageBatch;
@@ -152,11 +152,14 @@ impl<'a> IntoIterator for &'a mut ImageDataLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::DenseImageMemoryDataset;
     use crate::pipeline::{ImagePipeline, TransformSequence};
     use crate::sample::image::EncodedImageSample;
+    use crate::source::ImageSource;
     use arrow_buffer::Buffer;
-    use rivet_core::DType;
+    use rivet_core::{DType, Device, Tensor};
     use rivet_data::dataset::Dataset;
+    use rivet_data::random::OpKey;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // 1x1 RGB PNG (red pixel), valid input for decode_image.
@@ -286,6 +289,53 @@ mod tests {
         batch.labels.to_vec::<i64>().unwrap()
     }
 
+    fn decoded_pipeline(workers: usize) -> ImagePipeline {
+        const SAMPLES: usize = 24;
+        const HEIGHT: usize = 12;
+        const WIDTH: usize = 12;
+        const CHANNELS: usize = 3;
+        let values = (0..SAMPLES * HEIGHT * WIDTH * CHANNELS)
+            .map(|index| ((index * 17 + index / 11) % 251) as u8)
+            .collect::<Vec<_>>();
+        let images =
+            Tensor::from_vec(values, [SAMPLES, HEIGHT, WIDTH, CHANNELS], &Device::Cpu).unwrap();
+        let labels = Tensor::from_vec(
+            (0..SAMPLES).map(|index| index as i64).collect::<Vec<_>>(),
+            [SAMPLES],
+            &Device::Cpu,
+        )
+        .unwrap();
+        let dataset = DenseImageMemoryDataset::new(images, labels).unwrap();
+        ImagePipeline::from_source(ImageSource::from_dense_decoded(Arc::new(dataset)))
+            .workers(workers)
+    }
+
+    fn collect_decoded(loader: &mut ImageDataLoader) -> Vec<ImageBatch> {
+        drain(loader)
+    }
+
+    fn assert_random_op_is_worker_independent(
+        name: &str,
+        build: impl Fn(ImagePipeline) -> ImagePipeline,
+    ) {
+        let collect = |workers| {
+            let mut loader = build(decoded_pipeline(workers))
+                .seed(0x51A7)
+                .epoch(7)
+                .batch(4, false)
+                .prefetch_batches(2)
+                .compile()
+                .unwrap();
+            collect_decoded(&mut loader)
+        };
+
+        let expected = collect(0);
+        for workers in [1, 4, 8] {
+            assert_batches_equal(&expected, &collect(workers));
+            assert_eq!(expected.len(), 6, "{name} should produce all batches");
+        }
+    }
+
     #[test]
     fn workers_match_inline_order_and_content() {
         let mut inline = pipeline(37, 0).batch(8, false).compile().unwrap();
@@ -377,6 +427,107 @@ mod tests {
     }
 
     #[test]
+    fn each_random_transform_is_deterministic_across_worker_counts() {
+        assert_random_op_is_worker_independent("RandomCrop", |pipeline| {
+            pipeline.random_crop(8, 8, 2)
+        });
+        assert_random_op_is_worker_independent("RandomResizedCrop", |pipeline| {
+            pipeline.random_resized_crop(8, 8)
+        });
+        assert_random_op_is_worker_independent("RandomHorizontalFlip", |pipeline| {
+            pipeline.random_horizontal_flip(0.5)
+        });
+        assert_random_op_is_worker_independent("ColorJitter", |pipeline| {
+            pipeline.color_jitter(24, 0.7, 24)
+        });
+        assert_random_op_is_worker_independent("RandomErasing", |pipeline| {
+            pipeline.random_erasing(0.75)
+        });
+    }
+
+    #[test]
+    fn same_seed_epoch_repeats_and_new_epoch_changes_random_output() {
+        let collect = |epoch| {
+            let mut loader = decoded_pipeline(4)
+                .random_crop(8, 8, 2)
+                .random_horizontal_flip(0.5)
+                .color_jitter(24, 0.7, 24)
+                .random_erasing(0.75)
+                .seed(0xD15EA5E)
+                .epoch(epoch)
+                .batch(4, false)
+                .compile()
+                .unwrap();
+            collect_decoded(&mut loader)
+        };
+
+        let first = collect(0);
+        assert_batches_equal(&first, &collect(0));
+        assert_ne!(
+            first[0].images.to_vec::<u8>().unwrap(),
+            collect(1)[0].images.to_vec::<u8>().unwrap(),
+            "a new epoch must change stochastic output"
+        );
+    }
+
+    #[test]
+    fn nested_random_control_ops_are_deterministic_and_worker_independent() {
+        let configure = |workers, epoch| {
+            decoded_pipeline(workers)
+                .random_apply(
+                    0.75,
+                    TransformSequence::new()
+                        .random_horizontal_flip(0.5)
+                        .color_jitter(18, 0.5, 12),
+                )
+                .random_choice(vec![
+                    TransformSequence::new().random_crop(8, 8, 0),
+                    TransformSequence::new().random_crop(8, 8, 1),
+                ])
+                .random_order(TransformSequence::new().brightness(11).contrast(0.7))
+                .seed(0xA11CE)
+                .epoch(epoch)
+                .batch(4, false)
+                .prefetch_batches(3)
+        };
+
+        let collect = |workers, epoch| {
+            let mut loader = configure(workers, epoch).compile().unwrap();
+            collect_decoded(&mut loader)
+        };
+        let inline = collect(0, 4);
+        for workers in [1, 4, 8] {
+            assert_batches_equal(&inline, &collect(workers, 4));
+        }
+        assert_batches_equal(&inline, &collect(0, 4));
+        assert_ne!(
+            inline[0].images.to_vec::<u8>().unwrap(),
+            collect(0, 5)[0].images.to_vec::<u8>().unwrap()
+        );
+    }
+
+    #[test]
+    fn duplicate_random_transforms_get_distinct_namespaces() {
+        let mut loader = decoded_pipeline(0)
+            .random_crop(10, 10, 0)
+            .random_crop(8, 8, 0)
+            .seed(91)
+            .batch(4, false)
+            .compile()
+            .unwrap();
+        let keys = loader
+            .plan
+            .sample_ops
+            .iter()
+            .map(|op| op.random_key.expect("random crop key"))
+            .collect::<Vec<_>>();
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0], OpKey::from_parts("RandomCrop", 0));
+        assert_eq!(keys[1], OpKey::from_parts("RandomCrop", 1));
+        assert_eq!(collect_decoded(&mut loader)[0].images.dims(), &[4, 8, 8, 3]);
+    }
+
+    #[test]
     fn workers_preserve_skip_take_and_drop_last() {
         let mut inline = pipeline(50, 0)
             .skip(2)
@@ -465,6 +616,37 @@ mod tests {
             let pooled = drain(&mut loader);
             assert_batches_equal(&baseline, &pooled);
         }
+    }
+
+    #[test]
+    fn reordered_worker_completion_preserves_sampler_order() {
+        let mut inline = ImagePipeline::new(Arc::new(SampleDataset {
+            len: 24,
+            err_at: None,
+            panic_at: None,
+            slow_first_batch_ms: 5,
+        }))
+        .decode_image()
+        .shuffle(77)
+        .batch(4, false)
+        .compile()
+        .unwrap();
+        let expected = drain(&mut inline);
+
+        let mut pooled = ImagePipeline::new(Arc::new(SampleDataset {
+            len: 24,
+            err_at: None,
+            panic_at: None,
+            slow_first_batch_ms: 5,
+        }))
+        .decode_image()
+        .shuffle(77)
+        .workers(4)
+        .prefetch_batches(4)
+        .batch(4, false)
+        .compile()
+        .unwrap();
+        assert_batches_equal(&expected, &drain(&mut pooled));
     }
 
     #[test]

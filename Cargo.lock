@@ -4860,6 +4860,7 @@ dependencies = [
  "image",
  "lance",
  "memmap2",
+ "num_cpus",
  "rivet-core",
  "rivet-data",
  "serde",

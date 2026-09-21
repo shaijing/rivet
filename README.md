@@ -29,6 +29,15 @@ scales from 3 KiB to 12 MiB:
 cargo bench -j 12 -p rivet-core --bench aligned_buffer --features bench-internals
 ```
 
+The Phase-0 pipeline baseline records first-batch latency and steady-state
+throughput for decode, augmentation, normalization, CHW conversion, CIFAR,
+and ImageNet-style workloads across worker and prefetch settings:
+
+```bash
+cargo run -j 12 -p rivet-vision --release --no-default-features \
+  --example pipeline_baseline_bench
+```
+
 The image pipeline can be assembled from a dataset and compiled into a loader:
 
 ```rust
