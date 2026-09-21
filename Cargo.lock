@@ -4863,7 +4863,6 @@ dependencies = [
  "num_cpus",
  "rivet-core",
  "rivet-data",
- "serde",
  "thiserror 2.0.20",
  "tokio",
  "walkdir",

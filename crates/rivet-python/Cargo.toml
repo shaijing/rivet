@@ -18,8 +18,8 @@ lance = ["rivet-vision/lance"]
 [dependencies]
 arrow-buffer.workspace = true
 half.workspace = true
-numpy.workspace = true
-pyo3.workspace = true
+numpy = { version = "0.29.0", features = ["half"] }
+pyo3 = "0.29.0"
 rivet-core.workspace = true
 rivet-data.workspace = true
 rivet-vision.workspace = true
