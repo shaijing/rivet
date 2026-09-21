@@ -1,4 +1,4 @@
-use crate::errors::{RivetResult, invalid_argument, invalid_shape};
+use crate::errors::{invalid_argument, invalid_shape, RivetResult};
 use crate::sample::image::{ImageAxisOrder, ImageSample};
 use rivet_core::{CpuStorageRef, DType, Tensor};
 
@@ -56,6 +56,18 @@ impl ConvertImageDtypeConfig {
                 input.dims()
             )));
         }
+        self.convert_tensor(&input)
+    }
+
+    /// Apply a dtype conversion whose target dtype and rank were checked by
+    /// pipeline compilation.
+    pub(crate) fn apply_batch_trusted(
+        &self,
+        input: Tensor,
+        _axis_order: ImageAxisOrder,
+    ) -> RivetResult<Tensor> {
+        debug_assert!(matches!(self.dtype, DType::U8 | DType::F32));
+        debug_assert_eq!(input.rank(), 4);
         self.convert_tensor(&input)
     }
 

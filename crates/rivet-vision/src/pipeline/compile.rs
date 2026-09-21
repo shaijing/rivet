@@ -5,6 +5,7 @@ use super::op::{
 };
 use crate::errors::{invalid_pipeline, RivetResult};
 use crate::runtime::ImageDataLoader;
+use crate::sample::image::ImageAxisOrder;
 use crate::sampler::IndexSampler;
 use rivet_data::random::{OpKey, RandomContext};
 use std::collections::HashMap;
@@ -95,11 +96,14 @@ fn compile_image_ops(
             if num_workers > 0 && !sample_ops.is_empty() {
                 let sample_normalize = CompiledNormalize {
                     config: config.clone(),
+                    input_layout: state_axis_order(state),
                 };
-                state = ImageOp::Normalize(config.clone()).transition(state)?;
+                let input_state = state;
+                state = ImageOp::Normalize(config.clone()).transition(input_state)?;
                 sample_ops.push(CompiledSampleOp {
                     kernel: SampleKernel::SampleNormalize(sample_normalize),
                     random_key: None,
+                    input_state,
                 });
                 continue;
             }
@@ -123,6 +127,7 @@ fn compile_image_ops(
                 }
                 let fused = BatchKernel::NormalizeToChw(CompiledNormalize {
                     config: config.clone(),
+                    input_layout: ImageAxisOrder::Hwc,
                 });
                 state = fused.transition(state)?;
                 batch_ops.push(fused);
@@ -150,11 +155,13 @@ fn compile_image_ops(
                         op.name()
                     )));
                 }
-                state = op.transition(state)?;
+                let input_state = state;
+                state = op.transition(input_state)?;
                 let random_key = assign_random_key(&op, &mut random_occurrences);
                 sample_ops.push(CompiledSampleOp {
                     kernel: SampleKernel::Semantic(op),
                     random_key,
+                    input_state,
                 });
             }
             ExecutionKind::Batch => {
@@ -162,12 +169,20 @@ fn compile_image_ops(
                     pre_batch_state = Some(state);
                     batch_stage_started = true;
                 }
+                let input_layout = state_axis_order(state);
                 let kernel = match op {
-                    ImageOp::Normalize(config) => {
-                        BatchKernel::Normalize(CompiledNormalize { config })
-                    }
-                    ImageOp::ConvertImageDtype(config) => BatchKernel::ConvertImageDtype(config),
-                    ImageOp::Layout(config) => BatchKernel::Layout(config),
+                    ImageOp::Normalize(config) => BatchKernel::Normalize(CompiledNormalize {
+                        config,
+                        input_layout,
+                    }),
+                    ImageOp::ConvertImageDtype(config) => BatchKernel::ConvertImageDtype {
+                        config,
+                        input_layout,
+                    },
+                    ImageOp::Layout(config) => BatchKernel::Layout {
+                        config,
+                        input_layout,
+                    },
                     op => unreachable!(
                         "validated batch op has sample execution kind: {}",
                         op.name()
@@ -193,6 +208,13 @@ fn compile_image_ops(
         pre_batch_state,
         output_state,
     })
+}
+
+fn state_axis_order(state: PipelineImageState) -> ImageAxisOrder {
+    match state {
+        PipelineImageState::Encoded => ImageAxisOrder::Hwc,
+        PipelineImageState::Decoded { axis_order, .. } => axis_order,
+    }
 }
 
 fn assign_random_key(op: &ImageOp, occurrences: &mut HashMap<&'static str, u32>) -> Option<OpKey> {

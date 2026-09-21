@@ -1,4 +1,4 @@
-use crate::errors::{RivetResult, invalid_shape};
+use crate::errors::{invalid_shape, RivetResult};
 use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
 use rivet_core::Tensor;
 
@@ -51,6 +51,24 @@ impl LayoutConfig {
             )));
         }
 
+        match (input_layout, self.axis_order) {
+            (ImageAxisOrder::Hwc, ImageAxisOrder::Chw) => Ok(input.permute(&[0, 3, 1, 2])?),
+            (ImageAxisOrder::Chw, ImageAxisOrder::Hwc) => Ok(input.permute(&[0, 2, 3, 1])?),
+            _ => Ok(input),
+        }
+    }
+
+    /// Apply a layout change whose input rank and axis order were checked by
+    /// pipeline compilation.
+    pub(crate) fn apply_batch_trusted(
+        &self,
+        input: Tensor,
+        input_layout: ImageAxisOrder,
+    ) -> RivetResult<Tensor> {
+        if input_layout == self.axis_order {
+            return Ok(input);
+        }
+        debug_assert_eq!(input.rank(), 4);
         match (input_layout, self.axis_order) {
             (ImageAxisOrder::Hwc, ImageAxisOrder::Chw) => Ok(input.permute(&[0, 3, 1, 2])?),
             (ImageAxisOrder::Chw, ImageAxisOrder::Hwc) => Ok(input.permute(&[0, 2, 3, 1])?),

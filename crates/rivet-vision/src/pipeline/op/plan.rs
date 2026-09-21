@@ -35,6 +35,7 @@ impl BatchConfig {
 #[derive(Clone)]
 pub(crate) struct CompiledNormalize {
     pub(crate) config: NormalizeConfig,
+    pub(crate) input_layout: ImageAxisOrder,
 }
 
 #[derive(Clone)]
@@ -47,18 +48,40 @@ pub(crate) enum SampleKernel {
 pub(crate) enum BatchKernel {
     Normalize(CompiledNormalize),
     NormalizeToChw(CompiledNormalize),
-    ConvertImageDtype(ConvertImageDtypeConfig),
-    Layout(LayoutConfig),
+    ConvertImageDtype {
+        config: ConvertImageDtypeConfig,
+        input_layout: ImageAxisOrder,
+    },
+    Layout {
+        config: LayoutConfig,
+        input_layout: ImageAxisOrder,
+    },
 }
 
 #[derive(Clone)]
 pub(crate) struct CompiledSampleOp {
     pub(crate) kernel: SampleKernel,
     pub(crate) random_key: Option<OpKey>,
+    pub(crate) input_state: PipelineImageState,
 }
 
 #[allow(dead_code)]
 impl CompiledSampleOp {
+    pub(crate) fn execute(
+        &self,
+        sample: ImageSample,
+        ctx: &SampleContext,
+    ) -> RivetResult<ImageSample> {
+        match &self.kernel {
+            SampleKernel::Semantic(kernel) => {
+                kernel.apply_sample_compiled(sample, ctx, self.input_state, self.random_key)
+            }
+            SampleKernel::SampleNormalize(kernel) => {
+                kernel.config.apply_trusted(sample, kernel.input_layout)
+            }
+        }
+    }
+
     pub(crate) fn execution_kind(&self) -> super::image::ExecutionKind {
         super::image::ExecutionKind::Sample
     }
@@ -81,18 +104,18 @@ impl BatchKernel {
         match self {
             Self::Normalize(_) => "Normalize",
             Self::NormalizeToChw(_) => "NormalizeToChw",
-            Self::ConvertImageDtype(_) => "ConvertImageDtype",
-            Self::Layout(_) => "Layout",
+            Self::ConvertImageDtype { .. } => "ConvertImageDtype",
+            Self::Layout { .. } => "Layout",
         }
     }
 
     pub(crate) fn transition(&self, input: PipelineImageState) -> RivetResult<PipelineImageState> {
         match self {
             Self::Normalize(op) => ImageOp::Normalize(op.config.clone()).transition(input),
-            Self::ConvertImageDtype(config) => {
+            Self::ConvertImageDtype { config, .. } => {
                 ImageOp::ConvertImageDtype(config.clone()).transition(input)
             }
-            Self::Layout(config) => ImageOp::Layout(config.clone()).transition(input),
+            Self::Layout { config, .. } => ImageOp::Layout(config.clone()).transition(input),
             Self::NormalizeToChw(_) => match input {
                 PipelineImageState::Decoded {
                     dtype: DType::U8,
@@ -106,21 +129,21 @@ impl BatchKernel {
         }
     }
 
-    pub(crate) fn apply(
-        &self,
-        batch: rivet_core::Tensor,
-        input_layout: ImageAxisOrder,
-    ) -> RivetResult<rivet_core::Tensor> {
+    pub(crate) fn execute(&self, batch: rivet_core::Tensor) -> RivetResult<rivet_core::Tensor> {
         match self {
-            Self::Normalize(op) => op.config.apply_batch(batch, input_layout),
+            Self::Normalize(op) => op.config.apply_batch_trusted(batch, op.input_layout),
             Self::NormalizeToChw(op) => {
-                if input_layout != ImageAxisOrder::Hwc {
-                    return Err(invalid_pipeline("NormalizeToChw requires HWC batch input"));
-                }
-                op.config.apply_batch_to_chw(batch)
+                debug_assert_eq!(op.input_layout, ImageAxisOrder::Hwc);
+                op.config.apply_batch_to_chw_trusted(batch)
             }
-            Self::ConvertImageDtype(config) => config.apply_batch(batch, input_layout),
-            Self::Layout(config) => config.apply_batch(batch, input_layout),
+            Self::ConvertImageDtype {
+                config,
+                input_layout,
+            } => config.apply_batch_trusted(batch, *input_layout),
+            Self::Layout {
+                config,
+                input_layout,
+            } => config.apply_batch_trusted(batch, *input_layout),
         }
     }
 }
@@ -174,22 +197,8 @@ impl ExecutionPlan {
         sample_index: usize,
     ) -> RivetResult<DecodedSample> {
         let ctx = SampleContext::with_random(sample_index, self.random);
-        let mut state = self.input_state;
         for op in &self.sample_ops {
-            sample = match &op.kernel {
-                SampleKernel::Semantic(kernel) => {
-                    kernel.apply_sample_with_key(sample, &ctx, state, op.random_key)?
-                }
-                SampleKernel::SampleNormalize(kernel) => {
-                    kernel.config.apply(sample, state_axis_order(state))?
-                }
-            };
-            state = match &op.kernel {
-                SampleKernel::Semantic(kernel) => kernel.transition(state)?,
-                SampleKernel::SampleNormalize(kernel) => {
-                    ImageOp::Normalize(kernel.config.clone()).transition(state)?
-                }
-            };
+            sample = op.execute(sample, &ctx)?;
         }
 
         sample.into_decoded()
@@ -199,27 +208,20 @@ impl ExecutionPlan {
         let ImageBatch {
             mut images,
             labels,
-            axis_order: mut batch_axis_order,
+            axis_order: batch_axis_order,
         } = batch;
-        let mut state = self.pre_batch_state;
 
         for op in &self.batch_ops {
-            let input_layout = match state {
-                PipelineImageState::Decoded { axis_order, .. } => axis_order,
-                PipelineImageState::Encoded => ImageAxisOrder::Hwc,
-            };
-            debug_assert_eq!(batch_axis_order, input_layout);
-            images = op.apply(images, input_layout)?;
-            state = op.transition(state)?;
-            if let PipelineImageState::Decoded { axis_order, .. } = state {
-                batch_axis_order = axis_order;
-            }
+            images = op.execute(images)?;
         }
+
+        let output_axis_order = state_axis_order(self.output_state);
+        debug_assert_eq!(batch_axis_order, state_axis_order(self.pre_batch_state));
 
         Ok(ImageBatch {
             images,
             labels,
-            axis_order: batch_axis_order,
+            axis_order: output_axis_order,
         })
     }
 

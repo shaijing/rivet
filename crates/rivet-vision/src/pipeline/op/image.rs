@@ -462,6 +462,21 @@ impl ImageOp {
         self.apply_with_state(sample, ctx, input_state, random_key)
     }
 
+    /// Execute a sample-stage operation from a compiled plan.
+    ///
+    /// Compilation has already validated the operation kind and input state,
+    /// so the runtime path can dispatch directly to the transform without
+    /// repeating those semantic checks.
+    pub(crate) fn apply_sample_compiled(
+        &self,
+        sample: ImageSample,
+        ctx: &SampleContext,
+        input_state: PipelineImageState,
+        random_key: Option<OpKey>,
+    ) -> RivetResult<ImageSample> {
+        self.apply_with_state(sample, ctx, input_state, random_key)
+    }
+
     pub fn apply_batch(
         &self,
         batch: rivet_core::Tensor,

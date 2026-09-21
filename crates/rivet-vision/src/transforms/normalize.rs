@@ -211,6 +211,50 @@ impl NormalizeConfig {
         }))
     }
 
+    /// Apply sample normalization after the compiler has validated the
+    /// operation and input state.
+    pub(crate) fn apply_trusted(
+        &self,
+        sample: ImageSample,
+        layout: ImageAxisOrder,
+    ) -> RivetResult<ImageSample> {
+        let sample = sample.into_decoded()?;
+        debug_assert_eq!(sample.image.rank(), 3);
+        let channel_count = match layout {
+            ImageAxisOrder::Hwc => sample.image.dims()[2],
+            ImageAxisOrder::Chw => sample.image.dims()[0],
+        };
+        debug_assert!(self.mean.len() == 1 || self.mean.len() == channel_count);
+
+        let values = if sample.image.dtype() == DType::U8 {
+            let image = normalize_u8_to_f32_trusted(&sample.image, &self.mean, &self.std, layout)?;
+            return Ok(ImageSample::Decoded(DecodedSample {
+                image,
+                label: sample.label,
+            }));
+        } else if sample.image.dtype() == DType::F32 {
+            sample.image
+        } else {
+            return Err(invalid_argument(format!(
+                "normalize supports uint8 or float32 input, got {:?}",
+                sample.image.dtype()
+            )));
+        };
+
+        let stats_shape = match layout {
+            ImageAxisOrder::Hwc => [1, 1, self.mean.len()],
+            ImageAxisOrder::Chw => [self.mean.len(), 1, 1],
+        };
+        let mean = Tensor::from_vec(self.mean.clone(), stats_shape, &Device::Cpu)?;
+        let std = Tensor::from_vec(self.std.clone(), stats_shape, &Device::Cpu)?;
+        let image = values.broadcast_sub(&mean)?.broadcast_div(&std)?;
+
+        Ok(ImageSample::Decoded(DecodedSample {
+            image,
+            label: sample.label,
+        }))
+    }
+
     /// Apply normalization to a stacked rank-4 image batch.
     pub fn apply_batch(&self, input: Tensor, layout: ImageAxisOrder) -> RivetResult<Tensor> {
         self.validate_batch_input(&input, layout)?;
@@ -218,6 +262,40 @@ impl NormalizeConfig {
         let values = match input.dtype() {
             DType::U8 => {
                 return normalize_u8_batch_to_f32(&input, &self.mean, &self.std, layout);
+            }
+            DType::F32 => input,
+            dtype => {
+                return Err(invalid_argument(format!(
+                    "normalize supports uint8 or float32 input, got {:?}",
+                    dtype
+                )));
+            }
+        };
+
+        let stats_shape = match layout {
+            ImageAxisOrder::Hwc => vec![1, 1, 1, self.mean.len()],
+            ImageAxisOrder::Chw => vec![1, self.mean.len(), 1, 1],
+        };
+        let mean = Tensor::from_vec(self.mean.clone(), stats_shape.clone(), &Device::Cpu)?;
+        let std = Tensor::from_vec(self.std.clone(), stats_shape, &Device::Cpu)?;
+        Ok(values.broadcast_sub(&mean)?.broadcast_div(&std)?)
+    }
+
+    /// Apply a batch normalization whose configuration and input state were
+    /// checked by pipeline compilation.
+    pub(crate) fn apply_batch_trusted(
+        &self,
+        input: Tensor,
+        layout: ImageAxisOrder,
+    ) -> RivetResult<Tensor> {
+        debug_assert!(!self.mean.is_empty());
+        debug_assert_eq!(self.mean.len(), self.std.len());
+        debug_assert!(self.std.iter().all(|value| *value != 0.0));
+        debug_assert_eq!(input.rank(), 4);
+
+        let values = match input.dtype() {
+            DType::U8 => {
+                return normalize_u8_batch_to_f32_trusted(&input, &self.mean, &self.std, layout);
             }
             DType::F32 => input,
             dtype => {
@@ -252,6 +330,16 @@ impl NormalizeConfig {
         }
 
         normalize_u8_batch_to_nchw_f32(&input, &self.mean, &self.std)
+    }
+
+    /// Apply the fused path after compilation has established U8 NHWC input.
+    pub(crate) fn apply_batch_to_chw_trusted(&self, input: Tensor) -> RivetResult<Tensor> {
+        debug_assert!(!self.mean.is_empty());
+        debug_assert_eq!(self.mean.len(), self.std.len());
+        debug_assert!(self.std.iter().all(|value| *value != 0.0));
+        debug_assert_eq!(input.rank(), 4);
+        debug_assert_eq!(input.dtype(), DType::U8);
+        normalize_u8_batch_to_nchw_f32_trusted(&input, &self.mean, &self.std)
     }
 
     fn validate_batch_input(&self, input: &Tensor, layout: ImageAxisOrder) -> RivetResult<()> {
@@ -303,41 +391,69 @@ pub fn normalize_u8_batch_to_f32(
     std: &[f32],
     axis_order: ImageAxisOrder,
 ) -> RivetResult<Tensor> {
-    if input.dtype() != DType::U8 {
-        return Err(invalid_argument(format!(
-            "normalize_u8_batch_to_f32 requires uint8 input, got {:?}",
-            input.dtype()
-        )));
-    }
-    if input.rank() != 4 {
-        return Err(invalid_shape(format!(
-            "normalize_u8_batch_to_f32 requires a rank-4 image batch, got shape {:?}",
-            input.dims()
-        )));
-    }
-    if mean.is_empty() || std.is_empty() {
-        return Err(invalid_argument("normalize mean and std must not be empty"));
-    }
-    if mean.len() != std.len() {
-        return Err(invalid_argument(
-            "normalize mean and std must have the same length",
-        ));
-    }
-    if std.iter().any(|value| *value == 0.0) {
-        return Err(invalid_argument("normalize std values must be non-zero"));
+    normalize_u8_batch_to_f32_impl(input, mean, std, axis_order, true)
+}
+
+pub(crate) fn normalize_u8_batch_to_f32_trusted(
+    input: &Tensor,
+    mean: &[f32],
+    std: &[f32],
+    axis_order: ImageAxisOrder,
+) -> RivetResult<Tensor> {
+    normalize_u8_batch_to_f32_impl(input, mean, std, axis_order, false)
+}
+
+fn normalize_u8_batch_to_f32_impl(
+    input: &Tensor,
+    mean: &[f32],
+    std: &[f32],
+    axis_order: ImageAxisOrder,
+    validate: bool,
+) -> RivetResult<Tensor> {
+    if validate {
+        if input.dtype() != DType::U8 {
+            return Err(invalid_argument(format!(
+                "normalize_u8_batch_to_f32 requires uint8 input, got {:?}",
+                input.dtype()
+            )));
+        }
+        if input.rank() != 4 {
+            return Err(invalid_shape(format!(
+                "normalize_u8_batch_to_f32 requires a rank-4 image batch, got shape {:?}",
+                input.dims()
+            )));
+        }
+        if mean.is_empty() || std.is_empty() {
+            return Err(invalid_argument("normalize mean and std must not be empty"));
+        }
+        if mean.len() != std.len() {
+            return Err(invalid_argument(
+                "normalize mean and std must have the same length",
+            ));
+        }
+        if std.iter().any(|value| *value == 0.0) {
+            return Err(invalid_argument("normalize std values must be non-zero"));
+        }
+    } else {
+        debug_assert_eq!(input.dtype(), DType::U8);
+        debug_assert_eq!(input.rank(), 4);
+        debug_assert!(!mean.is_empty());
+        debug_assert_eq!(mean.len(), std.len());
+        debug_assert!(std.iter().all(|value| *value != 0.0));
     }
 
     let channel_count = match axis_order {
         ImageAxisOrder::Hwc => input.dims()[3],
         ImageAxisOrder::Chw => input.dims()[1],
     };
-    if mean.len() != 1 && mean.len() != channel_count {
+    if validate && mean.len() != 1 && mean.len() != channel_count {
         return Err(invalid_argument(format!(
             "normalize mean/std length must be 1 or channel count {}, got {}",
             channel_count,
             mean.len()
         )));
     }
+    debug_assert!(mean.len() == 1 || mean.len() == channel_count);
 
     let (scale, bias) = affine_params(mean, std, channel_count);
     let dims = input.dims().to_vec();
@@ -404,28 +520,53 @@ pub fn normalize_u8_batch_to_nchw_f32(
     mean: &[f32],
     std: &[f32],
 ) -> RivetResult<Tensor> {
-    if input.dtype() != DType::U8 {
-        return Err(invalid_argument(format!(
-            "normalize_u8_batch_to_nchw_f32 requires uint8 input, got {:?}",
-            input.dtype()
-        )));
-    }
-    if input.rank() != 4 {
-        return Err(invalid_shape(format!(
-            "normalize_u8_batch_to_nchw_f32 requires a rank-4 image batch, got shape {:?}",
-            input.dims()
-        )));
-    }
-    if mean.is_empty() || std.is_empty() {
-        return Err(invalid_argument("normalize mean and std must not be empty"));
-    }
-    if mean.len() != std.len() {
-        return Err(invalid_argument(
-            "normalize mean and std must have the same length",
-        ));
-    }
-    if std.iter().any(|value| *value == 0.0) {
-        return Err(invalid_argument("normalize std values must be non-zero"));
+    normalize_u8_batch_to_nchw_f32_impl(input, mean, std, true)
+}
+
+pub(crate) fn normalize_u8_batch_to_nchw_f32_trusted(
+    input: &Tensor,
+    mean: &[f32],
+    std: &[f32],
+) -> RivetResult<Tensor> {
+    normalize_u8_batch_to_nchw_f32_impl(input, mean, std, false)
+}
+
+fn normalize_u8_batch_to_nchw_f32_impl(
+    input: &Tensor,
+    mean: &[f32],
+    std: &[f32],
+    validate: bool,
+) -> RivetResult<Tensor> {
+    if validate {
+        if input.dtype() != DType::U8 {
+            return Err(invalid_argument(format!(
+                "normalize_u8_batch_to_nchw_f32 requires uint8 input, got {:?}",
+                input.dtype()
+            )));
+        }
+        if input.rank() != 4 {
+            return Err(invalid_shape(format!(
+                "normalize_u8_batch_to_nchw_f32 requires a rank-4 image batch, got shape {:?}",
+                input.dims()
+            )));
+        }
+        if mean.is_empty() || std.is_empty() {
+            return Err(invalid_argument("normalize mean and std must not be empty"));
+        }
+        if mean.len() != std.len() {
+            return Err(invalid_argument(
+                "normalize mean and std must have the same length",
+            ));
+        }
+        if std.iter().any(|value| *value == 0.0) {
+            return Err(invalid_argument("normalize std values must be non-zero"));
+        }
+    } else {
+        debug_assert_eq!(input.dtype(), DType::U8);
+        debug_assert_eq!(input.rank(), 4);
+        debug_assert!(!mean.is_empty());
+        debug_assert_eq!(mean.len(), std.len());
+        debug_assert!(std.iter().all(|value| *value != 0.0));
     }
 
     let [batch, height, width, channels] = input.dims() else {
@@ -434,13 +575,14 @@ pub fn normalize_u8_batch_to_nchw_f32(
             input.dims()
         )));
     };
-    if mean.len() != 1 && mean.len() != *channels {
+    if validate && mean.len() != 1 && mean.len() != *channels {
         return Err(invalid_argument(format!(
             "normalize mean/std length must be 1 or channel count {}, got {}",
             channels,
             mean.len()
         )));
     }
+    debug_assert!(mean.len() == 1 || mean.len() == *channels);
 
     let (scale, bias) = affine_params(mean, std, *channels);
     let dims = [*batch, *channels, *height, *width];
@@ -497,41 +639,69 @@ pub fn normalize_u8_to_f32(
     std: &[f32],
     axis_order: ImageAxisOrder,
 ) -> RivetResult<Tensor> {
-    if input.dtype() != DType::U8 {
-        return Err(invalid_argument(format!(
-            "normalize_u8_to_f32 requires uint8 input, got {:?}",
-            input.dtype()
-        )));
-    }
-    if input.rank() != 3 {
-        return Err(invalid_shape(format!(
-            "normalize_u8_to_f32 requires a rank-3 image, got shape {:?}",
-            input.dims()
-        )));
-    }
-    if mean.is_empty() || std.is_empty() {
-        return Err(invalid_argument("normalize mean and std must not be empty"));
-    }
-    if mean.len() != std.len() {
-        return Err(invalid_argument(
-            "normalize mean and std must have the same length",
-        ));
-    }
-    if std.iter().any(|value| *value == 0.0) {
-        return Err(invalid_argument("normalize std values must be non-zero"));
+    normalize_u8_to_f32_impl(input, mean, std, axis_order, true)
+}
+
+pub(crate) fn normalize_u8_to_f32_trusted(
+    input: &Tensor,
+    mean: &[f32],
+    std: &[f32],
+    axis_order: ImageAxisOrder,
+) -> RivetResult<Tensor> {
+    normalize_u8_to_f32_impl(input, mean, std, axis_order, false)
+}
+
+fn normalize_u8_to_f32_impl(
+    input: &Tensor,
+    mean: &[f32],
+    std: &[f32],
+    axis_order: ImageAxisOrder,
+    validate: bool,
+) -> RivetResult<Tensor> {
+    if validate {
+        if input.dtype() != DType::U8 {
+            return Err(invalid_argument(format!(
+                "normalize_u8_to_f32 requires uint8 input, got {:?}",
+                input.dtype()
+            )));
+        }
+        if input.rank() != 3 {
+            return Err(invalid_shape(format!(
+                "normalize_u8_to_f32 requires a rank-3 image, got shape {:?}",
+                input.dims()
+            )));
+        }
+        if mean.is_empty() || std.is_empty() {
+            return Err(invalid_argument("normalize mean and std must not be empty"));
+        }
+        if mean.len() != std.len() {
+            return Err(invalid_argument(
+                "normalize mean and std must have the same length",
+            ));
+        }
+        if std.iter().any(|value| *value == 0.0) {
+            return Err(invalid_argument("normalize std values must be non-zero"));
+        }
+    } else {
+        debug_assert_eq!(input.dtype(), DType::U8);
+        debug_assert_eq!(input.rank(), 3);
+        debug_assert!(!mean.is_empty());
+        debug_assert_eq!(mean.len(), std.len());
+        debug_assert!(std.iter().all(|value| *value != 0.0));
     }
 
     let channel_count = match axis_order {
         ImageAxisOrder::Hwc => input.dims()[2],
         ImageAxisOrder::Chw => input.dims()[0],
     };
-    if mean.len() != 1 && mean.len() != channel_count {
+    if validate && mean.len() != 1 && mean.len() != channel_count {
         return Err(invalid_argument(format!(
             "normalize mean/std length must be 1 or channel count {}, got {}",
             channel_count,
             mean.len()
         )));
     }
+    debug_assert!(mean.len() == 1 || mean.len() == channel_count);
 
     let spatial_size = match axis_order {
         ImageAxisOrder::Hwc => 1,
