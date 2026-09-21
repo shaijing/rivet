@@ -2,7 +2,7 @@ use super::{Tensor, Tensor_};
 use crate::backend::BackendDevice;
 use crate::cpu_backend::CpuDevice;
 use crate::storage::{Storage, validate_layout_for_storage};
-use crate::{DType, Device, Error, Layout, ReadOnlyCpuStorage, Result, Shape, WithDType};
+use crate::{DType, Device, Error, Layout, Result, Shape, WithDType};
 use std::ops::Add;
 use std::sync::Arc;
 
@@ -163,32 +163,6 @@ impl Tensor {
             Device::Cpu => CpuDevice.storage_from_vec(data)?,
         };
         Self::from_storage(Storage::Cpu(storage), shape, device)
-    }
-
-    /// Creates a tensor over immutable shared CPU bytes without copying.
-    pub fn from_read_only_storage<S>(
-        storage: ReadOnlyCpuStorage,
-        shape: S,
-        device: &Device,
-    ) -> Result<Self>
-    where
-        S: Into<Shape>,
-    {
-        Self::from_storage(Storage::CpuReadOnly(storage), shape, device)
-    }
-
-    /// Memory-map a native-endian typed file as immutable CPU tensor storage.
-    pub fn from_mmap<S>(
-        path: impl AsRef<std::path::Path>,
-        dtype: DType,
-        shape: S,
-        device: &Device,
-    ) -> Result<Self>
-    where
-        S: Into<Shape>,
-    {
-        let storage = ReadOnlyCpuStorage::from_mmap(path, dtype)?;
-        Self::from_read_only_storage(storage, shape, device)
     }
 
     pub fn from_slice<T, S>(data: &[T], shape: S, device: &Device) -> Result<Self>

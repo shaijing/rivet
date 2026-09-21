@@ -1,15 +1,12 @@
 use crate::cpu_backend::CpuStorage;
 use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
-use crate::readonly::ReadOnlyCpuStorage;
 use crate::{DType, Device, Error, Layout, Result, Shape, WithDType};
-use std::borrow::Cow;
 
 /// Backend storage. Storage itself is deliberately not `Clone`; cloning an
 /// allocation is explicit through `try_clone`.
 #[derive(Debug)]
 pub enum Storage {
     Cpu(CpuStorage),
-    CpuReadOnly(ReadOnlyCpuStorage),
 }
 
 impl Storage {
@@ -32,7 +29,7 @@ impl Storage {
     ) -> Result<Self> {
         let lhs = lhs.cpu_storage();
         let rhs = rhs.cpu_storage();
-        Ok(Self::Cpu(lhs.binary(lhs_layout, &rhs, rhs_layout, op)?))
+        Ok(Self::Cpu(lhs.binary(lhs_layout, rhs, rhs_layout, op)?))
     }
 
     pub(crate) fn binary_scalar<T: WithDType>(
@@ -53,7 +50,7 @@ impl Storage {
     ) -> Result<Self> {
         let lhs = lhs.cpu_storage();
         let rhs = rhs.cpu_storage();
-        Ok(Self::Cpu(lhs.matmul(lhs_layout, &rhs, rhs_layout)?))
+        Ok(Self::Cpu(lhs.matmul(lhs_layout, rhs, rhs_layout)?))
     }
 
     pub(crate) fn affine(storage: &Self, layout: &Layout, mul: f64, add: f64) -> Result<Self> {
@@ -79,7 +76,7 @@ impl Storage {
     ) -> Result<Self> {
         let lhs = lhs.cpu_storage();
         let rhs = rhs.cpu_storage();
-        Ok(Self::Cpu(lhs.pow(lhs_layout, &rhs, rhs_layout)?))
+        Ok(Self::Cpu(lhs.pow(lhs_layout, rhs, rhs_layout)?))
     }
 
     pub(crate) fn dot(
@@ -90,7 +87,7 @@ impl Storage {
     ) -> Result<Self> {
         let lhs = lhs.cpu_storage();
         let rhs = rhs.cpu_storage();
-        Ok(Self::Cpu(lhs.dot(lhs_layout, &rhs, rhs_layout)?))
+        Ok(Self::Cpu(lhs.dot(lhs_layout, rhs, rhs_layout)?))
     }
 
     pub(crate) fn norm(storage: &Self, layout: &Layout) -> Result<Self> {
@@ -124,7 +121,7 @@ impl Storage {
         let indexes = indexes.cpu_storage();
         Ok(Self::Cpu(storage.gather(
             layout,
-            &indexes,
+            indexes,
             indexes_layout,
             dim,
         )?))
@@ -141,7 +138,7 @@ impl Storage {
         let indexes = indexes.cpu_storage();
         Ok(Self::Cpu(storage.index_select(
             layout,
-            &indexes,
+            indexes,
             indexes_layout,
             dim,
         )?))
@@ -162,9 +159,9 @@ impl Storage {
         let source = source.cpu_storage();
         Ok(Self::Cpu(storage.scatter(
             layout,
-            &indexes,
+            indexes,
             indexes_layout,
-            &source,
+            source,
             source_layout,
             dim,
             add,
@@ -185,9 +182,9 @@ impl Storage {
         let source = source.cpu_storage();
         Ok(Self::Cpu(storage.index_add(
             layout,
-            &indexes,
+            indexes,
             indexes_layout,
-            &source,
+            source,
             source_layout,
             dim,
         )?))
@@ -207,7 +204,7 @@ impl Storage {
     ) -> Result<Self> {
         let lhs = lhs.cpu_storage();
         let rhs = rhs.cpu_storage();
-        Ok(Self::Cpu(lhs.cmp(lhs_layout, &rhs, rhs_layout, op)?))
+        Ok(Self::Cpu(lhs.cmp(lhs_layout, rhs, rhs_layout, op)?))
     }
 
     pub(crate) fn cmp_scalar<T: WithDType>(
@@ -232,11 +229,11 @@ impl Storage {
         let on_true = on_true.cpu_storage();
         let on_false = on_false.cpu_storage();
         Ok(Self::Cpu(CpuStorage::where_cond(
-            &condition,
+            condition,
             condition_layout,
-            &on_true,
+            on_true,
             true_layout,
-            &on_false,
+            on_false,
             false_layout,
         )?))
     }
@@ -295,13 +292,9 @@ impl Storage {
         if inputs.is_empty() {
             return Err(Error::EmptyTensorList);
         }
-        let owned_inputs = inputs
+        let cpu_inputs = inputs
             .iter()
             .map(|(storage, layout)| (storage.cpu_storage(), *layout))
-            .collect::<Vec<_>>();
-        let cpu_inputs = owned_inputs
-            .iter()
-            .map(|(storage, layout)| (storage.as_ref(), *layout))
             .collect::<Vec<_>>();
         Ok(Self::Cpu(CpuStorage::cat(&cpu_inputs, output_shape, dim)?))
     }
@@ -309,14 +302,12 @@ impl Storage {
     pub fn dtype(&self) -> DType {
         match self {
             Self::Cpu(storage) => storage.dtype(),
-            Self::CpuReadOnly(storage) => storage.dtype(),
         }
     }
 
     pub fn device(&self) -> Device {
         match self {
             Self::Cpu(_) => Device::Cpu,
-            Self::CpuReadOnly(_) => Device::Cpu,
         }
     }
 
@@ -327,14 +318,12 @@ impl Storage {
     pub fn len(&self) -> usize {
         match self {
             Self::Cpu(storage) => storage.len(),
-            Self::CpuReadOnly(storage) => storage.len(),
         }
     }
 
     pub fn try_clone(&self, _layout: &Layout) -> Result<Self> {
         match self {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.clone())),
-            Self::CpuReadOnly(storage) => Ok(Self::CpuReadOnly(storage.clone())),
         }
     }
 
@@ -348,10 +337,9 @@ impl Storage {
         Ok(Self::Cpu(storage.to_dtype(layout, dtype)?))
     }
 
-    fn cpu_storage(&self) -> Cow<'_, CpuStorage> {
+    fn cpu_storage(&self) -> &CpuStorage {
         match self {
-            Self::Cpu(storage) => Cow::Borrowed(storage),
-            Self::CpuReadOnly(storage) => Cow::Owned(storage.to_cpu_storage()),
+            Self::Cpu(storage) => storage,
         }
     }
 }

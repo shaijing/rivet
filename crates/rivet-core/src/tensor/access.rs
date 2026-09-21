@@ -148,7 +148,6 @@ impl Tensor {
         let storage = self.storage();
         let cpu_storage = match &*storage {
             Storage::Cpu(storage) => storage.as_ref(),
-            Storage::CpuReadOnly(storage) => storage.as_ref(),
         };
         let values = T::cpu_storage_ref_as_slice(cpu_storage)?;
         if let Some((start, end)) = self.layout().contiguous_offsets() {
@@ -174,7 +173,6 @@ impl Tensor {
         let storage = self.storage();
         let cpu_storage = match &*storage {
             Storage::Cpu(storage) => storage.as_ref(),
-            Storage::CpuReadOnly(storage) => storage.as_ref(),
         };
         let values = T::cpu_storage_ref_as_slice(cpu_storage)?;
         if let Some((start, end)) = self.layout().contiguous_offsets() {
@@ -197,7 +195,6 @@ impl Tensor {
         let storage = self.storage();
         let cpu_storage = match &*storage {
             Storage::Cpu(storage) => storage.as_ref(),
-            Storage::CpuReadOnly(storage) => storage.as_ref(),
         };
         f(cpu_storage, self.layout())
     }

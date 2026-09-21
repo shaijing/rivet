@@ -1,5 +1,4 @@
-use rivet_core::{CpuStorageRef, DType, Device, Error, Layout, ReadOnlyCpuStorage, Shape, Tensor};
-use std::sync::Arc;
+use rivet_core::{CpuStorageRef, DType, Device, Error, Layout, Shape, Tensor};
 
 #[test]
 fn shape_and_layout_metadata_match_candle_semantics() {
@@ -124,14 +123,6 @@ fn tensor_exclusive_transfer_requires_unique_mutable_storage() {
     assert_eq!(view.to_vec::<u8>().unwrap(), [2, 3]);
     drop(view);
     assert!(tensor.try_into_exclusive().is_ok());
-
-    let storage = ReadOnlyCpuStorage::from_bytes(Arc::from([0u8, 1, 2, 3]), DType::U8).unwrap();
-    let tensor = Tensor::from_read_only_storage(storage, (2, 2), &Device::Cpu).unwrap();
-    assert!(tensor.is_uniquely_owned());
-    assert!(
-        tensor.try_into_exclusive().is_err(),
-        "read-only storage is never mutable-transferable"
-    );
 }
 
 #[test]
@@ -153,62 +144,6 @@ fn borrowed_cpu_storage_exposes_view_layout_without_materializing() {
 
     assert_eq!(values, vec![0, 3, 1, 4, 2, 5]);
     assert_eq!(values, transpose.to_vec::<u8>().unwrap());
-}
-
-#[test]
-fn read_only_shared_storage_supports_views_and_operation_fallback() {
-    let mut raw = Vec::new();
-    for value in [1u32, 2, 3, 4] {
-        raw.extend_from_slice(&value.to_ne_bytes());
-    }
-    let bytes: Arc<[u8]> = Arc::from(raw);
-    let storage = ReadOnlyCpuStorage::from_bytes(bytes, DType::U32).unwrap();
-    let tensor = Tensor::from_read_only_storage(storage, [2, 2], &Device::Cpu).unwrap();
-
-    assert_eq!(tensor.to_vec::<u32>().unwrap(), [1, 2, 3, 4]);
-    assert_eq!(
-        tensor
-            .with_cpu_storage(|storage, _| {
-                let CpuStorageRef::U32(values) = storage else {
-                    panic!("expected u32 storage");
-                };
-                Ok(values.to_vec())
-            })
-            .unwrap(),
-        [1, 2, 3, 4]
-    );
-
-    // Read-only input is materialized only at the operation boundary.
-    assert_eq!(
-        tensor.add_scalar(1u32).unwrap().to_vec::<u32>().unwrap(),
-        [2, 3, 4, 5]
-    );
-
-    let mut with_prefix = vec![0u8; 4];
-    with_prefix.extend_from_slice(&2u32.to_ne_bytes());
-    let offset_storage =
-        ReadOnlyCpuStorage::from_bytes_with_offset(Arc::from(with_prefix), 4, DType::U32).unwrap();
-    let offset_tensor = Tensor::from_read_only_storage(offset_storage, [1], &Device::Cpu).unwrap();
-    assert_eq!(offset_tensor.to_vec::<u32>().unwrap(), [2]);
-}
-
-#[test]
-fn mmap_storage_keeps_file_backed_tensor_read_only_and_zero_copy() {
-    let path = std::env::temp_dir().join(format!(
-        "rivet-core-mmap-{}-{}.bin",
-        std::process::id(),
-        std::thread::current().name().unwrap_or("test")
-    ));
-    let mut raw = Vec::new();
-    for value in [10u32, 20, 30] {
-        raw.extend_from_slice(&value.to_ne_bytes());
-    }
-    std::fs::write(&path, raw).unwrap();
-
-    let tensor = Tensor::from_mmap(&path, DType::U32, [3], &Device::Cpu).unwrap();
-    assert_eq!(tensor.to_vec::<u32>().unwrap(), [10, 20, 30]);
-    assert_eq!(tensor.storage_bytes(), 12);
-    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
