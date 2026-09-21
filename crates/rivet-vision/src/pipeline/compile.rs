@@ -1,9 +1,9 @@
 use super::builder::ImagePipeline;
 use super::op::{
-    CompiledImageOp, ExecutionKind, ExecutionPlan, ImageOp, IndexOp, PipelineImageState,
-    compile_sampler,
+    compile_sampler, BatchKernel, CompiledNormalize, CompiledSampleOp, ExecutionKind,
+    ExecutionPlan, ImageOp, IndexOp, PipelineImageState, SampleKernel,
 };
-use crate::errors::{RivetResult, invalid_pipeline};
+use crate::errors::{invalid_pipeline, RivetResult};
 use crate::runtime::ImageDataLoader;
 use crate::sampler::IndexSampler;
 use rivet_data::random::{OpKey, RandomContext};
@@ -64,8 +64,8 @@ impl ImagePipeline {
 }
 
 struct CompiledImageOps {
-    sample_ops: Vec<CompiledImageOp>,
-    batch_ops: Vec<ImageOp>,
+    sample_ops: Vec<CompiledSampleOp>,
+    batch_ops: Vec<BatchKernel>,
     pre_batch_state: PipelineImageState,
     output_state: PipelineImageState,
 }
@@ -93,10 +93,12 @@ fn compile_image_ops(
             // batch stage. A batch kernel is still preferable for pipelines
             // with no sample-stage work to parallelize.
             if num_workers > 0 && !sample_ops.is_empty() {
-                let sample_normalize = ImageOp::NormalizeSample(config.clone());
-                state = sample_normalize.transition(state)?;
-                sample_ops.push(CompiledImageOp {
-                    op: sample_normalize,
+                let sample_normalize = CompiledNormalize {
+                    config: config.clone(),
+                };
+                state = ImageOp::Normalize(config.clone()).transition(state)?;
+                sample_ops.push(CompiledSampleOp {
+                    kernel: SampleKernel::SampleNormalize(sample_normalize),
                     random_key: None,
                 });
                 continue;
@@ -119,7 +121,9 @@ fn compile_image_ops(
                     pre_batch_state = Some(state);
                     batch_stage_started = true;
                 }
-                let fused = ImageOp::NormalizeToChw(config.clone());
+                let fused = BatchKernel::NormalizeToChw(CompiledNormalize {
+                    config: config.clone(),
+                });
                 state = fused.transition(state)?;
                 batch_ops.push(fused);
                 continue;
@@ -148,15 +152,29 @@ fn compile_image_ops(
                 }
                 state = op.transition(state)?;
                 let random_key = assign_random_key(&op, &mut random_occurrences);
-                sample_ops.push(CompiledImageOp { op, random_key });
+                sample_ops.push(CompiledSampleOp {
+                    kernel: SampleKernel::Semantic(op),
+                    random_key,
+                });
             }
             ExecutionKind::Batch => {
                 if !batch_stage_started {
                     pre_batch_state = Some(state);
                     batch_stage_started = true;
                 }
-                state = op.transition(state)?;
-                batch_ops.push(op);
+                let kernel = match op {
+                    ImageOp::Normalize(config) => {
+                        BatchKernel::Normalize(CompiledNormalize { config })
+                    }
+                    ImageOp::ConvertImageDtype(config) => BatchKernel::ConvertImageDtype(config),
+                    ImageOp::Layout(config) => BatchKernel::Layout(config),
+                    op => unreachable!(
+                        "validated batch op has sample execution kind: {}",
+                        op.name()
+                    ),
+                };
+                state = kernel.transition(state)?;
+                batch_ops.push(kernel);
             }
         }
     }

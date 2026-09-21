@@ -16,7 +16,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             label: index as i64,
         })
         .collect();
-    let source = ImageSource::from_decoded(Arc::new(rivet_vision::DecodedImageMemoryDataset::new(samples)));
+    let source = ImageSource::from_decoded(Arc::new(rivet_vision::DecodedImageMemoryDataset::new(
+        samples,
+    )));
     let mut loader = ImagePipeline::from_source(source)
         .resize(32, 32)
         .normalize(vec![0.5; 3], vec![0.5; 3])
@@ -28,10 +30,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "sample_ops={} batch_ops={} first_sample={} first_batch={}",
-        loader.plan.sample_ops.len(),
-        loader.plan.batch_ops.len(),
-        loader.plan.sample_ops.first().map(|op| op.name()).unwrap_or("-"),
-        loader.plan.batch_ops.first().map(|op| op.name()).unwrap_or("-"),
+        loader.plan.sample_op_count(),
+        loader.plan.batch_op_count(),
+        loader.plan.first_sample_op_name().unwrap_or("-"),
+        loader.plan.first_batch_op_name().unwrap_or("-"),
     );
     black_box(loader.next_batch()?.ok_or("warmup ended")?);
     let start = Instant::now();
@@ -39,6 +41,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         black_box(loader.next_batch()?.ok_or("benchmark ended")?);
     }
     let elapsed = start.elapsed().as_secs_f64();
-    println!("seconds={elapsed:.6} images_per_sec={:.0}", ITERATIONS as f64 * BATCH as f64 / elapsed);
+    println!(
+        "seconds={elapsed:.6} images_per_sec={:.0}",
+        ITERATIONS as f64 * BATCH as f64 / elapsed
+    );
     Ok(())
 }

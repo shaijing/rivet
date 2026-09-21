@@ -1,9 +1,12 @@
 use super::context::SampleContext;
 use super::image::{ImageOp, PipelineImageState};
 use super::source::SourceOp;
-use crate::errors::RivetResult;
+use crate::errors::{invalid_pipeline, RivetResult};
 use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageBatch, ImageSample};
 use crate::sampler::SamplerPlan;
+use crate::transforms::geometry::LayoutConfig;
+use crate::transforms::representation::{ConvertImageDtypeConfig, NormalizeConfig};
+use rivet_core::DType;
 use rivet_data::random::{OpKey, RandomContext};
 
 #[derive(Clone, Copy)]
@@ -30,18 +33,95 @@ impl BatchConfig {
 }
 
 #[derive(Clone)]
-pub struct CompiledImageOp {
-    pub op: ImageOp,
-    pub random_key: Option<OpKey>,
+pub(crate) struct CompiledNormalize {
+    pub(crate) config: NormalizeConfig,
 }
 
-impl CompiledImageOp {
-    pub fn execution_kind(&self) -> super::image::ExecutionKind {
-        self.op.execution_kind()
+#[derive(Clone)]
+pub(crate) enum SampleKernel {
+    Semantic(ImageOp),
+    SampleNormalize(CompiledNormalize),
+}
+
+#[derive(Clone)]
+pub(crate) enum BatchKernel {
+    Normalize(CompiledNormalize),
+    NormalizeToChw(CompiledNormalize),
+    ConvertImageDtype(ConvertImageDtypeConfig),
+    Layout(LayoutConfig),
+}
+
+#[derive(Clone)]
+pub(crate) struct CompiledSampleOp {
+    pub(crate) kernel: SampleKernel,
+    pub(crate) random_key: Option<OpKey>,
+}
+
+#[allow(dead_code)]
+impl CompiledSampleOp {
+    pub(crate) fn execution_kind(&self) -> super::image::ExecutionKind {
+        super::image::ExecutionKind::Sample
     }
 
-    pub fn name(&self) -> &'static str {
-        self.op.name()
+    pub(crate) fn name(&self) -> &'static str {
+        match &self.kernel {
+            SampleKernel::Semantic(op) => op.name(),
+            SampleKernel::SampleNormalize(_) => "NormalizeSample",
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl BatchKernel {
+    pub(crate) fn execution_kind(&self) -> super::image::ExecutionKind {
+        super::image::ExecutionKind::Batch
+    }
+
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Self::Normalize(_) => "Normalize",
+            Self::NormalizeToChw(_) => "NormalizeToChw",
+            Self::ConvertImageDtype(_) => "ConvertImageDtype",
+            Self::Layout(_) => "Layout",
+        }
+    }
+
+    pub(crate) fn transition(&self, input: PipelineImageState) -> RivetResult<PipelineImageState> {
+        match self {
+            Self::Normalize(op) => ImageOp::Normalize(op.config.clone()).transition(input),
+            Self::ConvertImageDtype(config) => {
+                ImageOp::ConvertImageDtype(config.clone()).transition(input)
+            }
+            Self::Layout(config) => ImageOp::Layout(config.clone()).transition(input),
+            Self::NormalizeToChw(_) => match input {
+                PipelineImageState::Decoded {
+                    dtype: DType::U8,
+                    axis_order: ImageAxisOrder::Hwc,
+                } => Ok(PipelineImageState::Decoded {
+                    dtype: DType::F32,
+                    axis_order: ImageAxisOrder::Chw,
+                }),
+                _ => Err(invalid_pipeline("NormalizeToChw requires U8 HWC input")),
+            },
+        }
+    }
+
+    pub(crate) fn apply(
+        &self,
+        batch: rivet_core::Tensor,
+        input_layout: ImageAxisOrder,
+    ) -> RivetResult<rivet_core::Tensor> {
+        match self {
+            Self::Normalize(op) => op.config.apply_batch(batch, input_layout),
+            Self::NormalizeToChw(op) => {
+                if input_layout != ImageAxisOrder::Hwc {
+                    return Err(invalid_pipeline("NormalizeToChw requires HWC batch input"));
+                }
+                op.config.apply_batch_to_chw(batch)
+            }
+            Self::ConvertImageDtype(config) => config.apply_batch(batch, input_layout),
+            Self::Layout(config) => config.apply_batch(batch, input_layout),
+        }
     }
 }
 
@@ -49,8 +129,8 @@ impl CompiledImageOp {
 pub struct ExecutionPlan {
     pub source: SourceOp,
     pub sampler: SamplerPlan,
-    pub sample_ops: Vec<CompiledImageOp>,
-    pub batch_ops: Vec<ImageOp>,
+    pub(crate) sample_ops: Vec<CompiledSampleOp>,
+    pub(crate) batch_ops: Vec<BatchKernel>,
     pub batch: BatchConfig,
     /// Semantic random namespace shared by sampler and sample transforms.
     pub random: RandomContext,
@@ -64,6 +144,26 @@ pub struct ExecutionPlan {
 }
 
 impl ExecutionPlan {
+    /// Number of sample kernels produced by the compiler.
+    pub fn sample_op_count(&self) -> usize {
+        self.sample_ops.len()
+    }
+
+    /// Number of batch kernels produced by the compiler.
+    pub fn batch_op_count(&self) -> usize {
+        self.batch_ops.len()
+    }
+
+    /// Name of the first compiled sample kernel, for diagnostics.
+    pub fn first_sample_op_name(&self) -> Option<&'static str> {
+        self.sample_ops.first().map(CompiledSampleOp::name)
+    }
+
+    /// Name of the first compiled batch kernel, for diagnostics.
+    pub fn first_batch_op_name(&self) -> Option<&'static str> {
+        self.batch_ops.first().map(BatchKernel::name)
+    }
+
     pub fn can_use_batch_native(&self) -> bool {
         self.sample_ops.is_empty() && self.source.supports_batch_read()
     }
@@ -76,10 +176,20 @@ impl ExecutionPlan {
         let ctx = SampleContext::with_random(sample_index, self.random);
         let mut state = self.input_state;
         for op in &self.sample_ops {
-            sample = op
-                .op
-                .apply_sample_with_key(sample, &ctx, state, op.random_key)?;
-            state = op.op.transition(state)?;
+            sample = match &op.kernel {
+                SampleKernel::Semantic(kernel) => {
+                    kernel.apply_sample_with_key(sample, &ctx, state, op.random_key)?
+                }
+                SampleKernel::SampleNormalize(kernel) => {
+                    kernel.config.apply(sample, state_axis_order(state))?
+                }
+            };
+            state = match &op.kernel {
+                SampleKernel::Semantic(kernel) => kernel.transition(state)?,
+                SampleKernel::SampleNormalize(kernel) => {
+                    ImageOp::Normalize(kernel.config.clone()).transition(state)?
+                }
+            };
         }
 
         sample.into_decoded()
@@ -99,7 +209,7 @@ impl ExecutionPlan {
                 PipelineImageState::Encoded => ImageAxisOrder::Hwc,
             };
             debug_assert_eq!(batch_axis_order, input_layout);
-            images = op.apply_batch(images, input_layout)?;
+            images = op.apply(images, input_layout)?;
             state = op.transition(state)?;
             if let PipelineImageState::Decoded { axis_order, .. } = state {
                 batch_axis_order = axis_order;
@@ -135,5 +245,12 @@ impl ExecutionPlan {
             builder.push(sample?)?;
         }
         self.apply_batch_ops(builder.finish()?)
+    }
+}
+
+fn state_axis_order(state: PipelineImageState) -> ImageAxisOrder {
+    match state {
+        PipelineImageState::Encoded => ImageAxisOrder::Hwc,
+        PipelineImageState::Decoded { axis_order, .. } => axis_order,
     }
 }
