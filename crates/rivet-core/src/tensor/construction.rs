@@ -3,7 +3,7 @@ use crate::backend::BackendDevice;
 use crate::cpu_backend::{CpuDevice, CpuStorage, buffer::AlignedBuffer};
 use crate::dtype::IntoCpuStorageBuffer;
 use crate::storage::{Storage, validate_layout_for_storage};
-use crate::{DType, Device, Error, Layout, Result, Shape, WithDType};
+use crate::{DType, Device, Error, ExactOutput, Layout, Result, Shape, WithDType};
 use std::ops::Add;
 use std::sync::Arc;
 
@@ -242,6 +242,82 @@ impl Tensor {
         let values = iter.into_iter().collect::<Vec<_>>();
         let len = values.len();
         Self::from_vec(values, len, device)
+    }
+
+    /// Creates a tensor directly from an exact-size iterator.
+    ///
+    /// The iterator writes into the final aligned CPU allocation and does not
+    /// materialize an intermediate `Vec`.
+    pub fn from_exact_iter<T, I, S>(iter: I, shape: S, device: &Device) -> Result<Self>
+    where
+        T: WithDType,
+        I: IntoIterator<Item = T>,
+        I::IntoIter: ExactSizeIterator,
+        S: Into<Shape>,
+    {
+        let shape = shape.into();
+        let iter = iter.into_iter();
+        let expected = shape.elem_count();
+        let actual = iter.len();
+        if expected != actual {
+            return Err(Error::ShapeMismatch { expected, actual });
+        }
+        let storage = match device {
+            Device::Cpu => T::into_cpu_storage_iter(iter)?,
+        };
+        Self::from_storage(Storage::Cpu(storage), shape, device)
+    }
+
+    /// Creates a tensor directly from an exact-size fallible iterator.
+    pub fn from_exact_try_iter<T, I, S>(iter: I, shape: S, device: &Device) -> Result<Self>
+    where
+        T: WithDType,
+        I: IntoIterator<Item = Result<T>>,
+        I::IntoIter: ExactSizeIterator,
+        S: Into<Shape>,
+    {
+        let shape = shape.into();
+        let iter = iter.into_iter();
+        let expected = shape.elem_count();
+        let actual = iter.len();
+        if expected != actual {
+            return Err(Error::ShapeMismatch { expected, actual });
+        }
+        let storage = match device {
+            Device::Cpu => T::try_into_cpu_storage_iter(iter)?,
+        };
+        Self::from_storage(Storage::Cpu(storage), shape, device)
+    }
+
+    /// Creates a tensor by writing exactly one value per shape element.
+    ///
+    /// The callback writes directly into the final aligned allocation.
+    pub fn from_exact_fn<T, S, F>(shape: S, device: &Device, fill: F) -> Result<Self>
+    where
+        T: WithDType,
+        S: Into<Shape>,
+        F: FnOnce(&mut dyn FnMut(T) -> Result<()>) -> Result<()>,
+    {
+        let shape = shape.into();
+        let storage = match device {
+            Device::Cpu => T::into_cpu_storage_with(shape.elem_count(), fill)?,
+        };
+        Self::from_storage(Storage::Cpu(storage), shape, device)
+    }
+
+    /// Creates a tensor through a statically dispatched writer into the final
+    /// aligned CPU allocation.
+    pub fn from_exact_writer<T, S, F>(shape: S, device: &Device, fill: F) -> Result<Self>
+    where
+        T: WithDType,
+        S: Into<Shape>,
+        F: FnOnce(&mut ExactOutput<T>) -> Result<()>,
+    {
+        let shape = shape.into();
+        let storage = match device {
+            Device::Cpu => T::into_cpu_storage_writer(shape.elem_count(), fill)?,
+        };
+        Self::from_storage(Storage::Cpu(storage), shape, device)
     }
 
     /// Creates values in the half-open interval `[start, end)` with step one.

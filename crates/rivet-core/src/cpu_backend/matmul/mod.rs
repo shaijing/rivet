@@ -1,3 +1,4 @@
+use crate::cpu_backend::buffer::{AlignedBuffer, AlignedBufferBuilder};
 use crate::{Error, Layout, Result};
 
 /// Executes a rank-2 row-major F32 matrix multiplication without copying the
@@ -8,7 +9,7 @@ pub(crate) fn f32(
     lhs_layout: &Layout,
     rhs: &[f32],
     rhs_layout: &Layout,
-) -> Result<Vec<f32>> {
+) -> Result<AlignedBuffer<f32>> {
     if lhs_layout.dims().len() != 2 || rhs_layout.dims().len() != 2 {
         return Err(Error::MatmulShapeMismatch {
             lhs: lhs_layout.dims().to_vec(),
@@ -29,7 +30,11 @@ pub(crate) fn f32(
     }
 
     let output_len = m.checked_mul(n).ok_or(Error::StorageOutOfBounds)?;
-    let mut output = vec![0.0f32; output_len];
+    let mut builder = AlignedBufferBuilder::new(output_len)?;
+    for _ in 0..output_len {
+        builder.write_next(0.0)?;
+    }
+    let mut output = builder.finish()?;
     // No input or output element is addressed for these cases. Returning
     // early also avoids forming pointers from an empty allocation with an
     // arbitrary empty-view offset.
@@ -56,7 +61,7 @@ pub(crate) fn f32(
             m,
             n,
             k,
-            output.as_mut_ptr(),
+            output.as_mut_slice().as_mut_ptr(),
             1,
             isize::try_from(n).map_err(|_| Error::UnsupportedMatmulLayout)?,
             false,

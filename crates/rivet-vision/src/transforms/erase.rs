@@ -154,43 +154,55 @@ impl RandomErasingConfig {
         let output = match sample.image.dtype() {
             DType::U8 => {
                 let fill = self.value.clamp(0.0, 255.0).round() as u8;
-                let values = sample.image.with_cpu_storage(|storage, layout| {
+                sample.image.with_cpu_storage(|storage, layout| {
                     let CpuStorageRef::U8(values) = storage else {
                         return Err(rivet_core::Error::UnexpectedDType {
                             expected: DType::U8,
                             actual: sample.image.dtype(),
                         });
                     };
-                    map_erased(
-                        values,
-                        layout,
-                        axis_order,
-                        (height, width, channels),
-                        region,
-                        fill,
+                    Tensor::from_exact_fn::<u8, _, _>(
+                        dims.clone(),
+                        sample.image.device(),
+                        |write| {
+                            map_erased(
+                                values,
+                                layout,
+                                axis_order,
+                                (height, width, channels),
+                                region,
+                                fill,
+                                write,
+                            )
+                        },
                     )
-                })?;
-                Tensor::from_vec(values, dims, sample.image.device())?
+                })?
             }
             DType::F32 => {
                 let fill = self.value;
-                let values = sample.image.with_cpu_storage(|storage, layout| {
+                sample.image.with_cpu_storage(|storage, layout| {
                     let CpuStorageRef::F32(values) = storage else {
                         return Err(rivet_core::Error::UnexpectedDType {
                             expected: DType::F32,
                             actual: sample.image.dtype(),
                         });
                     };
-                    map_erased(
-                        values,
-                        layout,
-                        axis_order,
-                        (height, width, channels),
-                        region,
-                        fill,
+                    Tensor::from_exact_fn::<f32, _, _>(
+                        dims.clone(),
+                        sample.image.device(),
+                        |write| {
+                            map_erased(
+                                values,
+                                layout,
+                                axis_order,
+                                (height, width, channels),
+                                region,
+                                fill,
+                                write,
+                            )
+                        },
                     )
-                })?;
-                Tensor::from_vec(values, dims, sample.image.device())?
+                })?
             }
             dtype => {
                 return Err(invalid_argument(format!(
@@ -213,24 +225,24 @@ fn map_erased<T: Copy>(
     (height, width, channels): (usize, usize, usize),
     region: EraseRegion,
     fill: T,
-) -> rivet_core::Result<Vec<T>> {
+    write: &mut dyn FnMut(T) -> rivet_core::Result<()>,
+) -> rivet_core::Result<()> {
     let read = |coords: [usize; 3]| {
         values
             .get(logical_offset(layout, &coords)?)
             .copied()
             .ok_or(rivet_core::Error::StorageOutOfBounds)
     };
-    let mut output = Vec::with_capacity(height * width * channels);
     match axis_order {
         ImageAxisOrder::Hwc => {
             for y in 0..height {
                 for x in 0..width {
                     for c in 0..channels {
-                        output.push(if in_region(x, y, region) {
+                        write(if in_region(x, y, region) {
                             fill
                         } else {
                             read([y, x, c])?
-                        });
+                        })?;
                     }
                 }
             }
@@ -239,17 +251,17 @@ fn map_erased<T: Copy>(
             for c in 0..channels {
                 for y in 0..height {
                     for x in 0..width {
-                        output.push(if in_region(x, y, region) {
+                        write(if in_region(x, y, region) {
                             fill
                         } else {
                             read([c, y, x])?
-                        });
+                        })?;
                     }
                 }
             }
         }
     }
-    Ok(output)
+    Ok(())
 }
 
 fn in_region(x: usize, y: usize, region: EraseRegion) -> bool {

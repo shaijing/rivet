@@ -407,6 +407,44 @@ fn phase1_construction_and_access_apis_follow_tensor_contracts() {
 }
 
 #[test]
+fn exact_iter_construction_writes_final_storage_directly() {
+    let tensor = Tensor::from_exact_iter(0u32..6, [2, 3], &Device::Cpu).unwrap();
+    assert_eq!(tensor.to_vec::<u32>().unwrap(), (0..6).collect::<Vec<_>>());
+
+    let written = Tensor::from_exact_writer::<u32, _, _>([2, 3], &Device::Cpu, |output| {
+        for value in 0..6 {
+            output.write_next(value)?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(written.to_vec::<u32>().unwrap(), (0..6).collect::<Vec<_>>());
+
+    let incomplete =
+        Tensor::from_exact_writer::<u32, _, _>([2, 3], &Device::Cpu, |output| output.write_next(0));
+    assert!(matches!(
+        incomplete,
+        Err(Error::UninitializedStorage { .. })
+    ));
+
+    let mismatch = Tensor::from_exact_iter(0u32..5, [2, 3], &Device::Cpu);
+    assert!(matches!(mismatch, Err(Error::ShapeMismatch { .. })));
+
+    let failed = Tensor::from_exact_try_iter(
+        (0..3).map(|value| {
+            if value == 1 {
+                Err(Error::StorageOutOfBounds)
+            } else {
+                Ok(value)
+            }
+        }),
+        [3],
+        &Device::Cpu,
+    );
+    assert!(matches!(failed, Err(Error::StorageOutOfBounds)));
+}
+
+#[test]
 fn phase1_view_composition_preserves_logical_order_and_storage_contracts() {
     let tensor = Tensor::from_vec((0u8..24).collect(), [2, 3, 4], &Device::Cpu).unwrap();
 

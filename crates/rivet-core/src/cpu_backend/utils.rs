@@ -1,6 +1,24 @@
+use super::buffer::{AlignedBuffer, AlignedBufferBuilder};
 use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use crate::storage::validate_layout_for_storage;
 use crate::{DType, Error, Layout, Result};
+
+fn aligned_try_iter<T, I>(iter: I) -> Result<AlignedBuffer<T>>
+where
+    I: ExactSizeIterator<Item = Result<T>>,
+{
+    let mut builder = AlignedBufferBuilder::new(iter.len())?;
+    for value in iter {
+        builder.write_next(value?)?;
+    }
+    builder.finish()
+}
+
+fn aligned_one<T>(value: T) -> Result<AlignedBuffer<T>> {
+    let mut builder = AlignedBufferBuilder::new(1)?;
+    builder.write_next(value)?;
+    builder.finish()
+}
 
 /// A typed view over storage whose layout has been checked once.
 ///
@@ -386,13 +404,13 @@ fn checked_slice<'a, T>(data: &'a [T], start: usize, end: usize) -> Result<&'a [
     data.get(start..end).ok_or(Error::StorageOutOfBounds)
 }
 
-pub fn binary_map<T: BinaryElement>(
+pub(crate) fn binary_map<T: BinaryElement>(
     lhs: &[T],
     lhs_layout: &Layout,
     rhs: &[T],
     rhs_layout: &Layout,
     op: BinaryOp,
-) -> Result<Vec<T>> {
+) -> Result<AlignedBuffer<T>> {
     if lhs_layout.shape() != rhs_layout.shape() {
         return Err(Error::ShapeMismatchBinary {
             lhs: lhs_layout.dims().to_vec(),
@@ -414,66 +432,72 @@ pub fn binary_map<T: BinaryElement>(
                 rhs: vec![rhs.len()],
             });
         }
-        return lhs
-            .iter()
-            .zip(rhs)
-            .map(|(&lhs, &rhs)| T::apply(op, lhs, rhs))
-            .collect();
+        return aligned_try_iter(
+            lhs.iter()
+                .zip(rhs)
+                .map(|(&lhs, &rhs)| T::apply(op, lhs, rhs)),
+        );
     }
 
-    let mut output = Vec::with_capacity(lhs_layout.elem_count());
-    for (lhs_index, rhs_index) in lhs_layout.strided_index().zip(rhs_layout.strided_index()) {
-        let lhs = lhs_values.read(lhs_index);
-        let rhs = rhs_values.read(rhs_index);
-        output.push(T::apply(op, lhs, rhs)?);
-    }
-    Ok(output)
+    aligned_try_iter(
+        lhs_layout
+            .strided_index()
+            .zip(rhs_layout.strided_index())
+            .map(|(lhs_index, rhs_index)| {
+                let lhs = lhs_values.read(lhs_index);
+                let rhs = rhs_values.read(rhs_index);
+                T::apply(op, lhs, rhs)
+            }),
+    )
 }
 
-pub fn binary_scalar_map<T: BinaryElement>(
+pub(crate) fn binary_scalar_map<T: BinaryElement>(
     values: &[T],
     layout: &Layout,
     scalar: T,
     op: BinaryOp,
-) -> Result<Vec<T>> {
+) -> Result<AlignedBuffer<T>> {
     let values = ValidatedValues::new(values, layout)?;
     if let Some((start, end)) = layout.contiguous_offsets() {
-        return checked_slice(values.as_slice(), start, end)?
-            .iter()
-            .map(|&value| T::apply(op, value, scalar))
-            .collect();
+        return aligned_try_iter(
+            checked_slice(values.as_slice(), start, end)?
+                .iter()
+                .map(|&value| T::apply(op, value, scalar)),
+        );
     }
 
-    let mut output = Vec::with_capacity(layout.elem_count());
-    for index in layout.strided_index() {
+    aligned_try_iter(layout.strided_index().map(|index| {
         let value = values.read(index);
-        output.push(T::apply(op, value, scalar)?);
-    }
-    Ok(output)
+        T::apply(op, value, scalar)
+    }))
 }
 
-pub fn unary_map<T: UnaryElement>(values: &[T], layout: &Layout, op: UnaryOp) -> Result<Vec<T>> {
+pub(crate) fn unary_map<T: UnaryElement>(
+    values: &[T],
+    layout: &Layout,
+    op: UnaryOp,
+) -> Result<AlignedBuffer<T>> {
     let values = ValidatedValues::new(values, layout)?;
     if let Some((start, end)) = layout.contiguous_offsets() {
-        return checked_slice(values.as_slice(), start, end)
-            .map(|values| values.iter().map(|&value| T::apply(op, value)).collect());
+        return checked_slice(values.as_slice(), start, end).and_then(|values| {
+            aligned_try_iter(values.iter().map(|&value| Ok(T::apply(op, value))))
+        });
     }
 
-    let mut output = Vec::with_capacity(layout.elem_count());
-    for index in layout.strided_index() {
-        let value = values.read(index);
-        output.push(T::apply(op, value));
-    }
-    Ok(output)
+    aligned_try_iter(
+        layout
+            .strided_index()
+            .map(|index| Ok(T::apply(op, values.read(index)))),
+    )
 }
 
-pub fn cmp_map<T: CmpElement>(
+pub(crate) fn cmp_map<T: CmpElement>(
     lhs: &[T],
     lhs_layout: &Layout,
     rhs: &[T],
     rhs_layout: &Layout,
     op: CmpOp,
-) -> Result<Vec<u8>> {
+) -> Result<AlignedBuffer<u8>> {
     if lhs_layout.shape() != rhs_layout.shape() {
         return Err(Error::ShapeMismatchBinary {
             lhs: lhs_layout.dims().to_vec(),
@@ -483,38 +507,39 @@ pub fn cmp_map<T: CmpElement>(
     let lhs_values = ValidatedValues::new(lhs, lhs_layout)?;
     let rhs_values = ValidatedValues::new(rhs, rhs_layout)?;
 
-    let mut output = Vec::with_capacity(lhs_layout.elem_count());
-    for (lhs_index, rhs_index) in lhs_layout.strided_index().zip(rhs_layout.strided_index()) {
-        let lhs = lhs_values.read(lhs_index);
-        let rhs = rhs_values.read(rhs_index);
-        output.push(T::compare(op, lhs, rhs));
-    }
-    Ok(output)
+    aligned_try_iter(
+        lhs_layout
+            .strided_index()
+            .zip(rhs_layout.strided_index())
+            .map(|(lhs_index, rhs_index)| {
+                let lhs = lhs_values.read(lhs_index);
+                let rhs = rhs_values.read(rhs_index);
+                Ok(T::compare(op, lhs, rhs))
+            }),
+    )
 }
 
-pub fn cmp_scalar_map<T: CmpElement>(
+pub(crate) fn cmp_scalar_map<T: CmpElement>(
     values: &[T],
     layout: &Layout,
     scalar: T,
     op: CmpOp,
-) -> Result<Vec<u8>> {
+) -> Result<AlignedBuffer<u8>> {
     let values = ValidatedValues::new(values, layout)?;
-    let mut output = Vec::with_capacity(layout.elem_count());
-    for index in layout.strided_index() {
+    aligned_try_iter(layout.strided_index().map(|index| {
         let value = values.read(index);
-        output.push(T::compare(op, value, scalar));
-    }
-    Ok(output)
+        Ok(T::compare(op, value, scalar))
+    }))
 }
 
-pub fn where_map<T: Copy>(
+pub(crate) fn where_map<T: Copy>(
     condition: &[u8],
     condition_layout: &Layout,
     on_true: &[T],
     true_layout: &Layout,
     on_false: &[T],
     false_layout: &Layout,
-) -> Result<Vec<T>> {
+) -> Result<AlignedBuffer<T>> {
     if condition_layout.shape() != true_layout.shape()
         || condition_layout.shape() != false_layout.shape()
     {
@@ -527,21 +552,21 @@ pub fn where_map<T: Copy>(
     let on_true = ValidatedValues::new(on_true, true_layout)?;
     let on_false = ValidatedValues::new(on_false, false_layout)?;
 
-    let mut output = Vec::with_capacity(condition_layout.elem_count());
-    for ((condition_index, true_index), false_index) in condition_layout
-        .strided_index()
-        .zip(true_layout.strided_index())
-        .zip(false_layout.strided_index())
-    {
-        let condition = condition.read(condition_index);
-        let value = if condition != 0 {
-            on_true.read(true_index)
-        } else {
-            on_false.read(false_index)
-        };
-        output.push(value);
-    }
-    Ok(output)
+    aligned_try_iter(
+        condition_layout
+            .strided_index()
+            .zip(true_layout.strided_index())
+            .zip(false_layout.strided_index())
+            .map(|((condition_index, true_index), false_index)| {
+                let condition = condition.read(condition_index);
+                let value = if condition != 0 {
+                    on_true.read(true_index)
+                } else {
+                    on_false.read(false_index)
+                };
+                Ok(value)
+            }),
+    )
 }
 
 fn output_coordinates(dims: &[usize], mut index: usize) -> Vec<usize> {
@@ -607,13 +632,13 @@ fn select_extreme<T: ReduceElement>(current: T, candidate: T, use_min: bool) -> 
     better.then_some(candidate).unwrap_or(current)
 }
 
-pub fn reduce_map<T: ReduceElement>(
+pub(crate) fn reduce_map<T: ReduceElement>(
     values: &[T],
     layout: &Layout,
     dim: usize,
     keepdim: bool,
     op: ReduceOp,
-) -> Result<Vec<T>> {
+) -> Result<AlignedBuffer<T>> {
     if dim >= layout.dims().len() {
         return Err(Error::InvalidDim {
             dim,
@@ -630,7 +655,7 @@ pub fn reduce_map<T: ReduceElement>(
         });
     }
     let values = ValidatedValues::new(values, layout)?;
-    let mut output = Vec::with_capacity(output_len);
+    let mut builder = AlignedBufferBuilder::new(output_len)?;
     for output_index in 0..output_len {
         let coordinates = output_coordinates(&output_dims, output_index);
         let base = input_base_index(layout, dim, &coordinates, keepdim);
@@ -641,7 +666,7 @@ pub fn reduce_map<T: ReduceElement>(
                     let index = base + offset * layout.stride()[dim];
                     value = value.add(values.read(index));
                 }
-                output.push(value);
+                builder.write_next(value)?;
             }
             ReduceOp::Min | ReduceOp::Max => {
                 let use_min = op == ReduceOp::Min;
@@ -651,23 +676,23 @@ pub fn reduce_map<T: ReduceElement>(
                     let index = base + offset * layout.stride()[dim];
                     value = select_extreme(value, values.read(index), use_min);
                 }
-                output.push(value);
+                builder.write_next(value)?;
             }
             ReduceOp::ArgMin | ReduceOp::ArgMax => {
                 unreachable!("arg reductions use arg_reduce_map")
             }
         }
     }
-    Ok(output)
+    builder.finish()
 }
 
-pub fn arg_reduce_map<T: ReduceElement>(
+pub(crate) fn arg_reduce_map<T: ReduceElement>(
     values: &[T],
     layout: &Layout,
     dim: usize,
     keepdim: bool,
     op: ReduceOp,
-) -> Result<Vec<i64>> {
+) -> Result<AlignedBuffer<i64>> {
     if dim >= layout.dims().len() {
         return Err(Error::InvalidDim {
             dim,
@@ -688,7 +713,7 @@ pub fn arg_reduce_map<T: ReduceElement>(
         });
     }
     let values = ValidatedValues::new(values, layout)?;
-    let mut output = Vec::with_capacity(output_len);
+    let mut builder = AlignedBufferBuilder::new(output_len)?;
     for output_index in 0..output_len {
         let coordinates = output_coordinates(&output_dims, output_index);
         let base = input_base_index(layout, dim, &coordinates, keepdim);
@@ -713,16 +738,16 @@ pub fn arg_reduce_map<T: ReduceElement>(
                 best_index = offset;
             }
         }
-        output.push(best_index as i64);
+        builder.write_next(best_index as i64)?;
     }
-    Ok(output)
+    builder.finish()
 }
 
-pub fn reduce_all_map<T: ReduceElement>(
+pub(crate) fn reduce_all_map<T: ReduceElement>(
     values: &[T],
     layout: &Layout,
     op: ReduceOp,
-) -> Result<Vec<T>> {
+) -> Result<AlignedBuffer<T>> {
     let values = ValidatedValues::new(values, layout)?;
     match op {
         ReduceOp::Sum => {
@@ -730,7 +755,7 @@ pub fn reduce_all_map<T: ReduceElement>(
             for index in layout.strided_index() {
                 value = value.add(values.read(index));
             }
-            Ok(vec![value])
+            aligned_one(value)
         }
         ReduceOp::Min | ReduceOp::Max => {
             let mut indices = layout.strided_index();
@@ -747,7 +772,7 @@ pub fn reduce_all_map<T: ReduceElement>(
             for index in indices {
                 value = select_extreme(value, values.read(index), use_min);
             }
-            Ok(vec![value])
+            aligned_one(value)
         }
         ReduceOp::ArgMin | ReduceOp::ArgMax => {
             unreachable!("arg reductions are dimension-only")
@@ -755,21 +780,21 @@ pub fn reduce_all_map<T: ReduceElement>(
     }
 }
 
-pub fn mean_map<T: ReduceElement>(
+pub(crate) fn mean_map<T: ReduceElement>(
     values: &[T],
     layout: &Layout,
     dim: usize,
     keepdim: bool,
-) -> Result<Vec<T>> {
+) -> Result<AlignedBuffer<T>> {
     reduce_f64_map(values, layout, dim, keepdim, false)
 }
 
-pub fn var_map<T: ReduceElement>(
+pub(crate) fn var_map<T: ReduceElement>(
     values: &[T],
     layout: &Layout,
     dim: usize,
     keepdim: bool,
-) -> Result<Vec<T>> {
+) -> Result<AlignedBuffer<T>> {
     reduce_f64_map(values, layout, dim, keepdim, true)
 }
 
@@ -779,7 +804,7 @@ fn reduce_f64_map<T: ReduceElement>(
     dim: usize,
     keepdim: bool,
     variance: bool,
-) -> Result<Vec<T>> {
+) -> Result<AlignedBuffer<T>> {
     if dim >= layout.dims().len() {
         return Err(Error::InvalidDim {
             dim,
@@ -804,7 +829,7 @@ fn reduce_f64_map<T: ReduceElement>(
         });
     }
     let values = ValidatedValues::new(values, layout)?;
-    let mut output = Vec::with_capacity(output_len);
+    let mut builder = AlignedBufferBuilder::new(output_len)?;
     for output_index in 0..output_len {
         let coordinates = output_coordinates(&output_dims, output_index);
         let base = input_base_index(layout, dim, &coordinates, keepdim);
@@ -825,12 +850,15 @@ fn reduce_f64_map<T: ReduceElement>(
         } else {
             mean
         };
-        output.push(T::from_f64(value));
+        builder.write_next(T::from_f64(value))?;
     }
-    Ok(output)
+    builder.finish()
 }
 
-pub fn mean_all_map<T: ReduceElement>(values: &[T], layout: &Layout) -> Result<Vec<T>> {
+pub(crate) fn mean_all_map<T: ReduceElement>(
+    values: &[T],
+    layout: &Layout,
+) -> Result<AlignedBuffer<T>> {
     let values = ValidatedValues::new(values, layout)?;
     let mut count = 0usize;
     let mut sum = 0.0;
@@ -844,26 +872,24 @@ pub fn mean_all_map<T: ReduceElement>(values: &[T], layout: &Layout) -> Result<V
             dim: 0,
         });
     }
-    Ok(vec![T::from_f64(sum / count as f64)])
+    aligned_one(T::from_f64(sum / count as f64))
 }
 
-pub fn copy_logical<T: Copy>(values: &[T], layout: &Layout) -> Result<Vec<T>> {
+pub(crate) fn copy_logical<T: Copy>(values: &[T], layout: &Layout) -> Result<AlignedBuffer<T>> {
     let values = ValidatedValues::new(values, layout)?;
     if let Some((start, end)) = layout.contiguous_offsets() {
-        return checked_slice(values.as_slice(), start, end).map(ToOwned::to_owned);
+        return checked_slice(values.as_slice(), start, end).and_then(AlignedBuffer::from_slice);
     }
 
-    layout
-        .strided_index()
-        .map(|index| Ok(values.read(index)))
-        .collect()
+    aligned_try_iter(layout.strided_index().map(|index| Ok(values.read(index))))
 }
 
-pub fn cat_map<T: Copy>(
+pub(crate) fn cat_map<T: Copy>(
     inputs: &[(&[T], &Layout)],
     output_shape: &[usize],
     dim: usize,
-) -> Result<Vec<T>> {
+    mut write: impl FnMut(T) -> Result<()>,
+) -> Result<()> {
     let rank = output_shape.len();
     if dim >= rank {
         return Err(Error::InvalidConcatDim { dim, rank });
@@ -874,7 +900,6 @@ pub fn cat_map<T: Copy>(
         .collect::<Result<Vec<_>>>()?;
     let inner = output_shape[dim + 1..].iter().product::<usize>();
     let outer = output_shape[..dim].iter().product::<usize>();
-    let mut output = Vec::with_capacity(output_shape.iter().product());
     let mut logical_indices = inputs
         .iter()
         .map(|(_, layout)| layout.strided_index())
@@ -885,9 +910,9 @@ pub fn cat_map<T: Copy>(
             let input_block = layout.dims()[dim] * inner;
             for _ in 0..input_block {
                 let index = logical_index.next().ok_or(Error::StorageOutOfBounds)?;
-                output.push(values.read(index));
+                write(values.read(index))?;
             }
         }
     }
-    Ok(output)
+    Ok(())
 }

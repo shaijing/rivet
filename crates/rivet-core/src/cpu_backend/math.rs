@@ -1,5 +1,23 @@
+use super::buffer::{AlignedBuffer, AlignedBufferBuilder};
 use super::utils::ReduceElement;
 use crate::{Error, Layout, Result};
+
+fn aligned_try_iter<T, I>(iter: I) -> Result<AlignedBuffer<T>>
+where
+    I: ExactSizeIterator<Item = Result<T>>,
+{
+    let mut builder = AlignedBufferBuilder::new(iter.len())?;
+    for value in iter {
+        builder.write_next(value?)?;
+    }
+    builder.finish()
+}
+
+fn aligned_one<T>(value: T) -> Result<AlignedBuffer<T>> {
+    let mut builder = AlignedBufferBuilder::new(1)?;
+    builder.write_next(value)?;
+    builder.finish()
+}
 
 /// Floating-point element contract for model-oriented math kernels.
 ///
@@ -94,37 +112,44 @@ fn input_base_index(layout: &Layout, dim: usize, output_coordinates: &[usize]) -
     logical_index(layout, &input_coordinates)
 }
 
-pub fn affine_map<T: Copy>(values: &[T], layout: &Layout, map: impl Fn(T) -> T) -> Result<Vec<T>> {
-    layout
-        .strided_index()
-        .map(|index| Ok(map(checked_value(values, index)?)))
-        .collect()
+pub(crate) fn affine_map<T: Copy>(
+    values: &[T],
+    layout: &Layout,
+    map: impl Fn(T) -> T,
+) -> Result<AlignedBuffer<T>> {
+    aligned_try_iter(
+        layout
+            .strided_index()
+            .map(|index| Ok(map(checked_value(values, index)?))),
+    )
 }
 
-pub fn elu_map<T: FloatElement>(values: &[T], layout: &Layout, alpha: f64) -> Result<Vec<T>> {
-    layout
-        .strided_index()
-        .map(|index| {
-            let value = checked_value(values, index)?.to_f64();
-            let output = if value > 0.0 {
-                value
-            } else {
-                alpha * value.exp_m1()
-            };
-            Ok(T::from_f64(output))
-        })
-        .collect()
+pub(crate) fn elu_map<T: FloatElement>(
+    values: &[T],
+    layout: &Layout,
+    alpha: f64,
+) -> Result<AlignedBuffer<T>> {
+    aligned_try_iter(layout.strided_index().map(|index| {
+        let value = checked_value(values, index)?.to_f64();
+        let output = if value > 0.0 {
+            value
+        } else {
+            alpha * value.exp_m1()
+        };
+        Ok(T::from_f64(output))
+    }))
 }
 
-pub fn powf_map<T: FloatElement>(values: &[T], layout: &Layout, exponent: f64) -> Result<Vec<T>> {
-    layout
-        .strided_index()
-        .map(|index| {
-            Ok(T::from_f64(
-                checked_value(values, index)?.to_f64().powf(exponent),
-            ))
-        })
-        .collect()
+pub(crate) fn powf_map<T: FloatElement>(
+    values: &[T],
+    layout: &Layout,
+    exponent: f64,
+) -> Result<AlignedBuffer<T>> {
+    aligned_try_iter(layout.strided_index().map(|index| {
+        Ok(T::from_f64(
+            checked_value(values, index)?.to_f64().powf(exponent),
+        ))
+    }))
 }
 
 pub fn pow_map<T: FloatElement>(
@@ -132,22 +157,23 @@ pub fn pow_map<T: FloatElement>(
     lhs_layout: &Layout,
     rhs: &[T],
     rhs_layout: &Layout,
-) -> Result<Vec<T>> {
+) -> Result<AlignedBuffer<T>> {
     if lhs_layout.shape() != rhs_layout.shape() {
         return Err(Error::ShapeMismatchBinary {
             lhs: lhs_layout.dims().to_vec(),
             rhs: rhs_layout.dims().to_vec(),
         });
     }
-    lhs_layout
-        .strided_index()
-        .zip(rhs_layout.strided_index())
-        .map(|(lhs_index, rhs_index)| {
-            let base = checked_value(lhs, lhs_index)?.to_f64();
-            let exponent = checked_value(rhs, rhs_index)?.to_f64();
-            Ok(T::from_f64(base.powf(exponent)))
-        })
-        .collect()
+    aligned_try_iter(
+        lhs_layout
+            .strided_index()
+            .zip(rhs_layout.strided_index())
+            .map(|(lhs_index, rhs_index)| {
+                let base = checked_value(lhs, lhs_index)?.to_f64();
+                let exponent = checked_value(rhs, rhs_index)?.to_f64();
+                Ok(T::from_f64(base.powf(exponent)))
+            }),
+    )
 }
 
 pub fn dot_map<T: FloatElement>(
@@ -155,7 +181,7 @@ pub fn dot_map<T: FloatElement>(
     lhs_layout: &Layout,
     rhs: &[T],
     rhs_layout: &Layout,
-) -> Result<Vec<T>> {
+) -> Result<AlignedBuffer<T>> {
     if lhs_layout.dims().len() != 1
         || rhs_layout.dims().len() != 1
         || lhs_layout.shape() != rhs_layout.shape()
@@ -169,19 +195,23 @@ pub fn dot_map<T: FloatElement>(
     for (lhs_index, rhs_index) in lhs_layout.strided_index().zip(rhs_layout.strided_index()) {
         sum += checked_value(lhs, lhs_index)?.to_f64() * checked_value(rhs, rhs_index)?.to_f64();
     }
-    Ok(vec![T::from_f64(sum)])
+    aligned_one(T::from_f64(sum))
 }
 
-pub fn norm_map<T: FloatElement>(values: &[T], layout: &Layout) -> Result<Vec<T>> {
+pub(crate) fn norm_map<T: FloatElement>(values: &[T], layout: &Layout) -> Result<AlignedBuffer<T>> {
     let mut sum = 0.0;
     for index in layout.strided_index() {
         let value = checked_value(values, index)?.to_f64();
         sum += value * value;
     }
-    Ok(vec![T::from_f64(sum.sqrt())])
+    aligned_one(T::from_f64(sum.sqrt()))
 }
 
-pub fn cumsum_map<T: ReduceElement>(values: &[T], layout: &Layout, dim: usize) -> Result<Vec<T>> {
+pub(crate) fn cumsum_map<T: ReduceElement>(
+    values: &[T],
+    layout: &Layout,
+    dim: usize,
+) -> Result<AlignedBuffer<T>> {
     if dim >= layout.dims().len() {
         return Err(Error::InvalidDim {
             dim,
@@ -189,7 +219,7 @@ pub fn cumsum_map<T: ReduceElement>(values: &[T], layout: &Layout, dim: usize) -
         });
     }
 
-    let mut output = Vec::with_capacity(layout.elem_count());
+    let mut builder = AlignedBufferBuilder::new(layout.elem_count())?;
     for output_index in 0..layout.elem_count() {
         let coordinates = output_coordinates(layout.dims(), output_index);
         let mut sum = T::zero();
@@ -199,16 +229,16 @@ pub fn cumsum_map<T: ReduceElement>(values: &[T], layout: &Layout, dim: usize) -
             let index = logical_index(layout, &input_coordinates)?;
             sum = sum.add(checked_value(values, index)?);
         }
-        output.push(sum);
+        builder.write_next(sum)?;
     }
-    Ok(output)
+    builder.finish()
 }
 
 pub fn log_sum_exp_map<T: FloatElement>(
     values: &[T],
     layout: &Layout,
     dim: usize,
-) -> Result<Vec<T>> {
+) -> Result<AlignedBuffer<T>> {
     if dim >= layout.dims().len() {
         return Err(Error::InvalidDim {
             dim,
@@ -225,7 +255,7 @@ pub fn log_sum_exp_map<T: FloatElement>(
 
     let output_dims = output_dims_for_dim(layout.dims(), dim);
     let output_len = output_dims.iter().product::<usize>();
-    let mut output = Vec::with_capacity(output_len);
+    let mut builder = AlignedBufferBuilder::new(output_len)?;
     for output_index in 0..output_len {
         let coordinates = output_coordinates(&output_dims, output_index);
         let base = input_base_index(layout, dim, &coordinates)?;
@@ -262,7 +292,7 @@ pub fn log_sum_exp_map<T: FloatElement>(
             }
             maximum + sum.ln()
         };
-        output.push(T::from_f64(result));
+        builder.write_next(T::from_f64(result))?;
     }
-    Ok(output)
+    builder.finish()
 }

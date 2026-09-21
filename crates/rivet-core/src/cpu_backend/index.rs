@@ -1,6 +1,18 @@
+use super::buffer::{AlignedBuffer, AlignedBufferBuilder};
 use super::utils::{BinaryElement, copy_logical};
 use crate::ops::BinaryOp;
 use crate::{Error, Layout, Result};
+
+fn aligned_from_iter<T, I>(iter: I) -> Result<AlignedBuffer<T>>
+where
+    I: ExactSizeIterator<Item = Result<T>>,
+{
+    let mut builder = AlignedBufferBuilder::new(iter.len())?;
+    for value in iter {
+        builder.write_next(value?)?;
+    }
+    builder.finish()
+}
 
 /// Integer values accepted by indexing operations. Negative values are
 /// rejected rather than being interpreted as Python-style offsets.
@@ -98,7 +110,11 @@ fn read_index<I: IndexElement>(
     Ok(index)
 }
 
-pub fn flip_map<T: Copy>(values: &[T], layout: &Layout, dims: &[usize]) -> Result<Vec<T>> {
+pub(crate) fn flip_map<T: Copy>(
+    values: &[T],
+    layout: &Layout,
+    dims: &[usize],
+) -> Result<AlignedBuffer<T>> {
     let mut reverse = vec![false; layout.dims().len()];
     for &dim in dims {
         if dim >= reverse.len() {
@@ -110,8 +126,7 @@ pub fn flip_map<T: Copy>(values: &[T], layout: &Layout, dims: &[usize]) -> Resul
         reverse[dim] = !reverse[dim];
     }
 
-    let mut output = Vec::with_capacity(layout.elem_count());
-    for linear in 0..layout.elem_count() {
+    aligned_from_iter((0..layout.elem_count()).map(|linear| {
         let mut coordinates = coordinates(layout.dims(), linear);
         for (axis, coordinate) in coordinates.iter_mut().enumerate() {
             if reverse[axis] {
@@ -119,9 +134,8 @@ pub fn flip_map<T: Copy>(values: &[T], layout: &Layout, dims: &[usize]) -> Resul
             }
         }
         let physical = physical_index(layout, &coordinates)?;
-        output.push(*values.get(physical).ok_or(Error::StorageOutOfBounds)?);
-    }
-    Ok(output)
+        Ok(*values.get(physical).ok_or(Error::StorageOutOfBounds)?)
+    }))
 }
 
 pub fn gather_map<T: Copy, I: IndexElement>(
@@ -130,7 +144,7 @@ pub fn gather_map<T: Copy, I: IndexElement>(
     indexes: &[I],
     indexes_layout: &Layout,
     dim: usize,
-) -> Result<Vec<T>> {
+) -> Result<AlignedBuffer<T>> {
     if values_layout.dims().len() != indexes_layout.dims().len()
         || dim >= values_layout.dims().len()
     {
@@ -140,8 +154,7 @@ pub fn gather_map<T: Copy, I: IndexElement>(
         });
     }
 
-    let mut output = Vec::with_capacity(indexes_layout.elem_count());
-    for linear in 0..indexes_layout.elem_count() {
+    aligned_from_iter((0..indexes_layout.elem_count()).map(|linear| {
         let coordinates = coordinates(indexes_layout.dims(), linear);
         let index = read_index(
             indexes,
@@ -153,9 +166,8 @@ pub fn gather_map<T: Copy, I: IndexElement>(
         let mut source_coordinates = coordinates;
         source_coordinates[dim] = index;
         let physical = physical_index(values_layout, &source_coordinates)?;
-        output.push(*values.get(physical).ok_or(Error::StorageOutOfBounds)?);
-    }
-    Ok(output)
+        Ok(*values.get(physical).ok_or(Error::StorageOutOfBounds)?)
+    }))
 }
 
 pub fn index_select_map<T: Copy, I: IndexElement>(
@@ -164,7 +176,7 @@ pub fn index_select_map<T: Copy, I: IndexElement>(
     indexes: &[I],
     indexes_layout: &Layout,
     dim: usize,
-) -> Result<Vec<T>> {
+) -> Result<AlignedBuffer<T>> {
     if indexes_layout.dims().len() != 1 || dim >= values_layout.dims().len() {
         return Err(Error::InvalidRank {
             expected: 1,
@@ -174,8 +186,7 @@ pub fn index_select_map<T: Copy, I: IndexElement>(
     let mut output_dims = values_layout.dims().to_vec();
     output_dims[dim] = indexes_layout.dims()[0];
     let output_len = output_dims.iter().product::<usize>();
-    let mut output = Vec::with_capacity(output_len);
-    for linear in 0..output_len {
+    aligned_from_iter((0..output_len).map(|linear| {
         let coordinates = coordinates(&output_dims, linear);
         let index = read_index(
             indexes,
@@ -187,9 +198,8 @@ pub fn index_select_map<T: Copy, I: IndexElement>(
         let mut source_coordinates = coordinates;
         source_coordinates[dim] = index;
         let physical = physical_index(values_layout, &source_coordinates)?;
-        output.push(*values.get(physical).ok_or(Error::StorageOutOfBounds)?);
-    }
-    Ok(output)
+        Ok(*values.get(physical).ok_or(Error::StorageOutOfBounds)?)
+    }))
 }
 
 pub fn scatter_map<T: Copy + BinaryElement, I: IndexElement>(
@@ -201,7 +211,7 @@ pub fn scatter_map<T: Copy + BinaryElement, I: IndexElement>(
     source_layout: &Layout,
     dim: usize,
     add: bool,
-) -> Result<Vec<T>> {
+) -> Result<AlignedBuffer<T>> {
     if indexes_layout.dims() != source_layout.dims()
         || values_layout.dims().len() != source_layout.dims().len()
         || dim >= values_layout.dims().len()
@@ -229,9 +239,10 @@ pub fn scatter_map<T: Copy + BinaryElement, I: IndexElement>(
             .get(source_physical)
             .ok_or(Error::StorageOutOfBounds)?;
         if add {
-            output[target] = T::apply(BinaryOp::Add, output[target], source_value)?;
+            output.as_mut_slice()[target] =
+                T::apply(BinaryOp::Add, output.as_slice()[target], source_value)?;
         } else {
-            output[target] = source_value;
+            output.as_mut_slice()[target] = source_value;
         }
     }
     Ok(output)
@@ -245,7 +256,7 @@ pub fn index_add_map<T: Copy + BinaryElement, I: IndexElement>(
     source: &[T],
     source_layout: &Layout,
     dim: usize,
-) -> Result<Vec<T>> {
+) -> Result<AlignedBuffer<T>> {
     if indexes_layout.dims().len() != 1
         || dim >= values_layout.dims().len()
         || values_layout.dims().len() != source_layout.dims().len()
@@ -275,7 +286,8 @@ pub fn index_add_map<T: Copy + BinaryElement, I: IndexElement>(
         let source_value = *source
             .get(source_physical)
             .ok_or(Error::StorageOutOfBounds)?;
-        output[target] = T::apply(BinaryOp::Add, output[target], source_value)?;
+        output.as_mut_slice()[target] =
+            T::apply(BinaryOp::Add, output.as_slice()[target], source_value)?;
     }
     Ok(output)
 }

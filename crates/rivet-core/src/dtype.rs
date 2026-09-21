@@ -1,4 +1,7 @@
-use crate::cpu_backend::{CpuStorage, CpuStorageRef, buffer::AlignedBuffer};
+use crate::cpu_backend::{
+    CpuStorage, CpuStorageRef,
+    buffer::{AlignedBuffer, AlignedBufferBuilder},
+};
 use crate::{Error, Result};
 use half::{bf16, f16};
 
@@ -59,6 +62,24 @@ pub trait WithDType: Copy + Send + Sync + 'static {
 
     fn into_cpu_storage(data: Vec<Self>) -> Result<CpuStorage>;
 
+    fn into_cpu_storage_iter<I>(data: I) -> Result<CpuStorage>
+    where
+        I: ExactSizeIterator<Item = Self>;
+
+    fn try_into_cpu_storage_iter<I>(data: I) -> Result<CpuStorage>
+    where
+        I: ExactSizeIterator<Item = Result<Self>>;
+
+    fn into_cpu_storage_with<F>(len: usize, fill: F) -> Result<CpuStorage>
+    where
+        F: FnOnce(&mut dyn FnMut(Self) -> Result<()>) -> Result<()>,
+        Self: Sized;
+
+    fn into_cpu_storage_writer<F>(len: usize, fill: F) -> Result<CpuStorage>
+    where
+        F: FnOnce(&mut ExactOutput<Self>) -> Result<()>,
+        Self: Sized;
+
     fn cpu_storage_as_slice(storage: &CpuStorage) -> Result<&[Self]>;
 
     fn cpu_storage_ref_as_slice(storage: CpuStorageRef<'_>) -> Result<&[Self]> {
@@ -69,6 +90,31 @@ pub trait WithDType: Copy + Send + Sync + 'static {
     }
 
     fn cpu_storage_as_mut_slice(storage: &mut CpuStorage) -> Result<&mut [Self]>;
+}
+
+/// A statically dispatched writer for a fixed-size tensor output.
+///
+/// The writer owns the final aligned allocation and requires callers to write
+/// exactly one value per output element before it is finished.
+pub struct ExactOutput<T> {
+    builder: AlignedBufferBuilder<T>,
+}
+
+impl<T> ExactOutput<T> {
+    fn new(len: usize) -> Result<Self> {
+        Ok(Self {
+            builder: AlignedBufferBuilder::new(len)?,
+        })
+    }
+
+    #[inline]
+    pub fn write_next(&mut self, value: T) -> Result<()> {
+        self.builder.write_next(value)
+    }
+
+    fn finish(self) -> Result<AlignedBuffer<T>> {
+        self.builder.finish()
+    }
 }
 
 #[allow(dead_code)]
@@ -83,6 +129,47 @@ macro_rules! impl_with_dtype {
 
             fn into_cpu_storage(data: Vec<Self>) -> Result<CpuStorage> {
                 crate::cpu_backend::buffer::AlignedBuffer::from_vec(data).map(CpuStorage::$variant)
+            }
+
+            fn into_cpu_storage_iter<I>(data: I) -> Result<CpuStorage>
+            where
+                I: ExactSizeIterator<Item = Self>,
+            {
+                let mut builder = AlignedBufferBuilder::new(data.len())?;
+                for value in data {
+                    builder.write_next(value)?;
+                }
+                builder.finish().map(CpuStorage::$variant)
+            }
+
+            fn try_into_cpu_storage_iter<I>(data: I) -> Result<CpuStorage>
+            where
+                I: ExactSizeIterator<Item = Result<Self>>,
+            {
+                let mut builder = AlignedBufferBuilder::new(data.len())?;
+                for value in data {
+                    builder.write_next(value?)?;
+                }
+                builder.finish().map(CpuStorage::$variant)
+            }
+
+            fn into_cpu_storage_with<F>(len: usize, fill: F) -> Result<CpuStorage>
+            where
+                F: FnOnce(&mut dyn FnMut(Self) -> Result<()>) -> Result<()>,
+            {
+                let mut builder = AlignedBufferBuilder::new(len)?;
+                let mut write = |value| builder.write_next(value);
+                fill(&mut write)?;
+                builder.finish().map(CpuStorage::$variant)
+            }
+
+            fn into_cpu_storage_writer<F>(len: usize, fill: F) -> Result<CpuStorage>
+            where
+                F: FnOnce(&mut ExactOutput<Self>) -> Result<()>,
+            {
+                let mut output = ExactOutput::new(len)?;
+                fill(&mut output)?;
+                output.finish().map(CpuStorage::$variant)
             }
 
             fn cpu_storage_as_slice(storage: &CpuStorage) -> Result<&[Self]> {

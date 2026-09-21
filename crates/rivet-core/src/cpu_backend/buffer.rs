@@ -155,6 +155,7 @@ impl<T> AlignedBufferBuilder<T> {
         self.len - self.initialized
     }
 
+    #[inline]
     pub(crate) fn write_next(&mut self, value: T) -> Result<()> {
         if self.initialized >= self.len {
             return Err(Error::StorageOutOfBounds);

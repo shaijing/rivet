@@ -12,7 +12,7 @@ pub mod tensor;
 
 pub use cpu_backend::{CpuDevice, CpuStorage, CpuStorageMutRef, CpuStorageRef};
 pub use device::{Device, DeviceLocation};
-pub use dtype::{DType, WithDType};
+pub use dtype::{DType, ExactOutput, WithDType};
 pub use error::{Error, Result};
 pub use layout::Layout;
 pub use ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};

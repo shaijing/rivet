@@ -578,12 +578,6 @@ where
                 .copied()
                 .ok_or(rivet_core::Error::StorageOutOfBounds)
         };
-        let mut output = Vec::with_capacity(
-            output_width
-                .checked_mul(output_height)
-                .and_then(|pixels| pixels.checked_mul(channels))
-                .ok_or(rivet_core::Error::StorageOutOfBounds)?,
-        );
         let mut append_pixel = |channel: usize, y: usize, x: usize| {
             let source = map(x, y);
             sample_value(
@@ -597,34 +591,36 @@ where
                 fill,
             )
         };
-        match axis_order {
-            ImageAxisOrder::Hwc => {
-                for y in 0..output_height {
-                    for x in 0..output_width {
-                        for channel in 0..channels {
-                            output.push(append_pixel(channel, y, x)?);
-                        }
-                    }
-                }
-            }
-            ImageAxisOrder::Chw => {
-                for channel in 0..channels {
+        let output_dims = match axis_order {
+            ImageAxisOrder::Hwc => vec![output_height, output_width, channels],
+            ImageAxisOrder::Chw => vec![channels, output_height, output_width],
+        };
+        Tensor::from_exact_fn::<u8, _, _>(output_dims, input.device(), |write| {
+            match axis_order {
+                ImageAxisOrder::Hwc => {
                     for y in 0..output_height {
                         for x in 0..output_width {
-                            output.push(append_pixel(channel, y, x)?);
+                            for channel in 0..channels {
+                                write(append_pixel(channel, y, x)?)?;
+                            }
+                        }
+                    }
+                }
+                ImageAxisOrder::Chw => {
+                    for channel in 0..channels {
+                        for y in 0..output_height {
+                            for x in 0..output_width {
+                                write(append_pixel(channel, y, x)?)?;
+                            }
                         }
                     }
                 }
             }
-        }
-        Ok(output)
+            Ok(())
+        })
     })?;
-    let output_dims = match axis_order {
-        ImageAxisOrder::Hwc => vec![output_height, output_width, channels],
-        ImageAxisOrder::Chw => vec![channels, output_height, output_width],
-    };
     Ok(DecodedSample {
-        image: Tensor::from_vec(values, output_dims, input.device())?,
+        image: values,
         label: sample.label,
     })
 }

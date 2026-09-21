@@ -1,6 +1,6 @@
-use crate::errors::{RivetResult, invalid_argument, invalid_shape};
+use crate::errors::{invalid_argument, invalid_shape, RivetResult};
 use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
-use rivet_core::{CpuStorageRef, DType, Device, Tensor};
+use rivet_core::{CpuStorageRef, DType, Device, ExactOutput, Tensor};
 
 fn affine_params(mean: &[f32], std: &[f32], channel_count: usize) -> (Vec<f32>, Vec<f32>) {
     let mut scale = Vec::with_capacity(channel_count);
@@ -18,16 +18,16 @@ fn apply_affine(value: u8, scale: &[f32], bias: &[f32], channel: usize) -> f32 {
     value as f32 * scale[channel] + bias[channel]
 }
 
-fn normalize_contiguous_image(
+fn write_normalize_contiguous_image(
     values: &[u8],
     dims: &[usize],
     axis_order: ImageAxisOrder,
     scale: &[f32],
     bias: &[f32],
-) -> Vec<f32> {
-    let mut output = Vec::with_capacity(values.len());
+    output: &mut ExactOutput<f32>,
+) -> rivet_core::Result<()> {
     if values.is_empty() {
-        return output;
+        return Ok(());
     }
 
     let channel_count = match axis_order {
@@ -37,15 +37,15 @@ fn normalize_contiguous_image(
     match axis_order {
         ImageAxisOrder::Hwc if channel_count == 3 => {
             for pixels in values.chunks_exact(3) {
-                output.push(apply_affine(pixels[0], scale, bias, 0));
-                output.push(apply_affine(pixels[1], scale, bias, 1));
-                output.push(apply_affine(pixels[2], scale, bias, 2));
+                output.write_next(apply_affine(pixels[0], scale, bias, 0))?;
+                output.write_next(apply_affine(pixels[1], scale, bias, 1))?;
+                output.write_next(apply_affine(pixels[2], scale, bias, 2))?;
             }
             debug_assert!(values.chunks_exact(3).remainder().is_empty());
         }
         ImageAxisOrder::Hwc => {
             for (index, &value) in values.iter().enumerate() {
-                output.push(apply_affine(value, scale, bias, index % channel_count));
+                output.write_next(apply_affine(value, scale, bias, index % channel_count))?;
             }
         }
         ImageAxisOrder::Chw => {
@@ -53,27 +53,25 @@ fn normalize_contiguous_image(
             for channel in 0..channel_count {
                 let start = channel * spatial_size;
                 let end = start + spatial_size;
-                output.extend(
-                    values[start..end]
-                        .iter()
-                        .map(|&value| apply_affine(value, scale, bias, channel)),
-                );
+                for &value in &values[start..end] {
+                    output.write_next(apply_affine(value, scale, bias, channel))?;
+                }
             }
         }
     }
-    output
+    Ok(())
 }
 
-fn normalize_contiguous_batch(
+fn write_normalize_contiguous_batch(
     values: &[u8],
     dims: &[usize],
     axis_order: ImageAxisOrder,
     scale: &[f32],
     bias: &[f32],
-) -> Vec<f32> {
-    let mut output = Vec::with_capacity(values.len());
+    output: &mut ExactOutput<f32>,
+) -> rivet_core::Result<()> {
     if values.is_empty() {
-        return output;
+        return Ok(());
     }
 
     let (batch, channels, spatial_size) = match axis_order {
@@ -83,15 +81,15 @@ fn normalize_contiguous_batch(
     match axis_order {
         ImageAxisOrder::Hwc if channels == 3 => {
             for pixels in values.chunks_exact(3) {
-                output.push(apply_affine(pixels[0], scale, bias, 0));
-                output.push(apply_affine(pixels[1], scale, bias, 1));
-                output.push(apply_affine(pixels[2], scale, bias, 2));
+                output.write_next(apply_affine(pixels[0], scale, bias, 0))?;
+                output.write_next(apply_affine(pixels[1], scale, bias, 1))?;
+                output.write_next(apply_affine(pixels[2], scale, bias, 2))?;
             }
             debug_assert!(values.chunks_exact(3).remainder().is_empty());
         }
         ImageAxisOrder::Hwc => {
             for (index, &value) in values.iter().enumerate() {
-                output.push(apply_affine(value, scale, bias, index % channels));
+                output.write_next(apply_affine(value, scale, bias, index % channels))?;
             }
         }
         ImageAxisOrder::Chw => {
@@ -100,43 +98,40 @@ fn normalize_contiguous_batch(
                 for channel in 0..channels {
                     let start = batch_start + channel * spatial_size;
                     let end = start + spatial_size;
-                    output.extend(
-                        values[start..end]
-                            .iter()
-                            .map(|&value| apply_affine(value, scale, bias, channel)),
-                    );
+                    for &value in &values[start..end] {
+                        output.write_next(apply_affine(value, scale, bias, channel))?;
+                    }
                 }
             }
         }
     }
-    output
+    Ok(())
 }
 
-fn normalize_contiguous_nhwc_to_nchw(
+fn write_normalize_contiguous_nhwc_to_nchw(
     values: &[u8],
     dims: &[usize; 4],
     scale: &[f32],
     bias: &[f32],
-) -> Vec<f32> {
+    output: &mut ExactOutput<f32>,
+) -> rivet_core::Result<()> {
     let [batch, height, width, channels] = *dims;
     let spatial_size = height * width;
     let image_size = spatial_size * channels;
-    let mut output = vec![0.0; values.len()];
     for batch_index in 0..batch {
         let source = &values[batch_index * image_size..(batch_index + 1) * image_size];
         for channel in 0..channels {
-            let output_start = (batch_index * channels + channel) * spatial_size;
             for spatial_index in 0..spatial_size {
-                output[output_start + spatial_index] = apply_affine(
+                output.write_next(apply_affine(
                     source[spatial_index * channels + channel],
                     scale,
                     bias,
                     channel,
-                );
+                ))?;
             }
         }
     }
-    output
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -347,7 +342,6 @@ pub fn normalize_u8_batch_to_f32(
     let (scale, bias) = affine_params(mean, std, channel_count);
     let dims = input.dims().to_vec();
     let device = input.device().clone();
-    let elem_count = input.elem_count();
 
     Ok(input.with_cpu_storage(|storage, layout| {
         let CpuStorageRef::U8(values) = storage else {
@@ -361,64 +355,41 @@ pub fn normalize_u8_batch_to_f32(
             let values = values
                 .get(start..end)
                 .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-            let output = normalize_contiguous_batch(values, &dims, axis_order, &scale, &bias);
-            return Tensor::from_vec(output, dims, &device);
+            return Tensor::from_exact_writer::<f32, _, _>(dims, &device, |output| {
+                write_normalize_contiguous_batch(
+                    values,
+                    &input.dims(),
+                    axis_order,
+                    &scale,
+                    &bias,
+                    output,
+                )
+            })
+            .map_err(Into::into);
         }
 
-        let [dim0, dim1, dim2, dim3] = dims.as_slice() else {
+        let [_, dim1, dim2, dim3] = dims.as_slice() else {
             return Err(rivet_core::Error::InvalidRank {
                 expected: 4,
                 actual: dims.len(),
             });
         };
-        let stride = layout.stride();
-        let mut output = Vec::with_capacity(elem_count);
-        for index0 in 0..*dim0 {
-            let offset0 = index0
-                .checked_mul(stride[0])
-                .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-            for index1 in 0..*dim1 {
-                let offset1 = offset0
-                    .checked_add(
-                        index1
-                            .checked_mul(stride[1])
-                            .ok_or(rivet_core::Error::StorageOutOfBounds)?,
-                    )
+        let (dim1, dim2, dim3) = (*dim1, *dim2, *dim3);
+        let output = layout
+            .strided_index()
+            .enumerate()
+            .map(|(logical_index, physical_index)| {
+                let value = *values
+                    .get(physical_index)
                     .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-                for index2 in 0..*dim2 {
-                    let offset2 = offset1
-                        .checked_add(
-                            index2
-                                .checked_mul(stride[2])
-                                .ok_or(rivet_core::Error::StorageOutOfBounds)?,
-                        )
-                        .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-                    for index3 in 0..*dim3 {
-                        let offset = offset2
-                            .checked_add(
-                                index3
-                                    .checked_mul(stride[3])
-                                    .ok_or(rivet_core::Error::StorageOutOfBounds)?,
-                            )
-                            .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-                        let physical_index = layout
-                            .start_offset()
-                            .checked_add(offset)
-                            .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-                        let value = *values
-                            .get(physical_index)
-                            .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-                        let channel = match axis_order {
-                            ImageAxisOrder::Hwc => index3,
-                            ImageAxisOrder::Chw => index1,
-                        };
-                        output.push(apply_affine(value, &scale, &bias, channel));
-                    }
-                }
-            }
-        }
+                let channel = match axis_order {
+                    ImageAxisOrder::Hwc => logical_index % dim3,
+                    ImageAxisOrder::Chw => (logical_index % (dim1 * dim2 * dim3)) / (dim2 * dim3),
+                };
+                Ok(apply_affine(value, &scale, &bias, channel))
+            });
 
-        Tensor::from_vec(output, dims, &device)
+        Tensor::from_exact_try_iter(output, dims, &device).map_err(Into::into)
     })?)
 }
 
@@ -488,45 +459,32 @@ pub fn normalize_u8_batch_to_nchw_f32(
                 .get(start..end)
                 .ok_or(rivet_core::Error::StorageOutOfBounds)?;
             let source_dims = [*batch, *height, *width, *channels];
-            let output = normalize_contiguous_nhwc_to_nchw(values, &source_dims, &scale, &bias);
-            return Tensor::from_vec(output, dims, &device);
+            return Tensor::from_exact_writer::<f32, _, _>(dims, &device, |output| {
+                write_normalize_contiguous_nhwc_to_nchw(values, &source_dims, &scale, &bias, output)
+            })
+            .map_err(Into::into);
         }
 
         let stride = layout.stride();
-        let mut output = vec![0.0; elem_count];
-        for batch_index in 0..*batch {
-            for height_index in 0..*height {
-                for width_index in 0..*width {
-                    let pixel_offset = batch_index
-                        .checked_mul(stride[0])
-                        .and_then(|offset| offset.checked_add(height_index.checked_mul(stride[1])?))
-                        .and_then(|offset| offset.checked_add(width_index.checked_mul(stride[2])?))
-                        .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-                    for channel in 0..*channels {
-                        let offset = pixel_offset
-                            .checked_add(
-                                channel
-                                    .checked_mul(stride[3])
-                                    .ok_or(rivet_core::Error::StorageOutOfBounds)?,
-                            )
-                            .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-                        let physical_index = layout
-                            .start_offset()
-                            .checked_add(offset)
-                            .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-                        let value = *values
-                            .get(physical_index)
-                            .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-                        let output_index =
-                            ((batch_index * *channels + channel) * *height + height_index) * *width
-                                + width_index;
-                        output[output_index] = apply_affine(value, &scale, &bias, channel);
-                    }
-                }
-            }
-        }
+        let output = (0..elem_count).map(|output_index| {
+            let batch_index = output_index / (*channels * *height * *width);
+            let channel = (output_index / (*height * *width)) % *channels;
+            let height_index = (output_index / *width) % *height;
+            let width_index = output_index % *width;
+            let physical_offset = batch_index
+                .checked_mul(stride[0])
+                .and_then(|offset| offset.checked_add(height_index.checked_mul(stride[1])?))
+                .and_then(|offset| offset.checked_add(width_index.checked_mul(stride[2])?))
+                .and_then(|offset| offset.checked_add(channel.checked_mul(stride[3])?))
+                .and_then(|offset| layout.start_offset().checked_add(offset))
+                .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+            let value = *values
+                .get(physical_offset)
+                .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+            Ok(apply_affine(value, &scale, &bias, channel))
+        });
 
-        Tensor::from_vec(output, dims, &device)
+        Tensor::from_exact_try_iter(output, dims, &device).map_err(Into::into)
     })?)
 }
 
@@ -584,7 +542,6 @@ pub fn normalize_u8_to_f32(
     let (scale, bias) = affine_params(mean, std, channel_count);
     let dims = input.dims().to_vec();
     let device = input.device().clone();
-    let elem_count = input.elem_count();
     Ok(input.with_cpu_storage(|storage, layout| {
         let CpuStorageRef::U8(values) = storage else {
             return Err(rivet_core::Error::UnexpectedDType {
@@ -597,31 +554,42 @@ pub fn normalize_u8_to_f32(
             let values = values
                 .get(start..end)
                 .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-            let output = normalize_contiguous_image(values, &dims, axis_order, &scale, &bias);
-            return Tensor::from_vec(output, dims, &device);
+            return Tensor::from_exact_writer::<f32, _, _>(dims, &device, |output| {
+                write_normalize_contiguous_image(
+                    values,
+                    &input.dims(),
+                    axis_order,
+                    &scale,
+                    &bias,
+                    output,
+                )
+            })
+            .map_err(Into::into);
         }
 
-        let mut output = Vec::with_capacity(elem_count);
-        for (logical_index, physical_index) in layout.strided_index().enumerate() {
-            let value = *values
-                .get(physical_index)
-                .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-            let channel = match axis_order {
-                ImageAxisOrder::Hwc => logical_index % channel_count,
-                ImageAxisOrder::Chw => logical_index / spatial_size,
-            };
-            output.push(apply_affine(value, &scale, &bias, channel));
-        }
+        let output = layout
+            .strided_index()
+            .enumerate()
+            .map(|(logical_index, physical_index)| {
+                let value = *values
+                    .get(physical_index)
+                    .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+                let channel = match axis_order {
+                    ImageAxisOrder::Hwc => logical_index % channel_count,
+                    ImageAxisOrder::Chw => logical_index / spatial_size,
+                };
+                Ok(apply_affine(value, &scale, &bias, channel))
+            });
 
-        Tensor::from_vec(output, dims, &device)
+        Tensor::from_exact_try_iter(output, dims, &device).map_err(Into::into)
     })?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        NormalizeConfig, normalize_u8_batch_to_f32, normalize_u8_batch_to_nchw_f32,
-        normalize_u8_to_f32,
+        normalize_u8_batch_to_f32, normalize_u8_batch_to_nchw_f32, normalize_u8_to_f32,
+        NormalizeConfig,
     };
     use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
     use rivet_core::{DType, Device, Tensor};

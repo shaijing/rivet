@@ -161,50 +161,51 @@ fn flip_decoded(
                 },
             )
         };
-        let mut output = Vec::with_capacity(sample.image.elem_count());
-        match axis_order {
-            ImageAxisOrder::Hwc => {
-                for y in 0..height {
-                    for x in 0..width {
-                        for channel in 0..channels {
-                            let (source_y, source_x) = match direction {
-                                FlipDirection::Horizontal => (y, width - 1 - x),
-                                FlipDirection::Vertical => (height - 1 - y, x),
-                            };
-                            let coords = [source_y, source_x, channel];
-                            output.push(
-                                *values
-                                    .get(offset(&coords)?)
-                                    .ok_or(rivet_core::Error::StorageOutOfBounds)?,
-                            );
-                        }
-                    }
-                }
-            }
-            ImageAxisOrder::Chw => {
-                for channel in 0..channels {
+        Tensor::from_exact_fn::<u8, _, _>(dims.clone(), sample.image.device(), |write| {
+            match axis_order {
+                ImageAxisOrder::Hwc => {
                     for y in 0..height {
                         for x in 0..width {
-                            let (source_y, source_x) = match direction {
-                                FlipDirection::Horizontal => (y, width - 1 - x),
-                                FlipDirection::Vertical => (height - 1 - y, x),
-                            };
-                            let coords = [channel, source_y, source_x];
-                            output.push(
-                                *values
-                                    .get(offset(&coords)?)
-                                    .ok_or(rivet_core::Error::StorageOutOfBounds)?,
-                            );
+                            for channel in 0..channels {
+                                let (source_y, source_x) = match direction {
+                                    FlipDirection::Horizontal => (y, width - 1 - x),
+                                    FlipDirection::Vertical => (height - 1 - y, x),
+                                };
+                                let coords = [source_y, source_x, channel];
+                                write(
+                                    *values
+                                        .get(offset(&coords)?)
+                                        .ok_or(rivet_core::Error::StorageOutOfBounds)?,
+                                )?;
+                            }
+                        }
+                    }
+                }
+                ImageAxisOrder::Chw => {
+                    for channel in 0..channels {
+                        for y in 0..height {
+                            for x in 0..width {
+                                let (source_y, source_x) = match direction {
+                                    FlipDirection::Horizontal => (y, width - 1 - x),
+                                    FlipDirection::Vertical => (height - 1 - y, x),
+                                };
+                                let coords = [channel, source_y, source_x];
+                                write(
+                                    *values
+                                        .get(offset(&coords)?)
+                                        .ok_or(rivet_core::Error::StorageOutOfBounds)?,
+                                )?;
+                            }
                         }
                     }
                 }
             }
-        }
-        Ok(output)
+            Ok(())
+        })
     })?;
 
     Ok(DecodedSample {
-        image: Tensor::from_vec(output, dims, sample.image.device())?,
+        image: output,
         label: sample.label,
     })
 }

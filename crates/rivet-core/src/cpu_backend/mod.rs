@@ -8,15 +8,31 @@ use crate::backend::{BackendDevice, BackendStorage};
 use crate::dtype::IntoCpuStorageBuffer;
 use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use crate::{DType, Error, Layout, Result, Shape, WithDType};
-use buffer::AlignedBuffer;
+use buffer::{AlignedBuffer, AlignedBufferBuilder};
 use half::{bf16, f16};
 use utils::{
     arg_reduce_map, binary_map, binary_scalar_map, cat_map, cmp_map, cmp_scalar_map, copy_logical,
     mean_all_map, mean_map, reduce_all_map, reduce_map, unary_map, var_map, where_map,
 };
 
-fn aligned<T: Copy>(values: Vec<T>) -> Result<AlignedBuffer<T>> {
-    AlignedBuffer::from_vec(values)
+trait IntoAlignedBuffer<T> {
+    fn into_aligned(self) -> Result<AlignedBuffer<T>>;
+}
+
+impl<T: Copy> IntoAlignedBuffer<T> for Vec<T> {
+    fn into_aligned(self) -> Result<AlignedBuffer<T>> {
+        AlignedBuffer::from_vec(self)
+    }
+}
+
+impl<T> IntoAlignedBuffer<T> for AlignedBuffer<T> {
+    fn into_aligned(self) -> Result<AlignedBuffer<T>> {
+        Ok(self)
+    }
+}
+
+fn aligned<T, V: IntoAlignedBuffer<T>>(values: V) -> Result<AlignedBuffer<T>> {
+    values.into_aligned()
 }
 
 // The enum remains part of the existing public storage API while its backing
@@ -162,11 +178,11 @@ impl CpuStorage {
     pub fn to_dtype(&self, layout: &Layout, dtype: DType) -> Result<Self> {
         macro_rules! convert {
             ($variant:ident, $ty:ty, $convert:expr) => {{
-                let mut output = Vec::<$ty>::with_capacity(layout.elem_count());
+                let mut builder = AlignedBufferBuilder::new(layout.elem_count())?;
                 for index in layout.strided_index() {
-                    output.push($convert(self.value_at(index)?.to_f64()));
+                    builder.write_next($convert(self.value_at(index)?.to_f64()))?;
                 }
-                Ok(Self::$variant(aligned(output)?))
+                Ok(Self::$variant(builder.finish()?))
             }};
         }
 
@@ -1194,11 +1210,11 @@ impl CpuStorage {
                         }
                     }
                 }
-                Ok(Self::$variant(aligned(cat_map(
-                    &typed,
-                    output_shape.dims(),
-                    dim,
-                )?)?))
+                let mut builder = AlignedBufferBuilder::new(output_shape.elem_count())?;
+                cat_map(&typed, output_shape.dims(), dim, |value| {
+                    builder.write_next(value)
+                })?;
+                Ok(Self::$variant(builder.finish()?))
             }};
         }
 
@@ -1222,7 +1238,7 @@ impl CpuStorage {
 
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {{
-                let mut output = Vec::<$ty>::with_capacity(output_shape.elem_count());
+                let mut builder = AlignedBufferBuilder::new(output_shape.elem_count())?;
                 for (storage, layout) in inputs {
                     let Self::$variant(values) = storage else {
                         return Err(Error::DTypeMismatch {
@@ -1234,16 +1250,17 @@ impl CpuStorage {
                         continue;
                     }
                     if let Some((start, end)) = layout.contiguous_offsets() {
-                        output.extend_from_slice(
+                        builder.extend_from_slice(
                             values.get(start..end).ok_or(Error::StorageOutOfBounds)?,
-                        );
+                        )?;
                     } else {
                         for index in layout.strided_index() {
-                            output.push(*values.get(index).ok_or(Error::StorageOutOfBounds)?);
+                            builder
+                                .write_next(*values.get(index).ok_or(Error::StorageOutOfBounds)?)?;
                         }
                     }
                 }
-                Ok(Self::$variant(aligned(output)?))
+                Ok(Self::$variant(builder.finish()?))
             }};
         }
 

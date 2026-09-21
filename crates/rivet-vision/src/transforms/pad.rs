@@ -147,19 +147,23 @@ impl PadConfig {
                             .copied()
                             .ok_or(rivet_core::Error::StorageOutOfBounds)
                     };
-                    let mut output = Vec::with_capacity(output_height * output_width * channels);
-                    append_padded_u8(
-                        &mut output,
-                        axis_order,
-                        (height, width, channels),
-                        (output_height, output_width),
-                        (self.top as usize, self.left as usize),
-                        fill,
-                        read,
-                    )?;
-                    Ok(output)
+                    Tensor::from_exact_fn::<u8, _, _>(
+                        output_dims.clone(),
+                        input.device(),
+                        |write| {
+                            append_padded_u8(
+                                write,
+                                axis_order,
+                                (height, width, channels),
+                                (output_height, output_width),
+                                (self.top as usize, self.left as usize),
+                                fill,
+                                read,
+                            )
+                        },
+                    )
                 })?;
-                Tensor::from_vec(values, output_dims, input.device())?
+                values
             }
             DType::F32 => {
                 let fill = self.value;
@@ -176,19 +180,23 @@ impl PadConfig {
                             .copied()
                             .ok_or(rivet_core::Error::StorageOutOfBounds)
                     };
-                    let mut output = Vec::with_capacity(output_height * output_width * channels);
-                    append_padded_f32(
-                        &mut output,
-                        axis_order,
-                        (height, width, channels),
-                        (output_height, output_width),
-                        (self.top as usize, self.left as usize),
-                        fill,
-                        read,
-                    )?;
-                    Ok(output)
+                    Tensor::from_exact_fn::<f32, _, _>(
+                        output_dims.clone(),
+                        input.device(),
+                        |write| {
+                            append_padded_f32(
+                                write,
+                                axis_order,
+                                (height, width, channels),
+                                (output_height, output_width),
+                                (self.top as usize, self.left as usize),
+                                fill,
+                                read,
+                            )
+                        },
+                    )
                 })?;
-                Tensor::from_vec(values, output_dims, input.device())?
+                values
             }
             dtype => {
                 return Err(invalid_argument(format!(
@@ -205,7 +213,7 @@ impl PadConfig {
 }
 
 fn append_padded_u8<F>(
-    output: &mut Vec<u8>,
+    output: &mut dyn FnMut(u8) -> rivet_core::Result<()>,
     axis_order: ImageAxisOrder,
     (height, width, channels): (usize, usize, usize),
     (output_height, output_width): (usize, usize),
@@ -223,11 +231,11 @@ where
                     let inside_y = y >= top && y - top < height;
                     let inside_x = x >= left && x - left < width;
                     for c in 0..channels {
-                        output.push(if inside_y && inside_x {
+                        output(if inside_y && inside_x {
                             read([y - top, x - left, c])?
                         } else {
                             fill
-                        });
+                        })?;
                     }
                 }
             }
@@ -238,11 +246,11 @@ where
                     for x in 0..output_width {
                         let inside_y = y >= top && y - top < height;
                         let inside_x = x >= left && x - left < width;
-                        output.push(if inside_y && inside_x {
+                        output(if inside_y && inside_x {
                             read([c, y - top, x - left])?
                         } else {
                             fill
-                        });
+                        })?;
                     }
                 }
             }
@@ -252,7 +260,7 @@ where
 }
 
 fn append_padded_f32<F>(
-    output: &mut Vec<f32>,
+    output: &mut dyn FnMut(f32) -> rivet_core::Result<()>,
     axis_order: ImageAxisOrder,
     dims: (usize, usize, usize),
     output_dims: (usize, usize),
@@ -276,7 +284,7 @@ where
 }
 
 fn append_padded_u8_like<T, F>(
-    output: &mut Vec<T>,
+    output: &mut dyn FnMut(T) -> rivet_core::Result<()>,
     axis_order: ImageAxisOrder,
     (height, width, channels): (usize, usize, usize),
     (output_height, output_width): (usize, usize),
@@ -295,11 +303,11 @@ where
                     let inside_y = y >= top && y - top < height;
                     let inside_x = x >= left && x - left < width;
                     for c in 0..channels {
-                        output.push(if inside_y && inside_x {
+                        output(if inside_y && inside_x {
                             read([y - top, x - left, c])?
                         } else {
                             fill
-                        });
+                        })?;
                     }
                 }
             }
@@ -310,11 +318,11 @@ where
                     for x in 0..output_width {
                         let inside_y = y >= top && y - top < height;
                         let inside_x = x >= left && x - left < width;
-                        output.push(if inside_y && inside_x {
+                        output(if inside_y && inside_x {
                             read([c, y - top, x - left])?
                         } else {
                             fill
-                        });
+                        })?;
                     }
                 }
             }

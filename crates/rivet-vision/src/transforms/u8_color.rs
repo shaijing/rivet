@@ -125,25 +125,28 @@ impl AutocontrastConfig {
                     }
                 }
             }
-            let mut output = Vec::with_capacity(input.elem_count());
-            append_mapped_pixels(
-                &mut output,
-                axis_order,
-                (height, width, channels),
-                |channel, y, x| {
-                    let value = read(pixel_coords(axis_order, channel, y, x))?;
-                    if min[channel] == max[channel] {
-                        Ok(value)
-                    } else {
-                        Ok(((u16::from(value.saturating_sub(min[channel])) * 255)
-                            / u16::from(max[channel] - min[channel]))
-                            as u8)
-                    }
-                },
-            )?;
-            Ok(output)
+            Tensor::from_exact_fn::<u8, _, _>(dims.clone(), input.device(), |write| {
+                append_mapped_pixels(
+                    write,
+                    axis_order,
+                    (height, width, channels),
+                    |channel, y, x| {
+                        let value = read(pixel_coords(axis_order, channel, y, x))?;
+                        if min[channel] == max[channel] {
+                            Ok(value)
+                        } else {
+                            Ok(((u16::from(value.saturating_sub(min[channel])) * 255)
+                                / u16::from(max[channel] - min[channel]))
+                                as u8)
+                        }
+                    },
+                )
+            })
         })?;
-        Ok(ImageSample::Decoded(new_sample(sample, values, dims)?))
+        Ok(ImageSample::Decoded(DecodedSample {
+            image: values,
+            label: sample.label,
+        }))
     }
 }
 
@@ -208,19 +211,22 @@ impl EqualizeConfig {
                         / (total - cdf_min)) as u8;
                 }
             }
-            let mut output = Vec::with_capacity(input.elem_count());
-            append_mapped_pixels(
-                &mut output,
-                axis_order,
-                (height, width, channels),
-                |channel, y, x| {
-                    let value = read(pixel_coords(axis_order, channel, y, x))?;
-                    Ok(luts[channel][usize::from(value)])
-                },
-            )?;
-            Ok(output)
+            Tensor::from_exact_fn::<u8, _, _>(dims.clone(), input.device(), |write| {
+                append_mapped_pixels(
+                    write,
+                    axis_order,
+                    (height, width, channels),
+                    |channel, y, x| {
+                        let value = read(pixel_coords(axis_order, channel, y, x))?;
+                        Ok(luts[channel][usize::from(value)])
+                    },
+                )
+            })
         })?;
-        Ok(ImageSample::Decoded(new_sample(sample, values, dims)?))
+        Ok(ImageSample::Decoded(DecodedSample {
+            image: values,
+            label: sample.label,
+        }))
     }
 }
 
@@ -273,34 +279,37 @@ impl SharpnessConfig {
                     .copied()
                     .ok_or(rivet_core::Error::StorageOutOfBounds)
             };
-            let mut output = Vec::with_capacity(input.elem_count());
-            append_mapped_pixels(
-                &mut output,
-                axis_order,
-                (height, width, channels),
-                |channel, y, x| {
-                    let center = f32::from(read(channel, y, x)?);
-                    let mut sum = 0.0;
-                    let mut count = 0.0;
-                    for dy in
-                        y.saturating_sub(1)..=y.saturating_add(1).min(height.saturating_sub(1))
-                    {
-                        for dx in
-                            x.saturating_sub(1)..=x.saturating_add(1).min(width.saturating_sub(1))
+            Tensor::from_exact_fn::<u8, _, _>(dims.clone(), input.device(), |write| {
+                append_mapped_pixels(
+                    write,
+                    axis_order,
+                    (height, width, channels),
+                    |channel, y, x| {
+                        let center = f32::from(read(channel, y, x)?);
+                        let mut sum = 0.0;
+                        let mut count = 0.0;
+                        for dy in
+                            y.saturating_sub(1)..=y.saturating_add(1).min(height.saturating_sub(1))
                         {
-                            sum += f32::from(read(channel, dy, dx)?);
-                            count += 1.0;
+                            for dx in x.saturating_sub(1)
+                                ..=x.saturating_add(1).min(width.saturating_sub(1))
+                            {
+                                sum += f32::from(read(channel, dy, dx)?);
+                                count += 1.0;
+                            }
                         }
-                    }
-                    let blurred = sum / count;
-                    Ok((center + self.amount * (center - blurred))
-                        .clamp(0.0, 255.0)
-                        .round() as u8)
-                },
-            )?;
-            Ok(output)
+                        let blurred = sum / count;
+                        Ok((center + self.amount * (center - blurred))
+                            .clamp(0.0, 255.0)
+                            .round() as u8)
+                    },
+                )
+            })
         })?;
-        Ok(ImageSample::Decoded(new_sample(sample, values, dims)?))
+        Ok(ImageSample::Decoded(DecodedSample {
+            image: values,
+            label: sample.label,
+        }))
     }
 }
 
@@ -360,7 +369,7 @@ fn invert_rgb(sample: DecodedSample, axis_order: ImageAxisOrder) -> RivetResult<
 }
 
 fn append_mapped_pixels<T, F>(
-    output: &mut Vec<T>,
+    output: &mut dyn FnMut(T) -> rivet_core::Result<()>,
     axis_order: ImageAxisOrder,
     (height, width, channels): (usize, usize, usize),
     mut read: F,
@@ -373,7 +382,7 @@ where
             for y in 0..height {
                 for x in 0..width {
                     for channel in 0..channels {
-                        output.push(read(channel, y, x)?);
+                        output(read(channel, y, x)?)?;
                     }
                 }
             }
@@ -382,7 +391,7 @@ where
             for channel in 0..channels {
                 for y in 0..height {
                     for x in 0..width {
-                        output.push(read(channel, y, x)?);
+                        output(read(channel, y, x)?)?;
                     }
                 }
             }
@@ -402,36 +411,26 @@ where
 {
     let sample = require_u8_image(sample, op_name)?;
     let dims = sample.image.dims().to_vec();
-    let values = sample.image.with_cpu_storage(|storage, layout| {
+    let image = sample.image.with_cpu_storage(|storage, layout| {
         let CpuStorageRef::U8(values) = storage else {
             return Err(rivet_core::Error::UnexpectedDType {
                 expected: DType::U8,
                 actual: sample.image.dtype(),
             });
         };
-        layout
-            .strided_index()
-            .map(|index| {
-                values
-                    .get(index)
-                    .copied()
-                    .map(&mut map)
-                    .ok_or(rivet_core::Error::StorageOutOfBounds)
-            })
-            .collect::<rivet_core::Result<Vec<_>>>()
+        let output = layout.strided_index().map(|index| {
+            values
+                .get(index)
+                .copied()
+                .map(&mut map)
+                .ok_or(rivet_core::Error::StorageOutOfBounds)
+        });
+        Tensor::from_exact_try_iter(output, dims.clone(), sample.image.device())
     })?;
-    Ok(ImageSample::Decoded(new_sample(sample, values, dims)?))
-}
-
-fn new_sample(
-    sample: DecodedSample,
-    values: Vec<u8>,
-    dims: Vec<usize>,
-) -> RivetResult<DecodedSample> {
-    Ok(DecodedSample {
-        image: Tensor::from_vec(values, dims, sample.image.device())?,
+    Ok(ImageSample::Decoded(DecodedSample {
+        image,
         label: sample.label,
-    })
+    }))
 }
 
 #[cfg(test)]

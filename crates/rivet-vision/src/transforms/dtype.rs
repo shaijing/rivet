@@ -66,45 +66,47 @@ impl ConvertImageDtypeConfig {
         let dims = input.dims().to_vec();
         match (input.dtype(), self.dtype) {
             (DType::U8, DType::F32) => {
-                let values = input.with_cpu_storage(|storage, layout| {
+                let output = input.with_cpu_storage(|storage, layout| {
                     let CpuStorageRef::U8(values) = storage else {
                         return Err(rivet_core::Error::UnexpectedDType {
                             expected: DType::U8,
                             actual: input.dtype(),
                         });
                     };
-                    logical_values(values, layout).map(|values| {
+                    let output = layout.strided_index().map(|index| {
                         values
-                            .into_iter()
+                            .get(index)
+                            .copied()
                             .map(|value| value as f32 / 255.0)
-                            .collect()
-                    })
+                            .ok_or(rivet_core::Error::StorageOutOfBounds)
+                    });
+                    Tensor::from_exact_try_iter(output, dims.clone(), input.device())
                 })?;
-                Ok(Tensor::from_vec(values, dims, input.device())?)
+                Ok(output)
             }
             (DType::F32, DType::U8) => {
-                let values = input.with_cpu_storage(|storage, layout| {
+                let output = input.with_cpu_storage(|storage, layout| {
                     let CpuStorageRef::F32(values) = storage else {
                         return Err(rivet_core::Error::UnexpectedDType {
                             expected: DType::F32,
                             actual: input.dtype(),
                         });
                     };
-                    logical_values(values, layout).map(|values| {
-                        values
-                            .into_iter()
-                            .map(|value| {
-                                let value = if value.is_nan() {
-                                    0.0
-                                } else {
-                                    value.clamp(0.0, 1.0)
-                                };
-                                (value * 255.0).round() as u8
-                            })
-                            .collect()
-                    })
+                    let output = layout.strided_index().map(|index| {
+                        let value = values
+                            .get(index)
+                            .copied()
+                            .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+                        let value = if value.is_nan() {
+                            0.0
+                        } else {
+                            value.clamp(0.0, 1.0)
+                        };
+                        Ok((value * 255.0).round() as u8)
+                    });
+                    Tensor::from_exact_try_iter(output, dims.clone(), input.device())
                 })?;
-                Ok(Tensor::from_vec(values, dims, input.device())?)
+                Ok(output)
             }
             (actual, target) => Err(invalid_argument(format!(
                 "image dtype conversion does not support {:?} -> {:?}",
@@ -112,21 +114,6 @@ impl ConvertImageDtypeConfig {
             ))),
         }
     }
-}
-
-fn logical_values<T: Copy>(
-    values: &[T],
-    layout: &rivet_core::Layout,
-) -> rivet_core::Result<Vec<T>> {
-    layout
-        .strided_index()
-        .map(|index| {
-            values
-                .get(index)
-                .copied()
-                .ok_or(rivet_core::Error::StorageOutOfBounds)
-        })
-        .collect()
 }
 
 #[cfg(test)]
