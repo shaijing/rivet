@@ -59,11 +59,12 @@ Reference command:
 ```
 
 With the release Python extension and the current decoded CIFAR-10 dataset,
-five complete runs produced speedups of `14.81x`, `14.94x`, `15.47x`,
-`14.61x`, and `13.48x`: arithmetic mean `14.66x`, range `13.48x-15.47x`,
-standard deviation `0.66x`. Treat this as a same-environment reference
-baseline; rerun multiple times and investigate meaningful regressions rather
-than comparing against a single noisy run.
+five complete runs produced Rivet decoded throughputs of `728278`, `730208`,
+`734899`, `737451`, and `725681 img/s`: arithmetic mean `731303 img/s`,
+range `725681-737451 img/s`, population standard deviation `4305 img/s`.
+Treat this as a same-environment absolute-throughput reference baseline; rerun
+multiple times and investigate meaningful regressions rather than comparing
+against a single noisy run.
 
 
 # References
