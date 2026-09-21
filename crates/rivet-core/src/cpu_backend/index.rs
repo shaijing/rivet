@@ -1,5 +1,6 @@
 use super::buffer::{AlignedBuffer, AlignedBufferBuilder};
-use super::utils::{BinaryElement, ValidatedValues, copy_logical};
+use super::storage::{aligned, CpuStorage};
+use super::utils::{copy_logical, BinaryElement, ValidatedValues};
 use crate::ops::BinaryOp;
 use crate::{Error, Layout, Result, Shape};
 
@@ -213,6 +214,364 @@ pub fn index_select_map<T: Copy, I: IndexElement>(
         let physical = physical_index(values_layout, &source_coordinates)?;
         Ok(values.read(physical))
     }))
+}
+
+impl CpuStorage {
+    pub(crate) fn flip(&self, layout: &Layout, dims: &[usize]) -> Result<Self> {
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                if let Self::$variant(values) = self {
+                    Ok(Self::$variant(aligned(flip_map(values, layout, dims)?)?))
+                } else {
+                    unreachable!()
+                }
+            };
+        }
+
+        match self {
+            Self::U8(_) => dispatch!(U8, u8),
+            Self::U32(_) => dispatch!(U32, u32),
+            Self::I16(_) => dispatch!(I16, i16),
+            Self::I32(_) => dispatch!(I32, i32),
+            Self::I64(_) => dispatch!(I64, i64),
+            Self::BF16(_) => dispatch!(BF16, bf16),
+            Self::F16(_) => dispatch!(F16, f16),
+            Self::F32(_) => dispatch!(F32, f32),
+            Self::F64(_) => dispatch!(F64, f64),
+        }
+    }
+
+    pub(crate) fn gather(
+        &self,
+        values_layout: &Layout,
+        indexes: &Self,
+        indexes_layout: &Layout,
+        dim: usize,
+    ) -> Result<Self> {
+        macro_rules! dispatch_indexes {
+            ($values_variant:ident, $values:expr) => {
+                match indexes {
+                    Self::U8(ids) => Ok(Self::$values_variant(aligned(gather_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        dim,
+                    )?)?)),
+                    Self::U32(ids) => Ok(Self::$values_variant(aligned(gather_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        dim,
+                    )?)?)),
+                    Self::I16(ids) => Ok(Self::$values_variant(aligned(gather_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        dim,
+                    )?)?)),
+                    Self::I32(ids) => Ok(Self::$values_variant(aligned(gather_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        dim,
+                    )?)?)),
+                    Self::I64(ids) => Ok(Self::$values_variant(aligned(gather_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        dim,
+                    )?)?)),
+                    _ => Err(Error::UnsupportedDTypeForOp {
+                        op: "gather",
+                        dtype: indexes.dtype(),
+                    }),
+                }
+            };
+        }
+
+        match self {
+            Self::U8(values) => dispatch_indexes!(U8, values),
+            Self::U32(values) => dispatch_indexes!(U32, values),
+            Self::I16(values) => dispatch_indexes!(I16, values),
+            Self::I32(values) => dispatch_indexes!(I32, values),
+            Self::I64(values) => dispatch_indexes!(I64, values),
+            Self::BF16(values) => dispatch_indexes!(BF16, values),
+            Self::F16(values) => dispatch_indexes!(F16, values),
+            Self::F32(values) => dispatch_indexes!(F32, values),
+            Self::F64(values) => dispatch_indexes!(F64, values),
+        }
+    }
+
+    pub(crate) fn index_select(
+        &self,
+        values_layout: &Layout,
+        indexes: &Self,
+        indexes_layout: &Layout,
+        dim: usize,
+    ) -> Result<Self> {
+        macro_rules! dispatch_indexes {
+            ($values_variant:ident, $values:expr) => {
+                match indexes {
+                    Self::U8(ids) => Ok(Self::$values_variant(aligned(index_select_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        dim,
+                    )?)?)),
+                    Self::U32(ids) => Ok(Self::$values_variant(aligned(index_select_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        dim,
+                    )?)?)),
+                    Self::I16(ids) => Ok(Self::$values_variant(aligned(index_select_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        dim,
+                    )?)?)),
+                    Self::I32(ids) => Ok(Self::$values_variant(aligned(index_select_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        dim,
+                    )?)?)),
+                    Self::I64(ids) => Ok(Self::$values_variant(aligned(index_select_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        dim,
+                    )?)?)),
+                    _ => Err(Error::UnsupportedDTypeForOp {
+                        op: "index_select",
+                        dtype: indexes.dtype(),
+                    }),
+                }
+            };
+        }
+
+        match self {
+            Self::U8(values) => dispatch_indexes!(U8, values),
+            Self::U32(values) => dispatch_indexes!(U32, values),
+            Self::I16(values) => dispatch_indexes!(I16, values),
+            Self::I32(values) => dispatch_indexes!(I32, values),
+            Self::I64(values) => dispatch_indexes!(I64, values),
+            Self::BF16(values) => dispatch_indexes!(BF16, values),
+            Self::F16(values) => dispatch_indexes!(F16, values),
+            Self::F32(values) => dispatch_indexes!(F32, values),
+            Self::F64(values) => dispatch_indexes!(F64, values),
+        }
+    }
+
+    pub(crate) fn scatter(
+        &self,
+        values_layout: &Layout,
+        indexes: &Self,
+        indexes_layout: &Layout,
+        source: &Self,
+        source_layout: &Layout,
+        dim: usize,
+        add: bool,
+    ) -> Result<Self> {
+        if self.dtype() != source.dtype() {
+            return Err(Error::DTypeMismatch {
+                lhs: self.dtype(),
+                rhs: source.dtype(),
+            });
+        }
+        macro_rules! dispatch_indexes {
+            ($variant:ident, $values:expr, $source:expr) => {
+                match indexes {
+                    Self::U8(ids) => Ok(Self::$variant(aligned(scatter_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        $source,
+                        source_layout,
+                        dim,
+                        add,
+                    )?)?)),
+                    Self::U32(ids) => Ok(Self::$variant(aligned(scatter_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        $source,
+                        source_layout,
+                        dim,
+                        add,
+                    )?)?)),
+                    Self::I16(ids) => Ok(Self::$variant(aligned(scatter_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        $source,
+                        source_layout,
+                        dim,
+                        add,
+                    )?)?)),
+                    Self::I32(ids) => Ok(Self::$variant(aligned(scatter_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        $source,
+                        source_layout,
+                        dim,
+                        add,
+                    )?)?)),
+                    Self::I64(ids) => Ok(Self::$variant(aligned(scatter_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        $source,
+                        source_layout,
+                        dim,
+                        add,
+                    )?)?)),
+                    _ => Err(Error::UnsupportedDTypeForOp {
+                        op: if add { "scatter_add" } else { "scatter" },
+                        dtype: indexes.dtype(),
+                    }),
+                }
+            };
+        }
+
+        match (self, source) {
+            (Self::U8(values), Self::U8(source)) => dispatch_indexes!(U8, values, source),
+            (Self::U32(values), Self::U32(source)) => dispatch_indexes!(U32, values, source),
+            (Self::I16(values), Self::I16(source)) => dispatch_indexes!(I16, values, source),
+            (Self::I32(values), Self::I32(source)) => dispatch_indexes!(I32, values, source),
+            (Self::I64(values), Self::I64(source)) => dispatch_indexes!(I64, values, source),
+            (Self::BF16(values), Self::BF16(source)) => dispatch_indexes!(BF16, values, source),
+            (Self::F16(values), Self::F16(source)) => dispatch_indexes!(F16, values, source),
+            (Self::F32(values), Self::F32(source)) => dispatch_indexes!(F32, values, source),
+            (Self::F64(values), Self::F64(source)) => dispatch_indexes!(F64, values, source),
+            _ => unreachable!(),
+        }
+    }
+
+    pub(crate) fn index_add(
+        &self,
+        values_layout: &Layout,
+        indexes: &Self,
+        indexes_layout: &Layout,
+        source: &Self,
+        source_layout: &Layout,
+        dim: usize,
+    ) -> Result<Self> {
+        if self.dtype() != source.dtype() {
+            return Err(Error::DTypeMismatch {
+                lhs: self.dtype(),
+                rhs: source.dtype(),
+            });
+        }
+        macro_rules! dispatch_indexes {
+            ($variant:ident, $values:expr, $source:expr) => {
+                match indexes {
+                    Self::U8(ids) => Ok(Self::$variant(aligned(index_add_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        $source,
+                        source_layout,
+                        dim,
+                    )?)?)),
+                    Self::U32(ids) => Ok(Self::$variant(aligned(index_add_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        $source,
+                        source_layout,
+                        dim,
+                    )?)?)),
+                    Self::I16(ids) => Ok(Self::$variant(aligned(index_add_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        $source,
+                        source_layout,
+                        dim,
+                    )?)?)),
+                    Self::I32(ids) => Ok(Self::$variant(aligned(index_add_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        $source,
+                        source_layout,
+                        dim,
+                    )?)?)),
+                    Self::I64(ids) => Ok(Self::$variant(aligned(index_add_map(
+                        $values,
+                        values_layout,
+                        ids,
+                        indexes_layout,
+                        $source,
+                        source_layout,
+                        dim,
+                    )?)?)),
+                    _ => Err(Error::UnsupportedDTypeForOp {
+                        op: "index_add",
+                        dtype: indexes.dtype(),
+                    }),
+                }
+            };
+        }
+
+        match (self, source) {
+            (Self::U8(values), Self::U8(source)) => dispatch_indexes!(U8, values, source),
+            (Self::U32(values), Self::U32(source)) => dispatch_indexes!(U32, values, source),
+            (Self::I16(values), Self::I16(source)) => dispatch_indexes!(I16, values, source),
+            (Self::I32(values), Self::I32(source)) => dispatch_indexes!(I32, values, source),
+            (Self::I64(values), Self::I64(source)) => dispatch_indexes!(I64, values, source),
+            (Self::BF16(values), Self::BF16(source)) => dispatch_indexes!(BF16, values, source),
+            (Self::F16(values), Self::F16(source)) => dispatch_indexes!(F16, values, source),
+            (Self::F32(values), Self::F32(source)) => dispatch_indexes!(F32, values, source),
+            (Self::F64(values), Self::F64(source)) => dispatch_indexes!(F64, values, source),
+            _ => unreachable!(),
+        }
+    }
+
+    pub(crate) fn copy_logical(&self, layout: &Layout) -> Result<Self> {
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {
+                if let Self::$variant(values) = self {
+                    Ok(Self::$variant(aligned(copy_logical(values, layout)?)?))
+                } else {
+                    unreachable!()
+                }
+            };
+        }
+
+        match self {
+            Self::U8(_) => dispatch!(U8, u8),
+            Self::U32(_) => dispatch!(U32, u32),
+            Self::I16(_) => dispatch!(I16, i16),
+            Self::I32(_) => dispatch!(I32, i32),
+            Self::I64(_) => dispatch!(I64, i64),
+            Self::BF16(_) => dispatch!(BF16, bf16),
+            Self::F16(_) => dispatch!(F16, f16),
+            Self::F32(_) => dispatch!(F32, f32),
+            Self::F64(_) => dispatch!(F64, f64),
+        }
+    }
 }
 
 pub fn scatter_map<T: Copy + BinaryElement, I: IndexElement>(
