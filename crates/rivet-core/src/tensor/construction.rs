@@ -1,6 +1,7 @@
 use super::{Tensor, Tensor_};
 use crate::backend::BackendDevice;
-use crate::cpu_backend::CpuDevice;
+use crate::cpu_backend::{CpuDevice, CpuStorage, buffer::AlignedBuffer};
+use crate::dtype::IntoCpuStorageBuffer;
 use crate::storage::{Storage, validate_layout_for_storage};
 use crate::{DType, Device, Error, Layout, Result, Shape, WithDType};
 use std::ops::Add;
@@ -155,6 +156,27 @@ impl Tensor {
             Layout::contiguous(shape),
             dtype,
             device.clone(),
+        )
+    }
+
+    /// Creates a CPU tensor from an already aligned, exactly-sized buffer.
+    #[allow(dead_code)]
+    pub(crate) fn from_aligned_buffer<T, S>(
+        buffer: AlignedBuffer<T>,
+        shape: S,
+        device: &Device,
+    ) -> Result<Self>
+    where
+        T: IntoCpuStorageBuffer,
+        S: Into<Shape>,
+    {
+        if !matches!(device, Device::Cpu) {
+            return Err(Error::DeviceMismatch);
+        }
+        Self::from_storage(
+            Storage::Cpu(CpuStorage::from_aligned_buffer(buffer)),
+            shape,
+            device,
         )
     }
 

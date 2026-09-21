@@ -1,4 +1,4 @@
-use crate::cpu_backend::{CpuStorage, CpuStorageRef};
+use crate::cpu_backend::{CpuStorage, CpuStorageRef, buffer::AlignedBuffer};
 use crate::{Error, Result};
 use half::{bf16, f16};
 
@@ -57,7 +57,7 @@ impl DType {
 pub trait WithDType: Copy + Send + Sync + 'static {
     const DTYPE: DType;
 
-    fn into_cpu_storage(data: Vec<Self>) -> CpuStorage;
+    fn into_cpu_storage(data: Vec<Self>) -> Result<CpuStorage>;
 
     fn cpu_storage_as_slice(storage: &CpuStorage) -> Result<&[Self]>;
 
@@ -71,18 +71,23 @@ pub trait WithDType: Copy + Send + Sync + 'static {
     fn cpu_storage_as_mut_slice(storage: &mut CpuStorage) -> Result<&mut [Self]>;
 }
 
+#[allow(dead_code)]
+pub(crate) trait IntoCpuStorageBuffer: WithDType {
+    fn into_cpu_storage_buffer(data: AlignedBuffer<Self>) -> CpuStorage;
+}
+
 macro_rules! impl_with_dtype {
     ($ty:ty, $variant:ident) => {
         impl WithDType for $ty {
             const DTYPE: DType = DType::$variant;
 
-            fn into_cpu_storage(data: Vec<Self>) -> CpuStorage {
-                CpuStorage::$variant(data)
+            fn into_cpu_storage(data: Vec<Self>) -> Result<CpuStorage> {
+                crate::cpu_backend::buffer::AlignedBuffer::from_vec(data).map(CpuStorage::$variant)
             }
 
             fn cpu_storage_as_slice(storage: &CpuStorage) -> Result<&[Self]> {
                 match storage {
-                    CpuStorage::$variant(data) => Ok(data),
+                    CpuStorage::$variant(data) => Ok(data.as_slice()),
                     _ => Err(Error::UnexpectedDType {
                         expected: DType::$variant,
                         actual: storage.dtype(),
@@ -102,12 +107,18 @@ macro_rules! impl_with_dtype {
 
             fn cpu_storage_as_mut_slice(storage: &mut CpuStorage) -> Result<&mut [Self]> {
                 match storage {
-                    CpuStorage::$variant(data) => Ok(data),
+                    CpuStorage::$variant(data) => Ok(data.as_mut_slice()),
                     _ => Err(Error::UnexpectedDType {
                         expected: DType::$variant,
                         actual: storage.dtype(),
                     }),
                 }
+            }
+        }
+
+        impl IntoCpuStorageBuffer for $ty {
+            fn into_cpu_storage_buffer(data: AlignedBuffer<Self>) -> CpuStorage {
+                CpuStorage::$variant(data)
             }
         }
     };

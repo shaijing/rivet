@@ -1,6 +1,3 @@
-// Phase 1 introduces the standalone buffer before the Phase 3 CpuStorage
-// migration; its construction APIs are intentionally unused for now.
-#[allow(dead_code)]
 pub(crate) mod buffer;
 pub(crate) mod index;
 pub(crate) mod math;
@@ -8,25 +5,34 @@ pub(crate) mod matmul;
 pub mod utils;
 
 use crate::backend::{BackendDevice, BackendStorage};
+use crate::dtype::IntoCpuStorageBuffer;
 use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use crate::{DType, Error, Layout, Result, Shape, WithDType};
+use buffer::AlignedBuffer;
 use half::{bf16, f16};
 use utils::{
     arg_reduce_map, binary_map, binary_scalar_map, cat_map, cmp_map, cmp_scalar_map, copy_logical,
     mean_all_map, mean_map, reduce_all_map, reduce_map, unary_map, var_map, where_map,
 };
 
+fn aligned<T: Copy>(values: Vec<T>) -> Result<AlignedBuffer<T>> {
+    AlignedBuffer::from_vec(values)
+}
+
+// The enum remains part of the existing public storage API while its backing
+// allocation stays crate-private until the aligned buffer API is stabilized.
+#[allow(private_interfaces)]
 #[derive(Debug, Clone)]
 pub enum CpuStorage {
-    U8(Vec<u8>),
-    U32(Vec<u32>),
-    I16(Vec<i16>),
-    I32(Vec<i32>),
-    I64(Vec<i64>),
-    BF16(Vec<bf16>),
-    F16(Vec<f16>),
-    F32(Vec<f32>),
-    F64(Vec<f64>),
+    U8(AlignedBuffer<u8>),
+    U32(AlignedBuffer<u32>),
+    I16(AlignedBuffer<i16>),
+    I32(AlignedBuffer<i32>),
+    I64(AlignedBuffer<i64>),
+    BF16(AlignedBuffer<bf16>),
+    F16(AlignedBuffer<f16>),
+    F32(AlignedBuffer<f32>),
+    F64(AlignedBuffer<f64>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -72,6 +78,11 @@ pub enum CpuStorageMutRef<'a> {
 }
 
 impl CpuStorage {
+    #[allow(dead_code)]
+    pub(crate) fn from_aligned_buffer<T: IntoCpuStorageBuffer>(buffer: AlignedBuffer<T>) -> Self {
+        T::into_cpu_storage_buffer(buffer)
+    }
+
     pub fn dtype(&self) -> DType {
         match self {
             Self::U8(_) => DType::U8,
@@ -106,29 +117,29 @@ impl CpuStorage {
 
     pub fn as_ref(&self) -> CpuStorageRef<'_> {
         match self {
-            Self::U8(data) => CpuStorageRef::U8(data),
-            Self::U32(data) => CpuStorageRef::U32(data),
-            Self::I16(data) => CpuStorageRef::I16(data),
-            Self::I32(data) => CpuStorageRef::I32(data),
-            Self::I64(data) => CpuStorageRef::I64(data),
-            Self::BF16(data) => CpuStorageRef::BF16(data),
-            Self::F16(data) => CpuStorageRef::F16(data),
-            Self::F32(data) => CpuStorageRef::F32(data),
-            Self::F64(data) => CpuStorageRef::F64(data),
+            Self::U8(data) => CpuStorageRef::U8(data.as_slice()),
+            Self::U32(data) => CpuStorageRef::U32(data.as_slice()),
+            Self::I16(data) => CpuStorageRef::I16(data.as_slice()),
+            Self::I32(data) => CpuStorageRef::I32(data.as_slice()),
+            Self::I64(data) => CpuStorageRef::I64(data.as_slice()),
+            Self::BF16(data) => CpuStorageRef::BF16(data.as_slice()),
+            Self::F16(data) => CpuStorageRef::F16(data.as_slice()),
+            Self::F32(data) => CpuStorageRef::F32(data.as_slice()),
+            Self::F64(data) => CpuStorageRef::F64(data.as_slice()),
         }
     }
 
     pub fn as_mut(&mut self) -> CpuStorageMutRef<'_> {
         match self {
-            Self::U8(data) => CpuStorageMutRef::U8(data),
-            Self::U32(data) => CpuStorageMutRef::U32(data),
-            Self::I16(data) => CpuStorageMutRef::I16(data),
-            Self::I32(data) => CpuStorageMutRef::I32(data),
-            Self::I64(data) => CpuStorageMutRef::I64(data),
-            Self::BF16(data) => CpuStorageMutRef::BF16(data),
-            Self::F16(data) => CpuStorageMutRef::F16(data),
-            Self::F32(data) => CpuStorageMutRef::F32(data),
-            Self::F64(data) => CpuStorageMutRef::F64(data),
+            Self::U8(data) => CpuStorageMutRef::U8(data.as_mut_slice()),
+            Self::U32(data) => CpuStorageMutRef::U32(data.as_mut_slice()),
+            Self::I16(data) => CpuStorageMutRef::I16(data.as_mut_slice()),
+            Self::I32(data) => CpuStorageMutRef::I32(data.as_mut_slice()),
+            Self::I64(data) => CpuStorageMutRef::I64(data.as_mut_slice()),
+            Self::BF16(data) => CpuStorageMutRef::BF16(data.as_mut_slice()),
+            Self::F16(data) => CpuStorageMutRef::F16(data.as_mut_slice()),
+            Self::F32(data) => CpuStorageMutRef::F32(data.as_mut_slice()),
+            Self::F64(data) => CpuStorageMutRef::F64(data.as_mut_slice()),
         }
     }
 
@@ -155,7 +166,7 @@ impl CpuStorage {
                 for index in layout.strided_index() {
                     output.push($convert(self.value_at(index)?.to_f64()));
                 }
-                Ok(Self::$variant(output))
+                Ok(Self::$variant(aligned(output)?))
             }};
         }
 
@@ -182,8 +193,8 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 match (self, rhs) {
-                    (Self::$variant(lhs), Self::$variant(rhs)) => Ok(Self::$variant(binary_map(
-                        lhs, lhs_layout, rhs, rhs_layout, op,
+                    (Self::$variant(lhs), Self::$variant(rhs)) => Ok(Self::$variant(aligned(
+                        binary_map(lhs, lhs_layout, rhs, rhs_layout, op)?,
                     )?)),
                     _ => Err(Error::DTypeMismatch {
                         lhs: self.dtype(),
@@ -219,9 +230,9 @@ impl CpuStorage {
             });
         }
         match (self, rhs) {
-            (Self::F32(lhs), Self::F32(rhs)) => {
-                Ok(Self::F32(matmul::f32(lhs, lhs_layout, rhs, rhs_layout)?))
-            }
+            (Self::F32(lhs), Self::F32(rhs)) => Ok(Self::F32(aligned(matmul::f32(
+                lhs, lhs_layout, rhs, rhs_layout,
+            )?)?)),
             _ => Err(Error::UnsupportedMatmulDType {
                 dtype: self.dtype(),
             }),
@@ -232,7 +243,9 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty, $convert:expr) => {
                 if let Self::$variant(values) = self {
-                    Ok(Self::$variant(math::affine_map(values, layout, $convert)?))
+                    Ok(Self::$variant(aligned(math::affine_map(
+                        values, layout, $convert,
+                    )?)?))
                 } else {
                     unreachable!()
                 }
@@ -270,7 +283,9 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 if let Self::$variant(values) = self {
-                    Ok(Self::$variant(math::elu_map(values, layout, alpha)?))
+                    Ok(Self::$variant(aligned(math::elu_map(
+                        values, layout, alpha,
+                    )?)?))
                 } else {
                     unreachable!()
                 }
@@ -293,7 +308,9 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 if let Self::$variant(values) = self {
-                    Ok(Self::$variant(math::powf_map(values, layout, exponent)?))
+                    Ok(Self::$variant(aligned(math::powf_map(
+                        values, layout, exponent,
+                    )?)?))
                 } else {
                     unreachable!()
                 }
@@ -322,9 +339,9 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 match (self, rhs) {
-                    (Self::$variant(lhs), Self::$variant(rhs)) => Ok(Self::$variant(
+                    (Self::$variant(lhs), Self::$variant(rhs)) => Ok(Self::$variant(aligned(
                         math::pow_map(lhs, lhs_layout, rhs, rhs_layout)?,
-                    )),
+                    )?)),
                     _ => unreachable!(),
                 }
             };
@@ -352,9 +369,9 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 match (self, rhs) {
-                    (Self::$variant(lhs), Self::$variant(rhs)) => Ok(Self::$variant(
+                    (Self::$variant(lhs), Self::$variant(rhs)) => Ok(Self::$variant(aligned(
                         math::dot_map(lhs, lhs_layout, rhs, rhs_layout)?,
-                    )),
+                    )?)),
                     _ => unreachable!(),
                 }
             };
@@ -376,7 +393,7 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 if let Self::$variant(values) = self {
-                    Ok(Self::$variant(math::norm_map(values, layout)?))
+                    Ok(Self::$variant(aligned(math::norm_map(values, layout)?)?))
                 } else {
                     unreachable!()
                 }
@@ -399,7 +416,9 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 if let Self::$variant(values) = self {
-                    Ok(Self::$variant(math::cumsum_map(values, layout, dim)?))
+                    Ok(Self::$variant(aligned(math::cumsum_map(
+                        values, layout, dim,
+                    )?)?))
                 } else {
                     unreachable!()
                 }
@@ -423,7 +442,9 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 if let Self::$variant(values) = self {
-                    Ok(Self::$variant(math::log_sum_exp_map(values, layout, dim)?))
+                    Ok(Self::$variant(aligned(math::log_sum_exp_map(
+                        values, layout, dim,
+                    )?)?))
                 } else {
                     unreachable!()
                 }
@@ -446,7 +467,9 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 if let Self::$variant(values) = self {
-                    Ok(Self::$variant(index::flip_map(values, layout, dims)?))
+                    Ok(Self::$variant(aligned(index::flip_map(
+                        values, layout, dims,
+                    )?)?))
                 } else {
                     unreachable!()
                 }
@@ -476,41 +499,41 @@ impl CpuStorage {
         macro_rules! dispatch_indexes {
             ($values_variant:ident, $values_ty:ty, $values:expr) => {
                 match indexes {
-                    Self::U8(ids) => Ok(Self::$values_variant(index::gather_map(
+                    Self::U8(ids) => Ok(Self::$values_variant(aligned(index::gather_map(
                         $values,
                         values_layout,
                         ids,
                         indexes_layout,
                         dim,
-                    )?)),
-                    Self::U32(ids) => Ok(Self::$values_variant(index::gather_map(
+                    )?)?)),
+                    Self::U32(ids) => Ok(Self::$values_variant(aligned(index::gather_map(
                         $values,
                         values_layout,
                         ids,
                         indexes_layout,
                         dim,
-                    )?)),
-                    Self::I16(ids) => Ok(Self::$values_variant(index::gather_map(
+                    )?)?)),
+                    Self::I16(ids) => Ok(Self::$values_variant(aligned(index::gather_map(
                         $values,
                         values_layout,
                         ids,
                         indexes_layout,
                         dim,
-                    )?)),
-                    Self::I32(ids) => Ok(Self::$values_variant(index::gather_map(
+                    )?)?)),
+                    Self::I32(ids) => Ok(Self::$values_variant(aligned(index::gather_map(
                         $values,
                         values_layout,
                         ids,
                         indexes_layout,
                         dim,
-                    )?)),
-                    Self::I64(ids) => Ok(Self::$values_variant(index::gather_map(
+                    )?)?)),
+                    Self::I64(ids) => Ok(Self::$values_variant(aligned(index::gather_map(
                         $values,
                         values_layout,
                         ids,
                         indexes_layout,
                         dim,
-                    )?)),
+                    )?)?)),
                     _ => Err(Error::UnsupportedDTypeForOp {
                         op: "gather",
                         dtype: indexes.dtype(),
@@ -542,41 +565,41 @@ impl CpuStorage {
         macro_rules! dispatch_indexes {
             ($values_variant:ident, $values:expr) => {
                 match indexes {
-                    Self::U8(ids) => Ok(Self::$values_variant(index::index_select_map(
+                    Self::U8(ids) => Ok(Self::$values_variant(aligned(index::index_select_map(
                         $values,
                         values_layout,
                         ids,
                         indexes_layout,
                         dim,
-                    )?)),
-                    Self::U32(ids) => Ok(Self::$values_variant(index::index_select_map(
+                    )?)?)),
+                    Self::U32(ids) => Ok(Self::$values_variant(aligned(index::index_select_map(
                         $values,
                         values_layout,
                         ids,
                         indexes_layout,
                         dim,
-                    )?)),
-                    Self::I16(ids) => Ok(Self::$values_variant(index::index_select_map(
+                    )?)?)),
+                    Self::I16(ids) => Ok(Self::$values_variant(aligned(index::index_select_map(
                         $values,
                         values_layout,
                         ids,
                         indexes_layout,
                         dim,
-                    )?)),
-                    Self::I32(ids) => Ok(Self::$values_variant(index::index_select_map(
+                    )?)?)),
+                    Self::I32(ids) => Ok(Self::$values_variant(aligned(index::index_select_map(
                         $values,
                         values_layout,
                         ids,
                         indexes_layout,
                         dim,
-                    )?)),
-                    Self::I64(ids) => Ok(Self::$values_variant(index::index_select_map(
+                    )?)?)),
+                    Self::I64(ids) => Ok(Self::$values_variant(aligned(index::index_select_map(
                         $values,
                         values_layout,
                         ids,
                         indexes_layout,
                         dim,
-                    )?)),
+                    )?)?)),
                     _ => Err(Error::UnsupportedDTypeForOp {
                         op: "index_select",
                         dtype: indexes.dtype(),
@@ -617,7 +640,7 @@ impl CpuStorage {
         macro_rules! dispatch_indexes {
             ($variant:ident, $values:expr, $source:expr) => {
                 match indexes {
-                    Self::U8(ids) => Ok(Self::$variant(index::scatter_map(
+                    Self::U8(ids) => Ok(Self::$variant(aligned(index::scatter_map(
                         $values,
                         values_layout,
                         ids,
@@ -626,8 +649,8 @@ impl CpuStorage {
                         source_layout,
                         dim,
                         add,
-                    )?)),
-                    Self::U32(ids) => Ok(Self::$variant(index::scatter_map(
+                    )?)?)),
+                    Self::U32(ids) => Ok(Self::$variant(aligned(index::scatter_map(
                         $values,
                         values_layout,
                         ids,
@@ -636,8 +659,8 @@ impl CpuStorage {
                         source_layout,
                         dim,
                         add,
-                    )?)),
-                    Self::I16(ids) => Ok(Self::$variant(index::scatter_map(
+                    )?)?)),
+                    Self::I16(ids) => Ok(Self::$variant(aligned(index::scatter_map(
                         $values,
                         values_layout,
                         ids,
@@ -646,8 +669,8 @@ impl CpuStorage {
                         source_layout,
                         dim,
                         add,
-                    )?)),
-                    Self::I32(ids) => Ok(Self::$variant(index::scatter_map(
+                    )?)?)),
+                    Self::I32(ids) => Ok(Self::$variant(aligned(index::scatter_map(
                         $values,
                         values_layout,
                         ids,
@@ -656,8 +679,8 @@ impl CpuStorage {
                         source_layout,
                         dim,
                         add,
-                    )?)),
-                    Self::I64(ids) => Ok(Self::$variant(index::scatter_map(
+                    )?)?)),
+                    Self::I64(ids) => Ok(Self::$variant(aligned(index::scatter_map(
                         $values,
                         values_layout,
                         ids,
@@ -666,7 +689,7 @@ impl CpuStorage {
                         source_layout,
                         dim,
                         add,
-                    )?)),
+                    )?)?)),
                     _ => Err(Error::UnsupportedDTypeForOp {
                         op: if add { "scatter_add" } else { "scatter" },
                         dtype: indexes.dtype(),
@@ -725,7 +748,7 @@ impl CpuStorage {
         macro_rules! dispatch_indexes {
             ($variant:ident, $values:expr, $source:expr) => {
                 match indexes {
-                    Self::U8(ids) => Ok(Self::$variant(index::index_add_map(
+                    Self::U8(ids) => Ok(Self::$variant(aligned(index::index_add_map(
                         $values,
                         values_layout,
                         ids,
@@ -733,8 +756,8 @@ impl CpuStorage {
                         $source,
                         source_layout,
                         dim,
-                    )?)),
-                    Self::U32(ids) => Ok(Self::$variant(index::index_add_map(
+                    )?)?)),
+                    Self::U32(ids) => Ok(Self::$variant(aligned(index::index_add_map(
                         $values,
                         values_layout,
                         ids,
@@ -742,8 +765,8 @@ impl CpuStorage {
                         $source,
                         source_layout,
                         dim,
-                    )?)),
-                    Self::I16(ids) => Ok(Self::$variant(index::index_add_map(
+                    )?)?)),
+                    Self::I16(ids) => Ok(Self::$variant(aligned(index::index_add_map(
                         $values,
                         values_layout,
                         ids,
@@ -751,8 +774,8 @@ impl CpuStorage {
                         $source,
                         source_layout,
                         dim,
-                    )?)),
-                    Self::I32(ids) => Ok(Self::$variant(index::index_add_map(
+                    )?)?)),
+                    Self::I32(ids) => Ok(Self::$variant(aligned(index::index_add_map(
                         $values,
                         values_layout,
                         ids,
@@ -760,8 +783,8 @@ impl CpuStorage {
                         $source,
                         source_layout,
                         dim,
-                    )?)),
-                    Self::I64(ids) => Ok(Self::$variant(index::index_add_map(
+                    )?)?)),
+                    Self::I64(ids) => Ok(Self::$variant(aligned(index::index_add_map(
                         $values,
                         values_layout,
                         ids,
@@ -769,7 +792,7 @@ impl CpuStorage {
                         $source,
                         source_layout,
                         dim,
-                    )?)),
+                    )?)?)),
                     _ => Err(Error::UnsupportedDTypeForOp {
                         op: "index_add",
                         dtype: indexes.dtype(),
@@ -814,7 +837,7 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 if let Self::$variant(values) = self {
-                    Ok(Self::$variant(copy_logical(values, layout)?))
+                    Ok(Self::$variant(aligned(copy_logical(values, layout)?)?))
                 } else {
                     unreachable!()
                 }
@@ -840,12 +863,12 @@ impl CpuStorage {
         scalar: T,
         op: BinaryOp,
     ) -> Result<Self> {
-        let scalar = T::into_cpu_storage(vec![scalar]);
+        let scalar = T::into_cpu_storage(vec![scalar])?;
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 match (self, scalar) {
                     (Self::$variant(values), Self::$variant(scalar)) => Ok(Self::$variant(
-                        binary_scalar_map(values, layout, scalar[0], op)?,
+                        aligned(binary_scalar_map(values, layout, scalar.as_slice()[0], op)?)?,
                     )),
                     _ => Err(Error::DTypeMismatch {
                         lhs: self.dtype(),
@@ -878,9 +901,9 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 match (self, rhs) {
-                    (Self::$variant(lhs), Self::$variant(rhs)) => {
-                        Ok(Self::U8(cmp_map(lhs, lhs_layout, rhs, rhs_layout, op)?))
-                    }
+                    (Self::$variant(lhs), Self::$variant(rhs)) => Ok(Self::U8(aligned(cmp_map(
+                        lhs, lhs_layout, rhs, rhs_layout, op,
+                    )?)?)),
                     _ => Err(Error::DTypeMismatch {
                         lhs: self.dtype(),
                         rhs: rhs.dtype(),
@@ -908,13 +931,13 @@ impl CpuStorage {
         scalar: T,
         op: CmpOp,
     ) -> Result<Self> {
-        let scalar = T::into_cpu_storage(vec![scalar]);
+        let scalar = T::into_cpu_storage(vec![scalar])?;
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 match (self, scalar) {
-                    (Self::$variant(values), Self::$variant(scalar)) => {
-                        Ok(Self::U8(cmp_scalar_map(values, layout, scalar[0], op)?))
-                    }
+                    (Self::$variant(values), Self::$variant(scalar)) => Ok(Self::U8(aligned(
+                        cmp_scalar_map(values, layout, scalar.as_slice()[0], op)?,
+                    )?)),
                     _ => Err(Error::DTypeMismatch {
                         lhs: self.dtype(),
                         rhs: T::DTYPE,
@@ -955,14 +978,14 @@ impl CpuStorage {
             ($variant:ident, $ty:ty) => {
                 match (on_true, on_false) {
                     (Self::$variant(on_true), Self::$variant(on_false)) => {
-                        Ok(Self::$variant(where_map(
+                        Ok(Self::$variant(aligned(where_map(
                             condition,
                             condition_layout,
                             on_true,
                             true_layout,
                             on_false,
                             false_layout,
-                        )?))
+                        )?)?))
                     }
                     _ => Err(Error::DTypeMismatch {
                         lhs: on_true.dtype(),
@@ -996,11 +1019,11 @@ impl CpuStorage {
             ($variant:ident, $ty:ty) => {
                 if let Self::$variant(values) = self {
                     match op {
-                        ReduceOp::ArgMin | ReduceOp::ArgMax => {
-                            Ok(Self::I64(arg_reduce_map(values, layout, dim, keepdim, op)?))
-                        }
+                        ReduceOp::ArgMin | ReduceOp::ArgMax => Ok(Self::I64(aligned(
+                            arg_reduce_map(values, layout, dim, keepdim, op)?,
+                        )?)),
                         ReduceOp::Sum | ReduceOp::Min | ReduceOp::Max => Ok(Self::$variant(
-                            reduce_map(values, layout, dim, keepdim, op)?,
+                            aligned(reduce_map(values, layout, dim, keepdim, op)?)?,
                         )),
                     }
                 } else {
@@ -1026,7 +1049,9 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 if let Self::$variant(values) = self {
-                    Ok(Self::$variant(reduce_all_map(values, layout, op)?))
+                    Ok(Self::$variant(aligned(reduce_all_map(
+                        values, layout, op,
+                    )?)?))
                 } else {
                     unreachable!()
                 }
@@ -1050,7 +1075,9 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 if let Self::$variant(values) = self {
-                    Ok(Self::$variant(mean_map(values, layout, dim, keepdim)?))
+                    Ok(Self::$variant(aligned(mean_map(
+                        values, layout, dim, keepdim,
+                    )?)?))
                 } else {
                     unreachable!()
                 }
@@ -1074,7 +1101,7 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 if let Self::$variant(values) = self {
-                    Ok(Self::$variant(mean_all_map(values, layout)?))
+                    Ok(Self::$variant(aligned(mean_all_map(values, layout)?)?))
                 } else {
                     unreachable!()
                 }
@@ -1098,7 +1125,9 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 if let Self::$variant(values) = self {
-                    Ok(Self::$variant(var_map(values, layout, dim, keepdim)?))
+                    Ok(Self::$variant(aligned(var_map(
+                        values, layout, dim, keepdim,
+                    )?)?))
                 } else {
                     unreachable!()
                 }
@@ -1122,7 +1151,7 @@ impl CpuStorage {
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 if let Self::$variant(values) = self {
-                    Ok(Self::$variant(unary_map(values, layout, op)?))
+                    Ok(Self::$variant(aligned(unary_map(values, layout, op)?)?))
                 } else {
                     unreachable!()
                 }
@@ -1165,7 +1194,11 @@ impl CpuStorage {
                         }
                     }
                 }
-                Ok(Self::$variant(cat_map(&typed, output_shape.dims(), dim)?))
+                Ok(Self::$variant(aligned(cat_map(
+                    &typed,
+                    output_shape.dims(),
+                    dim,
+                )?)?))
             }};
         }
 
@@ -1210,7 +1243,7 @@ impl CpuStorage {
                         }
                     }
                 }
-                Ok(Self::$variant(output))
+                Ok(Self::$variant(aligned(output)?))
             }};
         }
 
@@ -1288,38 +1321,84 @@ impl BackendDevice for CpuDevice {
     fn zeros(&self, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let count = shape.elem_count();
         Ok(match dtype {
-            DType::U8 => CpuStorage::U8(vec![0; count]),
-            DType::U32 => CpuStorage::U32(vec![0; count]),
-            DType::I16 => CpuStorage::I16(vec![0; count]),
-            DType::I32 => CpuStorage::I32(vec![0; count]),
-            DType::I64 => CpuStorage::I64(vec![0; count]),
-            DType::BF16 => CpuStorage::BF16(vec![bf16::from_f32(0.0); count]),
-            DType::F16 => CpuStorage::F16(vec![f16::from_f32(0.0); count]),
-            DType::F32 => CpuStorage::F32(vec![0.0; count]),
-            DType::F64 => CpuStorage::F64(vec![0.0; count]),
+            DType::U8 => CpuStorage::U8(AlignedBuffer::from_vec(vec![0; count])?),
+            DType::U32 => CpuStorage::U32(AlignedBuffer::from_vec(vec![0; count])?),
+            DType::I16 => CpuStorage::I16(AlignedBuffer::from_vec(vec![0; count])?),
+            DType::I32 => CpuStorage::I32(AlignedBuffer::from_vec(vec![0; count])?),
+            DType::I64 => CpuStorage::I64(AlignedBuffer::from_vec(vec![0; count])?),
+            DType::BF16 => {
+                CpuStorage::BF16(AlignedBuffer::from_vec(vec![bf16::from_f32(0.0); count])?)
+            }
+            DType::F16 => {
+                CpuStorage::F16(AlignedBuffer::from_vec(vec![f16::from_f32(0.0); count])?)
+            }
+            DType::F32 => CpuStorage::F32(AlignedBuffer::from_vec(vec![0.0; count])?),
+            DType::F64 => CpuStorage::F64(AlignedBuffer::from_vec(vec![0.0; count])?),
         })
     }
 
     fn ones(&self, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
         let count = shape.elem_count();
         Ok(match dtype {
-            DType::U8 => CpuStorage::U8(vec![1; count]),
-            DType::U32 => CpuStorage::U32(vec![1; count]),
-            DType::I16 => CpuStorage::I16(vec![1; count]),
-            DType::I32 => CpuStorage::I32(vec![1; count]),
-            DType::I64 => CpuStorage::I64(vec![1; count]),
-            DType::BF16 => CpuStorage::BF16(vec![bf16::from_f32(1.0); count]),
-            DType::F16 => CpuStorage::F16(vec![f16::from_f32(1.0); count]),
-            DType::F32 => CpuStorage::F32(vec![1.0; count]),
-            DType::F64 => CpuStorage::F64(vec![1.0; count]),
+            DType::U8 => CpuStorage::U8(AlignedBuffer::from_vec(vec![1; count])?),
+            DType::U32 => CpuStorage::U32(AlignedBuffer::from_vec(vec![1; count])?),
+            DType::I16 => CpuStorage::I16(AlignedBuffer::from_vec(vec![1; count])?),
+            DType::I32 => CpuStorage::I32(AlignedBuffer::from_vec(vec![1; count])?),
+            DType::I64 => CpuStorage::I64(AlignedBuffer::from_vec(vec![1; count])?),
+            DType::BF16 => {
+                CpuStorage::BF16(AlignedBuffer::from_vec(vec![bf16::from_f32(1.0); count])?)
+            }
+            DType::F16 => {
+                CpuStorage::F16(AlignedBuffer::from_vec(vec![f16::from_f32(1.0); count])?)
+            }
+            DType::F32 => CpuStorage::F32(AlignedBuffer::from_vec(vec![1.0; count])?),
+            DType::F64 => CpuStorage::F64(AlignedBuffer::from_vec(vec![1.0; count])?),
         })
     }
 
     fn storage_from_vec<T: crate::WithDType>(&self, data: Vec<T>) -> Result<Self::Storage> {
-        Ok(T::into_cpu_storage(data))
+        T::into_cpu_storage(data)
     }
 
     fn storage_from_slice<T: crate::WithDType>(&self, data: &[T]) -> Result<Self::Storage> {
-        Ok(T::into_cpu_storage(data.to_vec()))
+        T::into_cpu_storage(data.to_vec())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cpu_backend::buffer::CPU_STORAGE_ALIGNMENT;
+
+    fn assert_aligned(storage: &CpuStorage) {
+        match storage {
+            CpuStorage::U8(data) => assert!(data.is_aligned_to(CPU_STORAGE_ALIGNMENT)),
+            CpuStorage::U32(data) => assert!(data.is_aligned_to(CPU_STORAGE_ALIGNMENT)),
+            CpuStorage::I16(data) => assert!(data.is_aligned_to(CPU_STORAGE_ALIGNMENT)),
+            CpuStorage::I32(data) => assert!(data.is_aligned_to(CPU_STORAGE_ALIGNMENT)),
+            CpuStorage::I64(data) => assert!(data.is_aligned_to(CPU_STORAGE_ALIGNMENT)),
+            CpuStorage::BF16(data) => assert!(data.is_aligned_to(CPU_STORAGE_ALIGNMENT)),
+            CpuStorage::F16(data) => assert!(data.is_aligned_to(CPU_STORAGE_ALIGNMENT)),
+            CpuStorage::F32(data) => assert!(data.is_aligned_to(CPU_STORAGE_ALIGNMENT)),
+            CpuStorage::F64(data) => assert!(data.is_aligned_to(CPU_STORAGE_ALIGNMENT)),
+        }
+    }
+
+    #[test]
+    fn all_owned_cpu_storage_variants_are_aligned() {
+        let device = CpuDevice;
+        for dtype in [
+            DType::U8,
+            DType::U32,
+            DType::I16,
+            DType::I32,
+            DType::I64,
+            DType::BF16,
+            DType::F16,
+            DType::F32,
+            DType::F64,
+        ] {
+            assert_aligned(&device.zeros(&Shape::from(17), dtype).unwrap());
+        }
     }
 }

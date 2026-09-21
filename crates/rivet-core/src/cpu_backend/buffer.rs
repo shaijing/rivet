@@ -60,6 +60,12 @@ impl<T> AlignedBuffer<T> {
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [T] {
+        // SAFETY: a finished buffer contains exactly `len` initialized T
+        // values, and the unique `&mut self` excludes other accesses.
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+    }
+
     pub(crate) fn alignment(&self) -> usize {
         allocation_alignment::<T>()
     }
