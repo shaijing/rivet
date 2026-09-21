@@ -321,6 +321,16 @@ fn cat_and_stack_support_non_contiguous_inputs() {
 }
 
 #[test]
+fn stack_fast_path_preserves_mismatch_errors() {
+    let first = Tensor::from_vec(vec![1u8, 2, 3, 4], [2, 2], &Device::Cpu).unwrap();
+    let wrong_shape = Tensor::from_vec(vec![5u8, 6, 7, 8, 9, 10], [2, 3], &Device::Cpu).unwrap();
+    assert!(Tensor::stack(&[&first, &wrong_shape], 0).is_err());
+
+    let wrong_dtype = Tensor::from_vec(vec![1i32, 2, 3, 4], [2, 2], &Device::Cpu).unwrap();
+    assert!(Tensor::stack(&[&first, &wrong_dtype], 0).is_err());
+}
+
+#[test]
 fn phase1_construction_and_access_apis_follow_tensor_contracts() {
     let full = Tensor::full(7u8, [2, 2], &Device::Cpu).unwrap();
     assert_eq!(full.to_vec::<u8>().unwrap(), [7, 7, 7, 7]);

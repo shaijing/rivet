@@ -665,6 +665,28 @@ impl Tensor {
                 rank: first.rank() + 1,
             });
         }
+
+        if dim == 0
+            && tensors.iter().all(|tensor| {
+                tensor.shape() == first.shape()
+                    && tensor.dtype() == first.dtype()
+                    && tensor.device().same_device(first.device())
+            })
+        {
+            let mut output_dims = Vec::with_capacity(first.rank() + 1);
+            output_dims.push(tensors.len());
+            output_dims.extend_from_slice(first.dims());
+            let output_shape = Shape::from(output_dims);
+            let guards: Vec<_> = tensors.iter().map(|tensor| tensor.storage()).collect();
+            let inputs: Vec<_> = guards
+                .iter()
+                .zip(tensors.iter())
+                .map(|(storage, tensor)| (&**storage, tensor.layout()))
+                .collect();
+            let storage = Storage::stack_dim0(&inputs, &output_shape)?;
+            return Self::from_storage(storage, output_shape, first.device());
+        }
+
         let expanded: Vec<Self> = tensors
             .iter()
             .map(|tensor| tensor.unsqueeze(dim))

@@ -1177,6 +1177,51 @@ impl CpuStorage {
             Self::F64(_) => dispatch!(F64, f64),
         }
     }
+
+    pub(crate) fn stack_dim0(inputs: &[(&Self, &Layout)], output_shape: &Shape) -> Result<Self> {
+        if inputs.is_empty() {
+            return Err(Error::EmptyTensorList);
+        }
+
+        macro_rules! dispatch {
+            ($variant:ident, $ty:ty) => {{
+                let mut output = Vec::<$ty>::with_capacity(output_shape.elem_count());
+                for (storage, layout) in inputs {
+                    let Self::$variant(values) = storage else {
+                        return Err(Error::DTypeMismatch {
+                            lhs: inputs[0].0.dtype(),
+                            rhs: storage.dtype(),
+                        });
+                    };
+                    if layout.elem_count() == 0 {
+                        continue;
+                    }
+                    if let Some((start, end)) = layout.contiguous_offsets() {
+                        output.extend_from_slice(
+                            values.get(start..end).ok_or(Error::StorageOutOfBounds)?,
+                        );
+                    } else {
+                        for index in layout.strided_index() {
+                            output.push(*values.get(index).ok_or(Error::StorageOutOfBounds)?);
+                        }
+                    }
+                }
+                Ok(Self::$variant(output))
+            }};
+        }
+
+        match inputs[0].0 {
+            Self::U8(_) => dispatch!(U8, u8),
+            Self::U32(_) => dispatch!(U32, u32),
+            Self::I16(_) => dispatch!(I16, i16),
+            Self::I32(_) => dispatch!(I32, i32),
+            Self::I64(_) => dispatch!(I64, i64),
+            Self::BF16(_) => dispatch!(BF16, bf16),
+            Self::F16(_) => dispatch!(F16, f16),
+            Self::F32(_) => dispatch!(F32, f32),
+            Self::F64(_) => dispatch!(F64, f64),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

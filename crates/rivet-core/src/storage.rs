@@ -294,9 +294,26 @@ impl Storage {
         }
         let cpu_inputs = inputs
             .iter()
-            .map(|(storage, layout)| (storage.cpu_storage(), *layout))
+            .map(|(storage, layout)| {
+                let Self::Cpu(storage) = storage;
+                (storage, *layout)
+            })
             .collect::<Vec<_>>();
         Ok(Self::Cpu(CpuStorage::cat(&cpu_inputs, output_shape, dim)?))
+    }
+
+    pub(crate) fn stack_dim0(inputs: &[(&Self, &Layout)], output_shape: &Shape) -> Result<Self> {
+        if inputs.is_empty() {
+            return Err(Error::EmptyTensorList);
+        }
+        let cpu_inputs = inputs
+            .iter()
+            .map(|(storage, layout)| (storage.cpu_storage(), *layout))
+            .collect::<Vec<_>>();
+        Ok(Self::Cpu(CpuStorage::stack_dim0(
+            &cpu_inputs,
+            output_shape,
+        )?))
     }
 
     pub fn dtype(&self) -> DType {

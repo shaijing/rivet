@@ -2,6 +2,143 @@ use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
 use rivet_core::{CpuStorageRef, DType, Device, Tensor};
 
+fn affine_params(mean: &[f32], std: &[f32], channel_count: usize) -> (Vec<f32>, Vec<f32>) {
+    let mut scale = Vec::with_capacity(channel_count);
+    let mut bias = Vec::with_capacity(channel_count);
+    for channel in 0..channel_count {
+        let stats_index = if mean.len() == 1 { 0 } else { channel };
+        scale.push(1.0 / (255.0 * std[stats_index]));
+        bias.push(-mean[stats_index] / std[stats_index]);
+    }
+    (scale, bias)
+}
+
+#[inline(always)]
+fn apply_affine(value: u8, scale: &[f32], bias: &[f32], channel: usize) -> f32 {
+    value as f32 * scale[channel] + bias[channel]
+}
+
+fn normalize_contiguous_image(
+    values: &[u8],
+    dims: &[usize],
+    axis_order: ImageAxisOrder,
+    scale: &[f32],
+    bias: &[f32],
+) -> Vec<f32> {
+    let mut output = Vec::with_capacity(values.len());
+    if values.is_empty() {
+        return output;
+    }
+
+    let channel_count = match axis_order {
+        ImageAxisOrder::Hwc => dims[2],
+        ImageAxisOrder::Chw => dims[0],
+    };
+    match axis_order {
+        ImageAxisOrder::Hwc if channel_count == 3 => {
+            for pixels in values.chunks_exact(3) {
+                output.push(apply_affine(pixels[0], scale, bias, 0));
+                output.push(apply_affine(pixels[1], scale, bias, 1));
+                output.push(apply_affine(pixels[2], scale, bias, 2));
+            }
+            debug_assert!(values.chunks_exact(3).remainder().is_empty());
+        }
+        ImageAxisOrder::Hwc => {
+            for (index, &value) in values.iter().enumerate() {
+                output.push(apply_affine(value, scale, bias, index % channel_count));
+            }
+        }
+        ImageAxisOrder::Chw => {
+            let spatial_size = dims[1] * dims[2];
+            for channel in 0..channel_count {
+                let start = channel * spatial_size;
+                let end = start + spatial_size;
+                output.extend(
+                    values[start..end]
+                        .iter()
+                        .map(|&value| apply_affine(value, scale, bias, channel)),
+                );
+            }
+        }
+    }
+    output
+}
+
+fn normalize_contiguous_batch(
+    values: &[u8],
+    dims: &[usize],
+    axis_order: ImageAxisOrder,
+    scale: &[f32],
+    bias: &[f32],
+) -> Vec<f32> {
+    let mut output = Vec::with_capacity(values.len());
+    if values.is_empty() {
+        return output;
+    }
+
+    let (batch, channels, spatial_size) = match axis_order {
+        ImageAxisOrder::Hwc => (dims[0], dims[3], dims[1] * dims[2]),
+        ImageAxisOrder::Chw => (dims[0], dims[1], dims[2] * dims[3]),
+    };
+    match axis_order {
+        ImageAxisOrder::Hwc if channels == 3 => {
+            for pixels in values.chunks_exact(3) {
+                output.push(apply_affine(pixels[0], scale, bias, 0));
+                output.push(apply_affine(pixels[1], scale, bias, 1));
+                output.push(apply_affine(pixels[2], scale, bias, 2));
+            }
+            debug_assert!(values.chunks_exact(3).remainder().is_empty());
+        }
+        ImageAxisOrder::Hwc => {
+            for (index, &value) in values.iter().enumerate() {
+                output.push(apply_affine(value, scale, bias, index % channels));
+            }
+        }
+        ImageAxisOrder::Chw => {
+            for batch_index in 0..batch {
+                let batch_start = batch_index * channels * spatial_size;
+                for channel in 0..channels {
+                    let start = batch_start + channel * spatial_size;
+                    let end = start + spatial_size;
+                    output.extend(
+                        values[start..end]
+                            .iter()
+                            .map(|&value| apply_affine(value, scale, bias, channel)),
+                    );
+                }
+            }
+        }
+    }
+    output
+}
+
+fn normalize_contiguous_nhwc_to_nchw(
+    values: &[u8],
+    dims: &[usize; 4],
+    scale: &[f32],
+    bias: &[f32],
+) -> Vec<f32> {
+    let [batch, height, width, channels] = *dims;
+    let spatial_size = height * width;
+    let image_size = spatial_size * channels;
+    let mut output = vec![0.0; values.len()];
+    for batch_index in 0..batch {
+        let source = &values[batch_index * image_size..(batch_index + 1) * image_size];
+        for channel in 0..channels {
+            let output_start = (batch_index * channels + channel) * spatial_size;
+            for spatial_index in 0..spatial_size {
+                output[output_start + spatial_index] = apply_affine(
+                    source[spatial_index * channels + channel],
+                    scale,
+                    bias,
+                    channel,
+                );
+            }
+        }
+    }
+    output
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct NormalizeConfig {
     pub mean: Vec<f32>,
@@ -207,6 +344,7 @@ pub fn normalize_u8_batch_to_f32(
         )));
     }
 
+    let (scale, bias) = affine_params(mean, std, channel_count);
     let dims = input.dims().to_vec();
     let device = input.device().clone();
     let elem_count = input.elem_count();
@@ -218,6 +356,14 @@ pub fn normalize_u8_batch_to_f32(
                 actual: input.dtype(),
             });
         };
+
+        if let Some((start, end)) = layout.contiguous_offsets() {
+            let values = values
+                .get(start..end)
+                .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+            let output = normalize_contiguous_batch(values, &dims, axis_order, &scale, &bias);
+            return Tensor::from_vec(output, dims, &device);
+        }
 
         let [dim0, dim1, dim2, dim3] = dims.as_slice() else {
             return Err(rivet_core::Error::InvalidRank {
@@ -266,8 +412,7 @@ pub fn normalize_u8_batch_to_f32(
                             ImageAxisOrder::Hwc => index3,
                             ImageAxisOrder::Chw => index1,
                         };
-                        let stats_index = if mean.len() == 1 { 0 } else { channel };
-                        output.push((value as f32 / 255.0 - mean[stats_index]) / std[stats_index]);
+                        output.push(apply_affine(value, &scale, &bias, channel));
                     }
                 }
             }
@@ -326,6 +471,7 @@ pub fn normalize_u8_batch_to_nchw_f32(
         )));
     }
 
+    let (scale, bias) = affine_params(mean, std, *channels);
     let dims = [*batch, *channels, *height, *width];
     let device = input.device().clone();
     let elem_count = input.elem_count();
@@ -336,6 +482,15 @@ pub fn normalize_u8_batch_to_nchw_f32(
                 actual: input.dtype(),
             });
         };
+
+        if let Some((start, end)) = layout.contiguous_offsets() {
+            let values = values
+                .get(start..end)
+                .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+            let source_dims = [*batch, *height, *width, *channels];
+            let output = normalize_contiguous_nhwc_to_nchw(values, &source_dims, &scale, &bias);
+            return Tensor::from_vec(output, dims, &device);
+        }
 
         let stride = layout.stride();
         let mut output = vec![0.0; elem_count];
@@ -362,12 +517,10 @@ pub fn normalize_u8_batch_to_nchw_f32(
                         let value = *values
                             .get(physical_index)
                             .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-                        let stats_index = if mean.len() == 1 { 0 } else { channel };
                         let output_index =
                             ((batch_index * *channels + channel) * *height + height_index) * *width
                                 + width_index;
-                        output[output_index] =
-                            (value as f32 / 255.0 - mean[stats_index]) / std[stats_index];
+                        output[output_index] = apply_affine(value, &scale, &bias, channel);
                     }
                 }
             }
@@ -428,6 +581,7 @@ pub fn normalize_u8_to_f32(
             .checked_mul(input.dims()[2])
             .ok_or_else(|| invalid_shape("normalize image dimensions overflow"))?,
     };
+    let (scale, bias) = affine_params(mean, std, channel_count);
     let dims = input.dims().to_vec();
     let device = input.device().clone();
     let elem_count = input.elem_count();
@@ -439,6 +593,14 @@ pub fn normalize_u8_to_f32(
             });
         };
 
+        if let Some((start, end)) = layout.contiguous_offsets() {
+            let values = values
+                .get(start..end)
+                .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+            let output = normalize_contiguous_image(values, &dims, axis_order, &scale, &bias);
+            return Tensor::from_vec(output, dims, &device);
+        }
+
         let mut output = Vec::with_capacity(elem_count);
         for (logical_index, physical_index) in layout.strided_index().enumerate() {
             let value = *values
@@ -448,8 +610,7 @@ pub fn normalize_u8_to_f32(
                 ImageAxisOrder::Hwc => logical_index % channel_count,
                 ImageAxisOrder::Chw => logical_index / spatial_size,
             };
-            let stats_index = if mean.len() == 1 { 0 } else { channel };
-            output.push((value as f32 / 255.0 - mean[stats_index]) / std[stats_index]);
+            output.push(apply_affine(value, &scale, &bias, channel));
         }
 
         Tensor::from_vec(output, dims, &device)
@@ -503,6 +664,24 @@ mod tests {
     }
 
     #[test]
+    fn fused_normalize_supports_contiguous_chw_input() {
+        let chw =
+            Tensor::from_vec(vec![0u8, 255, 64, 32, 128, 96], [3, 1, 2], &Device::Cpu).unwrap();
+        let out = normalize_u8_to_f32(
+            &chw,
+            &[0.0, 0.5, 1.0],
+            &[1.0, 0.5, 0.25],
+            ImageAxisOrder::Chw,
+        )
+        .unwrap();
+
+        let expected = [0.0, 1.0, -0.49803922, -0.7490196, -1.9921569, -2.4941177];
+        for (actual, expected) in out.to_vec::<f32>().unwrap().iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
     fn batch_normalize_supports_nhwc_and_chw() {
         let input = Tensor::from_vec(
             (0..12).map(|value| value as u8).collect(),
@@ -525,6 +704,22 @@ mod tests {
             .unwrap();
         assert_eq!(nchw.dims(), [2, 3, 1, 2]);
         assert_batch_values(&nchw_input, &nchw, ImageAxisOrder::Chw, &config);
+
+        let contiguous_nchw = Tensor::from_vec(
+            (0..12).map(|value| value as u8).collect(),
+            [2, 3, 1, 2],
+            &Device::Cpu,
+        )
+        .unwrap();
+        let contiguous_output = config
+            .apply_batch(contiguous_nchw.clone(), ImageAxisOrder::Chw)
+            .unwrap();
+        assert_batch_values(
+            &contiguous_nchw,
+            &contiguous_output,
+            ImageAxisOrder::Chw,
+            &config,
+        );
     }
 
     fn assert_batch_values(
