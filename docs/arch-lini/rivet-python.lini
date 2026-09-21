@@ -1,0 +1,84 @@
+{
+  layout: grid; columns: repeat(2); gap: 28; padding: 28; fill: --bg; routing: straight; clearance: 18; font-size: 13;
+
+  |group| {
+    direction: column; gap: 16; padding: 18; radius: 10; stroke-style: dashed; routing: orthogonal;
+  }
+
+  |box| { max-width: 220; padding: 13; radius: 7; }
+
+  |-| { stroke: --gray-deep; stroke-width: 1.5; }
+
+  .hero {
+    fill: gradient(--sky, --teal); stroke: none; color: white; font-size: 20; font-weight: bold;
+  }
+
+  .public { fill: --sky-wash; stroke: --sky-ink; color: --sky-ink; }
+
+  .binding { fill: --purple-wash; stroke: --purple-ink; color: --purple-ink; }
+
+  .interop { fill: --orange-wash; stroke: --orange-ink; color: --orange-ink; }
+
+  .dependency { fill: --teal-wash; stroke: --teal-ink; color: --teal-ink; }
+
+  .contract { fill: --rose-wash; stroke: --rose-ink; color: --rose-ink; }
+
+  .boundary { stroke: --purple-deep; stroke-style: dashed; }
+
+  .test { stroke: --gray-deep; stroke-style: dotted; }
+}
+
+|box#title| "rivet-python\nPyO3 extension and Python-facing image APIs" .hero {
+  cell: 1 1; span: 2 1;
+}
+
+|group#public| "Python namespace" { cell: 1 2; } [
+  |box#root| "rivet.__init__\nbackwards-compatible root namespace" .public
+  |box#vision| "rivet.vision\ncanonical image namespace" .public
+  |box#helpers| "HF / Arrow helpers\nscan, load and batch functions" .public
+
+  root -> vision "exports"
+  root -> helpers "convenience API"
+]
+
+|group#bindings| "PyO3 classes & functions" { cell: 2 2; } [
+  |box#dataset| "PyArrowDataset / PyLanceDataset\nPyImageFolderDataset" .binding
+  |box#pipeline| "PyImagePipeline / PyTransform\nclone-on-write builder" .binding
+  |box#loader| "PyDataLoader\niterator and next batch" .binding
+
+  dataset -> pipeline "pipeline()"
+  pipeline -> loader "compile()"
+]
+
+|group#interop| "Tensor interoperability" { cell: 1 3; } [
+  |box#numpy| "NumPy views\nread-only zero-copy arrays" .interop
+  |box#dlpack| "DLPack\nlegacy and versioned exports" .interop
+  |box#dtype| "dtype conversion\nPython-compatible type codes" .interop
+
+  numpy -> dtype "maps dtypes"
+  dlpack -> dtype "encodes dtypes"
+]
+
+|group#dependencies| "Rust dependencies" { cell: 2 3; } [
+  |box#vision_dep| "rivet-vision\nimage sources, pipeline & batches" .dependency
+  |box#data_dep| "rivet-data\ndataset and runtime errors" .dependency
+  |box#core_dep| "rivet-core\ntensor storage and layouts" .dependency
+
+  vision_dep -> data_dep "uses"
+  vision_dep -> core_dep "returns tensors"
+]
+
+|group#contracts| "Conversion & verification" { cell: 1 4; span: 2 1; } [
+  |box#errors| "Rust errors -> PyErr\nIO, value, index and runtime errors" .contract
+  |box#batch| "Python dict batches\nimages + labels as NumPy or bytes" .contract
+  |box#tests| "Python compatibility tests\nbindings, DLPack and loaders" .contract
+
+  errors -> batch "reports / returns"
+  tests --- batch "asserts behavior" .test
+]
+
+public -> bindings .boundary
+bindings -> interop .boundary
+bindings -> dependencies .boundary
+interop -> contracts .boundary
+contracts --- bindings .test

@@ -1,0 +1,93 @@
+{
+  layout: grid; columns: repeat(3); gap: 28; padding: 28; fill: --bg; routing: straight; clearance: 18; font-size: 13;
+
+  |group| {
+    direction: column; gap: 16; padding: 18; radius: 10; stroke-style: dashed; routing: orthogonal;
+  }
+
+  |box| { max-width: 220; padding: 13; radius: 7; }
+
+  |-| { stroke: --gray-deep; stroke-width: 1.5; }
+
+  .hero {
+    fill: gradient(--sky, --teal); stroke: none; color: white; font-size: 20; font-weight: bold;
+  }
+
+  .api { fill: --sky-wash; stroke: --sky-ink; color: --sky-ink; }
+
+  .data { fill: --orange-wash; stroke: --orange-ink; color: --orange-ink; }
+
+  .pipeline { fill: --purple-wash; stroke: --purple-ink; color: --purple-ink; }
+
+  .runtime { fill: --green-wash; stroke: --green-ink; color: --green-ink; }
+
+  .contract { fill: --rose-wash; stroke: --rose-ink; color: --rose-ink; }
+
+  .dependency { fill: --teal-wash; stroke: --teal-ink; color: --teal-ink; }
+
+  .boundary { stroke: --purple-deep; stroke-style: dashed; }
+
+  .test { stroke: --gray-deep; stroke-style: dotted; }
+}
+
+|box#title| "rivet-vision\nImage datasets, transforms, batches & loaders" .hero {
+  cell: 1 1; span: 3 1;
+}
+
+|group#api| "Public image API" { cell: 1 2; } [
+  |box#source| "ImageSource\nArrow, ImageFolder & Lance sources" .api
+  |box#image_pipeline| "ImagePipeline\nfluent transform builder" .api
+  |box#loader_api| "ImageDataLoader\nnext_batch interface" .api
+
+  source -> image_pipeline "pipeline()"
+  image_pipeline -> loader_api "compile()"
+]
+
+|group#datasets| "Image datasets" { cell: 2 2; } [
+  |box#arrow| "ArrowImageDataset\nencoded image rows" .data
+  |box#folder| "ImageFolderDatasetCore\nclasses and file samples" .data
+  |box#lance| "LanceImageDataset\nlazy dataset access" .data
+
+  arrow -> folder "shared sample shape"
+  folder -> lance "common source contract"
+]
+
+|group#pipeline| "Pipeline & transforms" { cell: 3 2; } [
+  |box#compile| "ImagePipeline::compile\nvalidate ops + build plan" .pipeline
+  |box#ops| "decode / resize / crop / flip\nnormalize / layout / dtype" .pipeline
+  |box#sequence| "TransformSequence\ncomposable image operations" .pipeline
+
+  compile -> sequence "builds"
+  sequence -> ops "applies"
+]
+
+|group#runtime| "Execution runtime" { cell: 1 3; span: 2 1; } [
+  |box#scheduler| "WorkerPool + scheduler\ninline or multi-worker path" .runtime
+  |box#prefetch| "prefetch + reorder\nbounded batch flow" .runtime
+  |box#decode| "decode / transform workers\nparallel sample execution" .runtime
+
+  scheduler -> prefetch "queues"
+  prefetch -> decode "feeds workers"
+]
+
+|group#batch| "Batch contract" { cell: 3 3; } [
+  |box#builder| "ImageBatchBuilder\nshape / dtype / layout checks" .contract
+  |box#image_batch| "ImageBatch\nNHWC or NCHW tensor views" .contract
+  |box#sample| "EncodedSample / DecodedSample\nshared image representations" .contract
+
+  builder -> image_batch "builds"
+  sample -> builder "consumes"
+]
+
+|group#dependencies| "Shared crate contracts" { cell: 1 4; span: 3 1; } [
+  |box#data_dep| "rivet-data\nDataset, sampler & runtime" .dependency
+  |box#core_dep| "rivet-core\nTensor, layout & dtype" .dependency
+  data_dep -> core_dep "typed data path"
+]
+
+api -> pipeline .boundary
+datasets -> api .boundary
+pipeline -> runtime .boundary
+runtime -> batch .boundary
+batch -> dependencies .boundary
+dependencies.core_dep --- dependencies.data_dep "shared crate boundary" .test

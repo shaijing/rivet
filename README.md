@@ -1,4 +1,14 @@
-# Rivet
+<div align="center">
+
+  <img src="docs/static/img/logo.png" alt="Rivet logo" width="240">
+
+  <h1>Rivet</h1>
+
+  <p>
+    <strong>Rust and Python image data pipeline</strong>
+  </p>
+
+</div>
 
 Rivet is a Rust and Python image data pipeline for loading, transforming, and
 batching datasets. It provides zero-copy tensor views where possible, bounded

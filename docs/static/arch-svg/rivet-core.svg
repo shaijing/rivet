@@ -1,0 +1,181 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-295.1291 -379.2 603.7861 758.4" width="603.7861" height="758.4" class="lini lini-scope-6cffe522">
+  <style>
+    @layer lini.defaults {
+      :root, .lini-scope-6cffe522 { color-scheme: light dark; --lini-bg: light-dark(white, #1b1b1f); --lini-caption-color: light-dark(rgba(0, 0, 0, 0.5), rgba(255, 255, 255, 0.55)); --lini-caption-font-weight: 400; --lini-fg: light-dark(black, #e8e8ea); --lini-fill: light-dark(white, #26262b); --lini-font-family: "Google Sans", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; --lini-font-weight: 500; --lini-gray-deep: light-dark(#747474, #acacac); --lini-group-fill: light-dark(rgba(0, 0, 0, 0.03), rgba(255, 255, 255, 0.05)); --lini-group-stroke: light-dark(rgba(0, 0, 0, 0.4), rgba(255, 255, 255, 0.4)); --lini-link-font-weight: 400; --lini-orange-ink: light-dark(#7e2800, #ffcd84); --lini-orange-wash: light-dark(#ffe8d2, #3b2413); --lini-purple-deep: light-dark(#6e62cc, #a39cff); --lini-purple-ink: light-dark(#443394, #ded9ff); --lini-purple-wash: light-dark(#eaebff, #282741); --lini-sky: light-dark(#00ace2, #0080b4); --lini-sky-ink: light-dark(#00547e, #5ffdff); --lini-sky-wash: light-dark(#cff6ff, #0a2f3a); --lini-stroke: light-dark(#444, #9aa0a6); --lini-teal: light-dark(#00b8ac, #008b81); --lini-teal-ink: light-dark(#005d56, #4ffffa); --lini-teal-wash: light-dark(#cdf9f4, #07312e); --lini-text-color: var(--lini-fg); }
+      .lini-scope-6cffe522[data-theme="dark"], [data-theme="dark"] .lini-scope-6cffe522 { color-scheme: dark; }
+      .lini-scope-6cffe522[data-theme="light"], [data-theme="light"] .lini-scope-6cffe522 { color-scheme: light; }
+    }
+    .lini-scope-6cffe522 { font-family: var(--lini-font-family); font-size: 13px; font-weight: var(--lini-font-weight); color: var(--lini-text-color); }
+    .lini-scope-6cffe522 .lini-canvas { fill: var(--lini-bg); }
+    .lini-scope-6cffe522 .lini-block { fill: none; stroke: none; stroke-width: 2; stroke-dasharray: none; }
+    .lini-scope-6cffe522 .lini-text { fill: currentColor; stroke: none; text-anchor: middle; }
+    .lini-scope-6cffe522 .lini-box { fill: var(--lini-fill); stroke: var(--lini-stroke); stroke-width: 2; }
+    .lini-scope-6cffe522 .lini-group { fill: var(--lini-group-fill); stroke: var(--lini-group-stroke); stroke-width: 1; stroke-dasharray: 5,4; }
+    .lini-scope-6cffe522 .lini-caption { color: var(--lini-caption-color); font-size: 10.4px; font-weight: var(--lini-caption-font-weight); }
+    .lini-scope-6cffe522 .lini-link { fill: none; stroke: var(--lini-gray-deep); stroke-width: 1.5; stroke-dasharray: none; }
+    .lini-scope-6cffe522 .lini-link-dashed { stroke-dasharray: 6,4.75; }
+    .lini-scope-6cffe522 .lini-link-dotted { stroke-dasharray: 1.5,2.25; }
+    .lini-scope-6cffe522 .lini-link-label { fill: currentColor; stroke: none; text-anchor: middle; font-size: 9.5333px; font-weight: var(--lini-link-font-weight); }
+    .lini-scope-6cffe522 .lini-cut-bg { fill: white; stroke: none; }
+    .lini-scope-6cffe522 .lini-cut { fill: black; stroke: none; }
+    .lini-scope-6cffe522 .lini-marker { fill: var(--lini-stroke); stroke: none; }
+    .lini-scope-6cffe522 .lini-link .lini-marker { fill: var(--lini-gray-deep); }
+    .lini-scope-6cffe522 .lini-style-hero { fill: url(#lini-gradient-031efd54); stroke: none; color: white; font-size: 20px; font-weight: bold; }
+    .lini-scope-6cffe522 .lini-style-hero .lini-marker { fill: none; }
+    .lini-scope-6cffe522 .lini-style-model { fill: var(--lini-sky-wash); stroke: var(--lini-sky-ink); color: var(--lini-sky-ink); }
+    .lini-scope-6cffe522 .lini-style-model .lini-marker { fill: var(--lini-sky-ink); }
+    .lini-scope-6cffe522 .lini-style-storage { fill: var(--lini-orange-wash); stroke: var(--lini-orange-ink); color: var(--lini-orange-ink); }
+    .lini-scope-6cffe522 .lini-style-storage .lini-marker { fill: var(--lini-orange-ink); }
+    .lini-scope-6cffe522 .lini-style-compute { fill: var(--lini-teal-wash); stroke: var(--lini-teal-ink); color: var(--lini-teal-ink); }
+    .lini-scope-6cffe522 .lini-style-compute .lini-marker { fill: var(--lini-teal-ink); }
+    .lini-scope-6cffe522 .lini-style-support { fill: var(--lini-purple-wash); stroke: var(--lini-purple-ink); color: var(--lini-purple-ink); }
+    .lini-scope-6cffe522 .lini-style-support .lini-marker { fill: var(--lini-purple-ink); }
+    .lini-scope-6cffe522 .lini-style-boundary { stroke: var(--lini-purple-deep); stroke-dasharray: 3,2.5; }
+    .lini-scope-6cffe522 .lini-style-boundary .lini-marker { fill: var(--lini-purple-deep); }
+    .lini-scope-6cffe522 .lini-style-test { stroke: var(--lini-gray-deep); stroke-dasharray: 0,0; }
+    .lini-scope-6cffe522 .lini-style-test .lini-marker { fill: var(--lini-gray-deep); }
+  </style>
+  <defs>
+    <linearGradient id="lini-gradient-031efd54" gradientTransform="rotate(45 0.5 0.5)"><stop offset="0%" style="stop-color: var(--lini-sky)"/><stop offset="100%" style="stop-color: var(--lini-teal)"/></linearGradient>
+  </defs>
+  <rect class="lini-canvas" x="-295.1291" y="-379.2" width="603.7861" height="758.4"/>
+  <g class="lini-scene">
+    <g class="lini-node lini-box lini-block lini-style-hero" data-id="title" transform="translate(0,-290.2)">
+      <rect x="-95.53" y="-61" width="191.06" height="122" rx="7" ry="7"/>
+      <text class="lini-text" x="0" y="0"><tspan x="0" y="-28.84">rivet-core</tspan><tspan x="0" dy="24">Tensor storage,</tspan><tspan x="0" dy="24">layouts, dtypes &amp;</tspan><tspan x="0" dy="24">operations</tspan></text>
+    </g>
+    <g class="lini-node lini-group lini-block" data-id="tensor" transform="translate(-129.1995,-70.1)">
+      <rect x="-107.075" y="-130.6" width="214.15" height="261.2" rx="10" ry="10"/>
+      <g class="lini-node lini-box lini-block lini-style-model" data-id="tensor_api" transform="translate(0,-75.2)">
+        <rect x="-87.2625" y="-36.4" width="174.525" height="72.8" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-10.946">Tensor / ExclusiveTensor</tspan><tspan x="0" dy="15.6">owned and view-backed</tspan><tspan x="0" dy="15.6">tensors</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-model" data-id="layout" transform="translate(0,7.8)">
+        <rect x="-88.075" y="-28.6" width="176.15" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">Layout + Shape</tspan><tspan x="0" dy="15.6">strides, bounds, indexing</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-model" data-id="dtype" transform="translate(0,83)">
+        <rect x="-76.739" y="-28.6" width="153.478" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">DType + WithDType</tspan><tspan x="0" dy="15.6">static dtype dispatch</tspan></text>
+      </g>
+      <g class="lini-node lini-caption lini-block" transform="translate(-75.0742,-145.4)">
+        <rect x="-32.0008" y="-5.2" width="64.0016" height="10.4" rx="0" ry="0"/>
+        <text class="lini-text" x="0" y="0" dy="0.358em">Tensor model</text>
+      </g>
+    </g>
+    <g class="lini-node lini-group lini-block" data-id="storage" transform="translate(130.6555,-70.1)">
+      <rect x="-109.064" y="-122.8" width="218.128" height="245.6" rx="10" ry="10"/>
+      <g class="lini-node lini-box lini-block lini-style-storage" data-id="storage_trait" transform="translate(0,-75.2)">
+        <rect x="-90.064" y="-28.6" width="180.128" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">Storage trait</tspan><tspan x="0" dy="15.6">shared backing and slices</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-storage" data-id="cpu" transform="translate(0,0)">
+        <rect x="-87.8865" y="-28.6" width="175.773" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">CpuStorage / CpuDevice</tspan><tspan x="0" dy="15.6">aligned CPU buffers</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-storage" data-id="device" transform="translate(0,75.2)">
+        <rect x="-87.36" y="-28.6" width="174.72" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">Device + DeviceLocation</tspan><tspan x="0" dy="15.6">CPU placement contract</tspan></text>
+      </g>
+      <g class="lini-node lini-caption lini-block" transform="translate(-66.9076,-137.6)">
+        <rect x="-42.1564" y="-5.2" width="84.3128" height="10.4" rx="0" ry="0"/>
+        <text class="lini-text" x="0" y="0" dy="0.358em">Storage &amp; devices</text>
+      </g>
+    </g>
+    <g class="lini-node lini-group lini-block" data-id="ops" transform="translate(-129.1995,220.1)">
+      <rect x="-116.1555" y="-130.6" width="232.311" height="261.2" rx="10" ry="10"/>
+      <g class="lini-node lini-box lini-block lini-style-compute" data-id="ops_api" transform="translate(0,-75.2)">
+        <rect x="-97.1555" y="-36.4" width="194.311" height="72.8" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-10.946">ops::{Unary, Binary, Reduce,</tspan><tspan x="0" dy="15.6">Cmp}</tspan><tspan x="0" dy="15.6">operation definitions</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-compute" data-id="backend" transform="translate(0,7.8)">
+        <rect x="-70.0765" y="-28.6" width="140.153" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">Backend traits</tspan><tspan x="0" dy="15.6">operation dispatch</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-compute" data-id="cpu_math" transform="translate(0,83)">
+        <rect x="-83.3885" y="-28.6" width="166.777" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">cpu_backend</tspan><tspan x="0" dy="15.6">indexing, math, matmul</tspan></text>
+      </g>
+      <g class="lini-node lini-caption lini-block" transform="translate(-61.3787,-145.4)">
+        <rect x="-54.7768" y="-5.2" width="109.5536" height="10.4" rx="0" ry="0"/>
+        <text class="lini-text" x="0" y="0" dy="0.358em">Operations &amp; backends</text>
+      </g>
+    </g>
+    <g class="lini-node lini-group lini-block" data-id="validation" transform="translate(130.6555,220.1)">
+      <rect x="-114.6995" y="-122.8" width="229.399" height="245.6" rx="10" ry="10"/>
+      <g class="lini-node lini-box lini-block lini-style-support" data-id="error" transform="translate(0,-75.2)">
+        <rect x="-92.651" y="-28.6" width="185.302" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">Error + Result</tspan><tspan x="0" dy="15.6">shape and storage failures</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-support" data-id="strided" transform="translate(0,0)">
+        <rect x="-95.6995" y="-28.6" width="191.399" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">StridedIndex</tspan><tspan x="0" dy="15.6">checked coordinate access</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-test" data-id="tests" style="stroke-dasharray: 2,3" transform="translate(0,75.2)">
+        <rect x="-95.056" y="-28.6" width="190.112" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">tensor tests + benches</tspan><tspan x="0" dy="15.6">layout and buffer coverage</tspan></text>
+      </g>
+      <g class="lini-node lini-caption lini-block" transform="translate(-67.4627,-137.6)">
+        <rect x="-47.2368" y="-5.2" width="94.4736" height="10.4" rx="0" ry="0"/>
+        <text class="lini-text" x="0" y="0" dy="0.358em">Validation &amp; support</text>
+      </g>
+    </g>
+  </g>
+  <g class="lini-links">
+    <g class="lini-link lini-link-dashed lini-style-boundary" style="stroke-dasharray: 6,4.75" data-from="tensor" data-to="storage">
+      <path d="M -21.6245 -70.1 L 18.5915 -70.1"/>
+      <polygon class="lini-marker lini-marker-arrow" points="21.5915,-70.1 14.5915,-66.6 14.5915,-73.6"/>
+    </g>
+    <g class="lini-link lini-link-dashed lini-style-boundary" style="stroke-dasharray: 6,4.75" data-from="ops" data-to="validation">
+      <path d="M -12.544 220.1 L 12.956 220.1"/>
+      <polygon class="lini-marker lini-marker-arrow" points="15.956,220.1 8.956,223.6 8.956,216.6"/>
+    </g>
+    <g class="lini-link" data-from="tensor.tensor_api" data-to="tensor.layout">
+      <mask id="lini-label-cut-bfdd8a4d" maskUnits="userSpaceOnUse" x="-238.0245" y="-147.05" width="22.3125" height="86.5"><rect class="lini-cut-bg" x="-238.0245" y="-147.05" width="22.3125" height="86.5"/><rect class="lini-cut" x="-269.9891" y="-106.4029" width="67.4293" height="12.3933"/></mask>
+      <path d="M -217.462 -145.3 L -218.2745 -145.3 A 18 18 0 0 0 -236.2745 -127.3 L -236.2745 -77.8 A 15.5 15.5 0 0 0 -220.7745 -62.3 L -220.7745 -62.3" mask="url(#lini-label-cut-bfdd8a4d)"/>
+      <polygon class="lini-marker lini-marker-arrow" points="-217.7745,-62.3 -224.7745,-58.8 -224.7745,-65.8"/>
+      <text class="lini-link-label" x="-236.2745" y="-100.2062" dy="0.358em">views / offsets</text>
+    </g>
+    <g class="lini-link" data-from="tensor.tensor_api" data-to="tensor.dtype">
+      <mask id="lini-label-cut-b62b3c49" maskUnits="userSpaceOnUse" x="-53.2105" y="-147.05" width="32.836" height="161.7"><rect class="lini-cut-bg" x="-53.2105" y="-147.05" width="32.836" height="161.7"/><rect class="lini-cut" x="-52.1736" y="-31.1349" width="60.0981" height="12.3933"/></mask>
+      <path d="M -40.937 -145.3 L -40.1245 -145.3 A 18 18 0 0 1 -22.1245 -127.3 L -22.1245 -5.1 A 18 18 0 0 1 -40.1245 12.9 L -48.9605 12.9" mask="url(#lini-label-cut-b62b3c49)"/>
+      <polygon class="lini-marker lini-marker-arrow" points="-51.9605,12.9 -44.9605,9.4 -44.9605,16.4"/>
+      <text class="lini-link-label" x="-22.1245" y="-24.9382" dy="0.358em">typed values</text>
+    </g>
+    <g class="lini-link" data-from="storage.cpu" data-to="storage.storage_trait">
+      <mask id="lini-label-cut-4ef85da6" maskUnits="userSpaceOnUse" x="217.792" y="-147.05" width="23.6775" height="78.7"><rect class="lini-cut-bg" x="217.792" y="-147.05" width="23.6775" height="78.7"/><rect class="lini-cut" x="211.6915" y="-112.8079" width="56.056" height="12.3933"/></mask>
+      <path d="M 219.542 -70.1 L 221.7195 -70.1 A 18 18 0 0 0 239.7195 -88.1 L 239.7195 -129.8 A 15.5 15.5 0 0 0 224.2195 -145.3 L 224.2195 -145.3" mask="url(#lini-label-cut-4ef85da6)"/>
+      <polygon class="lini-marker lini-marker-arrow" points="221.2195,-145.3 228.2195,-148.8 228.2195,-141.8"/>
+      <text class="lini-link-label" x="239.7195" y="-106.6112" dy="0.358em">implements</text>
+    </g>
+    <g class="lini-link" data-from="storage.cpu" data-to="storage.device">
+      <mask id="lini-label-cut-bfd074c4" maskUnits="userSpaceOnUse" x="22.019" y="-71.85" width="22.0265" height="78.7"><rect class="lini-cut-bg" x="22.019" y="-71.85" width="22.0265" height="78.7"/><rect class="lini-cut" x="4.9693" y="-38.4334" width="37.5995" height="12.3933"/></mask>
+      <path d="M 41.769 -70.1 L 41.769 -70.1 A 18 18 0 0 0 23.769 -52.1 L 23.769 -10.9265 A 16.0265 16.0265 0 0 0 39.7955 5.1 L 39.7955 5.1" mask="url(#lini-label-cut-bfd074c4)"/>
+      <polygon class="lini-marker lini-marker-arrow" points="42.7955,5.1 35.7955,8.6 35.7955,1.6"/>
+      <text class="lini-link-label" x="23.769" y="-32.2367" dy="0.358em">runs on</text>
+    </g>
+    <g class="lini-link" data-from="ops.ops_api" data-to="ops.backend">
+      <mask id="lini-label-cut-fadf682f" maskUnits="userSpaceOnUse" x="-59.873" y="143.15" width="48.579" height="77.5"><rect class="lini-cut-bg" x="-59.873" y="143.15" width="48.579" height="77.5"/><rect class="lini-cut" x="-39.3036" y="189.2428" width="52.5191" height="12.3933"/><rect class="lini-cut" x="-20.0085" y="174.7791" width="71.929" height="12.3933"/></mask>
+      <path d="M -31.044 144.9 L -31.044 144.9 A 18 18 0 0 1 -13.044 162.9 L -13.044 200.9 A 18 18 0 0 1 -31.044 218.9 L -55.623 218.9" mask="url(#lini-label-cut-fadf682f)"/>
+      <polygon class="lini-marker lini-marker-arrow" points="-58.623,218.9 -51.623,215.4 -51.623,222.4"/>
+      <text class="lini-link-label" x="-13.044" y="195.4395" dy="0.358em">dispatches</text>
+    </g>
+    <g class="lini-link" data-from="ops.backend" data-to="ops.cpu_math">
+      <mask id="lini-label-cut-4d1f49af" maskUnits="userSpaceOnUse" x="-59.873" y="235.15" width="34.812" height="69.7"><rect class="lini-cut-bg" x="-59.873" y="235.15" width="34.812" height="69.7"/><rect class="lini-cut" x="-73.8818" y="257.1473" width="94.1417" height="12.3933"/></mask>
+      <path d="M -58.123 236.9 L -44.811 236.9 A 18 18 0 0 1 -26.811 254.9 L -26.811 287.6 A 15.5 15.5 0 0 1 -42.311 303.1 L -42.311 303.1" mask="url(#lini-label-cut-4d1f49af)"/>
+      <polygon class="lini-marker lini-marker-arrow" points="-45.311,303.1 -38.311,299.6 -38.311,306.6"/>
+      <text class="lini-link-label" x="-26.811" y="263.344" dy="0.358em">CPU implementation</text>
+    </g>
+    <g class="lini-link" data-from="validation.strided" data-to="validation.error">
+      <mask id="lini-label-cut-0ebd4733" maskUnits="userSpaceOnUse" x="14.206" y="143.15" width="24.5485" height="78.7"><rect class="lini-cut-bg" x="14.206" y="143.15" width="24.5485" height="78.7"/><rect class="lini-cut" x="-20.0085" y="174.7791" width="71.929" height="12.3933"/></mask>
+      <path d="M 33.956 220.1 L 33.956 220.1 A 18 18 0 0 1 15.956 202.1 L 15.956 162.9 A 18 18 0 0 1 33.956 144.9 L 34.5045 144.9" mask="url(#lini-label-cut-0ebd4733)"/>
+      <polygon class="lini-marker lini-marker-arrow" points="37.5045,144.9 30.5045,148.4 30.5045,141.4"/>
+      <text class="lini-link-label" x="15.956" y="180.9757" dy="0.358em">reports bounds</text>
+    </g>
+    <g class="lini-link lini-link-dotted lini-style-test" style="stroke-dasharray: 1.5,2.25" data-from="validation.tests" data-to="validation.strided">
+      <mask id="lini-label-cut-6806518b" maskUnits="userSpaceOnUse" x="224.9615" y="218.35" width="22.1435" height="78.7"><rect class="lini-cut-bg" x="224.9615" y="218.35" width="22.1435" height="78.7"/><rect class="lini-cut" x="207.1931" y="251.8251" width="76.3239" height="12.3933"/></mask>
+      <path d="M 226.7115 295.3 L 227.355 295.3 A 18 18 0 0 0 245.355 277.3 L 245.355 238.1 A 18 18 0 0 0 227.355 220.1 L 227.355 220.1" mask="url(#lini-label-cut-6806518b)"/>
+      <text class="lini-link-label" x="245.355" y="258.0217" dy="0.358em">asserts behavior</text>
+    </g>
+  </g>
+</svg>

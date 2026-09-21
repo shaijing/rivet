@@ -1,0 +1,209 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-446.712 -371.4 894.546 742.8" width="894.546" height="742.8" class="lini lini-scope-07504fc5">
+  <style>
+    @layer lini.defaults {
+      :root, .lini-scope-07504fc5 { color-scheme: light dark; --lini-bg: light-dark(white, #1b1b1f); --lini-caption-color: light-dark(rgba(0, 0, 0, 0.5), rgba(255, 255, 255, 0.55)); --lini-caption-font-weight: 400; --lini-fg: light-dark(black, #e8e8ea); --lini-fill: light-dark(white, #26262b); --lini-font-family: "Google Sans", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; --lini-font-weight: 500; --lini-gray-deep: light-dark(#747474, #acacac); --lini-green-ink: light-dark(#005d26, #8bffc3); --lini-green-wash: light-dark(#d6f8e3, #143121); --lini-group-fill: light-dark(rgba(0, 0, 0, 0.03), rgba(255, 255, 255, 0.05)); --lini-group-stroke: light-dark(rgba(0, 0, 0, 0.4), rgba(255, 255, 255, 0.4)); --lini-link-font-weight: 400; --lini-orange-ink: light-dark(#7e2800, #ffcd84); --lini-orange-wash: light-dark(#ffe8d2, #3b2413); --lini-purple-deep: light-dark(#6e62cc, #a39cff); --lini-purple-ink: light-dark(#443394, #ded9ff); --lini-purple-wash: light-dark(#eaebff, #282741); --lini-rose-ink: light-dark(#811442, #ffbee0); --lini-rose-wash: light-dark(#ffe3ec, #3c2028); --lini-sky: light-dark(#00ace2, #0080b4); --lini-sky-ink: light-dark(#00547e, #5ffdff); --lini-sky-wash: light-dark(#cff6ff, #0a2f3a); --lini-stroke: light-dark(#444, #9aa0a6); --lini-teal: light-dark(#00b8ac, #008b81); --lini-text-color: var(--lini-fg); }
+      .lini-scope-07504fc5[data-theme="dark"], [data-theme="dark"] .lini-scope-07504fc5 { color-scheme: dark; }
+      .lini-scope-07504fc5[data-theme="light"], [data-theme="light"] .lini-scope-07504fc5 { color-scheme: light; }
+    }
+    .lini-scope-07504fc5 { font-family: var(--lini-font-family); font-size: 13px; font-weight: var(--lini-font-weight); color: var(--lini-text-color); }
+    .lini-scope-07504fc5 .lini-canvas { fill: var(--lini-bg); }
+    .lini-scope-07504fc5 .lini-block { fill: none; stroke: none; stroke-width: 2; stroke-dasharray: none; }
+    .lini-scope-07504fc5 .lini-text { fill: currentColor; stroke: none; text-anchor: middle; }
+    .lini-scope-07504fc5 .lini-box { fill: var(--lini-fill); stroke: var(--lini-stroke); stroke-width: 2; }
+    .lini-scope-07504fc5 .lini-group { fill: var(--lini-group-fill); stroke: var(--lini-group-stroke); stroke-width: 1; stroke-dasharray: 5,4; }
+    .lini-scope-07504fc5 .lini-caption { color: var(--lini-caption-color); font-size: 10.4px; font-weight: var(--lini-caption-font-weight); }
+    .lini-scope-07504fc5 .lini-link { fill: none; stroke: var(--lini-gray-deep); stroke-width: 1.5; stroke-dasharray: none; }
+    .lini-scope-07504fc5 .lini-link-dashed { stroke-dasharray: 6,4.75; }
+    .lini-scope-07504fc5 .lini-link-dotted { stroke-dasharray: 1.5,2.25; }
+    .lini-scope-07504fc5 .lini-link-label { fill: currentColor; stroke: none; text-anchor: middle; font-size: 9.5333px; font-weight: var(--lini-link-font-weight); }
+    .lini-scope-07504fc5 .lini-cut-bg { fill: white; stroke: none; }
+    .lini-scope-07504fc5 .lini-cut { fill: black; stroke: none; }
+    .lini-scope-07504fc5 .lini-marker { fill: var(--lini-stroke); stroke: none; }
+    .lini-scope-07504fc5 .lini-link .lini-marker { fill: var(--lini-gray-deep); }
+    .lini-scope-07504fc5 .lini-style-hero { fill: url(#lini-gradient-031efd54); stroke: none; color: white; font-size: 20px; font-weight: bold; }
+    .lini-scope-07504fc5 .lini-style-hero .lini-marker { fill: none; }
+    .lini-scope-07504fc5 .lini-style-dataset { fill: var(--lini-sky-wash); stroke: var(--lini-sky-ink); color: var(--lini-sky-ink); }
+    .lini-scope-07504fc5 .lini-style-dataset .lini-marker { fill: var(--lini-sky-ink); }
+    .lini-scope-07504fc5 .lini-style-storage { fill: var(--lini-orange-wash); stroke: var(--lini-orange-ink); color: var(--lini-orange-ink); }
+    .lini-scope-07504fc5 .lini-style-storage .lini-marker { fill: var(--lini-orange-ink); }
+    .lini-scope-07504fc5 .lini-style-sampling { fill: var(--lini-purple-wash); stroke: var(--lini-purple-ink); color: var(--lini-purple-ink); }
+    .lini-scope-07504fc5 .lini-style-sampling .lini-marker { fill: var(--lini-purple-ink); }
+    .lini-scope-07504fc5 .lini-style-runtime { fill: var(--lini-green-wash); stroke: var(--lini-green-ink); color: var(--lini-green-ink); }
+    .lini-scope-07504fc5 .lini-style-runtime .lini-marker { fill: var(--lini-green-ink); }
+    .lini-scope-07504fc5 .lini-style-contract { fill: var(--lini-rose-wash); stroke: var(--lini-rose-ink); color: var(--lini-rose-ink); }
+    .lini-scope-07504fc5 .lini-style-contract .lini-marker { fill: var(--lini-rose-ink); }
+    .lini-scope-07504fc5 .lini-style-boundary { stroke: var(--lini-purple-deep); stroke-dasharray: 3,2.5; }
+    .lini-scope-07504fc5 .lini-style-boundary .lini-marker { fill: var(--lini-purple-deep); }
+    .lini-scope-07504fc5 .lini-style-test { stroke: var(--lini-gray-deep); stroke-dasharray: 0,0; }
+    .lini-scope-07504fc5 .lini-style-test .lini-marker { fill: var(--lini-gray-deep); }
+  </style>
+  <defs>
+    <linearGradient id="lini-gradient-031efd54" gradientTransform="rotate(45 0.5 0.5)"><stop offset="0%" style="stop-color: var(--lini-sky)"/><stop offset="100%" style="stop-color: var(--lini-teal)"/></linearGradient>
+  </defs>
+  <rect class="lini-canvas" x="-446.712" y="-371.4" width="894.546" height="742.8"/>
+  <g class="lini-scene">
+    <g class="lini-node lini-box lini-block lini-style-hero" data-id="title" transform="translate(0,-282.4)">
+      <rect x="-105.37" y="-61" width="210.74" height="122" rx="7" ry="7"/>
+      <text class="lini-text" x="0" y="0"><tspan x="0" y="-28.84">rivet-data</tspan><tspan x="0" dy="24">Datasets, storage,</tspan><tspan x="0" dy="24">sampling &amp; runtime</tspan><tspan x="0" dy="24">primitives</tspan></text>
+    </g>
+    <g class="lini-node lini-group lini-block" data-id="datasets" transform="translate(-258.048,-70.1)">
+      <rect x="-127.3355" y="-122.8" width="254.671" height="245.6" rx="10" ry="10"/>
+      <g class="lini-node lini-box lini-block lini-style-dataset" data-id="dataset_api" transform="translate(0,-75.2)">
+        <rect x="-96.8825" y="-28.6" width="193.765" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">Dataset + Source</tspan><tspan x="0" dy="15.6">length and indexed samples</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-dataset" data-id="manifest" transform="translate(0,0)">
+        <rect x="-108.3355" y="-28.6" width="216.671" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">Manifest + Bundle</tspan><tspan x="0" dy="15.6">split metadata and composition</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-dataset" data-id="memory" transform="translate(0,75.2)">
+        <rect x="-91.949" y="-28.6" width="183.898" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">MemoryDataset</tspan><tspan x="0" dy="15.6">in-memory sample source</tspan></text>
+      </g>
+      <g class="lini-node lini-caption lini-block" transform="translate(-78.6687,-137.6)">
+        <rect x="-48.6668" y="-5.2" width="97.3336" height="10.4" rx="0" ry="0"/>
+        <text class="lini-text" x="0" y="0" dy="0.358em">Dataset abstractions</text>
+      </g>
+    </g>
+    <g class="lini-node lini-group lini-block" data-id="storage" transform="translate(2.561,-70.1)">
+      <rect x="-104.2735" y="-122.8" width="208.547" height="245.6" rx="10" ry="10"/>
+      <g class="lini-node lini-box lini-block lini-style-storage" data-id="arrow" transform="translate(0,-75.2)">
+        <rect x="-76.869" y="-28.6" width="153.738" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">Arrow tables + rows</tspan><tspan x="0" dy="15.6">typed column access</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-storage" data-id="mmap" transform="translate(0,0)">
+        <rect x="-74.7955" y="-28.6" width="149.591" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">MmapArrowTable</tspan><tspan x="0" dy="15.6">zero-copy IPC reads</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-storage" data-id="cache" transform="translate(0,75.2)">
+        <rect x="-85.2735" y="-28.6" width="170.547" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">CachePolicy + levels</tspan><tspan x="0" dy="15.6">chunked materialization</tspan></text>
+      </g>
+      <g class="lini-node lini-caption lini-block" transform="translate(-52.5595,-137.6)">
+        <rect x="-51.714" y="-5.2" width="103.428" height="10.4" rx="0" ry="0"/>
+        <text class="lini-text" x="0" y="0" dy="0.358em">Arrow, mmap &amp; cache</text>
+      </g>
+    </g>
+    <g class="lini-node lini-group lini-block" data-id="sampling" transform="translate(260.609,-70.1)">
+      <rect x="-124.7745" y="-122.8" width="249.549" height="245.6" rx="10" ry="10"/>
+      <g class="lini-node lini-box lini-block lini-style-sampling" data-id="sampler" transform="translate(0,-75.2)">
+        <rect x="-105.7745" y="-28.6" width="211.549" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">IndexSampler + SamplerPlan</tspan><tspan x="0" dy="15.6">sequential / skip / take / shuffle</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-sampling" data-id="random" transform="translate(0,0)">
+        <rect x="-91.039" y="-28.6" width="182.078" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">RandomContext + Stream</tspan><tspan x="0" dy="15.6">deterministic domains</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-sampling" data-id="keys" transform="translate(0,75.2)">
+        <rect x="-79.261" y="-28.6" width="158.522" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">SampleKey + OpKey</tspan><tspan x="0" dy="15.6">stable sample identity</tspan></text>
+      </g>
+      <g class="lini-node lini-caption lini-block" transform="translate(-68.5781,-137.6)">
+        <rect x="-56.1964" y="-5.2" width="112.3928" height="10.4" rx="0" ry="0"/>
+        <text class="lini-text" x="0" y="0" dy="0.358em">Sampling &amp; randomness</text>
+      </g>
+    </g>
+    <g class="lini-node lini-group lini-block" data-id="runtime" transform="translate(-139.2745,212.3)">
+      <rect x="-118.7425" y="-130.6" width="237.485" height="261.2" rx="10" ry="10"/>
+      <g class="lini-node lini-box lini-block lini-style-runtime" data-id="pool" transform="translate(0,-75.2)">
+        <rect x="-81.107" y="-36.4" width="162.214" height="72.8" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-10.946">WorkerPool</tspan><tspan x="0" dy="15.6">bounded multi-worker</tspan><tspan x="0" dy="15.6">execution</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-runtime" data-id="work" transform="translate(0,7.8)">
+        <rect x="-99.7425" y="-28.6" width="199.485" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">Work + reorder</tspan><tspan x="0" dy="15.6">sequence-preserving results</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-runtime" data-id="channels" transform="translate(0,83)">
+        <rect x="-98.657" y="-28.6" width="197.314" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">crossbeam channels</tspan><tspan x="0" dy="15.6">backpressure and shutdown</tspan></text>
+      </g>
+      <g class="lini-node lini-caption lini-block" transform="translate(-75.4681,-145.4)">
+        <rect x="-43.2744" y="-5.2" width="86.5488" height="10.4" rx="0" ry="0"/>
+        <text class="lini-text" x="0" y="0" dy="0.358em">Runtime primitives</text>
+      </g>
+    </g>
+    <g class="lini-node lini-group lini-block" data-id="contracts" transform="translate(260.609,212.3)">
+      <rect x="-123.923" y="-85.2" width="247.846" height="170.4" rx="10" ry="10"/>
+      <g class="lini-node lini-box lini-block lini-style-contract" data-id="errors" transform="translate(0,-37.6)">
+        <rect x="-104.923" y="-28.6" width="209.846" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">DataError + DataResult</tspan><tspan x="0" dy="15.6">I/O, Arrow, Lance, index errors</tspan></text>
+      </g>
+      <g class="lini-node lini-box lini-block lini-style-contract" data-id="tests" transform="translate(0,37.6)">
+        <rect x="-101.569" y="-28.6" width="203.138" height="57.2" rx="7" ry="7"/>
+        <text class="lini-text" x="0" y="0"><tspan x="0" y="-3.146">dataset / runtime tests</tspan><tspan x="0" dy="15.6">ordering and cache coverage</tspan></text>
+      </g>
+      <g class="lini-node lini-caption lini-block" transform="translate(-78.0486,-100)">
+        <rect x="-45.8744" y="-5.2" width="91.7488" height="10.4" rx="0" ry="0"/>
+        <text class="lini-text" x="0" y="0" dy="0.358em">Errors &amp; verification</text>
+      </g>
+    </g>
+  </g>
+  <g class="lini-links">
+    <g class="lini-link lini-link-dashed lini-style-boundary" style="stroke-dasharray: 6,4.75" data-from="datasets" data-to="storage">
+      <mask id="lini-label-cut-18d91385" maskUnits="userSpaceOnUse" x="-131.9625" y="-71.85" width="31.5" height="3.5"><rect class="lini-cut-bg" x="-131.9625" y="-71.85" width="31.5" height="3.5"/><rect class="lini-cut" x="-149.0121" y="-80.4989" width="94.5993" height="12.3933"/></mask>
+      <path d="M -130.2125 -70.1 L -104.7125 -70.1" mask="url(#lini-label-cut-18d91385)"/>
+      <polygon class="lini-marker lini-marker-arrow" points="-101.7125,-70.1 -108.7125,-66.6 -108.7125,-73.6"/>
+    </g>
+    <g class="lini-link lini-link-dashed lini-style-boundary" style="stroke-dasharray: 6,4.75" data-from="sampling" data-to="runtime">
+      <path d="M 135.3345 18.3696 L -17.9899 126.6481"/>
+      <polygon class="lini-marker lini-marker-arrow" points="-20.4404,128.3787 -16.7415,121.4817 -12.7035,127.1996"/>
+    </g>
+    <g class="lini-link lini-link-dashed lini-style-boundary" style="stroke-dasharray: 6,4.75" data-from="runtime" data-to="contracts">
+      <path d="M -20.032 212.3 L 133.686 212.3"/>
+      <polygon class="lini-marker lini-marker-arrow" points="136.686,212.3 129.686,215.8 129.686,208.8"/>
+    </g>
+    <g class="lini-link" data-from="datasets.dataset_api" data-to="datasets.manifest">
+      <mask id="lini-label-cut-fab538e1" maskUnits="userSpaceOnUse" x="-387.1335" y="-147.05" width="32.953" height="78.7"><rect class="lini-cut-bg" x="-387.1335" y="-147.05" width="32.953" height="78.7"/><rect class="lini-cut" x="-421.572" y="-119.6232" width="72.3771" height="12.3933"/></mask>
+      <path d="M -355.9305 -145.3 L -367.3835 -145.3 A 18 18 0 0 0 -385.3835 -127.3 L -385.3835 -85.6 A 15.5 15.5 0 0 0 -369.8835 -70.1 L -369.8835 -70.1" mask="url(#lini-label-cut-fab538e1)"/>
+      <polygon class="lini-marker lini-marker-arrow" points="-366.8835,-70.1 -373.8835,-66.6 -373.8835,-73.6"/>
+      <text class="lini-link-label" x="-385.3835" y="-113.4265" dy="0.358em">loads metadata</text>
+    </g>
+    <g class="lini-link" data-from="datasets.manifest" data-to="datasets.memory">
+      <mask id="lini-label-cut-217c8a58" maskUnits="userSpaceOnUse" x="-166.849" y="-71.85" width="37.8865" height="78.7"><rect class="lini-cut-bg" x="-166.849" y="-71.85" width="37.8865" height="78.7"/><rect class="lini-cut" x="-171.3769" y="-38.5034" width="81.3289" height="12.3933"/><rect class="lini-cut" x="-149.0121" y="-80.4989" width="94.5993" height="12.3933"/></mask>
+      <path d="M -148.7125 -70.1 L -148.7125 -70.1 A 18 18 0 0 1 -130.7125 -52.1 L -130.7125 -12.9 A 18 18 0 0 1 -148.7125 5.1 L -162.599 5.1" mask="url(#lini-label-cut-217c8a58)"/>
+      <polygon class="lini-marker lini-marker-arrow" points="-165.599,5.1 -158.599,1.6 -158.599,8.6"/>
+      <text class="lini-link-label" x="-130.7125" y="-32.3067" dy="0.358em">materializes splits</text>
+    </g>
+    <g class="lini-link" data-from="storage.mmap" data-to="storage.arrow">
+      <mask id="lini-label-cut-c1e7048f" maskUnits="userSpaceOnUse" x="76.6065" y="-147.05" width="23.5735" height="78.7"><rect class="lini-cut-bg" x="76.6065" y="-147.05" width="23.5735" height="78.7"/><rect class="lini-cut" x="74.0294" y="-112.8599" width="48.8011" height="12.3933"/></mask>
+      <path d="M 78.3565 -70.1 L 80.43 -70.1 A 18 18 0 0 0 98.43 -88.1 L 98.43 -129.8 A 15.5 15.5 0 0 0 82.93 -145.3 L 82.93 -145.3" mask="url(#lini-label-cut-c1e7048f)"/>
+      <polygon class="lini-marker lini-marker-arrow" points="79.93,-145.3 86.93,-148.8 86.93,-141.8"/>
+      <text class="lini-link-label" x="98.43" y="-106.6632" dy="0.358em">maps files</text>
+    </g>
+    <g class="lini-link" data-from="storage.arrow" data-to="storage.cache">
+      <mask id="lini-label-cut-d680948c" maskUnits="userSpaceOnUse" x="-103.4625" y="-147.05" width="29.9045" height="153.9"><rect class="lini-cut-bg" x="-103.4625" y="-147.05" width="29.9045" height="153.9"/><rect class="lini-cut" x="-171.3769" y="-38.5034" width="81.3289" height="12.3933"/><rect class="lini-cut" x="-149.0121" y="-80.4989" width="94.5993" height="12.3933"/></mask>
+      <path d="M -75.308 -145.3 L -83.7125 -145.3 A 18 18 0 0 0 -101.7125 -127.3 L -101.7125 -10.4 A 15.5 15.5 0 0 0 -86.2125 5.1 L -86.2125 5.1" mask="url(#lini-label-cut-d680948c)"/>
+      <polygon class="lini-marker lini-marker-arrow" points="-83.2125,5.1 -90.2125,8.6 -90.2125,1.6"/>
+      <text class="lini-link-label" x="-101.7125" y="-74.3022" dy="0.358em">materializes samples</text>
+    </g>
+    <g class="lini-link" data-from="sampling.sampler" data-to="sampling.random">
+      <mask id="lini-label-cut-a700d657" maskUnits="userSpaceOnUse" x="350.898" y="-147.05" width="36.2355" height="69.7"><rect class="lini-cut-bg" x="350.898" y="-147.05" width="36.2355" height="69.7"/><rect class="lini-cut" x="353.5374" y="-111.0289" width="63.6922" height="12.3933"/></mask>
+      <path d="M 367.3835 -145.3 L 367.3835 -145.3 A 18 18 0 0 1 385.3835 -127.3 L 385.3835 -97.1 A 18 18 0 0 1 367.3835 -79.1 L 355.148 -79.1" mask="url(#lini-label-cut-a700d657)"/>
+      <polygon class="lini-marker lini-marker-arrow" points="352.148,-79.1 359.148,-82.6 359.148,-75.6"/>
+      <text class="lini-link-label" x="385.3835" y="-104.8322" dy="0.358em">seeded order</text>
+    </g>
+    <g class="lini-link" data-from="sampling.random" data-to="sampling.keys">
+      <mask id="lini-label-cut-684cc067" maskUnits="userSpaceOnUse" x="339.12" y="-62.85" width="33.278" height="69.7"><rect class="lini-cut-bg" x="339.12" y="-62.85" width="33.278" height="69.7"/><rect class="lini-cut" x="341.3044" y="-28.3077" width="58.6872" height="12.3933"/></mask>
+      <path d="M 352.648 -61.1 L 352.648 -61.1 A 18 18 0 0 1 370.648 -43.1 L 370.648 -12.9 A 18 18 0 0 1 352.648 5.1 L 343.37 5.1" mask="url(#lini-label-cut-684cc067)"/>
+      <polygon class="lini-marker lini-marker-arrow" points="340.37,5.1 347.37,1.6 347.37,8.6"/>
+      <text class="lini-link-label" x="370.648" y="-22.111" dy="0.358em">derives keys</text>
+    </g>
+    <g class="lini-link" data-from="runtime.pool" data-to="runtime.work">
+      <mask id="lini-label-cut-ad0298cb" maskUnits="userSpaceOnUse" x="-259.767" y="135.35" width="40.1355" height="86.5"><rect class="lini-cut-bg" x="-259.767" y="135.35" width="40.1355" height="86.5"/><rect class="lini-cut" x="-282.4891" y="163.0856" width="48.9441" height="12.3933"/></mask>
+      <path d="M -221.3815 137.1 L -240.017 137.1 A 18 18 0 0 0 -258.017 155.1 L -258.017 204.6 A 15.5 15.5 0 0 0 -242.517 220.1 L -242.517 220.1" mask="url(#lini-label-cut-ad0298cb)"/>
+      <polygon class="lini-marker lini-marker-arrow" points="-239.517,220.1 -246.517,223.6 -246.517,216.6"/>
+      <text class="lini-link-label" x="-258.017" y="169.2823" dy="0.358em">schedules</text>
+    </g>
+    <g class="lini-link" data-from="runtime.work" data-to="runtime.channels">
+      <mask id="lini-label-cut-438fcfc9" maskUnits="userSpaceOnUse" x="-41.3675" y="218.35" width="22.5855" height="78.7"><rect class="lini-cut-bg" x="-41.3675" y="218.35" width="22.5855" height="78.7"/><rect class="lini-cut" x="-49.0986" y="252.0461" width="57.1333" height="12.3933"/></mask>
+      <path d="M -38.532 220.1 L -38.532 220.1 A 18 18 0 0 1 -20.532 238.1 L -20.532 278.7145 A 16.5855 16.5855 0 0 1 -37.1175 295.3 L -37.1175 295.3" mask="url(#lini-label-cut-438fcfc9)"/>
+      <polygon class="lini-marker lini-marker-arrow" points="-40.1175,295.3 -33.1175,291.8 -33.1175,298.8"/>
+      <text class="lini-link-label" x="-20.532" y="258.2428" dy="0.358em">coordinates</text>
+    </g>
+    <g class="lini-link lini-link-dotted lini-style-test" style="stroke-dasharray: 1.5,2.25" data-from="contracts.tests" data-to="contracts.errors">
+      <mask id="lini-label-cut-75db5d0b" maskUnits="userSpaceOnUse" x="361.428" y="172.95" width="24.854" height="78.7"><rect class="lini-cut-bg" x="361.428" y="172.95" width="24.854" height="78.7"/><rect class="lini-cut" x="346.3701" y="207.7803" width="76.3239" height="12.3933"/></mask>
+      <path d="M 363.178 249.9 L 366.532 249.9 A 18 18 0 0 0 384.532 231.9 L 384.532 192.7 A 18 18 0 0 0 366.532 174.7 L 366.532 174.7" mask="url(#lini-label-cut-75db5d0b)"/>
+      <text class="lini-link-label" x="384.532" y="213.977" dy="0.358em">asserts behavior</text>
+    </g>
+  </g>
+</svg>

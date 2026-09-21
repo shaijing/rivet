@@ -1,0 +1,80 @@
+{
+  layout: grid; columns: repeat(3); gap: 28; padding: 28; fill: --bg; routing: straight; clearance: 18; font-size: 13;
+
+  |group| {
+    direction: column; gap: 16; padding: 18; radius: 10; stroke-style: dashed; routing: orthogonal;
+  }
+
+  |box| { max-width: 220; padding: 13; radius: 7; }
+
+  |-| { stroke: --gray-deep; stroke-width: 1.5; }
+
+  .hero {
+    fill: gradient(--sky, --teal); stroke: none; color: white; font-size: 20; font-weight: bold;
+  }
+
+  .dataset { fill: --sky-wash; stroke: --sky-ink; color: --sky-ink; }
+
+  .storage { fill: --orange-wash; stroke: --orange-ink; color: --orange-ink; }
+
+  .sampling { fill: --purple-wash; stroke: --purple-ink; color: --purple-ink; }
+
+  .runtime { fill: --green-wash; stroke: --green-ink; color: --green-ink; }
+
+  .contract { fill: --rose-wash; stroke: --rose-ink; color: --rose-ink; }
+
+  .boundary { stroke: --purple-deep; stroke-style: dashed; }
+
+  .test { stroke: --gray-deep; stroke-style: dotted; }
+}
+
+|box#title| "rivet-data\nDatasets, storage, sampling & runtime primitives" .hero {
+  cell: 1 1; span: 3 1;
+}
+
+|group#datasets| "Dataset abstractions" { cell: 1 2; } [
+  |box#dataset_api| "Dataset + Source\nlength and indexed samples" .dataset
+  |box#manifest| "Manifest + Bundle\nsplit metadata and composition" .dataset
+  |box#memory| "MemoryDataset\nin-memory sample source" .dataset
+
+  dataset_api -> manifest "loads metadata"
+  manifest -> memory "materializes splits"
+]
+
+|group#storage| "Arrow, mmap & cache" { cell: 2 2; } [
+  |box#arrow| "Arrow tables + rows\ntyped column access" .storage
+  |box#mmap| "MmapArrowTable\nzero-copy IPC reads" .storage
+  |box#cache| "CachePolicy + levels\nchunked materialization" .storage
+
+  mmap -> arrow "maps files"
+  arrow -> cache "materializes samples"
+]
+
+|group#sampling| "Sampling & randomness" { cell: 3 2; } [
+  |box#sampler| "IndexSampler + SamplerPlan\nsequential / skip / take / shuffle" .sampling
+  |box#random| "RandomContext + Stream\ndeterministic domains" .sampling
+  |box#keys| "SampleKey + OpKey\nstable sample identity" .sampling
+
+  sampler -> random "seeded order"
+  random -> keys "derives keys"
+]
+
+|group#runtime| "Runtime primitives" { cell: 1 3; span: 2 1; } [
+  |box#pool| "WorkerPool\nbounded multi-worker execution" .runtime
+  |box#work| "Work + reorder\nsequence-preserving results" .runtime
+  |box#channels| "crossbeam channels\nbackpressure and shutdown" .runtime
+
+  pool -> work "schedules"
+  work -> channels "coordinates"
+]
+
+|group#contracts| "Errors & verification" { cell: 3 3; } [
+  |box#errors| "DataError + DataResult\nI/O, Arrow, Lance, index errors" .contract
+  |box#tests| "dataset / runtime tests\nordering and cache coverage" .contract
+
+  tests --- errors "asserts behavior" .test
+]
+
+datasets -> storage .boundary
+sampling -> runtime .boundary
+runtime -> contracts .boundary
