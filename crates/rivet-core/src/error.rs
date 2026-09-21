@@ -47,6 +47,15 @@ pub enum Error {
     #[error("storage access out of bounds")]
     StorageOutOfBounds,
 
+    #[error("aligned allocation failed: {bytes} bytes with {alignment}-byte alignment")]
+    AllocationFailed { bytes: usize, alignment: usize },
+
+    #[error("aligned buffers do not support zero-sized element types")]
+    UnsupportedZeroSizedType,
+
+    #[error("aligned buffer is not fully initialized: initialized {initialized} of {len}")]
+    UninitializedStorage { initialized: usize, len: usize },
+
     #[error("invalid layout: shape rank is {rank}, stride rank is {stride_len}")]
     InvalidLayout { rank: usize, stride_len: usize },
 

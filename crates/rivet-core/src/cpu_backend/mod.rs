@@ -1,3 +1,7 @@
+// Phase 1 introduces the standalone buffer before the Phase 3 CpuStorage
+// migration; its construction APIs are intentionally unused for now.
+#[allow(dead_code)]
+pub(crate) mod buffer;
 pub(crate) mod index;
 pub(crate) mod math;
 pub(crate) mod matmul;
