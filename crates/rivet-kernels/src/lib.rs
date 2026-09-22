@@ -16,9 +16,26 @@ pub enum Id {
     Fill,
     Binary,
     Unary,
+    Affine,
+    Cast,
+    Indexing,
+    Reduce,
+    Sort,
+    Ternary,
 }
 
-pub const ALL_IDS: [Id; 4] = [Id::Copy, Id::Fill, Id::Binary, Id::Unary];
+pub const ALL_IDS: [Id; 10] = [
+    Id::Copy,
+    Id::Fill,
+    Id::Binary,
+    Id::Unary,
+    Id::Affine,
+    Id::Cast,
+    Id::Indexing,
+    Id::Reduce,
+    Id::Sort,
+    Id::Ternary,
+];
 
 #[derive(Debug, Clone, Copy)]
 pub struct Module {
@@ -60,21 +77,41 @@ module!(COPY, Copy);
 module!(FILL, Fill);
 module!(BINARY, Binary);
 module!(UNARY, Unary);
+module!(AFFINE, Affine);
+module!(CAST, Cast);
+module!(INDEXING, Indexing);
+module!(REDUCE, Reduce);
+module!(SORT, Sort);
+module!(TERNARY, Ternary);
 
 #[cfg(test)]
 mod tests {
-    use super::{ALL_IDS, BINARY, COPY, FILL, UNARY};
+    use super::{
+        AFFINE, ALL_IDS, BINARY, CAST, COPY, FILL, INDEXING, REDUCE, SORT, TERNARY, UNARY,
+    };
 
     #[test]
-    fn exposes_all_baseline_modules() {
-        assert_eq!(ALL_IDS.len(), 4);
+    fn exposes_all_modules() {
+        assert_eq!(ALL_IDS.len(), 10);
         assert_eq!(COPY.index(), 0);
         assert_eq!(FILL.index(), 1);
         assert_eq!(BINARY.index(), 2);
         assert_eq!(UNARY.index(), 3);
+        assert_eq!(AFFINE.index(), 4);
+        assert_eq!(CAST.index(), 5);
+        assert_eq!(INDEXING.index(), 6);
+        assert_eq!(REDUCE.index(), 7);
+        assert_eq!(SORT.index(), 8);
+        assert_eq!(TERNARY.index(), 9);
         assert!(COPY.ptx().contains(".version"));
         assert!(FILL.ptx().contains("fill_f32"));
         assert!(BINARY.ptx().contains("add_f32"));
         assert!(UNARY.ptx().contains("neg_f32"));
+        assert!(AFFINE.ptx().contains("affine_f32"));
+        assert!(CAST.ptx().contains("cast_f32_f64"));
+        assert!(INDEXING.ptx().contains("gather_i64_f32"));
+        assert!(REDUCE.ptx().contains("fast_sum_f32"));
+        assert!(SORT.ptx().contains("asort_asc_f32"));
+        assert!(TERNARY.ptx().contains("where_i64_f32"));
     }
 }
