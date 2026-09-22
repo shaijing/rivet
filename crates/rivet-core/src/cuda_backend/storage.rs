@@ -11,6 +11,7 @@ use crate::{DType, Error, Layout, Result, WithDType};
 
 use super::device::CudaDevice;
 use super::kernels;
+use super::matmul;
 
 /// Typed CUDA allocation storage. Keeping the dtype in the enum preserves
 /// static dispatch once an operation selects a concrete element type.
@@ -384,6 +385,97 @@ impl CudaStorage {
 
     pub(crate) fn copy_logical(&self, layout: &Layout) -> Result<Self> {
         self.copy_to_device(Arc::clone(&self.device), layout)
+    }
+
+    pub(crate) fn matmul(
+        &self,
+        lhs_layout: &Layout,
+        rhs: &Self,
+        rhs_layout: &Layout,
+    ) -> Result<Self> {
+        if !self.device.same_device(&rhs.device) {
+            return Err(Error::DeviceMismatch);
+        }
+        if self.dtype() != rhs.dtype() {
+            return Err(Error::DTypeMismatch {
+                lhs: self.dtype(),
+                rhs: rhs.dtype(),
+            });
+        }
+        if !matches!(self.dtype(), DType::F32 | DType::F16 | DType::BF16) {
+            return Err(Error::UnsupportedMatmulDType {
+                dtype: self.dtype(),
+            });
+        }
+        crate::storage::validate_layout_for_storage(lhs_layout, self.len())?;
+        crate::storage::validate_layout_for_storage(rhs_layout, rhs.len())?;
+
+        let plan = matmul::MatmulPlan::new(lhs_layout, rhs_layout)?;
+        let mut output =
+            CudaStorageSlice::zeros(&self.device.cuda_stream(), self.dtype(), plan.output_len()?)?;
+        if plan.has_empty_dimension() {
+            return Ok(Self::from_data(Arc::clone(&self.device), output));
+        }
+
+        let lhs_layout_is_general = plan.needs_lhs_materialization();
+        let rhs_layout_is_general = plan.needs_rhs_materialization();
+        match (lhs_layout_is_general, rhs_layout_is_general) {
+            (false, false) => matmul::matmul(
+                self.device.as_ref(),
+                &self.data,
+                lhs_layout,
+                &rhs.data,
+                rhs_layout,
+                &plan,
+                &mut output,
+            )?,
+            (true, false) => {
+                let lhs_materialized = self.copy_to_device(Arc::clone(&self.device), lhs_layout)?;
+                let lhs_layout = Layout::contiguous(lhs_layout.dims().to_vec());
+                let plan = matmul::MatmulPlan::new(&lhs_layout, rhs_layout)?;
+                matmul::matmul(
+                    self.device.as_ref(),
+                    &lhs_materialized.data,
+                    &lhs_layout,
+                    &rhs.data,
+                    rhs_layout,
+                    &plan,
+                    &mut output,
+                )?;
+            }
+            (false, true) => {
+                let rhs_materialized = rhs.copy_to_device(Arc::clone(&self.device), rhs_layout)?;
+                let rhs_layout = Layout::contiguous(rhs_layout.dims().to_vec());
+                let plan = matmul::MatmulPlan::new(lhs_layout, &rhs_layout)?;
+                matmul::matmul(
+                    self.device.as_ref(),
+                    &self.data,
+                    lhs_layout,
+                    &rhs_materialized.data,
+                    &rhs_layout,
+                    &plan,
+                    &mut output,
+                )?;
+            }
+            (true, true) => {
+                let lhs_materialized = self.copy_to_device(Arc::clone(&self.device), lhs_layout)?;
+                let rhs_materialized = rhs.copy_to_device(Arc::clone(&self.device), rhs_layout)?;
+                let lhs_layout = Layout::contiguous(lhs_layout.dims().to_vec());
+                let rhs_layout = Layout::contiguous(rhs_layout.dims().to_vec());
+                let plan = matmul::MatmulPlan::new(&lhs_layout, &rhs_layout)?;
+                matmul::matmul(
+                    self.device.as_ref(),
+                    &lhs_materialized.data,
+                    &lhs_layout,
+                    &rhs_materialized.data,
+                    &rhs_layout,
+                    &plan,
+                    &mut output,
+                )?;
+            }
+        }
+
+        Ok(Self::from_data(Arc::clone(&self.device), output))
     }
 
     pub(crate) fn unary(&self, layout: &Layout, op: UnaryOp) -> Result<Self> {

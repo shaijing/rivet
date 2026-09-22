@@ -79,7 +79,9 @@ impl Storage {
             }
 
             #[cfg(feature = "cuda")]
-            (Self::Cuda(_), Self::Cuda(_)) => unsupported_cuda("matmul"),
+            (Self::Cuda(lhs), Self::Cuda(rhs)) => {
+                Ok(Self::Cuda(lhs.matmul(lhs_layout, rhs, rhs_layout)?))
+            }
 
             #[cfg(feature = "cuda")]
             _ => Err(Error::DeviceMismatch),

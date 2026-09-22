@@ -225,10 +225,13 @@ impl Tensor {
         Self::from_exact_owned_storage(storage, Shape::from(()))
     }
 
-    /// Computes a rank-2 F32 matrix product using the CPU GEMM backend.
+    /// Computes a rank-2 matrix product using the CPU GEMM backend or CUDA
+    /// cuBLAS for supported device dtypes.
     ///
-    /// Phase 1 deliberately accepts only contiguous rank-2 inputs. The
-    /// output is always a fresh row-major contiguous tensor.
+    /// CPU execution currently requires contiguous rank-2 inputs; CUDA
+    /// supports regular row/column-major views and materializes general
+    /// strided inputs. The output is always a fresh row-major contiguous
+    /// tensor.
     pub fn matmul(&self, rhs: &Self) -> Result<Self> {
         if self.dtype() != rhs.dtype() {
             return Err(Error::DTypeMismatch {

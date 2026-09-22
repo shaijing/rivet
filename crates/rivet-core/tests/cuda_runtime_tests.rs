@@ -225,6 +225,157 @@ fn cuda_basic_ops_handle_empty_tensors_without_kernel_launches() {
 }
 
 #[test]
+fn cuda_matmul_uses_cublas_and_preserves_stream_order() {
+    let device = Device::cuda(0).unwrap();
+    let runtime = cuda_runtime(&device);
+    let lhs = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3], &device).unwrap();
+    let rhs = Tensor::from_vec(vec![7.0f32, 8.0, 9.0, 10.0, 11.0, 12.0], [3, 2], &device).unwrap();
+    runtime.reset_debug_stats();
+
+    let product = lhs.matmul(&rhs).unwrap();
+    let output = product.add_scalar(1.0f32).unwrap();
+    let queued = runtime.debug_stats();
+    assert_eq!(queued.synchronize_count, 0);
+    assert_eq!(queued.d2h_count, 0);
+    assert_eq!(queued.cublas_call_count, 1);
+    assert_eq!(queued.kernel_launch_count, 1);
+
+    assert_eq!(
+        output.to_vec::<f32>().unwrap(),
+        vec![59.0, 65.0, 140.0, 155.0]
+    );
+}
+
+#[test]
+fn cuda_matmul_supports_f16_and_bf16() {
+    let device = Device::cuda(0).unwrap();
+
+    let lhs_f16 = Tensor::from_vec(
+        vec![
+            half::f16::from_f32(1.0),
+            half::f16::from_f32(2.0),
+            half::f16::from_f32(3.0),
+            half::f16::from_f32(4.0),
+        ],
+        [2, 2],
+        &device,
+    )
+    .unwrap();
+    let rhs_f16 = Tensor::from_vec(
+        vec![
+            half::f16::from_f32(5.0),
+            half::f16::from_f32(6.0),
+            half::f16::from_f32(7.0),
+            half::f16::from_f32(8.0),
+        ],
+        [2, 2],
+        &device,
+    )
+    .unwrap();
+    let f16_values = lhs_f16
+        .matmul(&rhs_f16)
+        .unwrap()
+        .to_vec::<half::f16>()
+        .unwrap();
+    assert_eq!(
+        f16_values
+            .iter()
+            .map(|value| value.to_f32())
+            .collect::<Vec<_>>(),
+        vec![19.0, 22.0, 43.0, 50.0]
+    );
+
+    let lhs_bf16 = Tensor::from_vec(
+        vec![
+            half::bf16::from_f32(1.0),
+            half::bf16::from_f32(2.0),
+            half::bf16::from_f32(3.0),
+            half::bf16::from_f32(4.0),
+        ],
+        [2, 2],
+        &device,
+    )
+    .unwrap();
+    let rhs_bf16 = Tensor::from_vec(
+        vec![
+            half::bf16::from_f32(5.0),
+            half::bf16::from_f32(6.0),
+            half::bf16::from_f32(7.0),
+            half::bf16::from_f32(8.0),
+        ],
+        [2, 2],
+        &device,
+    )
+    .unwrap();
+    let bf16_values = lhs_bf16
+        .matmul(&rhs_bf16)
+        .unwrap()
+        .to_vec::<half::bf16>()
+        .unwrap();
+    assert_eq!(
+        bf16_values
+            .iter()
+            .map(|value| value.to_f32())
+            .collect::<Vec<_>>(),
+        vec![19.0, 22.0, 43.0, 50.0]
+    );
+}
+
+#[test]
+fn cuda_matmul_handles_col_major_views_and_general_strides() {
+    let device = Device::cuda(0).unwrap();
+
+    let lhs_col = Tensor::from_vec(vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0], [3, 2], &device)
+        .unwrap()
+        .transpose(0, 1)
+        .unwrap();
+    let rhs_col = Tensor::from_vec(vec![7.0f32, 8.0, 9.0, 10.0, 11.0, 12.0], [2, 3], &device)
+        .unwrap()
+        .transpose(0, 1)
+        .unwrap();
+    assert_eq!(
+        lhs_col.matmul(&rhs_col).unwrap().to_vec::<f32>().unwrap(),
+        vec![50.0, 68.0, 122.0, 167.0]
+    );
+
+    let lhs_general = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], [1, 3], &device)
+        .unwrap()
+        .broadcast_as([2, 3])
+        .unwrap();
+    let rhs = Tensor::from_vec(vec![4.0f32, 5.0, 6.0, 7.0, 8.0, 9.0], [3, 2], &device).unwrap();
+    assert_eq!(
+        lhs_general.matmul(&rhs).unwrap().to_vec::<f32>().unwrap(),
+        vec![40.0, 46.0, 40.0, 46.0]
+    );
+}
+
+#[test]
+fn cuda_matmul_handles_empty_and_unsupported_inputs_explicitly() {
+    let device = Device::cuda(0).unwrap();
+    let runtime = cuda_runtime(&device);
+
+    let empty_lhs = Tensor::zeros([0, 3], DType::F32, &device).unwrap();
+    let rhs = Tensor::ones([3, 2], DType::F32, &device).unwrap();
+    runtime.reset_debug_stats();
+    let empty_output = empty_lhs.matmul(&rhs).unwrap();
+    assert_eq!(empty_output.dims(), &[0, 2]);
+    assert!(empty_output.to_vec::<f32>().unwrap().is_empty());
+    assert_eq!(runtime.debug_stats().cublas_call_count, 0);
+
+    let zero_k_lhs = Tensor::zeros([2, 0], DType::F32, &device).unwrap();
+    let zero_k_rhs = Tensor::zeros([0, 3], DType::F32, &device).unwrap();
+    let zero_k_output = zero_k_lhs.matmul(&zero_k_rhs).unwrap();
+    assert_eq!(zero_k_output.to_vec::<f32>().unwrap(), vec![0.0; 6]);
+
+    let integer_lhs = Tensor::ones([2, 2], DType::I32, &device).unwrap();
+    let integer_rhs = Tensor::ones([2, 2], DType::I32, &device).unwrap();
+    assert!(matches!(
+        integer_lhs.matmul(&integer_rhs),
+        Err(Error::UnsupportedMatmulDType { dtype: DType::I32 })
+    ));
+}
+
+#[test]
 fn tensor_device_copy_preserves_contiguous_and_view_logical_order() {
     let cpu = Device::Cpu;
     let cuda = Device::cuda(0).unwrap();

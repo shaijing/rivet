@@ -18,6 +18,7 @@ use crate::{DType, Error, Result, Shape, WithDType};
 pub struct CudaDebugStats {
     pub synchronize_count: usize,
     pub kernel_launch_count: usize,
+    pub cublas_call_count: usize,
     pub h2d_count: usize,
     pub d2h_count: usize,
     pub d2d_count: usize,
@@ -27,6 +28,7 @@ pub struct CudaDebugStats {
 struct CudaDebugCounters {
     synchronize_count: AtomicUsize,
     kernel_launch_count: AtomicUsize,
+    cublas_call_count: AtomicUsize,
     h2d_count: AtomicUsize,
     d2h_count: AtomicUsize,
     d2d_count: AtomicUsize,
@@ -37,6 +39,7 @@ impl CudaDebugCounters {
         CudaDebugStats {
             synchronize_count: self.synchronize_count.load(Ordering::Relaxed),
             kernel_launch_count: self.kernel_launch_count.load(Ordering::Relaxed),
+            cublas_call_count: self.cublas_call_count.load(Ordering::Relaxed),
             h2d_count: self.h2d_count.load(Ordering::Relaxed),
             d2h_count: self.d2h_count.load(Ordering::Relaxed),
             d2d_count: self.d2d_count.load(Ordering::Relaxed),
@@ -46,6 +49,7 @@ impl CudaDebugCounters {
     fn reset(&self) {
         self.synchronize_count.store(0, Ordering::Relaxed);
         self.kernel_launch_count.store(0, Ordering::Relaxed);
+        self.cublas_call_count.store(0, Ordering::Relaxed);
         self.h2d_count.store(0, Ordering::Relaxed);
         self.d2h_count.store(0, Ordering::Relaxed);
         self.d2d_count.store(0, Ordering::Relaxed);
@@ -165,6 +169,10 @@ impl CudaDevice {
         self.debug
             .kernel_launch_count
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_cublas_call(&self) {
+        self.debug.cublas_call_count.fetch_add(1, Ordering::Relaxed);
     }
 }
 

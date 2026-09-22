@@ -5,6 +5,7 @@
 
 mod device;
 mod kernels;
+mod matmul;
 mod module;
 mod storage;
 
