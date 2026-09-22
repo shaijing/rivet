@@ -6,7 +6,7 @@ use half::{bf16, f16};
 
 use crate::backend::BackendStorage;
 use crate::cpu_backend::{CpuStorage, CpuStorageRef};
-use crate::ops::{BinaryOp, CmpOp, UnaryOp};
+use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use crate::{DType, Error, Layout, Result, WithDType};
 
 use super::device::CudaDevice;
@@ -478,6 +478,23 @@ impl CudaStorage {
         Ok(Self::from_data(Arc::clone(&self.device), output))
     }
 
+    pub(crate) fn affine(&self, layout: &Layout, mul: f64, add: f64) -> Result<Self> {
+        let mut output = CudaStorageSlice::zeros(
+            &self.device.cuda_stream(),
+            self.dtype(),
+            layout.checked_elem_count()?,
+        )?;
+        kernels::affine(
+            self.device.as_ref(),
+            &self.data,
+            &mut output,
+            layout,
+            mul,
+            add,
+        )?;
+        Ok(Self::from_data(Arc::clone(&self.device), output))
+    }
+
     pub(crate) fn unary(&self, layout: &Layout, op: UnaryOp) -> Result<Self> {
         let numel = layout.checked_elem_count()?;
         let mut output = CudaStorageSlice::zeros(&self.device.cuda_stream(), self.dtype(), numel)?;
@@ -583,6 +600,192 @@ impl CudaStorage {
         Ok(Self::from_data(Arc::clone(&self.device), output))
     }
 
+    pub(crate) fn gather(
+        &self,
+        layout: &Layout,
+        indexes: &Self,
+        indexes_layout: &Layout,
+        dim: usize,
+    ) -> Result<Self> {
+        if !self.device.same_device(&indexes.device) {
+            return Err(Error::DeviceMismatch);
+        }
+        let data = kernels::gather(
+            self.device.as_ref(),
+            &self.data,
+            layout,
+            &indexes.data,
+            indexes_layout,
+            dim,
+        )?;
+        Ok(Self::from_data(Arc::clone(&self.device), data))
+    }
+
+    pub(crate) fn index_select(
+        &self,
+        layout: &Layout,
+        indexes: &Self,
+        indexes_layout: &Layout,
+        dim: usize,
+    ) -> Result<Self> {
+        if !self.device.same_device(&indexes.device) {
+            return Err(Error::DeviceMismatch);
+        }
+        let data = kernels::index_select(
+            self.device.as_ref(),
+            &self.data,
+            layout,
+            &indexes.data,
+            indexes_layout,
+            dim,
+        )?;
+        Ok(Self::from_data(Arc::clone(&self.device), data))
+    }
+
+    pub(crate) fn scatter(
+        &self,
+        layout: &Layout,
+        indexes: &Self,
+        indexes_layout: &Layout,
+        source: &Self,
+        source_layout: &Layout,
+        dim: usize,
+        add: bool,
+    ) -> Result<Self> {
+        if !self.device.same_device(&indexes.device) || !self.device.same_device(&source.device) {
+            return Err(Error::DeviceMismatch);
+        }
+        let data = kernels::scatter(
+            self.device.as_ref(),
+            &self.data,
+            layout,
+            &indexes.data,
+            indexes_layout,
+            &source.data,
+            source_layout,
+            dim,
+            add,
+        )?;
+        Ok(Self::from_data(Arc::clone(&self.device), data))
+    }
+
+    pub(crate) fn index_add(
+        &self,
+        layout: &Layout,
+        indexes: &Self,
+        indexes_layout: &Layout,
+        source: &Self,
+        source_layout: &Layout,
+        dim: usize,
+    ) -> Result<Self> {
+        if !self.device.same_device(&indexes.device) || !self.device.same_device(&source.device) {
+            return Err(Error::DeviceMismatch);
+        }
+        let data = kernels::index_add(
+            self.device.as_ref(),
+            &self.data,
+            layout,
+            &indexes.data,
+            indexes_layout,
+            &source.data,
+            source_layout,
+            dim,
+        )?;
+        Ok(Self::from_data(Arc::clone(&self.device), data))
+    }
+
+    pub(crate) fn where_cond(
+        condition: &Self,
+        condition_layout: &Layout,
+        on_true: &Self,
+        true_layout: &Layout,
+        on_false: &Self,
+        false_layout: &Layout,
+    ) -> Result<Self> {
+        if !condition.device.same_device(&on_true.device)
+            || !condition.device.same_device(&on_false.device)
+        {
+            return Err(Error::DeviceMismatch);
+        }
+        let data = kernels::where_cond(
+            condition.device.as_ref(),
+            &condition.data,
+            condition_layout,
+            &on_true.data,
+            true_layout,
+            &on_false.data,
+            false_layout,
+        )?;
+        Ok(Self::from_data(Arc::clone(&condition.device), data))
+    }
+
+    pub(crate) fn reduce_dim(&self, layout: &Layout, dim: usize, op: ReduceOp) -> Result<Self> {
+        let data = kernels::reduce(self.device.as_ref(), &self.data, layout, Some(dim), op)?;
+        Ok(Self::from_data(Arc::clone(&self.device), data))
+    }
+
+    pub(crate) fn reduce_all(&self, layout: &Layout, op: ReduceOp) -> Result<Self> {
+        let data = kernels::reduce(self.device.as_ref(), &self.data, layout, None, op)?;
+        Ok(Self::from_data(Arc::clone(&self.device), data))
+    }
+
+    fn divide_by_usize(&self, layout: &Layout, divisor: usize) -> Result<Self> {
+        macro_rules! divide {
+            ($ty:ty) => {
+                self.binary_scalar(layout, divisor as $ty, BinaryOp::Div)
+            };
+        }
+        match self.dtype() {
+            DType::U8 => divide!(u8),
+            DType::U32 => divide!(u32),
+            DType::I64 => divide!(i64),
+            DType::BF16 => {
+                self.binary_scalar(layout, half::bf16::from_f64(divisor as f64), BinaryOp::Div)
+            }
+            DType::F16 => {
+                self.binary_scalar(layout, half::f16::from_f64(divisor as f64), BinaryOp::Div)
+            }
+            DType::F32 => divide!(f32),
+            DType::F64 => divide!(f64),
+            dtype => Err(Error::UnsupportedDTypeForOp { op: "mean", dtype }),
+        }
+    }
+
+    pub(crate) fn mean_dim(&self, layout: &Layout, dim: usize, keepdim: bool) -> Result<Self> {
+        let divisor = *layout.dims().get(dim).ok_or(Error::InvalidDim {
+            dim,
+            rank: layout.dims().len(),
+        })?;
+        if divisor == 0 {
+            return Err(Error::EmptyReduction { op: "mean", dim });
+        }
+        let reduced = self.reduce_dim(layout, dim, ReduceOp::Sum)?;
+        let mut dims = layout.dims().to_vec();
+        if keepdim {
+            dims[dim] = 1;
+        } else {
+            dims.remove(dim);
+        }
+        reduced.divide_by_usize(&Layout::contiguous(dims), divisor)
+    }
+
+    pub(crate) fn mean_all(&self, layout: &Layout) -> Result<Self> {
+        let divisor = layout.checked_elem_count()?;
+        if divisor == 0 {
+            return Err(Error::EmptyReduction {
+                op: "mean_all",
+                dim: 0,
+            });
+        }
+        let reduced = self.reduce_all(layout, ReduceOp::Sum)?;
+        reduced.divide_by_usize(&Layout::contiguous(()), divisor)
+    }
+
+    pub(crate) fn arg_sort_last_dim(&self, layout: &Layout, descending: bool) -> Result<Self> {
+        let data = kernels::sort(self.device.as_ref(), &self.data, layout, descending)?;
+        Ok(Self::from_data(Arc::clone(&self.device), data))
+    }
+
     pub(crate) fn copy_to_device(&self, device: Arc<CudaDevice>, layout: &Layout) -> Result<Self> {
         crate::storage::validate_layout_for_storage(layout, self.len())?;
         if !self.device.same_device(&device) {
@@ -607,8 +810,9 @@ impl CudaStorage {
         Ok(Self::from_data(device, data))
     }
 
-    pub(crate) fn to_dtype(&self, _layout: &Layout, _dtype: DType) -> Result<Self> {
-        Err(Error::UnsupportedCudaOp { op: "to_dtype" })
+    pub(crate) fn to_dtype(&self, layout: &Layout, dtype: DType) -> Result<Self> {
+        let data = kernels::cast(self.device.as_ref(), &self.data, layout, dtype)?;
+        Ok(Self::from_data(Arc::clone(&self.device), data))
     }
 }
 

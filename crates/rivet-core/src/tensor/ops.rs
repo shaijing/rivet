@@ -462,6 +462,24 @@ impl Tensor {
         self.reduce_dim(dim, false, ReduceOp::ArgMax)
     }
 
+    /// Returns the indices that sort the last dimension of each row.
+    ///
+    /// CUDA currently provides this operation through the migrated argsort
+    /// kernel; CPU callers receive an explicit unsupported-operation error.
+    pub fn arg_sort_last_dim(&self, descending: bool) -> Result<Self> {
+        if self.rank() == 0 {
+            return Err(Error::InvalidDim { dim: 0, rank: 0 });
+        }
+        let storage = self.storage();
+        let storage = Storage::arg_sort_last_dim(&storage, self.layout(), descending)?;
+        Self::from_exact_owned_storage(storage, self.shape().clone())
+    }
+
+    /// Alias for [`Tensor::arg_sort_last_dim`].
+    pub fn argsort_last_dim(&self, descending: bool) -> Result<Self> {
+        self.arg_sort_last_dim(descending)
+    }
+
     pub fn var_keepdim(&self, dim: usize) -> Result<Self> {
         self.dim(dim)?;
         let storage = self.storage();

@@ -3,8 +3,8 @@ use cudarc::driver::{CudaSlice, CudaView, DeviceRepr, LaunchConfig, PushKernelAr
 use super::device::CudaDevice;
 use super::storage::{CudaStorageSlice, CudaStorageView};
 use crate::cpu_backend::CpuStorageRef;
-use crate::ops::{BinaryOp, CmpOp, UnaryOp};
-use crate::{Error, Layout, Result, WithDType};
+use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
+use crate::{DType, Error, Layout, Result, Shape, WithDType};
 
 struct LayoutInfo {
     values: CudaSlice<usize>,
@@ -16,7 +16,20 @@ fn launch_config(numel: usize) -> Result<LaunchConfig> {
     Ok(LaunchConfig::for_num_elems(numel))
 }
 
-fn cuda_error(op: &'static str, name: &'static str, error: impl std::fmt::Display) -> Error {
+fn launch_config_blocks(num_blocks: usize) -> Result<LaunchConfig> {
+    let num_blocks = u32::try_from(num_blocks).map_err(|_| Error::ShapeElementCountOverflow)?;
+    Ok(LaunchConfig {
+        grid_dim: (num_blocks, 1, 1),
+        block_dim: (1024, 1, 1),
+        shared_mem_bytes: 0,
+    })
+}
+
+fn cuda_error(
+    op: &'static str,
+    name: impl std::fmt::Display,
+    error: impl std::fmt::Display,
+) -> Error {
     Error::CudaOperationFailed {
         op,
         message: format!("{name}: {error}"),
@@ -51,7 +64,7 @@ fn layout_view<'a>(data: &'a CudaStorageSlice, layout: &Layout) -> Result<CudaSt
 
 fn launch_fill<T: DeviceRepr>(
     device: &CudaDevice,
-    function_name: &'static str,
+    function_name: &str,
     dst: &mut CudaSlice<T>,
     value: T,
     numel: usize,
@@ -77,7 +90,7 @@ fn launch_fill<T: DeviceRepr>(
 
 fn launch_copy_layout<T: DeviceRepr>(
     device: &CudaDevice,
-    function_name: &'static str,
+    function_name: &str,
     src: &CudaView<'_, T>,
     dst: &mut CudaSlice<T>,
     layout: &Layout,
@@ -107,7 +120,7 @@ fn launch_copy_layout<T: DeviceRepr>(
 
 fn launch_unary<T: DeviceRepr>(
     device: &CudaDevice,
-    function_name: &'static str,
+    function_name: &str,
     layout_function_name: &'static str,
     src: &CudaView<'_, T>,
     dst: &mut CudaSlice<T>,
@@ -151,7 +164,7 @@ fn launch_unary<T: DeviceRepr>(
 
 fn launch_binary<T: DeviceRepr>(
     device: &CudaDevice,
-    function_name: &'static str,
+    function_name: &str,
     layout_function_name: &'static str,
     lhs: &CudaView<'_, T>,
     lhs_layout: &Layout,
@@ -201,7 +214,7 @@ fn launch_binary<T: DeviceRepr>(
 
 fn launch_scalar_binary<T: DeviceRepr>(
     device: &CudaDevice,
-    function_name: &'static str,
+    function_name: &str,
     layout_function_name: &'static str,
     src: &CudaView<'_, T>,
     dst: &mut CudaSlice<T>,
@@ -248,7 +261,7 @@ fn launch_scalar_binary<T: DeviceRepr>(
 
 fn launch_compare<T: DeviceRepr>(
     device: &CudaDevice,
-    function_name: &'static str,
+    function_name: &str,
     layout_function_name: &'static str,
     lhs: &CudaView<'_, T>,
     lhs_layout: &Layout,
@@ -298,7 +311,7 @@ fn launch_compare<T: DeviceRepr>(
 
 fn launch_scalar_compare<T: DeviceRepr>(
     device: &CudaDevice,
-    function_name: &'static str,
+    function_name: &str,
     layout_function_name: &'static str,
     src: &CudaView<'_, T>,
     dst: &mut CudaSlice<u8>,
@@ -1317,6 +1330,1913 @@ pub(crate) fn compare_scalar<T: WithDType>(
         src.dtype(),
         T::DTYPE
     )
+}
+
+fn layout_info_parts(
+    device: &CudaDevice,
+    dims: &[usize],
+    stride_parts: &[&[usize]],
+) -> Result<LayoutInfo> {
+    let mut values = Vec::with_capacity(dims.len() * (1 + stride_parts.len()));
+    values.extend_from_slice(dims);
+    for strides in stride_parts {
+        if strides.len() != dims.len() {
+            return Err(Error::InvalidLayout {
+                rank: dims.len(),
+                stride_len: strides.len(),
+            });
+        }
+        values.extend_from_slice(strides);
+    }
+    if !values.is_empty() {
+        device.record_h2d();
+    }
+    let values = device
+        .cuda_stream()
+        .clone_htod(&values)
+        .map_err(|error| cuda_error("kernel_layout_info", "layout", error))?;
+    Ok(LayoutInfo {
+        values,
+        rank: dims.len(),
+    })
+}
+
+fn product(values: &[usize]) -> Result<usize> {
+    values.iter().try_fold(1usize, |acc, &value| {
+        acc.checked_mul(value)
+            .ok_or(Error::ShapeElementCountOverflow)
+    })
+}
+
+fn materialize(
+    device: &CudaDevice,
+    data: &CudaStorageSlice,
+    layout: &Layout,
+) -> Result<CudaStorageSlice> {
+    let mut output = CudaStorageSlice::zeros(
+        &device.cuda_stream(),
+        data.dtype(),
+        layout.checked_elem_count()?,
+    )?;
+    copy_layout(device, data, &mut output, layout)?;
+    Ok(output)
+}
+
+fn launch_affine<T: DeviceRepr>(
+    device: &CudaDevice,
+    function_name: &str,
+    src: &CudaView<'_, T>,
+    dst: &mut CudaSlice<T>,
+    layout: &Layout,
+    mul: T,
+    add: T,
+) -> Result<()> {
+    let numel = layout.checked_elem_count()?;
+    if numel == 0 {
+        return Ok(());
+    }
+    let info = layout_info(device, layout)?;
+    let function = device.get_or_load_func(rivet_kernels::AFFINE, function_name)?;
+    unsafe {
+        device
+            .cuda_stream()
+            .launch_builder(&function)
+            .arg(&numel)
+            .arg(&info.rank)
+            .arg(&info.values)
+            .arg(src)
+            .arg(dst)
+            .arg(&mul)
+            .arg(&add)
+            .launch(launch_config(numel)?)
+    }
+    .map_err(|error| cuda_error("kernel_launch", function_name, error))?;
+    device.record_kernel_launch();
+    Ok(())
+}
+
+pub(crate) fn affine(
+    device: &CudaDevice,
+    src: &CudaStorageSlice,
+    dst: &mut CudaStorageSlice,
+    layout: &Layout,
+    mul: f64,
+    add: f64,
+) -> Result<()> {
+    let view = layout_view(src, layout)?;
+    let dst_dtype = dst.dtype();
+    macro_rules! affine_dispatch {
+        ($view:expr, $dst:expr) => {
+            match ($view, $dst) {
+                (CudaStorageView::U8(src), CudaStorageSlice::U8(dst)) => {
+                    launch_affine(device, "affine_u8", &src, dst, layout, mul as u8, add as u8)
+                }
+                (CudaStorageView::U32(src), CudaStorageSlice::U32(dst)) => launch_affine(
+                    device,
+                    "affine_u32",
+                    &src,
+                    dst,
+                    layout,
+                    mul as u32,
+                    add as u32,
+                ),
+                (CudaStorageView::I16(src), CudaStorageSlice::I16(dst)) => launch_affine(
+                    device,
+                    "affine_i16",
+                    &src,
+                    dst,
+                    layout,
+                    mul as i16,
+                    add as i16,
+                ),
+                (CudaStorageView::I32(src), CudaStorageSlice::I32(dst)) => launch_affine(
+                    device,
+                    "affine_i32",
+                    &src,
+                    dst,
+                    layout,
+                    mul as i32,
+                    add as i32,
+                ),
+                (CudaStorageView::I64(src), CudaStorageSlice::I64(dst)) => launch_affine(
+                    device,
+                    "affine_i64",
+                    &src,
+                    dst,
+                    layout,
+                    mul as i64,
+                    add as i64,
+                ),
+                (CudaStorageView::BF16(src), CudaStorageSlice::BF16(dst)) => launch_affine(
+                    device,
+                    "affine_bf16",
+                    &src,
+                    dst,
+                    layout,
+                    half::bf16::from_f64(mul),
+                    half::bf16::from_f64(add),
+                ),
+                (CudaStorageView::F16(src), CudaStorageSlice::F16(dst)) => launch_affine(
+                    device,
+                    "affine_f16",
+                    &src,
+                    dst,
+                    layout,
+                    half::f16::from_f64(mul),
+                    half::f16::from_f64(add),
+                ),
+                (CudaStorageView::F32(src), CudaStorageSlice::F32(dst)) => launch_affine(
+                    device,
+                    "affine_f32",
+                    &src,
+                    dst,
+                    layout,
+                    mul as f32,
+                    add as f32,
+                ),
+                (CudaStorageView::F64(src), CudaStorageSlice::F64(dst)) => {
+                    launch_affine(device, "affine_f64", &src, dst, layout, mul, add)
+                }
+                _ => Err(Error::DTypeMismatch {
+                    lhs: src.dtype(),
+                    rhs: dst_dtype,
+                }),
+            }
+        };
+    }
+    affine_dispatch!(view, dst)
+}
+
+fn launch_cast<S: DeviceRepr, T: DeviceRepr>(
+    device: &CudaDevice,
+    function_name: &str,
+    src: &CudaView<'_, S>,
+    dst: &mut CudaSlice<T>,
+    layout: &Layout,
+) -> Result<()> {
+    let numel = layout.checked_elem_count()?;
+    if numel == 0 {
+        return Ok(());
+    }
+    let info = layout_info(device, layout)?;
+    let function = device.get_or_load_func(rivet_kernels::CAST, function_name)?;
+    unsafe {
+        device
+            .cuda_stream()
+            .launch_builder(&function)
+            .arg(&numel)
+            .arg(&info.rank)
+            .arg(&info.values)
+            .arg(src)
+            .arg(dst)
+            .launch(launch_config(numel)?)
+    }
+    .map_err(|error| cuda_error("kernel_launch", function_name, error))?;
+    device.record_kernel_launch();
+    Ok(())
+}
+
+pub(crate) fn cast(
+    device: &CudaDevice,
+    src: &CudaStorageSlice,
+    layout: &Layout,
+    dtype: DType,
+) -> Result<CudaStorageSlice> {
+    let view = layout_view(src, layout)?;
+    macro_rules! cast_targets {
+        ($src:expr, $src_ty:ty, $src_name:literal, $dtype:expr, $(($dst_variant:ident, $dst_ty:ty, $dst_name:literal)),+ $(,)?) => {
+            match $dtype {
+                $(
+                    DType::$dst_variant => {
+                        let mut dst = CudaStorageSlice::zeros(&device.cuda_stream(), $dtype, layout.checked_elem_count()?)?;
+                        if let CudaStorageSlice::$dst_variant(output) = &mut dst {
+                            launch_cast::<$src_ty, $dst_ty>(device, concat!("cast_", $src_name, "_", $dst_name), &$src, output, layout)?;
+                            Ok(dst)
+                        } else {
+                            unreachable!()
+                        }
+                    }
+                )+
+                _ => Err(Error::UnsupportedDType { dtype: $dtype, op: "cuda_cast" }),
+            }
+        };
+    }
+    match view {
+        CudaStorageView::U8(src) => cast_targets!(
+            src,
+            u8,
+            "u8",
+            dtype,
+            (U8, u8, "u8"),
+            (U32, u32, "u32"),
+            (I64, i64, "i64"),
+            (BF16, half::bf16, "bf16"),
+            (F16, half::f16, "f16"),
+            (F32, f32, "f32"),
+            (F64, f64, "f64")
+        ),
+        CudaStorageView::U32(src) => cast_targets!(
+            src,
+            u32,
+            "u32",
+            dtype,
+            (U8, u8, "u8"),
+            (U32, u32, "u32"),
+            (I64, i64, "i64"),
+            (BF16, half::bf16, "bf16"),
+            (F16, half::f16, "f16"),
+            (F32, f32, "f32"),
+            (F64, f64, "f64")
+        ),
+        CudaStorageView::I64(src) => cast_targets!(
+            src,
+            i64,
+            "i64",
+            dtype,
+            (U8, u8, "u8"),
+            (U32, u32, "u32"),
+            (I64, i64, "i64"),
+            (F32, f32, "f32"),
+            (F64, f64, "f64")
+        ),
+        CudaStorageView::BF16(src) => cast_targets!(
+            src,
+            half::bf16,
+            "bf16",
+            dtype,
+            (U8, u8, "u8"),
+            (U32, u32, "u32"),
+            (BF16, half::bf16, "bf16"),
+            (F16, half::f16, "f16"),
+            (F32, f32, "f32"),
+            (F64, f64, "f64")
+        ),
+        CudaStorageView::F16(src) => cast_targets!(
+            src,
+            half::f16,
+            "f16",
+            dtype,
+            (U8, u8, "u8"),
+            (U32, u32, "u32"),
+            (BF16, half::bf16, "bf16"),
+            (F16, half::f16, "f16"),
+            (F32, f32, "f32"),
+            (F64, f64, "f64")
+        ),
+        CudaStorageView::F32(src) => cast_targets!(
+            src,
+            f32,
+            "f32",
+            dtype,
+            (U8, u8, "u8"),
+            (U32, u32, "u32"),
+            (I64, i64, "i64"),
+            (BF16, half::bf16, "bf16"),
+            (F16, half::f16, "f16"),
+            (F32, f32, "f32"),
+            (F64, f64, "f64")
+        ),
+        CudaStorageView::F64(src) => cast_targets!(
+            src,
+            f64,
+            "f64",
+            dtype,
+            (U8, u8, "u8"),
+            (U32, u32, "u32"),
+            (I64, i64, "i64"),
+            (BF16, half::bf16, "bf16"),
+            (F16, half::f16, "f16"),
+            (F32, f32, "f32"),
+            (F64, f64, "f64")
+        ),
+        _ => Err(Error::UnsupportedDType {
+            dtype: src.dtype(),
+            op: "cuda_cast",
+        }),
+    }
+}
+
+fn launch_index_select<T: DeviceRepr, I: DeviceRepr>(
+    device: &CudaDevice,
+    function_name: &str,
+    ids: &CudaView<'_, I>,
+    src: &CudaView<'_, T>,
+    dst: &mut CudaSlice<T>,
+    src_layout: &Layout,
+    numel: usize,
+    left_size: usize,
+    src_dim_size: usize,
+    ids_dim_size: usize,
+    right_size: usize,
+) -> Result<()> {
+    if numel == 0 {
+        return Ok(());
+    }
+    let info = layout_info(device, src_layout)?;
+    let function = device.get_or_load_func(rivet_kernels::INDEXING, function_name)?;
+    unsafe {
+        device
+            .cuda_stream()
+            .launch_builder(&function)
+            .arg(&numel)
+            .arg(&info.rank)
+            .arg(&info.values)
+            .arg(ids)
+            .arg(src)
+            .arg(dst)
+            .arg(&left_size)
+            .arg(&src_dim_size)
+            .arg(&ids_dim_size)
+            .arg(&right_size)
+            .launch(launch_config(numel)?)
+    }
+    .map_err(|error| cuda_error("kernel_launch", function_name, error))?;
+    device.record_kernel_launch();
+    Ok(())
+}
+
+fn launch_gather<T: DeviceRepr, I: DeviceRepr>(
+    device: &CudaDevice,
+    function_name: &str,
+    ids: &CudaView<'_, I>,
+    src: &CudaView<'_, T>,
+    dst: &mut CudaSlice<T>,
+    numel: usize,
+    left_size: usize,
+    src_dim_size: usize,
+    ids_dim_size: usize,
+    right_size: usize,
+) -> Result<()> {
+    if numel == 0 {
+        return Ok(());
+    }
+    let function = device.get_or_load_func(rivet_kernels::INDEXING, function_name)?;
+    unsafe {
+        device
+            .cuda_stream()
+            .launch_builder(&function)
+            .arg(&numel)
+            .arg(ids)
+            .arg(src)
+            .arg(dst)
+            .arg(&left_size)
+            .arg(&src_dim_size)
+            .arg(&ids_dim_size)
+            .arg(&right_size)
+            .launch(launch_config(numel)?)
+    }
+    .map_err(|error| cuda_error("kernel_launch", function_name, error))?;
+    device.record_kernel_launch();
+    Ok(())
+}
+
+fn launch_index_update<T: DeviceRepr, I: DeviceRepr>(
+    device: &CudaDevice,
+    function_name: &str,
+    ids: &CudaView<'_, I>,
+    src: &CudaView<'_, T>,
+    dst: &mut CudaSlice<T>,
+    ids_dim_size: usize,
+    src_dim_size: usize,
+    dst_dim_size: usize,
+    left_size: usize,
+    right_size: usize,
+) -> Result<()> {
+    let numel = left_size
+        .checked_mul(right_size)
+        .ok_or(Error::ShapeElementCountOverflow)?;
+    if numel == 0 {
+        return Ok(());
+    }
+    let function = device.get_or_load_func(rivet_kernels::INDEXING, function_name)?;
+    unsafe {
+        device
+            .cuda_stream()
+            .launch_builder(&function)
+            .arg(ids)
+            .arg(&ids_dim_size)
+            .arg(src)
+            .arg(dst)
+            .arg(&left_size)
+            .arg(&src_dim_size)
+            .arg(&dst_dim_size)
+            .arg(&right_size)
+            .launch(launch_config(numel)?)
+    }
+    .map_err(|error| cuda_error("kernel_launch", function_name, error))?;
+    device.record_kernel_launch();
+    Ok(())
+}
+
+fn launch_scatter_update<T: DeviceRepr, I: DeviceRepr>(
+    device: &CudaDevice,
+    function_name: &str,
+    ids: &CudaView<'_, I>,
+    src: &CudaView<'_, T>,
+    dst: &mut CudaSlice<T>,
+    src_dim_size: usize,
+    dst_dim_size: usize,
+    left_size: usize,
+    right_size: usize,
+) -> Result<()> {
+    let numel = left_size
+        .checked_mul(right_size)
+        .ok_or(Error::ShapeElementCountOverflow)?;
+    if numel == 0 {
+        return Ok(());
+    }
+    let function = device.get_or_load_func(rivet_kernels::INDEXING, function_name)?;
+    unsafe {
+        device
+            .cuda_stream()
+            .launch_builder(&function)
+            .arg(ids)
+            .arg(src)
+            .arg(dst)
+            .arg(&left_size)
+            .arg(&src_dim_size)
+            .arg(&dst_dim_size)
+            .arg(&right_size)
+            .launch(launch_config(numel)?)
+    }
+    .map_err(|error| cuda_error("kernel_launch", function_name, error))?;
+    device.record_kernel_launch();
+    Ok(())
+}
+
+fn index_layout_sizes(layout: &Layout, dim: usize) -> Result<(usize, usize, usize)> {
+    let left = product(&layout.dims()[..dim])?;
+    let right = product(&layout.dims()[dim + 1..])?;
+    Ok((left, layout.dims()[dim], right))
+}
+
+pub(crate) fn index_select(
+    device: &CudaDevice,
+    src: &CudaStorageSlice,
+    src_layout: &Layout,
+    indexes: &CudaStorageSlice,
+    indexes_layout: &Layout,
+    dim: usize,
+) -> Result<CudaStorageSlice> {
+    let (left_size, src_dim_size, right_size) = index_layout_sizes(src_layout, dim)?;
+    let ids_dim_size = indexes_layout.checked_elem_count()?;
+    let numel = left_size
+        .checked_mul(ids_dim_size)
+        .and_then(|value| value.checked_mul(right_size))
+        .ok_or(Error::ShapeElementCountOverflow)?;
+    let materialized_indexes = (!indexes_layout.is_contiguous())
+        .then(|| materialize(device, indexes, indexes_layout))
+        .transpose()?;
+    let index_data = materialized_indexes.as_ref().unwrap_or(indexes);
+    let index_layout = materialized_indexes
+        .as_ref()
+        .map(|_| Layout::contiguous(indexes_layout.dims().to_vec()))
+        .unwrap_or_else(|| indexes_layout.clone());
+    let ids_view = layout_view(index_data, &index_layout)?;
+    let src_view = layout_view(src, src_layout)?;
+    let mut output = CudaStorageSlice::zeros(&device.cuda_stream(), src.dtype(), numel)?;
+    match src_view {
+        CudaStorageView::U8(src) => match (ids_view, &mut output) {
+            (CudaStorageView::I64(ids), CudaStorageSlice::U8(dst)) => launch_index_select(
+                device,
+                "is_i64_u8",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U32(ids), CudaStorageSlice::U8(dst)) => launch_index_select(
+                device,
+                "is_u32_u8",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U8(ids), CudaStorageSlice::U8(dst)) => launch_index_select(
+                device,
+                "is_u8_u8",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "index_select",
+                dtype: indexes.dtype(),
+            }),
+        },
+        CudaStorageView::U32(src) => match (ids_view, &mut output) {
+            (CudaStorageView::I64(ids), CudaStorageSlice::U32(dst)) => launch_index_select(
+                device,
+                "is_i64_u32",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U32(ids), CudaStorageSlice::U32(dst)) => launch_index_select(
+                device,
+                "is_u32_u32",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U8(ids), CudaStorageSlice::U32(dst)) => launch_index_select(
+                device,
+                "is_u8_u32",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "index_select",
+                dtype: indexes.dtype(),
+            }),
+        },
+        CudaStorageView::I64(src) => match (ids_view, &mut output) {
+            (CudaStorageView::I64(ids), CudaStorageSlice::I64(dst)) => launch_index_select(
+                device,
+                "is_i64_i64",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U32(ids), CudaStorageSlice::I64(dst)) => launch_index_select(
+                device,
+                "is_u32_i64",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U8(ids), CudaStorageSlice::I64(dst)) => launch_index_select(
+                device,
+                "is_u8_i64",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "index_select",
+                dtype: indexes.dtype(),
+            }),
+        },
+        CudaStorageView::BF16(src) => match (ids_view, &mut output) {
+            (CudaStorageView::I64(ids), CudaStorageSlice::BF16(dst)) => launch_index_select(
+                device,
+                "is_i64_bf16",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U32(ids), CudaStorageSlice::BF16(dst)) => launch_index_select(
+                device,
+                "is_u32_bf16",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U8(ids), CudaStorageSlice::BF16(dst)) => launch_index_select(
+                device,
+                "is_u8_bf16",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "index_select",
+                dtype: indexes.dtype(),
+            }),
+        },
+        CudaStorageView::F16(src) => match (ids_view, &mut output) {
+            (CudaStorageView::I64(ids), CudaStorageSlice::F16(dst)) => launch_index_select(
+                device,
+                "is_i64_f16",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U32(ids), CudaStorageSlice::F16(dst)) => launch_index_select(
+                device,
+                "is_u32_f16",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U8(ids), CudaStorageSlice::F16(dst)) => launch_index_select(
+                device,
+                "is_u8_f16",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "index_select",
+                dtype: indexes.dtype(),
+            }),
+        },
+        CudaStorageView::F32(src) => match (ids_view, &mut output) {
+            (CudaStorageView::I64(ids), CudaStorageSlice::F32(dst)) => launch_index_select(
+                device,
+                "is_i64_f32",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U32(ids), CudaStorageSlice::F32(dst)) => launch_index_select(
+                device,
+                "is_u32_f32",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U8(ids), CudaStorageSlice::F32(dst)) => launch_index_select(
+                device,
+                "is_u8_f32",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "index_select",
+                dtype: indexes.dtype(),
+            }),
+        },
+        CudaStorageView::F64(src) => match (ids_view, &mut output) {
+            (CudaStorageView::I64(ids), CudaStorageSlice::F64(dst)) => launch_index_select(
+                device,
+                "is_i64_f64",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U32(ids), CudaStorageSlice::F64(dst)) => launch_index_select(
+                device,
+                "is_u32_f64",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U8(ids), CudaStorageSlice::F64(dst)) => launch_index_select(
+                device,
+                "is_u8_f64",
+                &ids,
+                &src,
+                dst,
+                src_layout,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "index_select",
+                dtype: indexes.dtype(),
+            }),
+        },
+        _ => Err(Error::UnsupportedDTypeForOp {
+            op: "index_select",
+            dtype: src.dtype(),
+        }),
+    }?;
+    Ok(output)
+}
+
+pub(crate) fn gather(
+    device: &CudaDevice,
+    src: &CudaStorageSlice,
+    src_layout: &Layout,
+    indexes: &CudaStorageSlice,
+    indexes_layout: &Layout,
+    dim: usize,
+) -> Result<CudaStorageSlice> {
+    let (left_size, src_dim_size, right_size) = index_layout_sizes(src_layout, dim)?;
+    let ids_dim_size = indexes_layout.dims()[dim];
+    let numel = indexes_layout.checked_elem_count()?;
+    let materialized_src = (!src_layout.is_contiguous())
+        .then(|| materialize(device, src, src_layout))
+        .transpose()?;
+    let source = materialized_src.as_ref().unwrap_or(src);
+    let source_layout = materialized_src
+        .as_ref()
+        .map(|_| Layout::contiguous(src_layout.dims().to_vec()))
+        .unwrap_or_else(|| src_layout.clone());
+    let materialized_indexes = (!indexes_layout.is_contiguous())
+        .then(|| materialize(device, indexes, indexes_layout))
+        .transpose()?;
+    let index_data = materialized_indexes.as_ref().unwrap_or(indexes);
+    let index_layout = materialized_indexes
+        .as_ref()
+        .map(|_| Layout::contiguous(indexes_layout.dims().to_vec()))
+        .unwrap_or_else(|| indexes_layout.clone());
+    let ids_view = layout_view(index_data, &index_layout)?;
+    let src_view = layout_view(source, &source_layout)?;
+    let mut output = CudaStorageSlice::zeros(&device.cuda_stream(), src.dtype(), numel)?;
+    match src_view {
+        CudaStorageView::U8(src) => match (ids_view, &mut output) {
+            (CudaStorageView::I64(ids), CudaStorageSlice::U8(dst)) => launch_gather(
+                device,
+                "gather_i64_u8",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U32(ids), CudaStorageSlice::U8(dst)) => launch_gather(
+                device,
+                "gather_u32_u8",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U8(ids), CudaStorageSlice::U8(dst)) => launch_gather(
+                device,
+                "gather_u8_u8",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "gather",
+                dtype: indexes.dtype(),
+            }),
+        },
+        CudaStorageView::U32(src) => match (ids_view, &mut output) {
+            (CudaStorageView::I64(ids), CudaStorageSlice::U32(dst)) => launch_gather(
+                device,
+                "gather_i64_u32",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U32(ids), CudaStorageSlice::U32(dst)) => launch_gather(
+                device,
+                "gather_u32_u32",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U8(ids), CudaStorageSlice::U32(dst)) => launch_gather(
+                device,
+                "gather_u8_u32",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "gather",
+                dtype: indexes.dtype(),
+            }),
+        },
+        CudaStorageView::I64(src) => match (ids_view, &mut output) {
+            (CudaStorageView::I64(ids), CudaStorageSlice::I64(dst)) => launch_gather(
+                device,
+                "gather_i64_i64",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U32(ids), CudaStorageSlice::I64(dst)) => launch_gather(
+                device,
+                "gather_u32_i64",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U8(ids), CudaStorageSlice::I64(dst)) => launch_gather(
+                device,
+                "gather_u8_i64",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "gather",
+                dtype: indexes.dtype(),
+            }),
+        },
+        CudaStorageView::BF16(src) => match (ids_view, &mut output) {
+            (CudaStorageView::I64(ids), CudaStorageSlice::BF16(dst)) => launch_gather(
+                device,
+                "gather_i64_bf16",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U32(ids), CudaStorageSlice::BF16(dst)) => launch_gather(
+                device,
+                "gather_u32_bf16",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U8(ids), CudaStorageSlice::BF16(dst)) => launch_gather(
+                device,
+                "gather_u8_bf16",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "gather",
+                dtype: indexes.dtype(),
+            }),
+        },
+        CudaStorageView::F16(src) => match (ids_view, &mut output) {
+            (CudaStorageView::I64(ids), CudaStorageSlice::F16(dst)) => launch_gather(
+                device,
+                "gather_i64_f16",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U32(ids), CudaStorageSlice::F16(dst)) => launch_gather(
+                device,
+                "gather_u32_f16",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U8(ids), CudaStorageSlice::F16(dst)) => launch_gather(
+                device,
+                "gather_u8_f16",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "gather",
+                dtype: indexes.dtype(),
+            }),
+        },
+        CudaStorageView::F32(src) => match (ids_view, &mut output) {
+            (CudaStorageView::I64(ids), CudaStorageSlice::F32(dst)) => launch_gather(
+                device,
+                "gather_i64_f32",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U32(ids), CudaStorageSlice::F32(dst)) => launch_gather(
+                device,
+                "gather_u32_f32",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U8(ids), CudaStorageSlice::F32(dst)) => launch_gather(
+                device,
+                "gather_u8_f32",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "gather",
+                dtype: indexes.dtype(),
+            }),
+        },
+        CudaStorageView::F64(src) => match (ids_view, &mut output) {
+            (CudaStorageView::I64(ids), CudaStorageSlice::F64(dst)) => launch_gather(
+                device,
+                "gather_i64_f64",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U32(ids), CudaStorageSlice::F64(dst)) => launch_gather(
+                device,
+                "gather_u32_f64",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            (CudaStorageView::U8(ids), CudaStorageSlice::F64(dst)) => launch_gather(
+                device,
+                "gather_u8_f64",
+                &ids,
+                &src,
+                dst,
+                numel,
+                left_size,
+                src_dim_size,
+                ids_dim_size,
+                right_size,
+            ),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "gather",
+                dtype: indexes.dtype(),
+            }),
+        },
+        _ => Err(Error::UnsupportedDTypeForOp {
+            op: "gather",
+            dtype: src.dtype(),
+        }),
+    }?;
+    Ok(output)
+}
+
+fn scatter_or_add(
+    device: &CudaDevice,
+    dst: &CudaStorageSlice,
+    dst_layout: &Layout,
+    indexes: &CudaStorageSlice,
+    indexes_layout: &Layout,
+    src: &CudaStorageSlice,
+    src_layout: &Layout,
+    dim: usize,
+    add: bool,
+    index_add: bool,
+) -> Result<CudaStorageSlice> {
+    let (left_size, src_dim_size, right_size) = index_layout_sizes(src_layout, dim)?;
+    let dst_dim_size = dst_layout.dims()[dim];
+    let ids_dim_size = indexes_layout.checked_elem_count()?;
+    let materialized_indexes = (!indexes_layout.is_contiguous())
+        .then(|| materialize(device, indexes, indexes_layout))
+        .transpose()?;
+    let index_data = materialized_indexes.as_ref().unwrap_or(indexes);
+    let index_layout = materialized_indexes
+        .as_ref()
+        .map(|_| Layout::contiguous(indexes_layout.dims().to_vec()))
+        .unwrap_or_else(|| indexes_layout.clone());
+    let materialized_src = (!src_layout.is_contiguous())
+        .then(|| materialize(device, src, src_layout))
+        .transpose()?;
+    let source = materialized_src.as_ref().unwrap_or(src);
+    let source_layout = materialized_src
+        .as_ref()
+        .map(|_| Layout::contiguous(src_layout.dims().to_vec()))
+        .unwrap_or_else(|| src_layout.clone());
+    let mut output = materialize(device, dst, dst_layout)?;
+    let ids_view = layout_view(index_data, &index_layout)?;
+    let src_view = layout_view(source, &source_layout)?;
+    macro_rules! scatter_targets {
+        ($variant:ident, $suffix:literal) => {
+            match (ids_view, &src_view, &mut output) {
+                (
+                    CudaStorageView::I64(ids),
+                    CudaStorageView::$variant(src),
+                    CudaStorageSlice::$variant(dst),
+                ) => {
+                    if index_add {
+                        launch_index_update(
+                            device,
+                            concat!("ia_i64_", $suffix),
+                            &ids,
+                            &src,
+                            dst,
+                            ids_dim_size,
+                            src_dim_size,
+                            dst_dim_size,
+                            left_size,
+                            right_size,
+                        )
+                    } else {
+                        launch_scatter_update(
+                            device,
+                            if add {
+                                concat!("sa_i64_", $suffix)
+                            } else {
+                                concat!("s_i64_", $suffix)
+                            },
+                            &ids,
+                            &src,
+                            dst,
+                            src_dim_size,
+                            dst_dim_size,
+                            left_size,
+                            right_size,
+                        )
+                    }
+                }
+                (
+                    CudaStorageView::U32(ids),
+                    CudaStorageView::$variant(src),
+                    CudaStorageSlice::$variant(dst),
+                ) => {
+                    if index_add {
+                        launch_index_update(
+                            device,
+                            concat!("ia_u32_", $suffix),
+                            &ids,
+                            &src,
+                            dst,
+                            ids_dim_size,
+                            src_dim_size,
+                            dst_dim_size,
+                            left_size,
+                            right_size,
+                        )
+                    } else {
+                        launch_scatter_update(
+                            device,
+                            if add {
+                                concat!("sa_u32_", $suffix)
+                            } else {
+                                concat!("s_u32_", $suffix)
+                            },
+                            &ids,
+                            &src,
+                            dst,
+                            src_dim_size,
+                            dst_dim_size,
+                            left_size,
+                            right_size,
+                        )
+                    }
+                }
+                (
+                    CudaStorageView::U8(ids),
+                    CudaStorageView::$variant(src),
+                    CudaStorageSlice::$variant(dst),
+                ) => {
+                    if index_add {
+                        launch_index_update(
+                            device,
+                            concat!("ia_u8_", $suffix),
+                            &ids,
+                            &src,
+                            dst,
+                            ids_dim_size,
+                            src_dim_size,
+                            dst_dim_size,
+                            left_size,
+                            right_size,
+                        )
+                    } else {
+                        launch_scatter_update(
+                            device,
+                            if add {
+                                concat!("sa_u8_", $suffix)
+                            } else {
+                                concat!("s_u8_", $suffix)
+                            },
+                            &ids,
+                            &src,
+                            dst,
+                            src_dim_size,
+                            dst_dim_size,
+                            left_size,
+                            right_size,
+                        )
+                    }
+                }
+                _ => Err(Error::UnsupportedDTypeForOp {
+                    op: if add { "scatter_add" } else { "scatter" },
+                    dtype: indexes.dtype(),
+                }),
+            }
+        };
+    }
+    match dst.dtype() {
+        DType::U8 => scatter_targets!(U8, "u8"),
+        DType::U32 => scatter_targets!(U32, "u32"),
+        DType::I64 => scatter_targets!(I64, "i64"),
+        DType::BF16 => scatter_targets!(BF16, "bf16"),
+        DType::F16 => scatter_targets!(F16, "f16"),
+        DType::F32 => scatter_targets!(F32, "f32"),
+        DType::F64 => scatter_targets!(F64, "f64"),
+        _ => Err(Error::UnsupportedDTypeForOp {
+            op: if add { "scatter_add" } else { "scatter" },
+            dtype: dst.dtype(),
+        }),
+    }?;
+    Ok(output)
+}
+
+pub(crate) fn scatter(
+    device: &CudaDevice,
+    dst: &CudaStorageSlice,
+    dst_layout: &Layout,
+    indexes: &CudaStorageSlice,
+    indexes_layout: &Layout,
+    src: &CudaStorageSlice,
+    src_layout: &Layout,
+    dim: usize,
+    add: bool,
+) -> Result<CudaStorageSlice> {
+    scatter_or_add(
+        device,
+        dst,
+        dst_layout,
+        indexes,
+        indexes_layout,
+        src,
+        src_layout,
+        dim,
+        add,
+        false,
+    )
+}
+
+pub(crate) fn index_add(
+    device: &CudaDevice,
+    dst: &CudaStorageSlice,
+    dst_layout: &Layout,
+    indexes: &CudaStorageSlice,
+    indexes_layout: &Layout,
+    src: &CudaStorageSlice,
+    src_layout: &Layout,
+    dim: usize,
+) -> Result<CudaStorageSlice> {
+    scatter_or_add(
+        device,
+        dst,
+        dst_layout,
+        indexes,
+        indexes_layout,
+        src,
+        src_layout,
+        dim,
+        true,
+        true,
+    )
+}
+
+fn launch_where<T: DeviceRepr, I: DeviceRepr>(
+    device: &CudaDevice,
+    function_name: &str,
+    info: &LayoutInfo,
+    ids: &CudaView<'_, I>,
+    on_true: &CudaView<'_, T>,
+    on_false: &CudaView<'_, T>,
+    dst: &mut CudaSlice<T>,
+    numel: usize,
+) -> Result<()> {
+    if numel == 0 {
+        return Ok(());
+    }
+    let function = device.get_or_load_func(rivet_kernels::TERNARY, function_name)?;
+    unsafe {
+        device
+            .cuda_stream()
+            .launch_builder(&function)
+            .arg(&numel)
+            .arg(&info.rank)
+            .arg(&info.values)
+            .arg(ids)
+            .arg(on_true)
+            .arg(on_false)
+            .arg(dst)
+            .launch(launch_config(numel)?)
+    }
+    .map_err(|error| cuda_error("kernel_launch", function_name, error))?;
+    device.record_kernel_launch();
+    Ok(())
+}
+
+pub(crate) fn where_cond(
+    device: &CudaDevice,
+    condition: &CudaStorageSlice,
+    condition_layout: &Layout,
+    on_true: &CudaStorageSlice,
+    true_layout: &Layout,
+    on_false: &CudaStorageSlice,
+    false_layout: &Layout,
+) -> Result<CudaStorageSlice> {
+    let numel = condition_layout.checked_elem_count()?;
+    let info = layout_info_parts(
+        device,
+        condition_layout.dims(),
+        &[
+            condition_layout.stride(),
+            true_layout.stride(),
+            false_layout.stride(),
+        ],
+    )?;
+    let ids_view = layout_view(condition, condition_layout)?;
+    let true_view = layout_view(on_true, true_layout)?;
+    let false_view = layout_view(on_false, false_layout)?;
+    let mut output = CudaStorageSlice::zeros(&device.cuda_stream(), on_true.dtype(), numel)?;
+    macro_rules! where_targets {
+        ($ids_view:expr, $t:expr, $f:expr, $out:expr, $suffix:literal) => {
+            match $ids_view {
+                CudaStorageView::I64(ids) => launch_where(
+                    device,
+                    concat!("where_i64_", $suffix),
+                    &info,
+                    &ids,
+                    &$t,
+                    &$f,
+                    $out,
+                    numel,
+                ),
+                CudaStorageView::U32(ids) => launch_where(
+                    device,
+                    concat!("where_u32_", $suffix),
+                    &info,
+                    &ids,
+                    &$t,
+                    &$f,
+                    $out,
+                    numel,
+                ),
+                CudaStorageView::U8(ids) => launch_where(
+                    device,
+                    concat!("where_u8_", $suffix),
+                    &info,
+                    &ids,
+                    &$t,
+                    &$f,
+                    $out,
+                    numel,
+                ),
+                _ => Err(Error::UnsupportedDTypeForOp {
+                    op: "where_cond",
+                    dtype: condition.dtype(),
+                }),
+            }
+        };
+    }
+    match (true_view, false_view, &mut output) {
+        (CudaStorageView::U8(t), CudaStorageView::U8(f), CudaStorageSlice::U8(out)) => {
+            where_targets!(ids_view, t, f, out, "u8")
+        }
+        (CudaStorageView::U32(t), CudaStorageView::U32(f), CudaStorageSlice::U32(out)) => {
+            where_targets!(ids_view, t, f, out, "u32")
+        }
+        (CudaStorageView::I64(t), CudaStorageView::I64(f), CudaStorageSlice::I64(out)) => {
+            where_targets!(ids_view, t, f, out, "i64")
+        }
+        (CudaStorageView::BF16(t), CudaStorageView::BF16(f), CudaStorageSlice::BF16(out)) => {
+            where_targets!(ids_view, t, f, out, "bf16")
+        }
+        (CudaStorageView::F16(t), CudaStorageView::F16(f), CudaStorageSlice::F16(out)) => {
+            where_targets!(ids_view, t, f, out, "f16")
+        }
+        (CudaStorageView::F32(t), CudaStorageView::F32(f), CudaStorageSlice::F32(out)) => {
+            where_targets!(ids_view, t, f, out, "f32")
+        }
+        (CudaStorageView::F64(t), CudaStorageView::F64(f), CudaStorageSlice::F64(out)) => {
+            where_targets!(ids_view, t, f, out, "f64")
+        }
+        _ => Err(Error::DTypeMismatch {
+            lhs: on_true.dtype(),
+            rhs: on_false.dtype(),
+        }),
+    }?;
+    Ok(output)
+}
+
+fn reduction_layout(layout: &Layout, dim: Option<usize>) -> Result<(Layout, usize, usize)> {
+    let src_numel = layout.checked_elem_count()?;
+    match dim {
+        Some(dim) => {
+            let reduce_len = *layout.dims().get(dim).ok_or(Error::InvalidDim {
+                dim,
+                rank: layout.dims().len(),
+            })?;
+            let mut dims = Vec::with_capacity(layout.dims().len());
+            let mut strides = Vec::with_capacity(layout.dims().len());
+            for axis in 0..layout.dims().len() {
+                if axis != dim {
+                    dims.push(layout.dims()[axis]);
+                    strides.push(layout.stride()[axis]);
+                }
+            }
+            dims.push(reduce_len);
+            strides.push(layout.stride()[dim]);
+            let output_len = product(&dims[..dims.len().saturating_sub(1)])?;
+            Ok((
+                Layout::new(Shape::from(dims), strides, 0)?,
+                reduce_len,
+                output_len,
+            ))
+        }
+        None => {
+            if layout.dims().is_empty() {
+                Ok((Layout::contiguous([1usize]), src_numel, 1))
+            } else {
+                Ok((
+                    Layout::new(
+                        Shape::from(layout.dims().to_vec()),
+                        layout.stride().to_vec(),
+                        0,
+                    )?,
+                    src_numel,
+                    1,
+                ))
+            }
+        }
+    }
+}
+
+fn launch_reduce_value<T: DeviceRepr>(
+    device: &CudaDevice,
+    function_name: &str,
+    src: &CudaView<'_, T>,
+    info: &LayoutInfo,
+    src_numel: usize,
+    reduce_len: usize,
+    dst: &mut CudaSlice<T>,
+    output_len: usize,
+) -> Result<()> {
+    if output_len == 0 || src_numel == 0 {
+        return Ok(());
+    }
+    let function = device.get_or_load_func(rivet_kernels::REDUCE, function_name)?;
+    unsafe {
+        device
+            .cuda_stream()
+            .launch_builder(&function)
+            .arg(&src_numel)
+            .arg(&reduce_len)
+            .arg(&info.rank)
+            .arg(&info.values)
+            .arg(src)
+            .arg(dst)
+            .launch(launch_config_blocks(output_len)?)
+    }
+    .map_err(|error| cuda_error("kernel_launch", function_name, error))?;
+    device.record_kernel_launch();
+    Ok(())
+}
+
+fn launch_reduce_index<T: DeviceRepr>(
+    device: &CudaDevice,
+    function_name: &str,
+    src: &CudaView<'_, T>,
+    info: &LayoutInfo,
+    src_numel: usize,
+    reduce_len: usize,
+    dst: &mut CudaSlice<u32>,
+    output_len: usize,
+) -> Result<()> {
+    if output_len == 0 || src_numel == 0 {
+        return Ok(());
+    }
+    let function = device.get_or_load_func(rivet_kernels::REDUCE, function_name)?;
+    unsafe {
+        device
+            .cuda_stream()
+            .launch_builder(&function)
+            .arg(&src_numel)
+            .arg(&reduce_len)
+            .arg(&info.rank)
+            .arg(&info.values)
+            .arg(src)
+            .arg(dst)
+            .launch(launch_config_blocks(output_len)?)
+    }
+    .map_err(|error| cuda_error("kernel_launch", function_name, error))?;
+    device.record_kernel_launch();
+    Ok(())
+}
+
+pub(crate) fn reduce(
+    device: &CudaDevice,
+    src: &CudaStorageSlice,
+    layout: &Layout,
+    dim: Option<usize>,
+    op: ReduceOp,
+) -> Result<CudaStorageSlice> {
+    let (kernel_layout, reduce_len, output_len) = reduction_layout(layout, dim)?;
+    if matches!(
+        op,
+        ReduceOp::Min | ReduceOp::Max | ReduceOp::ArgMin | ReduceOp::ArgMax
+    ) && reduce_len == 0
+    {
+        return Err(Error::EmptyReduction {
+            op: match op {
+                ReduceOp::Min => "min",
+                ReduceOp::Max => "max",
+                ReduceOp::ArgMin => "argmin",
+                ReduceOp::ArgMax => "argmax",
+                ReduceOp::Sum => unreachable!(),
+            },
+            dim: dim.unwrap_or(0),
+        });
+    }
+    if matches!(op, ReduceOp::ArgMin | ReduceOp::ArgMax) && reduce_len > u32::MAX as usize {
+        return Err(Error::ShapeElementCountOverflow);
+    }
+    let src_numel = layout.checked_elem_count()?;
+    let info = layout_info(device, &kernel_layout)?;
+    let src_view = layout_view(src, layout)?;
+    let reduction_name = match op {
+        ReduceOp::Sum => "sum",
+        ReduceOp::Min => "min",
+        ReduceOp::Max => "max",
+        ReduceOp::ArgMin => "argmin",
+        ReduceOp::ArgMax => "argmax",
+    };
+    macro_rules! value_target {
+        ($src:expr, $variant:ident, $ty:ty, $suffix:literal) => {{
+            let mut output =
+                CudaStorageSlice::zeros(&device.cuda_stream(), DType::$variant, output_len)?;
+            if let CudaStorageSlice::$variant(dst) = &mut output {
+                launch_reduce_value(
+                    device,
+                    &format!("fast_{}_{}", reduction_name, $suffix),
+                    &$src,
+                    &info,
+                    src_numel,
+                    reduce_len,
+                    dst,
+                    output_len,
+                )?;
+            }
+            Ok(output)
+        }};
+    }
+    macro_rules! index_target {
+        ($src:expr, $suffix:literal) => {{
+            let mut indices =
+                CudaStorageSlice::zeros(&device.cuda_stream(), DType::U32, output_len)?;
+            if let CudaStorageSlice::U32(dst) = &mut indices {
+                launch_reduce_index(
+                    device,
+                    &format!("fast_{}_{}", reduction_name, $suffix),
+                    &$src,
+                    &info,
+                    src_numel,
+                    reduce_len,
+                    dst,
+                    output_len,
+                )?;
+            }
+            cast(
+                device,
+                &indices,
+                &Layout::contiguous([output_len]),
+                DType::I64,
+            )
+        }};
+    }
+    match op {
+        ReduceOp::Sum | ReduceOp::Min | ReduceOp::Max => match src_view {
+            CudaStorageView::U8(src) => value_target!(src, U8, u8, "u8"),
+            CudaStorageView::U32(src) => value_target!(src, U32, u32, "u32"),
+            CudaStorageView::I64(src) => value_target!(src, I64, i64, "i64"),
+            CudaStorageView::BF16(src) => value_target!(src, BF16, half::bf16, "bf16"),
+            CudaStorageView::F16(src) => value_target!(src, F16, half::f16, "f16"),
+            CudaStorageView::F32(src) => value_target!(src, F32, f32, "f32"),
+            CudaStorageView::F64(src) => value_target!(src, F64, f64, "f64"),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "reduce",
+                dtype: src.dtype(),
+            }),
+        },
+        ReduceOp::ArgMin | ReduceOp::ArgMax => match src_view {
+            CudaStorageView::U8(src) => index_target!(src, "u8"),
+            CudaStorageView::U32(src) => index_target!(src, "u32"),
+            CudaStorageView::I64(src) => index_target!(src, "i64"),
+            CudaStorageView::BF16(src) => index_target!(src, "bf16"),
+            CudaStorageView::F16(src) => index_target!(src, "f16"),
+            CudaStorageView::F32(src) => index_target!(src, "f32"),
+            CudaStorageView::F64(src) => index_target!(src, "f64"),
+            _ => Err(Error::UnsupportedDTypeForOp {
+                op: "reduce",
+                dtype: src.dtype(),
+            }),
+        },
+    }
+}
+
+fn launch_sort<T: DeviceRepr>(
+    device: &CudaDevice,
+    function_name: &str,
+    src: &CudaView<'_, T>,
+    dst: &mut CudaSlice<u32>,
+    rows: usize,
+    cols: usize,
+    padded_cols: usize,
+) -> Result<()> {
+    if rows == 0 || cols == 0 {
+        return Ok(());
+    }
+    let rows = u32::try_from(rows).map_err(|_| Error::ShapeElementCountOverflow)?;
+    let cols = i32::try_from(cols).map_err(|_| Error::ShapeElementCountOverflow)?;
+    let padded_cols = i32::try_from(padded_cols).map_err(|_| Error::ShapeElementCountOverflow)?;
+    let shared_mem_bytes = u32::try_from(
+        usize::try_from(padded_cols)
+            .unwrap_or_default()
+            .checked_mul(std::mem::size_of::<u32>())
+            .ok_or(Error::ShapeElementCountOverflow)?,
+    )
+    .map_err(|_| Error::ShapeElementCountOverflow)?;
+    let function = device.get_or_load_func(rivet_kernels::SORT, function_name)?;
+    let config = LaunchConfig {
+        grid_dim: (rows, 1, 1),
+        block_dim: (1024, 1, 1),
+        shared_mem_bytes,
+    };
+    unsafe {
+        device
+            .cuda_stream()
+            .launch_builder(&function)
+            .arg(src)
+            .arg(dst)
+            .arg(&cols)
+            .arg(&padded_cols)
+            .launch(config)
+    }
+    .map_err(|error| cuda_error("kernel_launch", function_name, error))?;
+    device.record_kernel_launch();
+    Ok(())
+}
+
+pub(crate) fn sort(
+    device: &CudaDevice,
+    src: &CudaStorageSlice,
+    layout: &Layout,
+    descending: bool,
+) -> Result<CudaStorageSlice> {
+    let cols = *layout
+        .dims()
+        .last()
+        .ok_or(Error::InvalidDim { dim: 0, rank: 0 })?;
+    let numel = layout.checked_elem_count()?;
+    let rows = if cols == 0 { 0 } else { numel / cols };
+    let padded_cols = cols
+        .max(1)
+        .checked_next_power_of_two()
+        .ok_or(Error::ShapeElementCountOverflow)?;
+    let materialized = (!layout.is_contiguous())
+        .then(|| materialize(device, src, layout))
+        .transpose()?;
+    let source = materialized.as_ref().unwrap_or(src);
+    let source_layout = materialized
+        .as_ref()
+        .map(|_| Layout::contiguous(layout.dims().to_vec()))
+        .unwrap_or_else(|| layout.clone());
+    let source_view = layout_view(source, &source_layout)?;
+    let mut output = CudaStorageSlice::zeros(&device.cuda_stream(), DType::U32, numel)?;
+    match source_view {
+        CudaStorageView::U8(src) => match &mut output {
+            CudaStorageSlice::U32(dst) => launch_sort(
+                device,
+                if descending {
+                    "asort_desc_u8"
+                } else {
+                    "asort_asc_u8"
+                },
+                &src,
+                dst,
+                rows,
+                cols,
+                padded_cols,
+            ),
+            _ => unreachable!(),
+        },
+        CudaStorageView::U32(src) => match &mut output {
+            CudaStorageSlice::U32(dst) => launch_sort(
+                device,
+                if descending {
+                    "asort_desc_u32"
+                } else {
+                    "asort_asc_u32"
+                },
+                &src,
+                dst,
+                rows,
+                cols,
+                padded_cols,
+            ),
+            _ => unreachable!(),
+        },
+        CudaStorageView::I64(src) => match &mut output {
+            CudaStorageSlice::U32(dst) => launch_sort(
+                device,
+                if descending {
+                    "asort_desc_i64"
+                } else {
+                    "asort_asc_i64"
+                },
+                &src,
+                dst,
+                rows,
+                cols,
+                padded_cols,
+            ),
+            _ => unreachable!(),
+        },
+        CudaStorageView::BF16(src) => match &mut output {
+            CudaStorageSlice::U32(dst) => launch_sort(
+                device,
+                if descending {
+                    "asort_desc_bf16"
+                } else {
+                    "asort_asc_bf16"
+                },
+                &src,
+                dst,
+                rows,
+                cols,
+                padded_cols,
+            ),
+            _ => unreachable!(),
+        },
+        CudaStorageView::F16(src) => match &mut output {
+            CudaStorageSlice::U32(dst) => launch_sort(
+                device,
+                if descending {
+                    "asort_desc_f16"
+                } else {
+                    "asort_asc_f16"
+                },
+                &src,
+                dst,
+                rows,
+                cols,
+                padded_cols,
+            ),
+            _ => unreachable!(),
+        },
+        CudaStorageView::F32(src) => match &mut output {
+            CudaStorageSlice::U32(dst) => launch_sort(
+                device,
+                if descending {
+                    "asort_desc_f32"
+                } else {
+                    "asort_asc_f32"
+                },
+                &src,
+                dst,
+                rows,
+                cols,
+                padded_cols,
+            ),
+            _ => unreachable!(),
+        },
+        CudaStorageView::F64(src) => match &mut output {
+            CudaStorageSlice::U32(dst) => launch_sort(
+                device,
+                if descending {
+                    "asort_desc_f64"
+                } else {
+                    "asort_asc_f64"
+                },
+                &src,
+                dst,
+                rows,
+                cols,
+                padded_cols,
+            ),
+            _ => unreachable!(),
+        },
+        _ => Err(Error::UnsupportedDTypeForOp {
+            op: "arg_sort_last_dim",
+            dtype: src.dtype(),
+        }),
+    }?;
+    Ok(output)
 }
 
 #[cfg(test)]

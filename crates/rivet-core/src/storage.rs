@@ -93,7 +93,7 @@ impl Storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.affine(layout, mul, add)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => unsupported_cuda("affine"),
+            Self::Cuda(storage) => Ok(Self::Cuda(storage.affine(layout, mul, add)?)),
         }
     }
 
@@ -205,7 +205,12 @@ impl Storage {
             )?)),
 
             #[cfg(feature = "cuda")]
-            (Self::Cuda(_), Self::Cuda(_)) => unsupported_cuda("gather"),
+            (Self::Cuda(storage), Self::Cuda(indexes)) => Ok(Self::Cuda(storage.gather(
+                layout,
+                indexes,
+                indexes_layout,
+                dim,
+            )?)),
 
             #[cfg(feature = "cuda")]
             _ => Err(Error::DeviceMismatch),
@@ -228,7 +233,12 @@ impl Storage {
             )?)),
 
             #[cfg(feature = "cuda")]
-            (Self::Cuda(_), Self::Cuda(_)) => unsupported_cuda("index_select"),
+            (Self::Cuda(storage), Self::Cuda(indexes)) => Ok(Self::Cuda(storage.index_select(
+                layout,
+                indexes,
+                indexes_layout,
+                dim,
+            )?)),
 
             #[cfg(feature = "cuda")]
             _ => Err(Error::DeviceMismatch),
@@ -259,7 +269,17 @@ impl Storage {
             }
 
             #[cfg(feature = "cuda")]
-            (Self::Cuda(_), Self::Cuda(_), Self::Cuda(_)) => unsupported_cuda("scatter"),
+            (Self::Cuda(storage), Self::Cuda(indexes), Self::Cuda(source)) => {
+                Ok(Self::Cuda(storage.scatter(
+                    layout,
+                    indexes,
+                    indexes_layout,
+                    source,
+                    source_layout,
+                    dim,
+                    add,
+                )?))
+            }
 
             #[cfg(feature = "cuda")]
             _ => Err(Error::DeviceMismatch),
@@ -281,7 +301,9 @@ impl Storage {
             )),
 
             #[cfg(feature = "cuda")]
-            (Self::Cuda(_), Self::Cuda(_), Self::Cuda(_)) => unsupported_cuda("index_add"),
+            (Self::Cuda(storage), Self::Cuda(indexes), Self::Cuda(source)) => Ok(Self::Cuda(
+                storage.index_add(layout, indexes, indexes_layout, source, source_layout, dim)?,
+            )),
 
             #[cfg(feature = "cuda")]
             _ => Err(Error::DeviceMismatch),
@@ -354,7 +376,16 @@ impl Storage {
             }
 
             #[cfg(feature = "cuda")]
-            (Self::Cuda(_), Self::Cuda(_), Self::Cuda(_)) => unsupported_cuda("where_cond"),
+            (Self::Cuda(condition), Self::Cuda(on_true), Self::Cuda(on_false)) => {
+                Ok(Self::Cuda(CudaStorage::where_cond(
+                    condition,
+                    condition_layout,
+                    on_true,
+                    true_layout,
+                    on_false,
+                    false_layout,
+                )?))
+            }
 
             #[cfg(feature = "cuda")]
             _ => Err(Error::DeviceMismatch),
@@ -372,7 +403,7 @@ impl Storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.reduce_dim(layout, dim, keepdim, op)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => unsupported_cuda("reduce_dim"),
+            Self::Cuda(storage) => Ok(Self::Cuda(storage.reduce_dim(layout, dim, op)?)),
         }
     }
 
@@ -381,7 +412,23 @@ impl Storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.reduce_all(layout, op)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => unsupported_cuda("reduce_all"),
+            Self::Cuda(storage) => Ok(Self::Cuda(storage.reduce_all(layout, op)?)),
+        }
+    }
+
+    pub(crate) fn arg_sort_last_dim(
+        storage: &Self,
+        _layout: &Layout,
+        _descending: bool,
+    ) -> Result<Self> {
+        match storage {
+            Self::Cpu(storage) => Err(Error::UnsupportedDTypeForOp {
+                op: "arg_sort_last_dim",
+                dtype: storage.dtype(),
+            }),
+
+            #[cfg(feature = "cuda")]
+            Self::Cuda(storage) => Ok(Self::Cuda(storage.arg_sort_last_dim(_layout, _descending)?)),
         }
     }
 
@@ -395,7 +442,7 @@ impl Storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.mean_dim(layout, dim, keepdim)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => unsupported_cuda("mean_dim"),
+            Self::Cuda(storage) => Ok(Self::Cuda(storage.mean_dim(layout, dim, keepdim)?)),
         }
     }
 
@@ -404,7 +451,7 @@ impl Storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.mean_all(layout)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => unsupported_cuda("mean_all"),
+            Self::Cuda(storage) => Ok(Self::Cuda(storage.mean_all(layout)?)),
         }
     }
 

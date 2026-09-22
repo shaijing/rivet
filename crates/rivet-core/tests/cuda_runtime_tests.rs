@@ -72,9 +72,131 @@ fn unsupported_cuda_math_returns_an_explicit_error() {
     let tensor = Tensor::ones([2], DType::F32, &device).unwrap();
 
     assert!(matches!(
-        tensor.affine(2.0, 1.0),
-        Err(Error::UnsupportedCudaOp { op: "affine" })
+        tensor.powf(2.0),
+        Err(Error::UnsupportedCudaOp { op: "powf" })
     ));
+}
+
+#[test]
+fn cuda_migrated_basic_kernels_execute_on_device() {
+    let device = Device::cuda(0).unwrap();
+    let values = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3], &device).unwrap();
+
+    assert_eq!(
+        values.affine(2.0, 1.0).unwrap().to_vec::<f32>().unwrap(),
+        vec![3.0, 5.0, 7.0, 9.0, 11.0, 13.0]
+    );
+    assert_eq!(
+        values
+            .to_dtype(DType::F64)
+            .unwrap()
+            .to_vec::<f64>()
+            .unwrap(),
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    );
+
+    let indexes = Tensor::from_vec(vec![2i64, 0], [2], &device).unwrap();
+    assert_eq!(
+        values
+            .index_select(&indexes, 1)
+            .unwrap()
+            .to_vec::<f32>()
+            .unwrap(),
+        vec![3.0, 1.0, 6.0, 4.0]
+    );
+
+    let gather_indexes = Tensor::from_vec(vec![2i64, 0, 1, 1], [2, 2], &device).unwrap();
+    assert_eq!(
+        values
+            .gather(&gather_indexes, 1)
+            .unwrap()
+            .to_vec::<f32>()
+            .unwrap(),
+        vec![3.0, 1.0, 5.0, 5.0]
+    );
+
+    let zeros = Tensor::zeros([2, 3], DType::F32, &device).unwrap();
+    let source = Tensor::from_vec(vec![10.0f32, 20.0, 30.0, 40.0], [2, 2], &device).unwrap();
+    assert_eq!(
+        zeros
+            .scatter(&gather_indexes, &source, 1)
+            .unwrap()
+            .to_vec::<f32>()
+            .unwrap(),
+        vec![20.0, 0.0, 10.0, 0.0, 40.0, 0.0]
+    );
+
+    assert_eq!(
+        zeros
+            .index_add(&indexes, &source, 1)
+            .unwrap()
+            .to_vec::<f32>()
+            .unwrap(),
+        vec![20.0, 0.0, 10.0, 40.0, 0.0, 30.0]
+    );
+
+    let condition = Tensor::from_vec(vec![1u8, 0, 1, 0, 1, 0], [2, 3], &device).unwrap();
+    let other = Tensor::ones([2, 3], DType::F32, &device).unwrap();
+    assert_eq!(
+        condition
+            .where_cond(&values, &other)
+            .unwrap()
+            .to_vec::<f32>()
+            .unwrap(),
+        vec![1.0, 1.0, 3.0, 1.0, 5.0, 1.0]
+    );
+
+    assert_eq!(
+        values.sum(1).unwrap().to_vec::<f32>().unwrap(),
+        vec![6.0, 15.0]
+    );
+    assert_eq!(
+        values.min(1).unwrap().to_vec::<f32>().unwrap(),
+        vec![1.0, 4.0]
+    );
+    assert_eq!(
+        values.max(1).unwrap().to_vec::<f32>().unwrap(),
+        vec![3.0, 6.0]
+    );
+    assert_eq!(
+        values.mean(1).unwrap().to_vec::<f32>().unwrap(),
+        vec![2.0, 5.0]
+    );
+    assert_eq!(
+        values.argmin(1).unwrap().to_vec::<i64>().unwrap(),
+        vec![0, 0]
+    );
+    assert_eq!(
+        values.argmax(1).unwrap().to_vec::<i64>().unwrap(),
+        vec![2, 2]
+    );
+    assert_eq!(
+        values.sum_all().unwrap().to_vec::<f32>().unwrap(),
+        vec![21.0]
+    );
+    assert_eq!(
+        values.mean_all().unwrap().to_vec::<f32>().unwrap(),
+        vec![3.5]
+    );
+
+    let sortable =
+        Tensor::from_vec(vec![3.0f32, 1.0, 2.0, 6.0, 4.0, 5.0], [2, 3], &device).unwrap();
+    assert_eq!(
+        sortable
+            .arg_sort_last_dim(false)
+            .unwrap()
+            .to_vec::<u32>()
+            .unwrap(),
+        vec![1, 2, 0, 1, 2, 0]
+    );
+    assert_eq!(
+        sortable
+            .argsort_last_dim(true)
+            .unwrap()
+            .to_vec::<u32>()
+            .unwrap(),
+        vec![0, 2, 1, 0, 2, 1]
+    );
 }
 
 #[test]
