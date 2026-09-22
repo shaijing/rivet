@@ -67,3 +67,75 @@ fn unsupported_cuda_math_returns_an_explicit_error() {
         Err(Error::UnsupportedCudaOp { op: "binary" })
     ));
 }
+
+#[test]
+fn tensor_device_copy_preserves_contiguous_and_view_logical_order() {
+    let cpu = Device::Cpu;
+    let cuda = Device::cuda(0).unwrap();
+    let source =
+        Tensor::from_vec((0..6).map(|value| value as f32).collect(), [2, 3], &cpu).unwrap();
+
+    let gpu = source.to_device(&cuda).unwrap();
+    assert!(gpu.is_contiguous());
+    assert_eq!(gpu.to_vec::<f32>().unwrap(), vec![0., 1., 2., 3., 4., 5.]);
+
+    let roundtrip = gpu.to_device(&cpu).unwrap();
+    assert_eq!(roundtrip.dims(), &[2, 3]);
+    assert_eq!(
+        roundtrip.to_vec::<f32>().unwrap(),
+        vec![0., 1., 2., 3., 4., 5.]
+    );
+
+    let narrow = gpu.narrow(0, 1, 1).unwrap();
+    let narrow_roundtrip = narrow.to_device(&cpu).unwrap();
+    assert_eq!(narrow_roundtrip.dims(), &[1, 3]);
+    assert_eq!(narrow_roundtrip.to_vec::<f32>().unwrap(), vec![3., 4., 5.]);
+
+    let gpu_view_roundtrip = gpu.transpose(0, 1).unwrap().to_device(&cpu).unwrap();
+    assert_eq!(gpu_view_roundtrip.dims(), &[3, 2]);
+    assert_eq!(
+        gpu_view_roundtrip.to_vec::<f32>().unwrap(),
+        vec![0., 3., 1., 4., 2., 5.]
+    );
+
+    let transposed = source.transpose(0, 1).unwrap();
+    assert!(!transposed.is_contiguous());
+    let transposed_gpu = transposed.to_device(&cuda).unwrap();
+    assert!(transposed_gpu.is_contiguous());
+    assert_eq!(
+        transposed_gpu.to_vec::<f32>().unwrap(),
+        vec![0., 3., 1., 4., 2., 5.]
+    );
+
+    let transposed_roundtrip = transposed_gpu.to_device(&cpu).unwrap();
+    assert_eq!(transposed_roundtrip.dims(), &[3, 2]);
+    assert_eq!(
+        transposed_roundtrip.to_vec::<f32>().unwrap(),
+        vec![0., 3., 1., 4., 2., 5.]
+    );
+
+    let empty = Tensor::from_vec(Vec::<f32>::new(), [0, 3], &cpu).unwrap();
+    let empty_gpu = empty.to_device(&cuda).unwrap();
+    assert_eq!(empty_gpu.shape(), &rivet_core::Shape::from([0, 3]));
+    assert!(empty_gpu.to_vec::<f32>().unwrap().is_empty());
+}
+
+#[test]
+fn cuda_contiguous_materialization_and_same_device_copy_are_explicit() {
+    let cuda = Device::cuda(0).unwrap();
+    let same_cuda = Device::cuda(0).unwrap();
+    let source = Tensor::from_vec(vec![0u32, 1, 2, 3, 4, 5], [2, 3], &cuda).unwrap();
+    let view = source.transpose(0, 1).unwrap();
+
+    let materialized = view.contiguous().unwrap();
+    assert!(materialized.is_contiguous());
+    assert!(!materialized.same_storage(&view));
+    assert_eq!(
+        materialized.to_vec::<u32>().unwrap(),
+        vec![0, 3, 1, 4, 2, 5]
+    );
+
+    let shared = source.to_device(&same_cuda).unwrap();
+    assert!(shared.same_storage(&source));
+    assert_eq!(shared.to_vec::<u32>().unwrap(), vec![0, 1, 2, 3, 4, 5]);
+}

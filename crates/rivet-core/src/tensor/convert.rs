@@ -1,9 +1,21 @@
 use super::Tensor;
 use crate::storage::Storage;
-use crate::{DType, Result};
+use crate::{DType, Device, Result};
 use std::sync::Arc;
 
 impl Tensor {
+    /// Copies the logical tensor to `device` and returns a contiguous result.
+    /// Calling this with the same logical device keeps the existing shared
+    /// storage, matching the cheap-view behavior of the tensor API.
+    pub fn to_device(&self, device: &Device) -> Result<Self> {
+        if self.device().same_device(device) {
+            return Ok(self.clone());
+        }
+
+        let storage = Storage::to_device(self.storage(), self.layout(), device)?;
+        Self::from_exact_owned_storage(storage, self.shape().clone())
+    }
+
     /// Copies the complete backing allocation and preserves this view's layout.
     pub fn copy(&self) -> Result<Self> {
         let storage = self.storage().try_clone(self.layout())?;

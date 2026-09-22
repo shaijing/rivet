@@ -3,6 +3,8 @@ use crate::cpu_backend::CpuStorage;
 use crate::cuda_backend::CudaStorage;
 use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use crate::{DType, Device, Error, Layout, Result, Shape, WithDType};
+#[cfg(feature = "cuda")]
+use std::sync::Arc;
 
 /// Backend storage. Storage itself is deliberately not `Clone`; cloning an
 /// allocation is explicit through `try_clone`.
@@ -419,7 +421,31 @@ impl Storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.copy_logical(layout)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => unsupported_cuda("copy_logical"),
+            Self::Cuda(storage) => Ok(Self::Cuda(storage.copy_logical(layout)?)),
+        }
+    }
+
+    /// Copies a logical view to a target device as a new contiguous storage.
+    /// Contiguous ranges use direct backend copies; strided CUDA views use the
+    /// explicit materialization fallback owned by the CUDA storage backend.
+    pub(crate) fn to_device(&self, layout: &Layout, device: &Device) -> Result<Self> {
+        validate_layout_for_storage(layout, self.len())?;
+
+        match (self, device) {
+            (Self::Cpu(storage), Device::Cpu) => Ok(Self::Cpu(storage.copy_logical(layout)?)),
+
+            #[cfg(feature = "cuda")]
+            (Self::Cpu(storage), Device::Cuda(device)) => Ok(Self::Cuda(
+                CudaStorage::from_cpu_storage(Arc::clone(device), storage, layout)?,
+            )),
+
+            #[cfg(feature = "cuda")]
+            (Self::Cuda(storage), Device::Cpu) => Ok(Self::Cpu(storage.to_cpu_storage(layout)?)),
+
+            #[cfg(feature = "cuda")]
+            (Self::Cuda(storage), Device::Cuda(device)) => Ok(Self::Cuda(
+                storage.copy_to_device(Arc::clone(device), layout)?,
+            )),
         }
     }
 
