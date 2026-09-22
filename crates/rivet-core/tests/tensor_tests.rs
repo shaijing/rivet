@@ -46,6 +46,26 @@ fn shape_and_layout_metadata_match_candle_semantics() {
 }
 
 #[test]
+fn cpu_constructor_metadata_matches_the_requested_device_and_dtype() {
+    for dtype in [
+        DType::U8,
+        DType::U32,
+        DType::I16,
+        DType::I32,
+        DType::I64,
+        DType::BF16,
+        DType::F16,
+        DType::F32,
+        DType::F64,
+    ] {
+        let tensor = Tensor::zeros([3], dtype, &Device::Cpu).unwrap();
+        assert_eq!(tensor.dtype(), dtype);
+        assert!(tensor.device().same_device(&Device::Cpu));
+        assert_eq!(tensor.storage_len(), 3);
+    }
+}
+
+#[test]
 fn layout_storage_bounds_handle_empty_and_overflowing_views() {
     let empty = Layout::new(Shape::from((0, 3)), vec![3, 1], usize::MAX).unwrap();
     assert_eq!(empty.storage_bounds(), None);

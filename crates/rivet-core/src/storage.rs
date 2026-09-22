@@ -10,6 +10,10 @@ pub enum Storage {
 }
 
 impl Storage {
+    // Keep backend matches explicit. Adding a new storage variant must add a
+    // deliberate implementation branch to every operation rather than
+    // silently falling back to the CPU backend.
+
     /// Returns whether this backend can be handed to a mutable external
     /// consumer after all Rivet aliases have been removed.
     ///
@@ -27,9 +31,11 @@ impl Storage {
         rhs_layout: &Layout,
         op: BinaryOp,
     ) -> Result<Self> {
-        let lhs = lhs.cpu_storage();
-        let rhs = rhs.cpu_storage();
-        Ok(Self::Cpu(lhs.binary(lhs_layout, rhs, rhs_layout, op)?))
+        match (lhs, rhs) {
+            (Self::Cpu(lhs), Self::Cpu(rhs)) => {
+                Ok(Self::Cpu(lhs.binary(lhs_layout, rhs, rhs_layout, op)?))
+            }
+        }
     }
 
     pub(crate) fn binary_scalar<T: WithDType>(
@@ -38,8 +44,9 @@ impl Storage {
         scalar: T,
         op: BinaryOp,
     ) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        Ok(Self::Cpu(storage.binary_scalar(layout, scalar, op)?))
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.binary_scalar(layout, scalar, op)?)),
+        }
     }
 
     pub(crate) fn matmul(
@@ -48,24 +55,29 @@ impl Storage {
         rhs: &Self,
         rhs_layout: &Layout,
     ) -> Result<Self> {
-        let lhs = lhs.cpu_storage();
-        let rhs = rhs.cpu_storage();
-        Ok(Self::Cpu(lhs.matmul(lhs_layout, rhs, rhs_layout)?))
+        match (lhs, rhs) {
+            (Self::Cpu(lhs), Self::Cpu(rhs)) => {
+                Ok(Self::Cpu(lhs.matmul(lhs_layout, rhs, rhs_layout)?))
+            }
+        }
     }
 
     pub(crate) fn affine(storage: &Self, layout: &Layout, mul: f64, add: f64) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        Ok(Self::Cpu(storage.affine(layout, mul, add)?))
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.affine(layout, mul, add)?)),
+        }
     }
 
     pub(crate) fn elu(storage: &Self, layout: &Layout, alpha: f64) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        Ok(Self::Cpu(storage.elu(layout, alpha)?))
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.elu(layout, alpha)?)),
+        }
     }
 
     pub(crate) fn powf(storage: &Self, layout: &Layout, exponent: f64) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        Ok(Self::Cpu(storage.powf(layout, exponent)?))
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.powf(layout, exponent)?)),
+        }
     }
 
     pub(crate) fn pow(
@@ -74,9 +86,11 @@ impl Storage {
         rhs: &Self,
         rhs_layout: &Layout,
     ) -> Result<Self> {
-        let lhs = lhs.cpu_storage();
-        let rhs = rhs.cpu_storage();
-        Ok(Self::Cpu(lhs.pow(lhs_layout, rhs, rhs_layout)?))
+        match (lhs, rhs) {
+            (Self::Cpu(lhs), Self::Cpu(rhs)) => {
+                Ok(Self::Cpu(lhs.pow(lhs_layout, rhs, rhs_layout)?))
+            }
+        }
     }
 
     pub(crate) fn dot(
@@ -85,29 +99,35 @@ impl Storage {
         rhs: &Self,
         rhs_layout: &Layout,
     ) -> Result<Self> {
-        let lhs = lhs.cpu_storage();
-        let rhs = rhs.cpu_storage();
-        Ok(Self::Cpu(lhs.dot(lhs_layout, rhs, rhs_layout)?))
+        match (lhs, rhs) {
+            (Self::Cpu(lhs), Self::Cpu(rhs)) => {
+                Ok(Self::Cpu(lhs.dot(lhs_layout, rhs, rhs_layout)?))
+            }
+        }
     }
 
     pub(crate) fn norm(storage: &Self, layout: &Layout) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        Ok(Self::Cpu(storage.norm(layout)?))
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.norm(layout)?)),
+        }
     }
 
     pub(crate) fn cumsum(storage: &Self, layout: &Layout, dim: usize) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        Ok(Self::Cpu(storage.cumsum(layout, dim)?))
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.cumsum(layout, dim)?)),
+        }
     }
 
     pub(crate) fn log_sum_exp(storage: &Self, layout: &Layout, dim: usize) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        Ok(Self::Cpu(storage.log_sum_exp(layout, dim)?))
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.log_sum_exp(layout, dim)?)),
+        }
     }
 
     pub(crate) fn flip(storage: &Self, layout: &Layout, dims: &[usize]) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        Ok(Self::Cpu(storage.flip(layout, dims)?))
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.flip(layout, dims)?)),
+        }
     }
 
     pub(crate) fn gather(
@@ -117,14 +137,14 @@ impl Storage {
         indexes_layout: &Layout,
         dim: usize,
     ) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        let indexes = indexes.cpu_storage();
-        Ok(Self::Cpu(storage.gather(
-            layout,
-            indexes,
-            indexes_layout,
-            dim,
-        )?))
+        match (storage, indexes) {
+            (Self::Cpu(storage), Self::Cpu(indexes)) => Ok(Self::Cpu(storage.gather(
+                layout,
+                indexes,
+                indexes_layout,
+                dim,
+            )?)),
+        }
     }
 
     pub(crate) fn index_select(
@@ -134,14 +154,14 @@ impl Storage {
         indexes_layout: &Layout,
         dim: usize,
     ) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        let indexes = indexes.cpu_storage();
-        Ok(Self::Cpu(storage.index_select(
-            layout,
-            indexes,
-            indexes_layout,
-            dim,
-        )?))
+        match (storage, indexes) {
+            (Self::Cpu(storage), Self::Cpu(indexes)) => Ok(Self::Cpu(storage.index_select(
+                layout,
+                indexes,
+                indexes_layout,
+                dim,
+            )?)),
+        }
     }
 
     pub(crate) fn scatter(
@@ -154,18 +174,19 @@ impl Storage {
         dim: usize,
         add: bool,
     ) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        let indexes = indexes.cpu_storage();
-        let source = source.cpu_storage();
-        Ok(Self::Cpu(storage.scatter(
-            layout,
-            indexes,
-            indexes_layout,
-            source,
-            source_layout,
-            dim,
-            add,
-        )?))
+        match (storage, indexes, source) {
+            (Self::Cpu(storage), Self::Cpu(indexes), Self::Cpu(source)) => {
+                Ok(Self::Cpu(storage.scatter(
+                    layout,
+                    indexes,
+                    indexes_layout,
+                    source,
+                    source_layout,
+                    dim,
+                    add,
+                )?))
+            }
+        }
     }
 
     pub(crate) fn index_add(
@@ -177,22 +198,17 @@ impl Storage {
         source_layout: &Layout,
         dim: usize,
     ) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        let indexes = indexes.cpu_storage();
-        let source = source.cpu_storage();
-        Ok(Self::Cpu(storage.index_add(
-            layout,
-            indexes,
-            indexes_layout,
-            source,
-            source_layout,
-            dim,
-        )?))
+        match (storage, indexes, source) {
+            (Self::Cpu(storage), Self::Cpu(indexes), Self::Cpu(source)) => Ok(Self::Cpu(
+                storage.index_add(layout, indexes, indexes_layout, source, source_layout, dim)?,
+            )),
+        }
     }
 
     pub(crate) fn unary(storage: &Self, layout: &Layout, op: UnaryOp) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        Ok(Self::Cpu(storage.unary(layout, op)?))
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.unary(layout, op)?)),
+        }
     }
 
     pub(crate) fn cmp(
@@ -202,9 +218,11 @@ impl Storage {
         rhs_layout: &Layout,
         op: CmpOp,
     ) -> Result<Self> {
-        let lhs = lhs.cpu_storage();
-        let rhs = rhs.cpu_storage();
-        Ok(Self::Cpu(lhs.cmp(lhs_layout, rhs, rhs_layout, op)?))
+        match (lhs, rhs) {
+            (Self::Cpu(lhs), Self::Cpu(rhs)) => {
+                Ok(Self::Cpu(lhs.cmp(lhs_layout, rhs, rhs_layout, op)?))
+            }
+        }
     }
 
     pub(crate) fn cmp_scalar<T: WithDType>(
@@ -213,8 +231,9 @@ impl Storage {
         scalar: T,
         op: CmpOp,
     ) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        Ok(Self::Cpu(storage.cmp_scalar(layout, scalar, op)?))
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.cmp_scalar(layout, scalar, op)?)),
+        }
     }
 
     pub(crate) fn where_cond(
@@ -225,17 +244,18 @@ impl Storage {
         on_false: &Self,
         false_layout: &Layout,
     ) -> Result<Self> {
-        let condition = condition.cpu_storage();
-        let on_true = on_true.cpu_storage();
-        let on_false = on_false.cpu_storage();
-        Ok(Self::Cpu(CpuStorage::where_cond(
-            condition,
-            condition_layout,
-            on_true,
-            true_layout,
-            on_false,
-            false_layout,
-        )?))
+        match (condition, on_true, on_false) {
+            (Self::Cpu(condition), Self::Cpu(on_true), Self::Cpu(on_false)) => {
+                Ok(Self::Cpu(CpuStorage::where_cond(
+                    condition,
+                    condition_layout,
+                    on_true,
+                    true_layout,
+                    on_false,
+                    false_layout,
+                )?))
+            }
+        }
     }
 
     pub(crate) fn reduce_dim(
@@ -245,13 +265,15 @@ impl Storage {
         keepdim: bool,
         op: ReduceOp,
     ) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        Ok(Self::Cpu(storage.reduce_dim(layout, dim, keepdim, op)?))
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.reduce_dim(layout, dim, keepdim, op)?)),
+        }
     }
 
     pub(crate) fn reduce_all(storage: &Self, layout: &Layout, op: ReduceOp) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        Ok(Self::Cpu(storage.reduce_all(layout, op)?))
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.reduce_all(layout, op)?)),
+        }
     }
 
     pub(crate) fn mean_dim(
@@ -260,13 +282,15 @@ impl Storage {
         dim: usize,
         keepdim: bool,
     ) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        Ok(Self::Cpu(storage.mean_dim(layout, dim, keepdim)?))
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.mean_dim(layout, dim, keepdim)?)),
+        }
     }
 
     pub(crate) fn mean_all(storage: &Self, layout: &Layout) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        Ok(Self::Cpu(storage.mean_all(layout)?))
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.mean_all(layout)?)),
+        }
     }
 
     pub(crate) fn var_dim(
@@ -275,13 +299,15 @@ impl Storage {
         dim: usize,
         keepdim: bool,
     ) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        Ok(Self::Cpu(storage.var_dim(layout, dim, keepdim)?))
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.var_dim(layout, dim, keepdim)?)),
+        }
     }
 
     pub(crate) fn copy_logical(storage: &Self, layout: &Layout) -> Result<Self> {
-        let storage = storage.cpu_storage();
-        Ok(Self::Cpu(storage.copy_logical(layout)?))
+        match storage {
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.copy_logical(layout)?)),
+        }
     }
 
     pub(crate) fn cat(
@@ -294,11 +320,10 @@ impl Storage {
         }
         let cpu_inputs = inputs
             .iter()
-            .map(|(storage, layout)| {
-                let Self::Cpu(storage) = storage;
-                (storage, *layout)
+            .map(|(storage, layout)| match storage {
+                Self::Cpu(storage) => Ok((storage, *layout)),
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         Ok(Self::Cpu(CpuStorage::cat(&cpu_inputs, output_shape, dim)?))
     }
 
@@ -308,8 +333,10 @@ impl Storage {
         }
         let cpu_inputs = inputs
             .iter()
-            .map(|(storage, layout)| (storage.cpu_storage(), *layout))
-            .collect::<Vec<_>>();
+            .map(|(storage, layout)| match storage {
+                Self::Cpu(storage) => Ok((storage, *layout)),
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(Self::Cpu(CpuStorage::stack_dim0(
             &cpu_inputs,
             output_shape,
@@ -350,13 +377,8 @@ impl Storage {
         if dtype == self.dtype() {
             return Self::copy_logical(self, layout);
         }
-        let storage = self.cpu_storage();
-        Ok(Self::Cpu(storage.to_dtype(layout, dtype)?))
-    }
-
-    fn cpu_storage(&self) -> &CpuStorage {
         match self {
-            Self::Cpu(storage) => storage,
+            Self::Cpu(storage) => Ok(Self::Cpu(storage.to_dtype(layout, dtype)?)),
         }
     }
 }
@@ -376,4 +398,33 @@ pub(crate) fn validate_layout_for_storage(layout: &Layout, storage_len: usize) -
         return Err(Error::StorageOutOfBounds);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::BackendDevice;
+    use crate::cpu_backend::CpuDevice;
+
+    #[test]
+    fn cpu_storage_metadata_matches_the_logical_device() {
+        let backend = CpuDevice;
+        let shape = Shape::from(3);
+        for dtype in [
+            DType::U8,
+            DType::U32,
+            DType::I16,
+            DType::I32,
+            DType::I64,
+            DType::BF16,
+            DType::F16,
+            DType::F32,
+            DType::F64,
+        ] {
+            let storage = Storage::Cpu(backend.zeros(&shape, dtype).unwrap());
+            assert_eq!(storage.dtype(), dtype);
+            assert!(storage.device().same_device(&Device::Cpu));
+            assert!(storage.same_device(&storage));
+        }
+    }
 }

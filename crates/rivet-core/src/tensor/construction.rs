@@ -1,8 +1,7 @@
 use super::{Tensor, Tensor_};
-use crate::backend::BackendDevice;
-use crate::cpu_backend::{CpuDevice, CpuStorage, buffer::AlignedBuffer};
+use crate::cpu_backend::buffer::AlignedBuffer;
 use crate::dtype::IntoCpuStorageBuffer;
-use crate::storage::{Storage, validate_layout_for_storage};
+use crate::storage::{validate_layout_for_storage, Storage};
 use crate::{DType, Device, Error, ExactOutput, Layout, Result, Shape, WithDType};
 use std::ops::Add;
 use std::sync::Arc;
@@ -203,10 +202,8 @@ impl Tensor {
     {
         let shape = shape.into();
         shape.checked_elem_count()?;
-        if !matches!(device, Device::Cpu) {
-            return Err(Error::DeviceMismatch);
-        }
-        Self::from_exact_owned_storage(Storage::Cpu(CpuStorage::from_aligned_buffer(buffer)), shape)
+        let storage = device.storage_from_aligned_buffer(buffer)?;
+        Self::from_exact_owned_storage(storage, shape)
     }
 
     pub fn from_vec<T, S>(data: Vec<T>, shape: S, device: &Device) -> Result<Self>
@@ -216,10 +213,8 @@ impl Tensor {
     {
         let shape = shape.into();
         shape.checked_elem_count()?;
-        let storage = match device {
-            Device::Cpu => CpuDevice.storage_from_vec(data)?,
-        };
-        Self::from_exact_owned_storage(Storage::Cpu(storage), shape)
+        let storage = device.storage_from_vec(data)?;
+        Self::from_exact_owned_storage(storage, shape)
     }
 
     pub fn from_slice<T, S>(data: &[T], shape: S, device: &Device) -> Result<Self>
@@ -229,10 +224,8 @@ impl Tensor {
     {
         let shape = shape.into();
         shape.checked_elem_count()?;
-        let storage = match device {
-            Device::Cpu => CpuDevice.storage_from_slice(data)?,
-        };
-        Self::from_exact_owned_storage(Storage::Cpu(storage), shape)
+        let storage = device.storage_from_slice(data)?;
+        Self::from_exact_owned_storage(storage, shape)
     }
 
     pub fn zeros<S>(shape: S, dtype: DType, device: &Device) -> Result<Self>
@@ -241,10 +234,8 @@ impl Tensor {
     {
         let shape = shape.into();
         shape.checked_elem_count()?;
-        let storage = match device {
-            Device::Cpu => CpuDevice.zeros(&shape, dtype)?,
-        };
-        Self::from_exact_owned_storage(Storage::Cpu(storage), shape)
+        let storage = device.zeros(&shape, dtype)?;
+        Self::from_exact_owned_storage(storage, shape)
     }
 
     pub fn ones<S>(shape: S, dtype: DType, device: &Device) -> Result<Self>
@@ -253,10 +244,8 @@ impl Tensor {
     {
         let shape = shape.into();
         shape.checked_elem_count()?;
-        let storage = match device {
-            Device::Cpu => CpuDevice.ones(&shape, dtype)?,
-        };
-        Self::from_exact_owned_storage(Storage::Cpu(storage), shape)
+        let storage = device.ones(&shape, dtype)?;
+        Self::from_exact_owned_storage(storage, shape)
     }
 
     /// Creates a tensor filled with one scalar value.
@@ -298,10 +287,8 @@ impl Tensor {
         if expected != actual {
             return Err(Error::ShapeMismatch { expected, actual });
         }
-        let storage = match device {
-            Device::Cpu => T::into_cpu_storage_iter(iter)?,
-        };
-        Self::from_exact_owned_storage(Storage::Cpu(storage), shape)
+        let storage = device.storage_from_exact_iter(iter)?;
+        Self::from_exact_owned_storage(storage, shape)
     }
 
     /// Creates a tensor directly from an exact-size fallible iterator.
@@ -319,10 +306,8 @@ impl Tensor {
         if expected != actual {
             return Err(Error::ShapeMismatch { expected, actual });
         }
-        let storage = match device {
-            Device::Cpu => T::try_into_cpu_storage_iter(iter)?,
-        };
-        Self::from_exact_owned_storage(Storage::Cpu(storage), shape)
+        let storage = device.storage_from_exact_try_iter(iter)?;
+        Self::from_exact_owned_storage(storage, shape)
     }
 
     /// Creates a tensor by writing exactly one value per shape element.
@@ -336,10 +321,8 @@ impl Tensor {
     {
         let shape = shape.into();
         let count = shape.checked_elem_count()?;
-        let storage = match device {
-            Device::Cpu => T::into_cpu_storage_with(count, fill)?,
-        };
-        Self::from_exact_owned_storage(Storage::Cpu(storage), shape)
+        let storage = device.storage_from_exact_fn(count, fill)?;
+        Self::from_exact_owned_storage(storage, shape)
     }
 
     /// Creates a tensor through a statically dispatched writer into the final
@@ -352,10 +335,8 @@ impl Tensor {
     {
         let shape = shape.into();
         let count = shape.checked_elem_count()?;
-        let storage = match device {
-            Device::Cpu => T::into_cpu_storage_writer(count, fill)?,
-        };
-        Self::from_exact_owned_storage(Storage::Cpu(storage), shape)
+        let storage = device.storage_from_exact_writer(count, fill)?;
+        Self::from_exact_owned_storage(storage, shape)
     }
 
     /// Creates values in the half-open interval `[start, end)` with step one.
