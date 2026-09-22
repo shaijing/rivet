@@ -140,14 +140,18 @@ impl CudaStorageSlice {
         }
     }
 
-    fn ones(stream: &Arc<CudaStream>, dtype: DType, len: usize) -> Result<Self> {
+    fn ones(device: &CudaDevice, dtype: DType, len: usize) -> Result<Self> {
+        let stream = device.cuda_stream();
         macro_rules! ones {
-            ($ty:ty, $variant:ident, $value:expr) => {
+            ($ty:ty, $variant:ident, $value:expr) => {{
+                if len > 0 {
+                    device.record_h2d();
+                }
                 stream
                     .clone_htod(&vec![$value as $ty; len])
                     .map(Self::$variant)
                     .map_err(|error| cuda_error("ones", error))
-            };
+            }};
         }
 
         match dtype {
@@ -163,7 +167,10 @@ impl CudaStorageSlice {
         }
     }
 
-    fn try_clone(&self) -> Result<Self> {
+    fn try_clone(&self, device: &CudaDevice) -> Result<Self> {
+        if !self.is_empty() {
+            device.record_d2d();
+        }
         macro_rules! clone_slice {
             ($data:expr, $variant:ident) => {
                 $data
@@ -186,7 +193,11 @@ impl CudaStorageSlice {
         }
     }
 
-    fn clone_range(&self, stream: &Arc<CudaStream>, start: usize, len: usize) -> Result<Self> {
+    fn clone_range(&self, device: &CudaDevice, start: usize, len: usize) -> Result<Self> {
+        let stream = device.cuda_stream();
+        if len > 0 {
+            device.record_d2d();
+        }
         // The enum view cannot be projected with a common method, so dispatch
         // once here and keep the actual copy typed.
         match self.view(start, len)? {
@@ -269,7 +280,7 @@ impl CudaStorage {
     }
 
     pub(crate) fn ones(device: Arc<CudaDevice>, dtype: DType, len: usize) -> Result<Self> {
-        let data = CudaStorageSlice::ones(&device.cuda_stream(), dtype, len)?;
+        let data = CudaStorageSlice::ones(device.as_ref(), dtype, len)?;
         Ok(Self { data, device })
     }
 
@@ -284,6 +295,9 @@ impl CudaStorage {
         device: Arc<CudaDevice>,
         data: &[T],
     ) -> Result<CudaSlice<T>> {
+        if !data.is_empty() {
+            device.record_h2d();
+        }
         device
             .cuda_stream()
             .clone_htod(data)
@@ -359,7 +373,7 @@ impl CudaStorage {
 
     pub(crate) fn try_clone(&self) -> Result<Self> {
         Ok(Self {
-            data: self.data.try_clone()?,
+            data: self.data.try_clone(self.device.as_ref())?,
             device: Arc::clone(&self.device),
         })
     }
@@ -369,7 +383,7 @@ impl CudaStorage {
 
         macro_rules! copy_device {
             ($variant:ident, $ty:ty, $data:expr) => {{
-                let values = copy_device_values($data, layout, &self.device.cuda_stream())?;
+                let values = copy_device_values($data, layout, self.device.as_ref())?;
                 <$ty as WithDType>::into_cpu_storage(values)
             }};
         }
@@ -400,14 +414,12 @@ impl CudaStorage {
         }
 
         if layout.checked_elem_count()? == 0 {
-            let data = self.data.clone_range(&device.cuda_stream(), 0, 0)?;
+            let data = self.data.clone_range(device.as_ref(), 0, 0)?;
             return Ok(Self::from_data(device, data));
         }
 
         if let Some((start, end)) = layout.contiguous_offsets() {
-            let data = self
-                .data
-                .clone_range(&device.cuda_stream(), start, end - start)?;
+            let data = self.data.clone_range(device.as_ref(), start, end - start)?;
             return Ok(Self::from_data(device, data));
         }
 
@@ -469,7 +481,7 @@ fn copy_host_values<T: DeviceRepr + Copy>(
 fn copy_device_values<T: DeviceRepr + Copy>(
     data: &CudaSlice<T>,
     layout: &Layout,
-    stream: &Arc<CudaStream>,
+    device: &CudaDevice,
 ) -> Result<Vec<T>> {
     if layout.checked_elem_count()? == 0 {
         return Ok(Vec::new());
@@ -479,14 +491,22 @@ fn copy_device_values<T: DeviceRepr + Copy>(
         let view = data
             .try_slice(start..end)
             .ok_or(Error::StorageOutOfBounds)?;
-        return stream
+        let values = device
+            .cuda_stream()
             .clone_dtoh(&view)
             .map_err(|error| cuda_error("device to host copy", error));
+        let values = values?;
+        device.record_d2h();
+        device.synchronize()?;
+        return Ok(values);
     }
 
-    let values = stream
+    let values = device
+        .cuda_stream()
         .clone_dtoh(data)
         .map_err(|error| cuda_error("device to host copy", error))?;
+    device.record_d2h();
+    device.synchronize()?;
     logical_values(&values, layout)
 }
 

@@ -243,9 +243,12 @@ macro_rules! impl_with_dtype {
             ) -> Result<Vec<Self>> {
                 match &storage.data {
                     crate::cuda_backend::CudaStorageSlice::$variant(data) => {
-                        data.stream().clone_dtoh(data).map_err(|error| {
+                        let values = data.stream().clone_dtoh(data).map_err(|error| {
                             crate::cuda_backend::cuda_error("device to host copy", error)
-                        })
+                        })?;
+                        storage.device().record_d2h();
+                        storage.device().synchronize()?;
+                        Ok(values)
                     }
                     _ => Err(Error::UnexpectedDType {
                         expected: DType::$variant,

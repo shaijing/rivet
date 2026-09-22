@@ -82,6 +82,17 @@ impl Device {
         }
     }
 
+    /// Waits for work submitted to this device. CPU is already synchronous;
+    /// CUDA waits on its single default stream.
+    pub fn synchronize(&self) -> Result<()> {
+        match self {
+            Self::Cpu => Ok(()),
+
+            #[cfg(feature = "cuda")]
+            Self::Cuda(device) => device.synchronize(),
+        }
+    }
+
     /// Allocates backend storage through the logical device dispatch boundary.
     ///
     /// Tensor constructors should use these helpers instead of matching on a

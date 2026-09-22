@@ -4,6 +4,12 @@ use crate::{DType, Device, Result};
 use std::sync::Arc;
 
 impl Tensor {
+    /// Waits for all asynchronous work associated with this tensor's device.
+    /// CPU tensors are already complete, so this is a no-op on CPU.
+    pub fn synchronize(&self) -> Result<()> {
+        self.device().synchronize()
+    }
+
     /// Copies the logical tensor to `device` and returns a contiguous result.
     /// Calling this with the same logical device keeps the existing shared
     /// storage, matching the cheap-view behavior of the tensor API.

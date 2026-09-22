@@ -7,6 +7,6 @@ mod device;
 mod module;
 mod storage;
 
-pub use device::CudaDevice;
+pub use device::{CudaDebugStats, CudaDevice};
 pub(crate) use storage::cuda_error;
 pub use storage::{CudaStorage, CudaStorageSlice, CudaStorageView};

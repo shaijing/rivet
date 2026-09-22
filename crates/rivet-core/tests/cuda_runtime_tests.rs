@@ -1,6 +1,15 @@
 #![cfg(feature = "cuda")]
 
+use std::sync::Arc;
+
 use rivet_core::{CudaDevice, DType, Device, DeviceLocation, Error, Tensor};
+
+fn cuda_runtime(device: &Device) -> Arc<CudaDevice> {
+    match device {
+        Device::Cuda(runtime) => Arc::clone(runtime),
+        Device::Cpu => panic!("expected CUDA device"),
+    }
+}
 
 #[test]
 fn cuda_device_owns_a_default_stream_and_synchronizes() {
@@ -138,4 +147,49 @@ fn cuda_contiguous_materialization_and_same_device_copy_are_explicit() {
     let shared = source.to_device(&same_cuda).unwrap();
     assert!(shared.same_storage(&source));
     assert_eq!(shared.to_vec::<u32>().unwrap(), vec![0, 1, 2, 3, 4, 5]);
+}
+
+#[test]
+fn cuda_transfers_stay_async_until_readback_or_explicit_sync() {
+    let device = Device::cuda(0).unwrap();
+    let runtime = cuda_runtime(&device);
+    runtime.reset_debug_stats();
+
+    let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], [3], &device).unwrap();
+    let output = input.force_contiguous().unwrap();
+    let queued = runtime.debug_stats();
+
+    assert_eq!(queued.synchronize_count, 0);
+    assert_eq!(queued.h2d_count, 1);
+    assert_eq!(queued.d2d_count, 1);
+    assert_eq!(queued.d2h_count, 0);
+    assert_eq!(queued.kernel_launch_count, 0);
+
+    output.synchronize().unwrap();
+    assert_eq!(runtime.debug_stats().synchronize_count, 1);
+
+    assert_eq!(output.to_vec::<f32>().unwrap(), vec![1.0, 2.0, 3.0]);
+    let readback = runtime.debug_stats();
+    assert_eq!(readback.synchronize_count, 2);
+    assert_eq!(readback.d2h_count, 1);
+}
+
+#[test]
+fn cuda_allocation_lifetime_survives_input_drop_before_sync() {
+    let device = Device::cuda(0).unwrap();
+    let runtime = cuda_runtime(&device);
+    let mut outputs = Vec::with_capacity(1000);
+
+    for value in 0..1000 {
+        let input = Tensor::from_vec(vec![value as f32; 64], [64], &device).unwrap();
+        let output = input.force_contiguous().unwrap();
+        drop(input);
+        outputs.push(output);
+    }
+
+    runtime.synchronize().unwrap();
+
+    for (value, output) in outputs.iter().enumerate() {
+        assert_eq!(output.to_vec::<f32>().unwrap(), vec![value as f32; 64]);
+    }
 }
