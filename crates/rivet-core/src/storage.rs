@@ -44,7 +44,9 @@ impl Storage {
             }
 
             #[cfg(feature = "cuda")]
-            (Self::Cuda(_), Self::Cuda(_)) => unsupported_cuda("binary"),
+            (Self::Cuda(lhs), Self::Cuda(rhs)) => {
+                Ok(Self::Cuda(lhs.binary(lhs_layout, rhs, rhs_layout, op)?))
+            }
 
             #[cfg(feature = "cuda")]
             _ => Err(Error::DeviceMismatch),
@@ -289,7 +291,7 @@ impl Storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.unary(layout, op)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => unsupported_cuda("unary"),
+            Self::Cuda(storage) => Ok(Self::Cuda(storage.unary(layout, op)?)),
         }
     }
 

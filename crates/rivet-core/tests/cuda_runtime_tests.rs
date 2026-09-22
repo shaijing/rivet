@@ -72,9 +72,38 @@ fn unsupported_cuda_math_returns_an_explicit_error() {
     let tensor = Tensor::ones([2], DType::F32, &device).unwrap();
 
     assert!(matches!(
-        tensor.add(&tensor),
-        Err(Error::UnsupportedCudaOp { op: "binary" })
+        tensor.abs(),
+        Err(Error::UnsupportedCudaOp { op: "unary_abs" })
     ));
+}
+
+#[test]
+fn cuda_f32_math_dispatches_static_kernels_without_intermediate_sync() {
+    let device = Device::cuda(0).unwrap();
+    let runtime = cuda_runtime(&device);
+    runtime.reset_debug_stats();
+
+    let lhs = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], [4], &device).unwrap();
+    let rhs = Tensor::from_vec(vec![10.0f32, 20.0, 30.0, 40.0], [4], &device).unwrap();
+    let negated = {
+        let sum = lhs.add(&rhs).unwrap();
+        let product = sum.mul(&rhs).unwrap();
+        product.neg().unwrap()
+    };
+
+    let queued = runtime.debug_stats();
+    assert_eq!(queued.synchronize_count, 0);
+    assert_eq!(queued.h2d_count, 2);
+    assert_eq!(queued.d2h_count, 0);
+    assert_eq!(queued.kernel_launch_count, 3);
+
+    assert_eq!(
+        negated.to_vec::<f32>().unwrap(),
+        vec![-110.0, -440.0, -990.0, -1760.0]
+    );
+    let completed = runtime.debug_stats();
+    assert_eq!(completed.synchronize_count, 1);
+    assert_eq!(completed.d2h_count, 1);
 }
 
 #[test]

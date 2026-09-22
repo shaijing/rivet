@@ -6,9 +6,11 @@ use half::{bf16, f16};
 
 use crate::backend::BackendStorage;
 use crate::cpu_backend::{CpuStorage, CpuStorageRef};
+use crate::ops::{BinaryOp, UnaryOp};
 use crate::{DType, Error, Layout, Result, WithDType};
 
 use super::device::CudaDevice;
+use super::kernels;
 
 /// Typed CUDA allocation storage. Keeping the dtype in the enum preserves
 /// static dispatch once an operation selects a concrete element type.
@@ -405,6 +407,63 @@ impl CudaStorage {
         self.copy_to_device(Arc::clone(&self.device), layout)
     }
 
+    pub(crate) fn unary(&self, layout: &Layout, op: UnaryOp) -> Result<Self> {
+        let numel = layout.checked_elem_count()?;
+        let src = self.f32_view(layout, "unary")?;
+        let mut output = CudaStorageSlice::zeros(&self.device.cuda_stream(), DType::F32, numel)?;
+        match &mut output {
+            CudaStorageSlice::F32(dst) => {
+                let function = match op {
+                    UnaryOp::Neg => "neg_f32",
+                    UnaryOp::Abs => {
+                        return Err(Error::UnsupportedCudaOp { op: "unary_abs" });
+                    }
+                };
+                kernels::unary_f32(self.device.as_ref(), function, &src, dst, numel)?;
+            }
+            _ => unreachable!("F32 output allocation returned another dtype"),
+        }
+        Ok(Self::from_data(Arc::clone(&self.device), output))
+    }
+
+    pub(crate) fn binary(
+        &self,
+        lhs_layout: &Layout,
+        rhs: &Self,
+        rhs_layout: &Layout,
+        op: BinaryOp,
+    ) -> Result<Self> {
+        if !self.device.same_device(&rhs.device) {
+            return Err(Error::DeviceMismatch);
+        }
+        let numel = lhs_layout.checked_elem_count()?;
+        if numel != rhs_layout.checked_elem_count()? {
+            return Err(Error::ShapeMismatchBinary {
+                lhs: lhs_layout.dims().to_vec(),
+                rhs: rhs_layout.dims().to_vec(),
+            });
+        }
+        let lhs = self.f32_view(lhs_layout, "binary")?;
+        let rhs = rhs.f32_view(rhs_layout, "binary")?;
+        let mut output = CudaStorageSlice::zeros(&self.device.cuda_stream(), DType::F32, numel)?;
+        match &mut output {
+            CudaStorageSlice::F32(dst) => {
+                let function = match op {
+                    BinaryOp::Add => "add_f32",
+                    BinaryOp::Mul => "mul_f32",
+                    _ => {
+                        return Err(Error::UnsupportedCudaOp {
+                            op: "binary_function",
+                        });
+                    }
+                };
+                kernels::binary_f32(self.device.as_ref(), function, &lhs, &rhs, dst, numel)?;
+            }
+            _ => unreachable!("F32 output allocation returned another dtype"),
+        }
+        Ok(Self::from_data(Arc::clone(&self.device), output))
+    }
+
     pub(crate) fn copy_to_device(&self, device: Arc<CudaDevice>, layout: &Layout) -> Result<Self> {
         crate::storage::validate_layout_for_storage(layout, self.len())?;
         if !self.device.same_device(&device) {
@@ -431,6 +490,22 @@ impl CudaStorage {
 
     pub(crate) fn to_dtype(&self, _layout: &Layout, _dtype: DType) -> Result<Self> {
         Err(Error::UnsupportedCudaOp { op: "to_dtype" })
+    }
+
+    fn f32_view(&self, layout: &Layout, op: &'static str) -> Result<CudaView<'_, f32>> {
+        let (start, end) = layout
+            .contiguous_offsets()
+            .ok_or(Error::UnsupportedCudaOp { op })?;
+        match &self.data {
+            CudaStorageSlice::F32(_) => match self.data.view(start, end - start)? {
+                CudaStorageView::F32(view) => Ok(view),
+                _ => unreachable!("F32 storage returned another view dtype"),
+            },
+            data => Err(Error::UnexpectedDType {
+                expected: DType::F32,
+                actual: data.dtype(),
+            }),
+        }
     }
 }
 

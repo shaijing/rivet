@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cudarc::cublas::CudaBlas;
-use cudarc::driver::{CudaContext, CudaStream};
+use cudarc::driver::{CudaContext, CudaFunction, CudaStream};
 
 use super::module::ModuleCache;
 use super::storage::CudaStorage;
@@ -64,7 +64,6 @@ pub struct CudaDevice {
     context: Arc<CudaContext>,
     stream: Arc<CudaStream>,
     blas: Arc<CudaBlas>,
-    #[allow(dead_code)]
     modules: ModuleCache,
     debug: Arc<CudaDebugCounters>,
 }
@@ -102,6 +101,22 @@ impl CudaDevice {
 
     pub fn cublas_handle(&self) -> Arc<CudaBlas> {
         Arc::clone(&self.blas)
+    }
+
+    /// Returns a cached function from a statically compiled PTX module.
+    pub fn get_or_load_func(
+        &self,
+        module: rivet_kernels::Module,
+        function: &str,
+    ) -> Result<CudaFunction> {
+        self.modules
+            .get_or_load_func(&self.context, module, function)
+    }
+
+    /// Returns `(loaded_modules, cached_functions)` for diagnostics and cache
+    /// regression tests.
+    pub fn debug_module_counts(&self) -> (usize, usize) {
+        self.modules.counts()
     }
 
     /// Returns whether cudarc can use stream-ordered allocation/free for this

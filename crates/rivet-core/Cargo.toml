@@ -19,9 +19,10 @@ criterion = "0.8.2"
 [features]
 default = []
 
-# CUDA runtime, context, default stream, and cuBLAS handle. CUDA is optional
-# so the CPU-only build does not require the CUDA toolkit or driver libraries.
-cuda = ["dep:cudarc", "dep:rivet-kernels"]
+# CUDA runtime, context, default stream, cuBLAS handle, and static PTX loading.
+# `cudarc/nvrtc` only exposes its Ptx wrapper here; Rivet does not compile
+# source at runtime in this feature.
+cuda = ["dep:cudarc", "dep:rivet-kernels", "cudarc/nvrtc"]
 
 # Optional runtime PTX compilation; static CUDA runtime support does not depend
 # on NVRTC.

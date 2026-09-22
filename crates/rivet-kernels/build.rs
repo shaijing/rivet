@@ -1,6 +1,25 @@
 use cudaforge::{KernelBuilder, Result};
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+fn kernel_builder() -> KernelBuilder {
+    println!("cargo:rerun-if-env-changed=RIVET_CUDA_ROOT");
+
+    if let Ok(cuda_root) = env::var("RIVET_CUDA_ROOT") {
+        return KernelBuilder::new().cuda_root(cuda_root);
+    }
+
+    // rivet-core's cudarc feature is pinned to the CUDA 13.3 API profile.
+    // Prefer the matching toolkit when it is installed even if a newer nvcc
+    // happens to appear first in PATH: newer toolchains can emit PTX that an
+    // older driver rejects before a kernel is launched.
+    let compatible_root = Path::new("/usr/local/cuda-13.3");
+    if compatible_root.join("bin/nvcc").is_file() {
+        return KernelBuilder::new().cuda_root(compatible_root);
+    }
+
+    KernelBuilder::new()
+}
 
 fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
@@ -17,11 +36,12 @@ fn main() -> Result<()> {
         .map(|arch| arch.base())
         .unwrap_or(80);
 
-    let bindings = KernelBuilder::new()
+    let bindings = kernel_builder()
         .compute_cap(compute_cap)
         .source_dir("src")
         .arg("--expt-relaxed-constexpr")
         .arg("-std=c++17")
+        .arg("-allow-unsupported-compiler")
         .arg("-O3")
         .build_ptx()?;
     bindings.write(ptx_path)?;

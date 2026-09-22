@@ -4,6 +4,7 @@
 //! and keeps unsupported tensor operations explicit until their kernel phases.
 
 mod device;
+mod kernels;
 mod module;
 mod storage;
 
