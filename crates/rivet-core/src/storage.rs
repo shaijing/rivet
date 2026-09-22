@@ -63,7 +63,7 @@ impl Storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.binary_scalar(layout, scalar, op)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => unsupported_cuda("binary_scalar"),
+            Self::Cuda(storage) => Ok(Self::Cuda(storage.binary_scalar(layout, scalar, op)?)),
         }
     }
 
@@ -308,7 +308,9 @@ impl Storage {
             }
 
             #[cfg(feature = "cuda")]
-            (Self::Cuda(_), Self::Cuda(_)) => unsupported_cuda("cmp"),
+            (Self::Cuda(lhs), Self::Cuda(rhs)) => {
+                Ok(Self::Cuda(lhs.cmp(lhs_layout, rhs, rhs_layout, op)?))
+            }
 
             #[cfg(feature = "cuda")]
             _ => Err(Error::DeviceMismatch),
@@ -325,7 +327,7 @@ impl Storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.cmp_scalar(layout, scalar, op)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => unsupported_cuda("cmp_scalar"),
+            Self::Cuda(storage) => Ok(Self::Cuda(storage.cmp_scalar(layout, scalar, op)?)),
         }
     }
 
