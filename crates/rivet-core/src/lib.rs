@@ -2,6 +2,8 @@ pub mod backend;
 #[cfg(feature = "bench-internals")]
 pub mod bench;
 pub mod cpu_backend;
+#[cfg(feature = "cuda")]
+pub mod cuda_backend;
 pub mod device;
 pub mod dtype;
 pub mod error;
@@ -14,6 +16,8 @@ pub mod tensor;
 
 pub use cpu_backend::CPU_STORAGE_ALIGNMENT;
 pub use cpu_backend::{CpuDevice, CpuStorage, CpuStorageMutRef, CpuStorageRef};
+#[cfg(feature = "cuda")]
+pub use cuda_backend::CudaDevice;
 pub use device::{Device, DeviceLocation};
 pub use dtype::{DType, ExactOutput, WithDType};
 pub use error::{Error, Result};

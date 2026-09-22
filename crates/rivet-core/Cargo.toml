@@ -7,6 +7,7 @@ repository.workspace = true
 description = "Core tensor types, storage, layouts, and operations for Rivet"
 
 [dependencies]
+cudarc = { workspace = true, optional = true }
 gemm = { version = "0.19.0", default-features = false, features = ["std", "rayon"] }
 half.workspace = true
 thiserror.workspace = true
@@ -15,6 +16,16 @@ thiserror.workspace = true
 criterion = "0.8.2"
 
 [features]
+default = []
+
+# CUDA runtime, context, default stream, and cuBLAS handle. CUDA is optional
+# so the CPU-only build does not require the CUDA toolkit or driver libraries.
+cuda = ["dep:cudarc"]
+
+# Optional runtime PTX compilation; static CUDA runtime support does not depend
+# on NVRTC.
+cuda-nvrtc = ["cuda", "cudarc/nvrtc"]
+
 # Makes narrowly scoped internal measurement helpers available to Criterion
 # targets without committing them to the normal public API.
 bench-internals = []

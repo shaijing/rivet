@@ -47,6 +47,18 @@ pub enum Error {
     #[error("device mismatch")]
     DeviceMismatch,
 
+    #[cfg(feature = "cuda")]
+    #[error("CUDA initialization failed: {0}")]
+    CudaInitializationFailed(String),
+
+    #[cfg(feature = "cuda")]
+    #[error("CUDA synchronization failed: {0}")]
+    CudaSynchronizationFailed(String),
+
+    #[cfg(feature = "cuda")]
+    #[error("CUDA storage backend is not available for {op}")]
+    CudaStorageUnavailable { op: &'static str },
+
     #[error("storage access out of bounds")]
     StorageOutOfBounds,
 
