@@ -10,6 +10,7 @@ description = "Core tensor types, storage, layouts, and operations for Rivet"
 cudarc = { workspace = true, optional = true }
 gemm = { version = "0.19.0", default-features = false, features = ["std", "rayon"] }
 half.workspace = true
+rivet-kernels = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
@@ -20,7 +21,7 @@ default = []
 
 # CUDA runtime, context, default stream, and cuBLAS handle. CUDA is optional
 # so the CPU-only build does not require the CUDA toolkit or driver libraries.
-cuda = ["dep:cudarc"]
+cuda = ["dep:cudarc", "dep:rivet-kernels"]
 
 # Optional runtime PTX compilation; static CUDA runtime support does not depend
 # on NVRTC.

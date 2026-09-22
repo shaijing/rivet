@@ -1,0 +1,18 @@
+[package]
+name = "rivet-kernels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Static CUDA kernels for Rivet"
+
+[features]
+default = []
+
+# Reserved for the future cuTile-based kernel set. Keeping this feature at the
+# kernel-crate boundary mirrors Candle without making cuTile a runtime
+# dependency of rivet-core.
+cutile = []
+
+[build-dependencies]
+cudaforge = "0.1.2"

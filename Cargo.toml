@@ -2,6 +2,7 @@
 members = [
     "crates/rivet-core",
     "crates/rivet-data",
+    "crates/rivet-kernels",
     "crates/rivet-python",
     "crates/rivet-vision",
 ]
@@ -34,6 +35,7 @@ lance = {version = "11.0.0", default-features = false}
 memmap2 = "0.9.11"
 rivet-core = { path = "crates/rivet-core" }
 rivet-data = { path = "crates/rivet-data", default-features = false }
+rivet-kernels = { path = "crates/rivet-kernels" }
 rivet-vision = { path = "crates/rivet-vision", default-features = false }
 thiserror = "2.0.17"
 tokio = { version = "1.53.1", features = ["full"] }
