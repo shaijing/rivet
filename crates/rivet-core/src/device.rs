@@ -3,12 +3,12 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::backend::BackendDevice;
-use crate::cpu_backend::{buffer::AlignedBuffer, CpuDevice};
+use crate::cpu_backend::{CpuDevice, buffer::AlignedBuffer};
 use crate::dtype::{ExactOutput, IntoCpuStorageBuffer};
 use crate::{DType, Result, Shape, Storage, WithDType};
 
 #[cfg(feature = "cuda")]
-use crate::{cuda_backend::CudaDevice, Error};
+use crate::{Error, cuda_backend::CudaDevice};
 
 /// Logical device locations. A CUDA location identifies a physical GPU ordinal;
 /// context and stream identity remain runtime details of `CudaDevice`.
@@ -86,14 +86,13 @@ impl Device {
     ///
     /// Tensor constructors should use these helpers instead of matching on a
     /// concrete backend and wrapping the result in `Storage` themselves. This
-    /// keeps the CPU-only implementation explicit while leaving one place to
-    /// add CUDA allocation dispatch later.
+    /// keeps backend allocation and runtime dispatch in one place.
     pub(crate) fn zeros(&self, shape: &Shape, dtype: DType) -> Result<Storage> {
         match self {
             Self::Cpu => Ok(Storage::Cpu(CpuDevice.zeros(shape, dtype)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => Err(Error::CudaStorageUnavailable { op: "zeros" }),
+            Self::Cuda(device) => Ok(Storage::Cuda(device.zeros(shape, dtype)?)),
         }
     }
 
@@ -102,7 +101,7 @@ impl Device {
             Self::Cpu => Ok(Storage::Cpu(CpuDevice.ones(shape, dtype)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => Err(Error::CudaStorageUnavailable { op: "ones" }),
+            Self::Cuda(device) => Ok(Storage::Cuda(device.ones(shape, dtype)?)),
         }
     }
 
@@ -111,9 +110,10 @@ impl Device {
             Self::Cpu => Ok(Storage::Cpu(CpuDevice.storage_from_vec(data)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => Err(Error::CudaStorageUnavailable {
-                op: "storage_from_vec",
-            }),
+            Self::Cuda(device) => Ok(Storage::Cuda(T::into_cuda_storage(
+                data,
+                Arc::clone(device),
+            )?)),
         }
     }
 
@@ -122,9 +122,10 @@ impl Device {
             Self::Cpu => Ok(Storage::Cpu(CpuDevice.storage_from_slice(data)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => Err(Error::CudaStorageUnavailable {
-                op: "storage_from_slice",
-            }),
+            Self::Cuda(device) => Ok(Storage::Cuda(T::into_cuda_storage(
+                data.to_vec(),
+                Arc::clone(device),
+            )?)),
         }
     }
 
@@ -138,7 +139,7 @@ impl Device {
             )),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => Err(Error::CudaStorageUnavailable {
+            Self::Cuda(_) => Err(Error::UnsupportedCudaOp {
                 op: "storage_from_aligned_buffer",
             }),
         }
@@ -153,7 +154,7 @@ impl Device {
             Self::Cpu => Ok(Storage::Cpu(T::into_cpu_storage_iter(data)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => Err(Error::CudaStorageUnavailable {
+            Self::Cuda(_) => Err(Error::UnsupportedCudaOp {
                 op: "storage_from_exact_iter",
             }),
         }
@@ -168,7 +169,7 @@ impl Device {
             Self::Cpu => Ok(Storage::Cpu(T::try_into_cpu_storage_iter(data)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => Err(Error::CudaStorageUnavailable {
+            Self::Cuda(_) => Err(Error::UnsupportedCudaOp {
                 op: "storage_from_exact_try_iter",
             }),
         }
@@ -183,7 +184,7 @@ impl Device {
             Self::Cpu => Ok(Storage::Cpu(T::into_cpu_storage_with(len, fill)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => Err(Error::CudaStorageUnavailable {
+            Self::Cuda(_) => Err(Error::UnsupportedCudaOp {
                 op: "storage_from_exact_fn",
             }),
         }
@@ -198,7 +199,7 @@ impl Device {
             Self::Cpu => Ok(Storage::Cpu(T::into_cpu_storage_writer(len, fill)?)),
 
             #[cfg(feature = "cuda")]
-            Self::Cuda(_) => Err(Error::CudaStorageUnavailable {
+            Self::Cuda(_) => Err(Error::UnsupportedCudaOp {
                 op: "storage_from_exact_writer",
             }),
         }

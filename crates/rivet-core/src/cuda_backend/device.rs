@@ -5,7 +5,9 @@ use cudarc::cublas::CudaBlas;
 use cudarc::driver::{CudaContext, CudaStream};
 
 use super::module::ModuleCache;
-use crate::{Error, Result};
+use super::storage::CudaStorage;
+use crate::backend::BackendDevice;
+use crate::{DType, Error, Result, Shape, WithDType};
 
 /// CUDA execution resources owned by one logical Rivet device.
 ///
@@ -62,6 +64,26 @@ impl CudaDevice {
         self.context
             .synchronize()
             .map_err(cuda_synchronization_error)
+    }
+}
+
+impl BackendDevice for CudaDevice {
+    type Storage = CudaStorage;
+
+    fn zeros(&self, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        CudaStorage::zeros(Arc::new(self.clone()), dtype, shape.checked_elem_count()?)
+    }
+
+    fn ones(&self, shape: &Shape, dtype: DType) -> Result<Self::Storage> {
+        CudaStorage::ones(Arc::new(self.clone()), dtype, shape.checked_elem_count()?)
+    }
+
+    fn storage_from_vec<T: WithDType>(&self, data: Vec<T>) -> Result<Self::Storage> {
+        T::into_cuda_storage(data, Arc::new(self.clone()))
+    }
+
+    fn storage_from_slice<T: WithDType>(&self, data: &[T]) -> Result<Self::Storage> {
+        T::into_cuda_storage(data.to_vec(), Arc::new(self.clone()))
     }
 }
 

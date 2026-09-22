@@ -59,6 +59,14 @@ pub enum Error {
     #[error("CUDA storage backend is not available for {op}")]
     CudaStorageUnavailable { op: &'static str },
 
+    #[cfg(feature = "cuda")]
+    #[error("unsupported CUDA operation: {op}")]
+    UnsupportedCudaOp { op: &'static str },
+
+    #[cfg(feature = "cuda")]
+    #[error("CUDA operation {op} failed: {message}")]
+    CudaOperationFailed { op: &'static str, message: String },
+
     #[error("storage access out of bounds")]
     StorageOutOfBounds,
 

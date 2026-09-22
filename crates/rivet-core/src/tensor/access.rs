@@ -138,6 +138,9 @@ impl Tensor {
     pub fn storage_base_ptr(&self) -> *const u8 {
         match self.storage() {
             Storage::Cpu(storage) => storage.base_ptr(),
+
+            #[cfg(feature = "cuda")]
+            Storage::Cuda(storage) => storage.base_ptr(),
         }
     }
 
@@ -145,6 +148,9 @@ impl Tensor {
     pub fn storage_alignment(&self) -> usize {
         match self.storage() {
             Storage::Cpu(storage) => storage.base_alignment(),
+
+            #[cfg(feature = "cuda")]
+            Storage::Cuda(storage) => storage.base_alignment(),
         }
     }
 
@@ -154,6 +160,9 @@ impl Tensor {
     pub fn effective_alignment(&self) -> Result<usize> {
         match self.storage() {
             Storage::Cpu(storage) => storage.effective_alignment(self.layout()),
+
+            #[cfg(feature = "cuda")]
+            Storage::Cuda(storage) => storage.effective_alignment(self.layout()),
         }
     }
 
@@ -178,20 +187,18 @@ impl Tensor {
     /// physical storage order.
     pub fn to_vec<T: WithDType>(&self) -> Result<Vec<T>> {
         let storage = self.storage();
-        let cpu_storage = match &*storage {
-            Storage::Cpu(storage) => storage.as_ref(),
-        };
-        let values = T::cpu_storage_ref_as_slice(cpu_storage)?;
-        if let Some((start, end)) = self.layout().contiguous_offsets() {
-            return values
-                .get(start..end)
-                .map(ToOwned::to_owned)
-                .ok_or(Error::StorageOutOfBounds);
+        match &*storage {
+            Storage::Cpu(storage) => {
+                let values = T::cpu_storage_ref_as_slice(storage.as_ref())?;
+                logical_values(values, self.layout())
+            }
+
+            #[cfg(feature = "cuda")]
+            Storage::Cuda(storage) => {
+                let values = T::cuda_storage_to_vec(storage)?;
+                logical_values(&values, self.layout())
+            }
         }
-        self.layout()
-            .strided_index()
-            .map(|index| values.get(index).copied().ok_or(Error::StorageOutOfBounds))
-            .collect()
     }
 
     /// Visits values in logical row-major order without allocating a second
@@ -202,18 +209,19 @@ impl Tensor {
         T: WithDType,
         F: FnMut(T),
     {
-        let storage = self.storage();
-        let cpu_storage = match &*storage {
-            Storage::Cpu(storage) => storage.as_ref(),
-        };
-        let values = T::cpu_storage_ref_as_slice(cpu_storage)?;
-        if let Some((start, end)) = self.layout().contiguous_offsets() {
-            for &value in values.get(start..end).ok_or(Error::StorageOutOfBounds)? {
-                f(value);
+        match self.storage() {
+            Storage::Cpu(storage) => {
+                let values = T::cpu_storage_ref_as_slice(storage.as_ref())?;
+                for value in logical_values(values, self.layout())? {
+                    f(value);
+                }
             }
-        } else {
-            for index in self.layout().strided_index() {
-                f(*values.get(index).ok_or(Error::StorageOutOfBounds)?);
+
+            #[cfg(feature = "cuda")]
+            Storage::Cuda(_) => {
+                for value in self.to_vec::<T>()? {
+                    f(value);
+                }
             }
         }
         Ok(())
@@ -225,10 +233,14 @@ impl Tensor {
         f: impl FnOnce(CpuStorageRef<'_>, &Layout) -> Result<R>,
     ) -> Result<R> {
         let storage = self.storage();
-        let cpu_storage = match &*storage {
-            Storage::Cpu(storage) => storage.as_ref(),
-        };
-        f(cpu_storage, self.layout())
+        match &*storage {
+            Storage::Cpu(storage) => f(storage.as_ref(), self.layout()),
+
+            #[cfg(feature = "cuda")]
+            Storage::Cuda(_) => Err(Error::UnsupportedCudaOp {
+                op: "with_cpu_storage",
+            }),
+        }
     }
 
     /// Reads one element from a rank-1 tensor without constructing a scalar
@@ -340,4 +352,17 @@ impl Tensor {
     pub(super) fn storage(&self) -> &Storage {
         &self.0.storage
     }
+}
+
+fn logical_values<T: Copy>(values: &[T], layout: &Layout) -> Result<Vec<T>> {
+    if let Some((start, end)) = layout.contiguous_offsets() {
+        return values
+            .get(start..end)
+            .map(ToOwned::to_owned)
+            .ok_or(Error::StorageOutOfBounds);
+    }
+    layout
+        .strided_index()
+        .map(|index| values.get(index).copied().ok_or(Error::StorageOutOfBounds))
+        .collect()
 }

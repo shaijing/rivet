@@ -2,8 +2,12 @@ use crate::cpu_backend::{
     CpuStorage, CpuStorageRef,
     buffer::{AlignedBuffer, AlignedBufferBuilder},
 };
+#[cfg(feature = "cuda")]
+use crate::cuda_backend::{CudaDevice, CudaStorage};
 use crate::{Error, Result};
 use half::{bf16, f16};
+#[cfg(feature = "cuda")]
+use std::sync::Arc;
 
 /// The runtime element types supported by a Rivet tensor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -90,6 +94,22 @@ pub trait WithDType: Copy + Send + Sync + 'static {
     }
 
     fn cpu_storage_as_mut_slice(storage: &mut CpuStorage) -> Result<&mut [Self]>;
+
+    #[cfg(feature = "cuda")]
+    fn into_cuda_storage(data: Vec<Self>, device: Arc<CudaDevice>) -> Result<CudaStorage> {
+        let _ = (data, device);
+        Err(Error::UnsupportedCudaOp {
+            op: "storage_from_vec",
+        })
+    }
+
+    #[cfg(feature = "cuda")]
+    fn cuda_storage_to_vec(storage: &CudaStorage) -> Result<Vec<Self>> {
+        let _ = storage;
+        Err(Error::UnsupportedCudaOp {
+            op: "device_to_host_copy",
+        })
+    }
 }
 
 /// A statically dispatched writer for a fixed-size tensor output.
@@ -195,6 +215,38 @@ macro_rules! impl_with_dtype {
             fn cpu_storage_as_mut_slice(storage: &mut CpuStorage) -> Result<&mut [Self]> {
                 match storage {
                     CpuStorage::$variant(data) => Ok(data.as_mut_slice()),
+                    _ => Err(Error::UnexpectedDType {
+                        expected: DType::$variant,
+                        actual: storage.dtype(),
+                    }),
+                }
+            }
+
+            #[cfg(feature = "cuda")]
+            fn into_cuda_storage(
+                data: Vec<Self>,
+                device: std::sync::Arc<crate::cuda_backend::CudaDevice>,
+            ) -> Result<crate::cuda_backend::CudaStorage> {
+                let allocation = crate::cuda_backend::CudaStorage::from_host_vec(
+                    std::sync::Arc::clone(&device),
+                    data,
+                )?;
+                Ok(crate::cuda_backend::CudaStorage::from_data(
+                    device,
+                    crate::cuda_backend::CudaStorageSlice::$variant(allocation),
+                ))
+            }
+
+            #[cfg(feature = "cuda")]
+            fn cuda_storage_to_vec(
+                storage: &crate::cuda_backend::CudaStorage,
+            ) -> Result<Vec<Self>> {
+                match &storage.data {
+                    crate::cuda_backend::CudaStorageSlice::$variant(data) => {
+                        data.stream().clone_dtoh(data).map_err(|error| {
+                            crate::cuda_backend::cuda_error("device to host copy", error)
+                        })
+                    }
                     _ => Err(Error::UnexpectedDType {
                         expected: DType::$variant,
                         actual: storage.dtype(),
