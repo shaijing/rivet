@@ -14,6 +14,9 @@ pub struct RuntimeConfig {
     /// Maximum retained payload bytes on each persistent stage-graph edge.
     /// Oversized items fail explicitly instead of exceeding this bound.
     pub stage_queue_max_bytes: usize,
+    /// Collect per-node timings and byte counts. Disabled by default to keep
+    /// steady-state execution free from profiling overhead.
+    pub profiling_enabled: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -22,6 +25,7 @@ impl Default for RuntimeConfig {
             num_workers: 0,
             prefetch_batches: 2,
             stage_queue_max_bytes: 512 * 1024 * 1024,
+            profiling_enabled: false,
         }
     }
 }

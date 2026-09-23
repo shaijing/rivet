@@ -794,6 +794,7 @@ mod tests {
             .workers(3)
             .prefetch_batches(4)
             .stage_queue_max_bytes(16_384)
+            .profiling(true)
             .seed(91)
             .epoch(7)
             .batch(2, true);
@@ -823,6 +824,7 @@ mod tests {
         assert_eq!(restored.runtime.num_workers, 3);
         assert_eq!(restored.runtime.prefetch_batches, 4);
         assert_eq!(restored.runtime.stage_queue_max_bytes, 16_384);
+        assert!(restored.runtime.profiling_enabled);
         assert_eq!(restored.epoch, 7);
         assert_eq!(restored.global_seed, Some(91));
     }

@@ -852,6 +852,12 @@ impl PyImagePipeline {
         }
     }
 
+    fn profiling(&self, enabled: bool) -> Self {
+        Self {
+            inner: self.inner.clone().profiling(enabled),
+        }
+    }
+
     fn execute(&self) -> PyResult<PyDataLoader> {
         Ok(PyDataLoader {
             inner: self.inner.clone().compile().map_err(to_py_err)?,

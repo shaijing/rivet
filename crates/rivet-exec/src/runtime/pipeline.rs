@@ -159,9 +159,9 @@ pub struct PhysicalPipelineExecutor<P: PhysicalPipelineAdapter> {
 
 struct CpuOnlyPipeline<P: PhysicalPipelineAdapter> {
     nodes: StageNodes,
-    max_bytes: usize,
-    workers: Option<WorkerPool<P::Sample, (P::Output, usize), P::Error>>,
-    pending: PrefetchCoordinator<(P::Output, usize)>,
+    chunk_size: usize,
+    workers: Option<WorkerPool<Vec<(usize, P::Sample)>, Vec<P::Output>, P::Error>>,
+    pending: PrefetchCoordinator<P::Output>,
 }
 
 impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
@@ -195,7 +195,25 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         num_workers: usize,
         prefetch_batches: usize,
         stage_queue_max_bytes: usize,
+        graph: PhysicalGraph,
+    ) -> RuntimeResult<Self> {
+        Self::with_graph_limits_and_profiling(
+            adapter,
+            num_workers,
+            prefetch_batches,
+            stage_queue_max_bytes,
+            graph,
+            false,
+        )
+    }
+
+    pub fn with_graph_limits_and_profiling(
+        adapter: Arc<P>,
+        num_workers: usize,
+        prefetch_batches: usize,
+        stage_queue_max_bytes: usize,
         mut graph: PhysicalGraph,
+        profiling_enabled: bool,
     ) -> RuntimeResult<Self> {
         let batch_size = adapter.batch_size();
         if batch_size == 0 {
@@ -349,12 +367,24 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             device_target,
             transfer_nodes,
         };
-        let profiler = PhysicalProfiler::default();
+        let profiler = if profiling_enabled {
+            PhysicalProfiler::enabled(graph.nodes().len())
+        } else {
+            PhysicalProfiler::default()
+        };
         // CPU-only graphs need cross-batch worker prefetch, but no persistent
         // source/decode/transfer/device stage threads.
         let cpu_only_path = nodes.transfer_nodes.is_empty() && !nodes.device_batch_kernel;
+        let chunk_size = if num_workers <= 1 {
+            batch_size
+        } else {
+            batch_size
+                .div_ceil(num_workers.saturating_mul(2))
+                .clamp(1, 8)
+        };
         let worker_capacity = if cpu_only_path && !adapter.is_batch_native() && num_workers > 0 {
             batch_size
+                .div_ceil(chunk_size)
                 .checked_mul(max_in_flight_batches)
                 .ok_or_else(|| runtime_error("worker queue capacity overflow"))?
         } else {
@@ -362,52 +392,23 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         };
         let (stages, cpu_only) = if cpu_only_path {
             let workers = if num_workers > 0 && !adapter.is_batch_native() {
-                let worker_adapter = Arc::clone(&adapter);
-                let worker_nodes = nodes.clone();
-                let worker_profiler = profiler.clone();
-                let decode_stage = nodes.decode != nodes.source;
-                Some(WorkerPool::new(
-                    num_workers,
-                    worker_capacity,
-                    move |sample, sample_index| {
-                        let sample = if decode_stage {
-                            let started = Instant::now();
-                            let input_bytes = worker_adapter.sample_bytes(&sample);
-                            let result = worker_adapter.decode_sample(sample, sample_index);
-                            let output_bytes = result
-                                .as_ref()
-                                .map(|sample| worker_adapter.sample_bytes(sample))
-                                .unwrap_or(0);
-                            worker_profiler.record(
-                                worker_nodes.decode,
-                                started.elapsed(),
-                                input_bytes,
-                                output_bytes,
-                            );
-                            result?
-                        } else {
-                            sample
-                        };
-                        let started = Instant::now();
-                        let input_bytes = worker_adapter.sample_bytes(&sample);
-                        let result = worker_adapter.process_sample(sample, sample_index);
-                        let output_bytes = result
-                            .as_ref()
-                            .map(|output| worker_adapter.output_bytes(output))
-                            .unwrap_or(0);
-                        worker_profiler.record(
-                            worker_nodes.sample.unwrap_or(worker_nodes.decode),
-                            started.elapsed(),
-                            input_bytes,
-                            output_bytes,
-                        );
-                        result.map(|output| (output, input_bytes))
-                    },
-                    {
-                        let worker_adapter = Arc::clone(&adapter);
-                        move |worker, index| worker_adapter.worker_panic_error(worker, index)
-                    },
-                )?)
+                if profiler.is_enabled() {
+                    Some(make_cpu_worker_pool::<true, P>(
+                        Arc::clone(&adapter),
+                        nodes.clone(),
+                        profiler.clone(),
+                        num_workers,
+                        worker_capacity,
+                    )?)
+                } else {
+                    Some(make_cpu_worker_pool::<false, P>(
+                        Arc::clone(&adapter),
+                        nodes.clone(),
+                        profiler.clone(),
+                        num_workers,
+                        worker_capacity,
+                    )?)
+                }
             } else {
                 None
             };
@@ -415,7 +416,7 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
                 None,
                 Some(CpuOnlyPipeline {
                     nodes,
-                    max_bytes: queue_limits.max_bytes,
+                    chunk_size,
                     workers,
                     pending: PrefetchCoordinator::new(max_in_flight_batches),
                 }),
@@ -490,7 +491,7 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         }
 
         while self.in_flight_batches < self.max_in_flight_batches && !self.source_exhausted {
-            let started = Instant::now();
+            let started = self.profiler.is_enabled().then(Instant::now);
             let Some(indices) = sampler.next_indices(self.adapter.batch_size()) else {
                 self.source_exhausted = true;
                 self.stages
@@ -508,8 +509,8 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
                 break;
             }
             let sequence_id = self.next_sequence_id;
-            let bytes = indices.len().saturating_mul(std::mem::size_of::<usize>());
-            if let Some(node) = self.sampler_node {
+            if let (Some(node), Some(started)) = (self.sampler_node, started) {
+                let bytes = indices.len().saturating_mul(std::mem::size_of::<usize>());
                 self.profiler.record(node, started.elapsed(), 0, bytes);
             }
             let waited = match self
@@ -621,15 +622,36 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             .cpu_only
             .as_mut()
             .expect("CPU-only path has a pull executor");
-        let result = next_cpu_batch(
-            &self.adapter,
-            cpu_only,
-            sampler,
-            self.max_in_flight_batches,
-            &mut self.source_exhausted,
-            self.sampler_node,
-            &self.profiler,
-        );
+        let result = if self.profiler.is_enabled() {
+            catch_unwind(AssertUnwindSafe(|| {
+                next_cpu_batch::<true, P>(
+                    &self.adapter,
+                    cpu_only,
+                    sampler,
+                    self.max_in_flight_batches,
+                    &mut self.source_exhausted,
+                    self.sampler_node,
+                    &self.profiler,
+                )
+            }))
+        } else {
+            catch_unwind(AssertUnwindSafe(|| {
+                next_cpu_batch::<false, P>(
+                    &self.adapter,
+                    cpu_only,
+                    sampler,
+                    self.max_in_flight_batches,
+                    &mut self.source_exhausted,
+                    self.sampler_node,
+                    &self.profiler,
+                )
+            }))
+        }
+        .unwrap_or_else(|_| {
+            Err(PipelineError::Runtime(runtime_error(
+                "CPU fused pipeline batch panicked",
+            )))
+        });
         if result.is_err() {
             self.failed = true;
             if let Some(cpu_only) = &mut self.cpu_only {
@@ -648,7 +670,35 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
     }
 }
 
-fn next_cpu_batch<P: PhysicalPipelineAdapter>(
+fn make_cpu_worker_pool<const PROFILE: bool, P: PhysicalPipelineAdapter>(
+    adapter: Arc<P>,
+    nodes: StageNodes,
+    profiler: PhysicalProfiler,
+    workers: usize,
+    capacity: usize,
+) -> RuntimeResult<WorkerPool<Vec<(usize, P::Sample)>, Vec<P::Output>, P::Error>> {
+    let panic_adapter = Arc::clone(&adapter);
+    WorkerPool::new(
+        workers,
+        capacity,
+        move |samples: Vec<(usize, P::Sample)>, _chunk_start| {
+            let mut outputs = Vec::with_capacity(samples.len());
+            for (sample_index, sample) in samples {
+                outputs.push(process_cpu_sample::<PROFILE, P>(
+                    &adapter,
+                    sample,
+                    sample_index,
+                    &nodes,
+                    &profiler,
+                )?);
+            }
+            Ok(outputs)
+        },
+        move |worker, chunk_start| panic_adapter.worker_panic_error(worker, chunk_start),
+    )
+}
+
+fn next_cpu_batch<const PROFILE: bool, P: PhysicalPipelineAdapter>(
     adapter: &Arc<P>,
     cpu_only: &mut CpuOnlyPipeline<P>,
     sampler: &mut IndexSampler,
@@ -660,23 +710,21 @@ fn next_cpu_batch<P: PhysicalPipelineAdapter>(
     if let Some(pool) = cpu_only.workers.as_ref() {
         loop {
             while cpu_only.pending.in_flight < max_in_flight_batches && !cpu_only.pending.closed {
-                let Some(indices) =
-                    take_cpu_indices(adapter.as_ref(), sampler, sampler_node, profiler)
-                else {
+                let Some(indices) = take_cpu_indices::<PROFILE, P>(
+                    adapter.as_ref(),
+                    sampler,
+                    sampler_node,
+                    profiler,
+                ) else {
                     *source_exhausted = true;
                     cpu_only.pending.closed = true;
                     break;
                 };
-                let samples = fetch_cpu_samples(
-                    adapter,
-                    &indices,
-                    &cpu_only.nodes,
-                    cpu_only.max_bytes,
-                    profiler,
-                )?;
+                let samples =
+                    fetch_cpu_samples::<PROFILE, P>(adapter, &indices, &cpu_only.nodes, profiler)?;
                 cpu_only
                     .pending
-                    .submit(indices, samples, pool)
+                    .submit_chunked(indices, samples, cpu_only.chunk_size, pool)
                     .map_err(PipelineError::Runtime)?;
             }
 
@@ -686,12 +734,11 @@ fn next_cpu_batch<P: PhysicalPipelineAdapter>(
                 .map_err(PipelineError::Runtime)?
             {
                 let (indices, outputs) = pending.into_parts();
-                return finish_cpu_batch(
+                return finish_cpu_batch::<PROFILE, P>(
                     adapter,
                     outputs.map(|output| output.map_err(PipelineError::Runtime)),
                     &indices,
                     &cpu_only.nodes,
-                    cpu_only.max_bytes,
                     profiler,
                 )
                 .map(Some);
@@ -703,118 +750,99 @@ fn next_cpu_batch<P: PhysicalPipelineAdapter>(
 
             let result = pool.recv().map_err(PipelineError::Runtime)?;
             match result.result {
-                Ok(output) => cpu_only
+                Ok(outputs) => cpu_only
                     .pending
-                    .record(result.batch_id, result.position, output)
+                    .record_chunk(result.batch_id, result.position, outputs)
                     .map_err(PipelineError::Runtime)?,
                 Err(error) => return Err(PipelineError::Domain(error)),
             }
         }
     }
 
-    let Some(indices) = take_cpu_indices(adapter.as_ref(), sampler, sampler_node, profiler) else {
+    let Some(indices) =
+        take_cpu_indices::<PROFILE, P>(adapter.as_ref(), sampler, sampler_node, profiler)
+    else {
         *source_exhausted = true;
         return Ok(None);
     };
 
     if adapter.is_batch_native() {
-        let started = Instant::now();
-        let batch = catch_unwind(AssertUnwindSafe(|| adapter.fetch_batch(&indices)))
-            .map_err(|_| {
-                PipelineError::Runtime(runtime_error(
-                    "dataset get_batch panicked while fetching a batch",
-                ))
-            })?
+        let started = PROFILE.then(Instant::now);
+        let batch = adapter
+            .fetch_batch(&indices)
             .map_err(PipelineError::Domain)?
             .ok_or_else(|| {
                 PipelineError::Runtime(runtime_error("batch-native source capability disappeared"))
             })?;
-        let source_bytes = adapter
-            .batch_bytes(&batch)
-            .saturating_add(indices.len().saturating_mul(std::mem::size_of::<usize>()));
-        if source_bytes > cpu_only.max_bytes {
-            return Err(PipelineError::Runtime(runtime_error(format!(
-                "source batch is {source_bytes} bytes, exceeding stage queue max_bytes {}",
-                cpu_only.max_bytes
-            ))));
+        if PROFILE {
+            let source_bytes = adapter
+                .batch_bytes(&batch)
+                .saturating_add(indices.len().saturating_mul(std::mem::size_of::<usize>()));
+            profiler.record(
+                cpu_only.nodes.source,
+                started.expect("profiling start set").elapsed(),
+                0,
+                source_bytes,
+            );
         }
-        profiler.record(cpu_only.nodes.source, started.elapsed(), 0, source_bytes);
-        return apply_cpu_batch(
-            adapter,
-            batch,
-            &indices,
-            &cpu_only.nodes,
-            cpu_only.max_bytes,
-            profiler,
-        )
-        .map(Some);
+        return apply_cpu_batch::<PROFILE, P>(adapter, batch, &indices, &cpu_only.nodes, profiler)
+            .map(Some);
     }
 
-    let samples = fetch_cpu_samples(
-        adapter,
-        &indices,
-        &cpu_only.nodes,
-        cpu_only.max_bytes,
-        profiler,
-    )?;
+    let samples = fetch_cpu_samples::<PROFILE, P>(adapter, &indices, &cpu_only.nodes, profiler)?;
     let mut outputs = Vec::with_capacity(samples.len());
     for (sample_index, sample) in indices.iter().copied().zip(samples) {
-        outputs.push(Ok(process_cpu_sample_inline(
-            adapter,
-            sample,
-            sample_index,
-            &cpu_only.nodes,
-            profiler,
-        )?));
+        outputs.push(
+            process_cpu_sample::<PROFILE, P>(
+                adapter,
+                sample,
+                sample_index,
+                &cpu_only.nodes,
+                profiler,
+            )
+            .map_err(PipelineError::Domain),
+        );
     }
-    finish_cpu_batch(
-        adapter,
-        outputs,
-        &indices,
-        &cpu_only.nodes,
-        cpu_only.max_bytes,
-        profiler,
-    )
-    .map(Some)
+    finish_cpu_batch::<PROFILE, P>(adapter, outputs, &indices, &cpu_only.nodes, profiler).map(Some)
 }
 
-fn take_cpu_indices<P: PhysicalPipelineAdapter>(
+fn take_cpu_indices<const PROFILE: bool, P: PhysicalPipelineAdapter>(
     adapter: &P,
     sampler: &mut IndexSampler,
     sampler_node: Option<PhysNodeId>,
     profiler: &PhysicalProfiler,
 ) -> Option<Vec<usize>> {
-    let started = Instant::now();
+    let started = PROFILE.then(Instant::now);
     let indices = sampler.next_indices(adapter.batch_size())?;
     let indices = if adapter.drop_last() && indices.len() < adapter.batch_size() {
         None
     } else {
         Some(indices)
     };
-    if let Some(node) = sampler_node {
+    if PROFILE && let Some(node) = sampler_node {
         let bytes = indices
             .as_ref()
             .map(|indices| indices.len().saturating_mul(std::mem::size_of::<usize>()))
             .unwrap_or(0);
-        profiler.record(node, started.elapsed(), 0, bytes);
+        profiler.record(
+            node,
+            started.expect("profiling start set").elapsed(),
+            0,
+            bytes,
+        );
     }
     indices
 }
 
-fn fetch_cpu_samples<P: PhysicalPipelineAdapter>(
+fn fetch_cpu_samples<const PROFILE: bool, P: PhysicalPipelineAdapter>(
     adapter: &Arc<P>,
     indices: &[usize],
     nodes: &StageNodes,
-    max_bytes: usize,
     profiler: &PhysicalProfiler,
 ) -> Result<Vec<P::Sample>, PipelineError<P::Error>> {
-    let started = Instant::now();
-    let samples = catch_unwind(AssertUnwindSafe(|| adapter.fetch_samples(indices)))
-        .map_err(|_| {
-            PipelineError::Runtime(runtime_error(
-                "dataset get_many panicked while fetching a batch",
-            ))
-        })?
+    let started = PROFILE.then(Instant::now);
+    let samples = adapter
+        .fetch_samples(indices)
         .map_err(PipelineError::Domain)?;
     if samples.len() != indices.len() {
         return Err(PipelineError::Runtime(runtime_error(format!(
@@ -823,140 +851,126 @@ fn fetch_cpu_samples<P: PhysicalPipelineAdapter>(
             indices.len()
         ))));
     }
-    let sample_bytes = samples.iter().fold(0usize, |total, sample| {
-        total.saturating_add(adapter.sample_bytes(sample))
-    });
-    let bytes =
-        sample_bytes.saturating_add(indices.len().saturating_mul(std::mem::size_of::<usize>()));
-    if bytes > max_bytes {
-        return Err(PipelineError::Runtime(runtime_error(format!(
-            "source batch is {bytes} bytes, exceeding stage queue max_bytes {max_bytes}"
-        ))));
+    if PROFILE {
+        let sample_bytes = samples.iter().fold(0usize, |total, sample| {
+            total.saturating_add(adapter.sample_bytes(sample))
+        });
+        profiler.record(
+            nodes.source,
+            started.expect("profiling start set").elapsed(),
+            0,
+            sample_bytes,
+        );
     }
-    profiler.record(nodes.source, started.elapsed(), 0, sample_bytes);
     Ok(samples)
 }
 
-fn process_cpu_sample_inline<P: PhysicalPipelineAdapter>(
+fn process_cpu_sample<const PROFILE: bool, P: PhysicalPipelineAdapter>(
     adapter: &Arc<P>,
     sample: P::Sample,
     sample_index: usize,
     nodes: &StageNodes,
     profiler: &PhysicalProfiler,
-) -> Result<(P::Output, usize), PipelineError<P::Error>> {
+) -> Result<P::Output, P::Error> {
     let sample = if nodes.decode != nodes.source {
-        let started = Instant::now();
-        let input_bytes = adapter.sample_bytes(&sample);
-        let decoded = catch_unwind(AssertUnwindSafe(|| {
-            adapter.decode_sample(sample, sample_index)
-        }))
-        .map_err(|_| {
-            PipelineError::Runtime(runtime_error(format!(
-                "decode stage panicked at sample {sample_index}"
-            )))
-        })?
-        .map_err(PipelineError::Domain)?;
-        profiler.record(
-            nodes.decode,
-            started.elapsed(),
-            input_bytes,
-            adapter.sample_bytes(&decoded),
-        );
-        decoded
+        let started = PROFILE.then(Instant::now);
+        let input_bytes = if PROFILE {
+            adapter.sample_bytes(&sample)
+        } else {
+            0
+        };
+        let result = adapter.decode_sample(sample, sample_index);
+        if PROFILE {
+            let output_bytes = result
+                .as_ref()
+                .map(|sample| adapter.sample_bytes(sample))
+                .unwrap_or(0);
+            profiler.record(
+                nodes.decode,
+                started.expect("profiling start set").elapsed(),
+                input_bytes,
+                output_bytes,
+            );
+        }
+        result?
     } else {
         sample
     };
 
-    let started = Instant::now();
-    let input_bytes = adapter.sample_bytes(&sample);
-    let output = catch_unwind(AssertUnwindSafe(|| {
-        adapter.process_sample(sample, sample_index)
-    }))
-    .map_err(|_| {
-        PipelineError::Runtime(runtime_error(format!(
-            "CPU transform stage panicked at sample {sample_index}"
-        )))
-    })?
-    .map_err(PipelineError::Domain)?;
-    let output_bytes = adapter.output_bytes(&output);
-    profiler.record(
-        nodes.sample.unwrap_or(nodes.decode),
-        started.elapsed(),
-        input_bytes,
-        output_bytes,
-    );
-    Ok((output, input_bytes))
+    let started = PROFILE.then(Instant::now);
+    let input_bytes = if PROFILE {
+        adapter.sample_bytes(&sample)
+    } else {
+        0
+    };
+    let result = adapter.process_sample(sample, sample_index);
+    if PROFILE {
+        let output_bytes = result
+            .as_ref()
+            .map(|output| adapter.output_bytes(output))
+            .unwrap_or(0);
+        profiler.record(
+            nodes.sample.unwrap_or(nodes.decode),
+            started.expect("profiling start set").elapsed(),
+            input_bytes,
+            output_bytes,
+        );
+    }
+    result
 }
 
-fn finish_cpu_batch<P: PhysicalPipelineAdapter>(
+fn finish_cpu_batch<const PROFILE: bool, P: PhysicalPipelineAdapter>(
     adapter: &Arc<P>,
-    outputs: impl IntoIterator<Item = Result<(P::Output, usize), PipelineError<P::Error>>>,
+    outputs: impl IntoIterator<Item = Result<P::Output, PipelineError<P::Error>>>,
     indices: &[usize],
     nodes: &StageNodes,
-    max_bytes: usize,
     profiler: &PhysicalProfiler,
 ) -> Result<P::Batch, PipelineError<P::Error>> {
-    let started = Instant::now();
+    let started = PROFILE.then(Instant::now);
     let capacity = indices.len();
-    let batch = catch_unwind(AssertUnwindSafe(|| {
-        let mut builder = adapter.batch_builder(capacity);
-        let mut decoded_bytes = indices
-            .len()
-            .saturating_mul(std::mem::size_of::<usize>());
-        for output in outputs {
-            let (output, bytes) = output?;
-            decoded_bytes = decoded_bytes.saturating_add(bytes);
-            if decoded_bytes > max_bytes {
-                return Err(PipelineError::Runtime(runtime_error(format!(
-                    "decoded batch is {decoded_bytes} bytes, exceeding stage queue max_bytes {max_bytes}"
-                ))));
-            }
-            adapter
-                .push_batch_sample(&mut builder, output)
-                .map_err(PipelineError::Domain)?;
-        }
-        adapter.finish_batch(builder).map_err(PipelineError::Domain)
-    }))
-    .unwrap_or_else(|_| {
-        Err(PipelineError::Runtime(runtime_error(
-            "batch builder panicked while assembling a logical batch",
-        )))
-    })?;
-    profiler.record(
-        nodes.batch,
-        started.elapsed(),
-        0,
-        adapter.batch_bytes(&batch),
-    );
-    apply_cpu_batch(adapter, batch, indices, nodes, max_bytes, profiler)
+    let mut builder = adapter.batch_builder(capacity);
+    for output in outputs {
+        adapter
+            .push_batch_sample(&mut builder, output?)
+            .map_err(PipelineError::Domain)?;
+    }
+    let batch = adapter
+        .finish_batch(builder)
+        .map_err(PipelineError::Domain)?;
+    if PROFILE {
+        profiler.record(
+            nodes.batch,
+            started.expect("profiling start set").elapsed(),
+            0,
+            adapter.batch_bytes(&batch),
+        );
+    }
+    apply_cpu_batch::<PROFILE, P>(adapter, batch, indices, nodes, profiler)
 }
 
-fn apply_cpu_batch<P: PhysicalPipelineAdapter>(
+fn apply_cpu_batch<const PROFILE: bool, P: PhysicalPipelineAdapter>(
     adapter: &Arc<P>,
     batch: P::Batch,
     indices: &[usize],
     nodes: &StageNodes,
-    max_bytes: usize,
     profiler: &PhysicalProfiler,
 ) -> Result<P::Batch, PipelineError<P::Error>> {
-    let started = Instant::now();
-    let input_bytes = adapter.batch_bytes(&batch);
-    let batch = catch_unwind(AssertUnwindSafe(|| {
-        adapter.apply_batch_with_indices(batch, indices)
-    }))
-    .map_err(|_| PipelineError::Runtime(runtime_error("CPU batch transform stage panicked")))?
-    .map_err(PipelineError::Domain)?;
-    let output_bytes = adapter.batch_bytes(&batch);
-    profiler.record(
-        nodes.batch_kernel,
-        started.elapsed(),
-        input_bytes,
-        output_bytes,
-    );
-    if output_bytes > max_bytes {
-        return Err(PipelineError::Runtime(runtime_error(format!(
-            "sink batch is {output_bytes} bytes, exceeding stage queue max_bytes {max_bytes}"
-        ))));
+    let started = PROFILE.then(Instant::now);
+    let input_bytes = if PROFILE {
+        adapter.batch_bytes(&batch)
+    } else {
+        0
+    };
+    let batch = adapter
+        .apply_batch_with_indices(batch, indices)
+        .map_err(PipelineError::Domain)?;
+    if PROFILE {
+        profiler.record(
+            nodes.batch_kernel,
+            started.expect("profiling start set").elapsed(),
+            input_bytes,
+            adapter.batch_bytes(&batch),
+        );
     }
     Ok(batch)
 }
@@ -1219,7 +1233,15 @@ mod tests {
         });
         let (graph, transfer) = h2d_graph();
         let sink = graph.root().unwrap();
-        let mut executor = PhysicalPipelineExecutor::with_graph(adapter, 3, 2, graph).unwrap();
+        let mut executor = PhysicalPipelineExecutor::with_graph_limits_and_profiling(
+            adapter,
+            3,
+            2,
+            512 * 1024 * 1024,
+            graph,
+            true,
+        )
+        .unwrap();
         assert_eq!(executor.stage_queue_limits().max_items, 3);
         assert!(executor.stage_queue_limits().max_bytes > 0);
 
@@ -1259,7 +1281,7 @@ mod tests {
     }
 
     #[test]
-    fn source_payload_over_byte_budget_is_reported_and_terminal() {
+    fn cpu_fused_path_does_not_apply_stage_queue_byte_limits() {
         let adapter = Arc::new(Adapter {
             calls: AtomicUsize::new(0),
             transfers: AtomicUsize::new(0),
@@ -1270,16 +1292,11 @@ mod tests {
         let mut executor =
             PhysicalPipelineExecutor::with_graph_limits(adapter, 0, 0, 24, graph).unwrap();
         let mut sampler = IndexSampler::new(SamplerPlan::Sequential { start: 0, end: 3 }, 0);
-        assert!(matches!(
-            executor.next_batch(&mut sampler),
-            Err(PipelineError::Runtime(RuntimeError::Message(message)))
-                if message.contains("source batch is 48 bytes")
-        ));
-        assert!(matches!(
-            executor.next_batch(&mut sampler),
-            Err(PipelineError::Runtime(RuntimeError::Message(message)))
-                if message.contains("failed state")
-        ));
+        assert_eq!(executor.stage_queue_limits().max_bytes, 24);
+        assert_eq!(
+            executor.next_batch(&mut sampler).unwrap(),
+            Some(vec![0, 2, 4])
+        );
     }
 
     #[test]
@@ -1292,8 +1309,15 @@ mod tests {
         });
         let (graph, transfer) = h2d_graph();
 
-        let mut executor =
-            PhysicalPipelineExecutor::with_graph(adapter.clone(), 0, 0, graph).unwrap();
+        let mut executor = PhysicalPipelineExecutor::with_graph_limits_and_profiling(
+            adapter.clone(),
+            0,
+            0,
+            512 * 1024 * 1024,
+            graph,
+            true,
+        )
+        .unwrap();
         let mut sampler = IndexSampler::new(SamplerPlan::Sequential { start: 0, end: 2 }, 0);
         let output = executor.next_batch(&mut sampler).unwrap().unwrap();
         assert_eq!(output, [0, 2]);

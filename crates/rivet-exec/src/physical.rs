@@ -7,7 +7,8 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use rivet_core::{DType, Tensor};
@@ -736,36 +737,93 @@ pub struct NodeProfile {
     pub output_bytes: u64,
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
+struct AtomicNodeProfile {
+    executions: AtomicU64,
+    elapsed_ns: AtomicU64,
+    wait_ns: AtomicU64,
+    wait_events: AtomicU64,
+    input_bytes: AtomicU64,
+    output_bytes: AtomicU64,
+}
+
+#[derive(Clone)]
 pub struct PhysicalProfiler {
-    nodes: Arc<Mutex<HashMap<PhysNodeId, NodeProfile>>>,
+    nodes: Option<Arc<[AtomicNodeProfile]>>,
 }
 
 impl PhysicalProfiler {
+    /// Create an enabled profiler with one dense counter slot per physical node.
+    /// Profiling is opt-in because even atomic accounting perturbs short kernels.
+    pub fn enabled(node_count: usize) -> Self {
+        let nodes = (0..node_count)
+            .map(|_| AtomicNodeProfile::default())
+            .collect::<Vec<_>>()
+            .into();
+        Self { nodes: Some(nodes) }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.nodes.is_some()
+    }
+
     pub fn snapshot(&self) -> HashMap<PhysNodeId, NodeProfile> {
-        self.nodes
-            .lock()
-            .expect("physical profiler mutex poisoned")
-            .clone()
+        let Some(nodes) = &self.nodes else {
+            return HashMap::new();
+        };
+        nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                let profile = NodeProfile {
+                    executions: node.executions.load(Ordering::Relaxed),
+                    elapsed: Duration::from_nanos(node.elapsed_ns.load(Ordering::Relaxed)),
+                    wait_elapsed: Duration::from_nanos(node.wait_ns.load(Ordering::Relaxed)),
+                    wait_events: node.wait_events.load(Ordering::Relaxed),
+                    input_bytes: node.input_bytes.load(Ordering::Relaxed),
+                    output_bytes: node.output_bytes.load(Ordering::Relaxed),
+                };
+                (profile.executions != 0 || profile.wait_events != 0)
+                    .then_some((PhysNodeId(index), profile))
+            })
+            .collect()
     }
 
     pub(crate) fn record(&self, id: PhysNodeId, elapsed: Duration, input: usize, output: usize) {
-        let mut nodes = self.nodes.lock().expect("physical profiler mutex poisoned");
-        let profile = nodes.entry(id).or_default();
-        profile.executions += 1;
-        profile.elapsed += elapsed;
-        profile.input_bytes += input as u64;
-        profile.output_bytes += output as u64;
+        let Some(profile) = self.nodes.as_ref().and_then(|nodes| nodes.get(id.index())) else {
+            return;
+        };
+        profile.executions.fetch_add(1, Ordering::Relaxed);
+        profile.elapsed_ns.fetch_add(
+            elapsed.as_nanos().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
+        profile
+            .input_bytes
+            .fetch_add(input as u64, Ordering::Relaxed);
+        profile
+            .output_bytes
+            .fetch_add(output as u64, Ordering::Relaxed);
     }
 
     pub(crate) fn record_wait(&self, id: PhysNodeId, elapsed: Duration) {
         if elapsed.is_zero() {
             return;
         }
-        let mut nodes = self.nodes.lock().expect("physical profiler mutex poisoned");
-        let profile = nodes.entry(id).or_default();
-        profile.wait_elapsed += elapsed;
-        profile.wait_events += 1;
+        let Some(profile) = self.nodes.as_ref().and_then(|nodes| nodes.get(id.index())) else {
+            return;
+        };
+        profile.wait_ns.fetch_add(
+            elapsed.as_nanos().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
+        profile.wait_events.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl Default for PhysicalProfiler {
+    fn default() -> Self {
+        Self { nodes: None }
     }
 }
 
@@ -805,12 +863,15 @@ impl GraphExecutor {
             let Some(operator) = &node.operator else {
                 continue;
             };
-            let input_bytes = morsel.bytes;
-            let started = Instant::now();
+            let profile = profiler.is_enabled();
+            let input_bytes = profile.then_some(morsel.bytes);
+            let started = profile.then(Instant::now);
             morsel = operator
                 .execute(morsel)
                 .map_err(PhysicalGraphError::Operator)?;
-            profiler.record(id, started.elapsed(), input_bytes, morsel.bytes);
+            if let (Some(started), Some(input_bytes)) = (started, input_bytes) {
+                profiler.record(id, started.elapsed(), input_bytes, morsel.bytes);
+            }
         }
         Ok(morsel)
     }
@@ -899,7 +960,7 @@ mod tests {
             [source],
         );
         graph.set_root(sink).unwrap();
-        let profiler = PhysicalProfiler::default();
+        let profiler = PhysicalProfiler::enabled(physical.nodes().len());
         let morsel = Morsel::new(42, vec![7, 3]);
 
         let output = GraphExecutor::execute(&mut graph, morsel, &profiler).unwrap();

@@ -435,4 +435,12 @@ impl ImagePipeline {
         self.runtime.stage_queue_max_bytes = max_bytes;
         self
     }
+
+    /// Enable detailed per-node profiling for diagnostics.
+    /// Profiling is disabled by default to avoid steady-state timing and
+    /// counter updates on the runtime hot path.
+    pub fn profiling(mut self, enabled: bool) -> Self {
+        self.runtime.profiling_enabled = enabled;
+        self
+    }
 }

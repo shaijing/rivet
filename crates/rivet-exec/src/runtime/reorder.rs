@@ -115,26 +115,89 @@ impl<R> PrefetchCoordinator<R> {
         }
         let batch_id = self.next_batch_id;
         self.next_batch_id += 1;
+        let sample_count = indices.len();
 
         self.pending.insert(
             batch_id,
             PendingBatch {
                 batch_id,
-                indices: indices.clone(),
-                samples: std::iter::repeat_with(|| None)
-                    .take(indices.len())
-                    .collect(),
-                remaining: indices.len(),
+                indices,
+                samples: std::iter::repeat_with(|| None).take(sample_count).collect(),
+                remaining: sample_count,
             },
         );
         self.in_flight += 1;
 
-        for (position, (sample_index, payload)) in indices.into_iter().zip(payloads).enumerate() {
+        let pending = self
+            .pending
+            .get(&batch_id)
+            .ok_or_else(|| runtime_error(format!("pending batch {batch_id} vanished")))?;
+        for (position, (sample_index, payload)) in
+            pending.indices.iter().copied().zip(payloads).enumerate()
+        {
             pool.submit(super::WorkItem {
                 batch_id,
                 position,
                 sample_index,
                 payload,
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Submit contiguous sample chunks to workers while retaining per-sample
+    /// result slots so the assembled batch stays in sampler order.
+    pub fn submit_chunked<T, E>(
+        &mut self,
+        indices: Vec<usize>,
+        payloads: Vec<T>,
+        chunk_size: usize,
+        pool: &WorkerPool<Vec<(usize, T)>, Vec<R>, E>,
+    ) -> RuntimeResult<()>
+    where
+        T: Send + 'static,
+        R: Send + 'static,
+        E: Send + 'static,
+    {
+        if indices.len() != payloads.len() {
+            return Err(runtime_error(format!(
+                "source returned {} payloads for {} indices",
+                payloads.len(),
+                indices.len()
+            )));
+        }
+        let chunk_size = chunk_size.max(1);
+        let batch_id = self.next_batch_id;
+        self.next_batch_id += 1;
+        let sample_count = indices.len();
+        self.pending.insert(
+            batch_id,
+            PendingBatch {
+                batch_id,
+                indices,
+                samples: std::iter::repeat_with(|| None).take(sample_count).collect(),
+                remaining: sample_count,
+            },
+        );
+        self.in_flight += 1;
+
+        let pending = self
+            .pending
+            .get(&batch_id)
+            .ok_or_else(|| runtime_error(format!("pending batch {batch_id} vanished")))?;
+        let mut payloads = payloads.into_iter();
+        for start_position in (0..sample_count).step_by(chunk_size) {
+            let end_position = start_position.saturating_add(chunk_size).min(sample_count);
+            let samples = pending.indices[start_position..end_position]
+                .iter()
+                .copied()
+                .zip(payloads.by_ref())
+                .collect();
+            pool.submit(super::WorkItem {
+                batch_id,
+                position: start_position,
+                sample_index: pending.indices[start_position],
+                payload: samples,
             })?;
         }
         Ok(())
@@ -157,6 +220,43 @@ impl<R> PrefetchCoordinator<R> {
         }
         *slot = Some(sample);
         batch.remaining -= 1;
+        Ok(())
+    }
+
+    pub fn record_chunk(
+        &mut self,
+        batch_id: u64,
+        start_position: usize,
+        samples: Vec<R>,
+    ) -> RuntimeResult<()> {
+        let end = start_position
+            .checked_add(samples.len())
+            .ok_or_else(|| runtime_error("worker result chunk position overflow"))?;
+        let batch = self
+            .pending
+            .get_mut(&batch_id)
+            .ok_or_else(|| runtime_error(format!("result for unknown batch {batch_id}")))?;
+        let batch_len = batch.samples.len();
+        if end > batch_len {
+            return Err(runtime_error(format!(
+                "invalid result chunk {start_position}..{end} for batch {batch_id} with {batch_len} samples"
+            )));
+        }
+        for (offset, sample) in samples.into_iter().enumerate() {
+            let position = start_position + offset;
+            let slot = batch.samples.get_mut(position).ok_or_else(|| {
+                runtime_error(format!(
+                    "invalid result position {position} for batch {batch_id}"
+                ))
+            })?;
+            if slot.is_some() {
+                return Err(runtime_error(format!(
+                    "duplicate result for batch {batch_id} position {position}"
+                )));
+            }
+            *slot = Some(sample);
+            batch.remaining -= 1;
+        }
         Ok(())
     }
 

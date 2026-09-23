@@ -60,6 +60,7 @@ struct QueueState<T> {
 
 struct QueueInner<T> {
     limits: StageQueueLimits,
+    track_waits: bool,
     state: Mutex<QueueState<T>>,
     readable: Condvar,
     writable: Condvar,
@@ -83,10 +84,18 @@ impl<T> Clone for BoundedStageQueue<T> {
 
 impl<T> BoundedStageQueue<T> {
     pub fn new(limits: StageQueueLimits) -> RuntimeResult<Self> {
+        Self::new_with_wait_tracking(limits, true)
+    }
+
+    pub(crate) fn new_with_wait_tracking(
+        limits: StageQueueLimits,
+        track_waits: bool,
+    ) -> RuntimeResult<Self> {
         let limits = limits.validate()?;
         Ok(Self {
             inner: Arc::new(QueueInner {
                 limits,
+                track_waits,
                 state: Mutex::new(QueueState {
                     items: VecDeque::new(),
                     bytes: 0,
@@ -148,17 +157,29 @@ impl<T> BoundedStageQueue<T> {
                 self.inner.readable.notify_one();
                 return Ok(waited);
             }
-            let started = wait_started.get_or_insert_with(Instant::now);
-            let (next, _) = self
-                .inner
-                .writable
-                .wait_timeout(state, Duration::from_millis(10))
-                .expect("stage queue poisoned while waiting for capacity");
-            state = next;
-            if state.closed || state.cancelled {
-                waited += started.elapsed();
-                state.producer_wait += started.elapsed();
-                return Err(runtime_error("stage queue closed while producer waited"));
+            if self.inner.track_waits {
+                let started = wait_started.get_or_insert_with(Instant::now);
+                let (next, _) = self
+                    .inner
+                    .writable
+                    .wait_timeout(state, Duration::from_millis(10))
+                    .expect("stage queue poisoned while waiting for capacity");
+                state = next;
+                if state.closed || state.cancelled {
+                    let elapsed = started.elapsed();
+                    waited += elapsed;
+                    state.producer_wait += elapsed;
+                    return Err(runtime_error("stage queue closed while producer waited"));
+                }
+            } else {
+                state = self
+                    .inner
+                    .writable
+                    .wait(state)
+                    .expect("stage queue poisoned while waiting for capacity");
+                if state.closed || state.cancelled {
+                    return Err(runtime_error("stage queue closed while producer waited"));
+                }
             }
         }
     }
@@ -186,17 +207,29 @@ impl<T> BoundedStageQueue<T> {
             if state.closed {
                 return Ok((None, waited));
             }
-            let started = wait_started.get_or_insert_with(Instant::now);
-            let (next, _) = self
-                .inner
-                .readable
-                .wait_timeout(state, Duration::from_millis(10))
-                .expect("stage queue poisoned while waiting for data");
-            state = next;
-            if state.cancelled {
-                waited += started.elapsed();
-                state.consumer_wait += started.elapsed();
-                return Ok((None, waited));
+            if self.inner.track_waits {
+                let started = wait_started.get_or_insert_with(Instant::now);
+                let (next, _) = self
+                    .inner
+                    .readable
+                    .wait_timeout(state, Duration::from_millis(10))
+                    .expect("stage queue poisoned while waiting for data");
+                state = next;
+                if state.cancelled {
+                    let elapsed = started.elapsed();
+                    waited += elapsed;
+                    state.consumer_wait += elapsed;
+                    return Ok((None, waited));
+                }
+            } else {
+                state = self
+                    .inner
+                    .readable
+                    .wait(state)
+                    .expect("stage queue poisoned while waiting for data");
+                if state.cancelled {
+                    return Ok((None, waited));
+                }
             }
         }
     }

@@ -95,6 +95,7 @@ impl ImagePipeline {
         let num_workers = self.runtime.num_workers;
         let prefetch_batches = self.runtime.prefetch_batches;
         let stage_queue_max_bytes = self.runtime.stage_queue_max_bytes;
+        let profiling_enabled = self.runtime.profiling_enabled;
         let plan = Arc::new(plan);
 
         ImageDataLoader::new(
@@ -103,6 +104,7 @@ impl ImagePipeline {
             num_workers,
             prefetch_batches,
             stage_queue_max_bytes,
+            profiling_enabled,
             physical,
         )
     }

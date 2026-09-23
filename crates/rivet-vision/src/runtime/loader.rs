@@ -176,6 +176,7 @@ impl ImageDataLoader {
         num_workers: usize,
         prefetch_batches: usize,
         stage_queue_max_bytes: usize,
+        profiling_enabled: bool,
         physical: PhysicalGraph,
     ) -> RivetResult<Self> {
         let cuda_batch_kernel = physical.nodes().iter().any(|node| {
@@ -191,12 +192,13 @@ impl ImageDataLoader {
             cuda_batch_kernel,
             decode_stage,
         });
-        let executor = PhysicalPipelineExecutor::with_graph_limits(
+        let executor = PhysicalPipelineExecutor::with_graph_limits_and_profiling(
             adapter,
             num_workers,
             prefetch_batches,
             stage_queue_max_bytes,
             physical,
+            profiling_enabled,
         )
         .map_err(|error| RivetError::Worker(error.to_string()))?;
 
@@ -399,6 +401,7 @@ mod tests {
         let mut loader = pipeline(4, 0)
             .normalize(vec![0.0; 3], vec![1.0; 3])
             .batch(2, false)
+            .profiling(true)
             .compile()
             .unwrap();
         let physical = loader.physical_explain().unwrap();

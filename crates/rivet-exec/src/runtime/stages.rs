@@ -111,12 +111,12 @@ impl<P: PhysicalPipelineAdapter> PersistentStageGraph<P> {
             CpuStageOutput::Sink
         };
         let channels = Arc::new(StageChannels {
-            requests: BoundedStageQueue::new(limits)?,
-            source: BoundedStageQueue::new(limits)?,
-            decoded: BoundedStageQueue::new(limits)?,
-            transfer: BoundedStageQueue::new(limits)?,
-            device: BoundedStageQueue::new(limits)?,
-            sink: BoundedStageQueue::new(limits)?,
+            requests: BoundedStageQueue::new_with_wait_tracking(limits, profiler.is_enabled())?,
+            source: BoundedStageQueue::new_with_wait_tracking(limits, profiler.is_enabled())?,
+            decoded: BoundedStageQueue::new_with_wait_tracking(limits, profiler.is_enabled())?,
+            transfer: BoundedStageQueue::new_with_wait_tracking(limits, profiler.is_enabled())?,
+            device: BoundedStageQueue::new_with_wait_tracking(limits, profiler.is_enabled())?,
+            sink: BoundedStageQueue::new_with_wait_tracking(limits, profiler.is_enabled())?,
         });
         if !topology.decode {
             channels.source.close();
@@ -171,19 +171,25 @@ impl<P: PhysicalPipelineAdapter> PersistentStageGraph<P> {
                 workers,
                 worker_capacity.max(1),
                 move |sample, index| {
-                    let started = Instant::now();
-                    let input_bytes = worker_adapter.sample_bytes(&sample);
+                    let started = worker_profiler.is_enabled().then(Instant::now);
+                    let input_bytes = if started.is_some() {
+                        worker_adapter.sample_bytes(&sample)
+                    } else {
+                        0
+                    };
                     let result = worker_adapter.process_sample(sample, index);
-                    let output_bytes = result
-                        .as_ref()
-                        .map(|output| worker_adapter.output_bytes(output))
-                        .unwrap_or(0);
-                    worker_profiler.record(
-                        worker_node,
-                        started.elapsed(),
-                        input_bytes,
-                        output_bytes,
-                    );
+                    if let Some(started) = started {
+                        let output_bytes = result
+                            .as_ref()
+                            .map(|output| worker_adapter.output_bytes(output))
+                            .unwrap_or(0);
+                        worker_profiler.record(
+                            worker_node,
+                            started.elapsed(),
+                            input_bytes,
+                            output_bytes,
+                        );
+                    }
                     result
                 },
                 {
@@ -348,8 +354,12 @@ fn run_source_stage<P: PhysicalPipelineAdapter>(
         let Some(request) = request else { break };
         let sequence_id = request.sequence_id;
         let indices = request.value;
-        let input_bytes = indices.len().saturating_mul(std::mem::size_of::<usize>());
-        let started = Instant::now();
+        let started = profiler.is_enabled().then(Instant::now);
+        let input_bytes = if started.is_some() {
+            indices.len().saturating_mul(std::mem::size_of::<usize>())
+        } else {
+            0
+        };
         let fetched = catch_unwind(AssertUnwindSafe(|| {
             if adapter.is_batch_native() {
                 adapter
@@ -403,7 +413,9 @@ fn run_source_stage<P: PhysicalPipelineAdapter>(
             fetched
         };
         let output_bytes = if fetched.is_ok() { output_bytes } else { 0 };
-        profiler.record(nodes.source, started.elapsed(), input_bytes, output_bytes);
+        if let Some(started) = started {
+            profiler.record(nodes.source, started.elapsed(), input_bytes, output_bytes);
+        }
         if fetched.is_err() {
             channels.requests.cancel();
         }
@@ -443,8 +455,12 @@ fn run_decode_stage<P: PhysicalPipelineAdapter>(
                 let mut decoded = Vec::with_capacity(samples.len());
                 let mut failure = None;
                 for (index, sample) in samples {
-                    let started = Instant::now();
-                    let input_bytes = adapter.sample_bytes(&sample);
+                    let started = profiler.is_enabled().then(Instant::now);
+                    let input_bytes = if started.is_some() {
+                        adapter.sample_bytes(&sample)
+                    } else {
+                        0
+                    };
                     let result = match catch_unwind(AssertUnwindSafe(|| {
                         adapter.decode_sample(sample, index)
                     })) {
@@ -454,11 +470,13 @@ fn run_decode_stage<P: PhysicalPipelineAdapter>(
                             "decode stage panicked at sample {index}"
                         )))),
                     };
-                    let output_bytes = result
-                        .as_ref()
-                        .map(|sample| adapter.sample_bytes(sample))
-                        .unwrap_or(0);
-                    profiler.record(nodes.decode, started.elapsed(), input_bytes, output_bytes);
+                    if let Some(started) = started {
+                        let output_bytes = result
+                            .as_ref()
+                            .map(|sample| adapter.sample_bytes(sample))
+                            .unwrap_or(0);
+                        profiler.record(nodes.decode, started.elapsed(), input_bytes, output_bytes);
+                    }
                     match result {
                         Ok(sample) => decoded.push((index, sample)),
                         Err(error) => {
@@ -679,8 +697,12 @@ fn process_batch_samples<P: PhysicalPipelineAdapter>(
     } else {
         let mut outputs = Vec::with_capacity(samples.len());
         for (sample_index, sample) in samples {
-            let started = Instant::now();
-            let input_bytes = adapter.sample_bytes(&sample);
+            let started = profiler.is_enabled().then(Instant::now);
+            let input_bytes = if started.is_some() {
+                adapter.sample_bytes(&sample)
+            } else {
+                0
+            };
             let output_result = catch_unwind(AssertUnwindSafe(|| {
                 adapter.process_sample(sample, sample_index)
             }));
@@ -693,15 +715,21 @@ fn process_batch_samples<P: PhysicalPipelineAdapter>(
                     ))));
                 }
             };
-            let output_bytes = adapter.output_bytes(&output);
-            profiler.record(sample_node, started.elapsed(), input_bytes, output_bytes);
+            if let Some(started) = started {
+                profiler.record(
+                    sample_node,
+                    started.elapsed(),
+                    input_bytes,
+                    adapter.output_bytes(&output),
+                );
+            }
             outputs.push(output);
         }
         outputs
     };
 
     let capacity = outputs.len();
-    let started = Instant::now();
+    let started = profiler.is_enabled().then(Instant::now);
     let batch = catch_unwind(AssertUnwindSafe(|| {
         let mut builder = adapter.batch_builder(capacity);
         for output in outputs {
@@ -716,8 +744,14 @@ fn process_batch_samples<P: PhysicalPipelineAdapter>(
             "batch builder panicked while assembling a logical batch",
         )))
     })?;
-    let output_bytes = adapter.batch_bytes(&batch);
-    profiler.record(batch_node, started.elapsed(), 0, output_bytes);
+    if let Some(started) = started {
+        profiler.record(
+            batch_node,
+            started.elapsed(),
+            0,
+            adapter.batch_bytes(&batch),
+        );
+    }
     Ok((batch, indices))
 }
 
@@ -729,8 +763,12 @@ fn execute_cpu_batch<P: PhysicalPipelineAdapter>(
     profiler: &PhysicalProfiler,
 ) -> StageResult<IndexedBatch<P::Batch>, P::Error> {
     if !nodes.device_batch_kernel {
-        let started = Instant::now();
-        let input_bytes = adapter.batch_bytes(&batch);
+        let started = profiler.is_enabled().then(Instant::now);
+        let input_bytes = if started.is_some() {
+            adapter.batch_bytes(&batch)
+        } else {
+            0
+        };
         batch = match catch_unwind(AssertUnwindSafe(|| {
             adapter.apply_batch_with_indices(batch, &indices)
         })) {
@@ -742,12 +780,14 @@ fn execute_cpu_batch<P: PhysicalPipelineAdapter>(
                 )));
             }
         };
-        profiler.record(
-            nodes.batch_kernel,
-            started.elapsed(),
-            input_bytes,
-            adapter.batch_bytes(&batch),
-        );
+        if let Some(started) = started {
+            profiler.record(
+                nodes.batch_kernel,
+                started.elapsed(),
+                input_bytes,
+                adapter.batch_bytes(&batch),
+            );
+        }
     }
     Ok(IndexedBatch { indices, batch })
 }
@@ -854,8 +894,12 @@ fn run_device_stage<P: PhysicalPipelineAdapter>(
         let result = match message.value {
             Err(error) => Err(error),
             Ok(IndexedBatch { batch, indices }) if nodes.device_batch_kernel => {
-                let started = Instant::now();
-                let input_bytes = adapter.batch_bytes(&batch);
+                let started = profiler.is_enabled().then(Instant::now);
+                let input_bytes = if started.is_some() {
+                    adapter.batch_bytes(&batch)
+                } else {
+                    0
+                };
                 let target = nodes
                     .transfer_nodes
                     .last()
@@ -870,12 +914,14 @@ fn run_device_stage<P: PhysicalPipelineAdapter>(
                     )))
                 })
                 .map(|batch| {
-                    profiler.record(
-                        nodes.batch_kernel,
-                        started.elapsed(),
-                        input_bytes,
-                        adapter.batch_bytes(&batch),
-                    );
+                    if let Some(started) = started {
+                        profiler.record(
+                            nodes.batch_kernel,
+                            started.elapsed(),
+                            input_bytes,
+                            adapter.batch_bytes(&batch),
+                        );
+                    }
                     batch
                 })
             }
@@ -913,8 +959,12 @@ fn run_transfers<P: PhysicalPipelineAdapter>(
     profiler: &PhysicalProfiler,
 ) -> StageResult<P::Batch, P::Error> {
     for (node, kind, target) in nodes.transfer_nodes.iter().copied() {
-        let started = Instant::now();
-        let input_bytes = adapter.batch_bytes(&batch);
+        let started = profiler.is_enabled().then(Instant::now);
+        let input_bytes = if started.is_some() {
+            adapter.batch_bytes(&batch)
+        } else {
+            0
+        };
         batch = catch_unwind(AssertUnwindSafe(|| {
             adapter.transfer_batch(batch, kind, target)
         }))
@@ -923,12 +973,14 @@ fn run_transfers<P: PhysicalPipelineAdapter>(
                 "transfer stage panicked",
             )))
         })?;
-        profiler.record(
-            node,
-            started.elapsed(),
-            input_bytes,
-            adapter.batch_bytes(&batch),
-        );
+        if let Some(started) = started {
+            profiler.record(
+                node,
+                started.elapsed(),
+                input_bytes,
+                adapter.batch_bytes(&batch),
+            );
+        }
     }
     Ok(batch)
 }
