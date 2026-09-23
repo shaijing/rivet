@@ -36,6 +36,22 @@ impl PhysicalPipelineAdapter for ImagePipelineAdapter {
         self.plan.can_use_batch_native()
     }
 
+    fn worker_chunk_size_hint(&self) -> Option<usize> {
+        let lightweight_dense_path = self.plan.source.supports_batch_read()
+            && !self.plan.sample_ops.is_empty()
+            && self
+                .plan
+                .sample_ops
+                .iter()
+                .all(|op| {
+                    matches!(
+                        op.name(),
+                        "RandomCrop" | "RandomHorizontalFlip" | "NormalizeSample"
+                    )
+                });
+        lightweight_dense_path.then_some(16)
+    }
+
     fn fetch_samples(&self, indices: &[usize]) -> Result<Vec<ImageSample>, RivetError> {
         self.plan.source.get_many(indices)
     }

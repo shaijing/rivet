@@ -27,6 +27,11 @@ pub trait PhysicalPipelineAdapter: Send + Sync + 'static {
     fn batch_size(&self) -> usize;
     fn drop_last(&self) -> bool;
     fn is_batch_native(&self) -> bool;
+    /// Preferred maximum samples per worker work item for adapters with a
+    /// known lightweight sample path. `None` uses the runtime heuristic.
+    fn worker_chunk_size_hint(&self) -> Option<usize> {
+        None
+    }
     fn fetch_samples(&self, indices: &[usize]) -> Result<Vec<Self::Sample>, Self::Error>;
     /// Decode or normalize source representation before CPU semantic ops.
     /// The default is identity for adapters whose source is already decoded.
@@ -377,6 +382,8 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         let cpu_only_path = nodes.transfer_nodes.is_empty() && !nodes.device_batch_kernel;
         let chunk_size = if num_workers <= 1 {
             batch_size
+        } else if let Some(hint) = adapter.worker_chunk_size_hint() {
+            hint.clamp(1, batch_size)
         } else {
             batch_size
                 .div_ceil(num_workers.saturating_mul(2))
