@@ -4924,7 +4924,6 @@ dependencies = [
 name = "rivet-plan"
 version = "0.1.0"
 dependencies = [
- "rivet-core",
  "thiserror 2.0.20",
 ]
 
@@ -4970,6 +4969,7 @@ dependencies = [
  "rivet-core",
  "rivet-data",
  "rivet-exec",
+ "rivet-plan",
  "thiserror 2.0.20",
  "tokio",
  "walkdir",

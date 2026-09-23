@@ -17,6 +17,16 @@ impl ImagePipeline {
     }
 
     pub fn compile_from(self, start: usize) -> RivetResult<ImageDataLoader> {
+        let logical = self.to_logical_plan();
+        logical
+            .infer_properties(&super::inference::VisionPropertyInference::new(
+                self.runtime.num_workers,
+            ))
+            .map_err(super::logical::inference_error)?;
+        Self::from_logical_plan(&logical)?.compile_legacy_from(start)
+    }
+
+    fn compile_legacy_from(self, start: usize) -> RivetResult<ImageDataLoader> {
         let input_state = self.source.state();
         let compiled_ops = compile_image_ops(self.ops, input_state, self.runtime.num_workers)?;
 
@@ -61,6 +71,11 @@ impl ImagePipeline {
             num_workers,
             prefetch_batches,
         )
+    }
+
+    #[cfg(test)]
+    pub(super) fn compile_legacy_for_test(self, start: usize) -> RivetResult<ImageDataLoader> {
+        self.compile_legacy_from(start)
     }
 }
 

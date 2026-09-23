@@ -1,5 +1,7 @@
 mod builder;
 mod compile;
+pub mod inference;
+mod logical;
 pub mod op;
 mod transform;
 
@@ -99,6 +101,13 @@ mod tests {
         match pipeline.compile() {
             Err(err) => err.to_string(),
             Ok(_) => panic!("expected a compile error"),
+        }
+    }
+
+    fn legacy_compile_err(pipeline: ImagePipeline) -> String {
+        match pipeline.compile_legacy_for_test(0) {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("expected a legacy compile error"),
         }
     }
 
@@ -767,5 +776,258 @@ mod tests {
 
         assert!(direct.next_batch().unwrap().is_none());
         assert!(fallback.next_batch().unwrap().is_none());
+    }
+
+    #[test]
+    fn image_pipeline_logical_round_trip_preserves_builder_configuration() {
+        let original = stub(10)
+            .skip(2)
+            .take(5)
+            .shuffle(17)
+            .decode_image()
+            .resize(8, 6)
+            .random_horizontal_flip(0.25)
+            .normalize(vec![0.1, 0.2, 0.3], vec![1.0; 3])
+            .hwc_to_chw()
+            .workers(3)
+            .prefetch_batches(4)
+            .seed(91)
+            .epoch(7)
+            .batch(2, true);
+
+        let logical = original.to_logical_plan();
+        let explain = logical.explain().unwrap();
+        assert!(explain.contains("LogicalPlan(root="));
+        assert!(explain.contains("Source vision::Source"));
+        assert!(explain.contains("Op vision::ImageOp"));
+        assert!(explain.contains("Batch vision::BatchConfig"));
+        assert!(explain.contains("Sink <-"));
+
+        let restored = ImagePipeline::from_logical_plan(&logical).unwrap();
+        assert_eq!(restored.index_ops.len(), 3);
+        assert_eq!(
+            restored.ops.iter().map(|op| op.name()).collect::<Vec<_>>(),
+            [
+                "Decode",
+                "Resize",
+                "RandomHorizontalFlip",
+                "Normalize",
+                "Layout"
+            ]
+        );
+        assert_eq!(restored.batch.unwrap().size, 2);
+        assert!(restored.batch.unwrap().drop_last);
+        assert_eq!(restored.runtime.num_workers, 3);
+        assert_eq!(restored.runtime.prefetch_batches, 4);
+        assert_eq!(restored.epoch, 7);
+        assert_eq!(restored.global_seed, Some(91));
+    }
+
+    #[test]
+    fn logical_round_trip_preserves_compile_errors() {
+        let invalid = stub(10).resize(8, 8).batch(4, false);
+        let legacy_error = legacy_compile_err(invalid.clone());
+        let logical_error = compile_err(invalid);
+        assert!(logical_error.contains("node %1"), "got: {logical_error}");
+        assert!(
+            logical_error.contains(
+                legacy_error
+                    .strip_prefix("invalid pipeline: ")
+                    .unwrap_or(&legacy_error)
+            ),
+            "legacy error: {legacy_error}; logical error: {logical_error}"
+        );
+    }
+
+    #[test]
+    fn logical_round_trip_preserves_compiled_batch_output() {
+        let original = decoded_stub()
+            .skip(0)
+            .take(1)
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .batch(1, false);
+        let lowered = ImagePipeline::from_logical_plan(&original.to_logical_plan()).unwrap();
+        let mut original_loader = original.compile_legacy_for_test(0).unwrap();
+        let mut lowered_loader = lowered.compile().unwrap();
+        let original_batch = original_loader.next_batch().unwrap().unwrap();
+        let lowered_batch = lowered_loader.next_batch().unwrap().unwrap();
+
+        assert_eq!(
+            original_batch.labels.to_vec::<i64>().unwrap(),
+            lowered_batch.labels.to_vec::<i64>().unwrap()
+        );
+        assert_eq!(original_batch.images.dims(), lowered_batch.images.dims());
+        assert_eq!(
+            original_batch.images.to_vec::<f32>().unwrap(),
+            lowered_batch.images.to_vec::<f32>().unwrap()
+        );
+    }
+
+    #[test]
+    fn property_inference_tracks_resize_layout_and_batch_properties() {
+        use rivet_plan::{
+            AxisOrder, Contiguity, DataType as PlanDType, NodeKind, Representation, Residency,
+            ShapeDim, ValueGranularity,
+        };
+
+        let pipeline = stub(4)
+            .decode_image()
+            .resize(12, 8)
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .hwc_to_chw()
+            .batch(4, true);
+        let logical = pipeline.to_logical_plan();
+        let annotations = logical
+            .infer_properties(&super::inference::VisionPropertyInference::new(0))
+            .unwrap();
+        let node_properties = logical
+            .nodes()
+            .map(|(id, node)| (node.kind(), annotations.get(id).unwrap()))
+            .collect::<Vec<_>>();
+
+        let resized = node_properties
+            .iter()
+            .find(|(kind, properties)| {
+                *kind == NodeKind::Op
+                    && properties.shape.as_ref().is_some_and(|shape| {
+                        shape.dims() == [ShapeDim::Known(8), ShapeDim::Known(12), ShapeDim::Dynamic]
+                    })
+            })
+            .unwrap()
+            .1;
+        assert_eq!(resized.representation, Some(Representation::Image));
+        assert_eq!(resized.dtype, Some(PlanDType::U8));
+        assert_eq!(resized.axis_order, Some(AxisOrder::Hwc));
+        assert_eq!(resized.residency, Some(Residency::Host));
+        assert_eq!(resized.granularity, Some(ValueGranularity::Sample));
+        assert_eq!(resized.contiguity, Some(Contiguity::Contiguous));
+
+        let batch = node_properties
+            .iter()
+            .find(|(kind, properties)| {
+                *kind == NodeKind::Batch && properties.granularity == Some(ValueGranularity::Batch)
+            })
+            .unwrap()
+            .1;
+        assert_eq!(batch.dtype, Some(PlanDType::F32));
+        assert_eq!(batch.axis_order, Some(AxisOrder::Nchw));
+        assert_eq!(
+            batch.shape.as_ref().unwrap().dims(),
+            [
+                ShapeDim::Known(4),
+                ShapeDim::Dynamic,
+                ShapeDim::Known(8),
+                ShapeDim::Known(12)
+            ]
+        );
+        assert_eq!(batch.contiguity, Some(Contiguity::Contiguous));
+    }
+
+    #[test]
+    fn property_inference_rejects_known_crop_bounds_before_execution() {
+        let pipeline = stub(1)
+            .decode_image()
+            .resize(10, 8)
+            .crop(9, 0, 2, 2)
+            .batch(1, false);
+        let error = pipeline.infer_properties().unwrap_err().to_string();
+        assert!(
+            error.contains("property inference failed at node %3"),
+            "got: {error}"
+        );
+        assert!(
+            error.contains("crop rectangle (9, 0, 2, 2) exceeds image shape 10x8"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn worker_normalize_keeps_sample_stage_property() {
+        use rivet_plan::{NodeKind, OperatorStage};
+
+        let pipeline = stub(1)
+            .decode_image()
+            .horizontal_flip()
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .random_erasing(0.0)
+            .workers(2)
+            .batch(1, false);
+        let logical = pipeline.to_logical_plan();
+        let annotations = pipeline.infer_properties().unwrap();
+        let last_op = logical
+            .nodes()
+            .filter(|(_, node)| node.kind() == NodeKind::Op)
+            .last()
+            .unwrap()
+            .0;
+        assert_eq!(
+            annotations.get(last_op).unwrap().operator.unwrap().stage,
+            OperatorStage::Sample
+        );
+    }
+
+    #[test]
+    fn property_inference_covers_every_image_op_variant() {
+        use crate::pipeline::op::ImageOp;
+        use crate::transforms::{Point2, RotationAngle};
+        use rivet_core::DType;
+
+        let points = [
+            Point2::new(0.0, 0.0),
+            Point2::new(1.0, 0.0),
+            Point2::new(1.0, 1.0),
+            Point2::new(0.0, 1.0),
+        ];
+        let operations = vec![
+            ImageOp::resize(4, 4),
+            ImageOp::crop(0, 0, 1, 1),
+            ImageOp::center_crop(1, 1),
+            ImageOp::pad(1),
+            ImageOp::horizontal_flip(),
+            ImageOp::vertical_flip(),
+            ImageOp::random_crop(1, 1, 0),
+            ImageOp::random_resized_crop(1, 1),
+            ImageOp::random_horizontal_flip(0.5),
+            ImageOp::brightness(1),
+            ImageOp::contrast(1.0),
+            ImageOp::hue(1),
+            ImageOp::color_jitter(1, 1.0, 1),
+            ImageOp::invert(),
+            ImageOp::posterize(4),
+            ImageOp::solarize(128),
+            ImageOp::autocontrast(),
+            ImageOp::equalize(),
+            ImageOp::sharpness(1.0),
+            ImageOp::arbitrary_rotate(0.0),
+            ImageOp::random_affine(0.0),
+            ImageOp::perspective(points, points),
+            ImageOp::random_perspective(0.1, 0.5),
+            ImageOp::elastic_transform(1.0, 1.0),
+            ImageOp::random_apply(0.5, vec![ImageOp::invert()]),
+            ImageOp::random_choice(vec![vec![ImageOp::invert()], vec![ImageOp::solarize(128)]]),
+            ImageOp::random_order(vec![ImageOp::invert(), ImageOp::solarize(128)]),
+            ImageOp::gaussian_blur(1.0),
+            ImageOp::grayscale(3),
+            ImageOp::random_grayscale(0.5, 3),
+            ImageOp::random_erasing(0.0),
+            ImageOp::convert_image_dtype(DType::F32),
+            ImageOp::rotate(RotationAngle::Deg90),
+            ImageOp::normalize(vec![0.5; 3], vec![0.5; 3]),
+            ImageOp::hwc_to_chw(),
+        ];
+
+        for op in operations {
+            let mut pipeline = decoded_stub();
+            pipeline.ops.push(op.clone());
+            pipeline.batch = Some(crate::pipeline::op::BatchConfig::new(1, false));
+            pipeline
+                .infer_properties()
+                .unwrap_or_else(|error| panic!("{} inference failed: {error}", op.name()));
+        }
+
+        let mut encoded_pipeline = stub(1);
+        encoded_pipeline.ops.push(ImageOp::decode());
+        encoded_pipeline.batch = Some(crate::pipeline::op::BatchConfig::new(1, false));
+        encoded_pipeline.infer_properties().unwrap();
     }
 }

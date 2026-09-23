@@ -7,5 +7,4 @@ repository.workspace = true
 description = "Logical planning, inference, optimization, and placement for Rivet"
 
 [dependencies]
-rivet-core.workspace = true
 thiserror.workspace = true

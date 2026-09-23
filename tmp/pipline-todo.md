@@ -52,15 +52,15 @@
 任务：
 
 - [x] workspace 中已建立 rivet-plan crate。
-- [ ] 定义 NodeId、PlanArena、LogicalNode 和 LogicalPlan。
-- [ ] 定义 Source、Op、Batch、Cache、Sink 等稳定 node kind 和输入边。
-- [ ] 第一版使用小型固定容量输入容器；domain op 先使用 VisionOp，不提前引入全局 type-erasure。
-- [ ] 支持 root 更新、parent/child traversal、节点替换和一致性校验。
-- [ ] 实现 logical explain，展示 node id、kind、inputs 和 root。
-- [ ] 将 ImagePipeline builder 输出 lowering 成 LogicalPlan，保留 builder API 和错误语义。
-- [ ] 将 LogicalPlan lowering 回现有 ExecutionPlan；旧执行路径仍作为迁移期 backend。
-- [ ] 为 logical plan 增加 snapshot/explain 测试。
-- [ ] 对新旧 lowering 做输出和错误等价测试。
+- [x] 定义 NodeId、PlanArena、LogicalNode 和 LogicalPlan。
+- [x] 定义 Source、Index、Op、Batch、Cache、Sink 等稳定 node kind 和输入边。
+- [x] 使用 inline 容量为 2、可 spill 的小型输入边容器；按 Phase 1 采用 PlanPayload trait-object 擦除领域 payload，rivet-plan 不依赖 rivet-vision。
+- [x] 支持 root 更新、parent/child traversal、节点替换和一致性校验。
+- [x] 实现 logical explain，展示 node id、kind、inputs 和 root。
+- [x] 将 ImagePipeline builder 输出 lowering 成 LogicalPlan，保留 builder API 和错误语义。
+- [x] 将 LogicalPlan lowering 回现有 ExecutionPlan；旧执行路径仍作为迁移期 backend。
+- [x] 为 logical plan 增加 explain 稳定性和 traversal 测试。
+- [x] 对新旧 lowering 做输出和错误等价测试。
 
 验收门槛：
 
@@ -74,18 +74,18 @@
 
 任务：
 
-- [ ] 定义 representation、dtype、shape、layout、residency、granularity、mutability properties。
-- [ ] 定义 Known/Dynamic shape dimension。
-- [ ] 定义 axis order 与 contiguity 两个独立 property。
-- [ ] 定义 Host/Device(DeviceClass)/Unknown residency；具体 device ordinal 保留给 physical planning。
-- [ ] 定义 Sample/Batch/Stream granularity，并与 kernel 执行粒度分离。
-- [ ] 定义 PropertyInference hook 和可诊断的 inference/validation error。
-- [ ] 将 compile.rs 中的 state transition 与 validation 移到 inference pass。
-- [ ] 实现 vision Decode、Resize、Normalize、Layout 的 property inference。
-- [ ] 推导 Resize 固定 shape、Decode dynamic H/W、Batch 新增 N 轴。
-- [ ] 检查 dtype、shape、axis order、contiguity、residency、granularity 的非法组合。
-- [ ] 第一版 residency 全部推导为 CPU，不在本阶段增加 CUDA placement。
-- [ ] 为每个语义 op 添加合法/非法属性组合测试。
+- [x] 定义 representation、dtype、shape、layout、residency、granularity、mutability properties。
+- [x] 定义 Known/Dynamic shape dimension，并以缺省 shape 表示未知 rank。
+- [x] 定义 axis order 与 contiguity 两个独立 property。
+- [x] 定义 Host/Device(DeviceClass)/Unknown residency；具体 device ordinal 保留给 physical planning。
+- [x] 定义 Sample/Batch/Stream granularity，并通过独立 OperatorProperties 表示 sample/batch 执行 barrier。
+- [x] 定义 PropertyInference hook 和带 node id 的 inference/validation error。
+- [x] 将 vision op 的 state transition 语义集中到 property inference；compile 入口先推导校验，PipelineImageState 只作旧 ExecutionPlan 的兼容投影。
+- [x] 为全部 ImageOp 变体实现 property inference，重点覆盖 Decode、Resize、Normalize、Layout。
+- [x] 推导 Resize 固定 shape、Decode dynamic H/W/C、Batch 新增 N 轴。
+- [x] 检查 dtype、rank/shape、axis order、contiguity、residency、granularity 的非法组合，并在已知 shape 时预检 crop bounds。
+- [x] vision source 首版 residency 推导为 Host；已知 Device 输入在 CPU vision planner 中拒绝，不增加 CUDA placement。
+- [x] 为所有 ImageOp 变体添加合法推导覆盖，并测试 dtype、shape、axis order、contiguity、residency 和 granularity 冲突。
 
 验收门槛：
 

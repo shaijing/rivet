@@ -19,6 +19,7 @@ lance = { workspace = true, optional = true }
 rivet-core.workspace = true
 rivet-data.workspace = true
 rivet-exec.workspace = true
+rivet-plan.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 walkdir = "2.5.0"

@@ -178,118 +178,9 @@ impl ImageOp {
     }
 
     pub fn transition(&self, input: PipelineImageState) -> RivetResult<PipelineImageState> {
-        use PipelineImageState::{Decoded, Encoded};
-
-        match self {
-            Self::Decode(_) => match input {
-                Encoded => Ok(Decoded {
-                    dtype: DType::U8,
-                    axis_order: ImageAxisOrder::Hwc,
-                }),
-                Decoded { .. } => Err(invalid_pipeline(
-                    "Decode requires an encoded image, current state is decoded",
-                )),
-            },
-            Self::Resize(_) => require_u8_hwc(input, "Resize"),
-            Self::Crop(_) => require_u8_decoded(input, "Crop"),
-            Self::CenterCrop(_) => require_u8_decoded(input, "CenterCrop"),
-            Self::Pad(_) => require_u8_or_f32_decoded(input, "Pad"),
-            Self::Flip(_) => require_u8_decoded(input, "Flip"),
-            Self::RandomCrop(_) => require_u8_hwc(input, "RandomCrop"),
-            Self::RandomResizedCrop(_) => require_u8_hwc(input, "RandomResizedCrop"),
-            Self::RandomHorizontalFlip(_) => require_u8_decoded(input, "RandomHorizontalFlip"),
-            Self::Brightness(_) => require_u8_hwc(input, "Brightness"),
-            Self::Contrast(_) => require_u8_hwc(input, "Contrast"),
-            Self::Hue(_) => require_u8_hwc(input, "Hue"),
-            Self::ColorJitter(_) => require_u8_hwc(input, "ColorJitter"),
-            Self::Invert(_) => require_u8_decoded(input, "Invert"),
-            Self::Posterize(_) => require_u8_decoded(input, "Posterize"),
-            Self::Solarize(_) => require_u8_decoded(input, "Solarize"),
-            Self::Autocontrast(_) => require_u8_decoded(input, "Autocontrast"),
-            Self::Equalize(_) => require_u8_decoded(input, "Equalize"),
-            Self::Sharpness(_) => require_u8_decoded(input, "Sharpness"),
-            Self::ArbitraryRotate(_) => require_u8_decoded(input, "ArbitraryRotate"),
-            Self::RandomAffine(_) => require_u8_decoded(input, "RandomAffine"),
-            Self::Perspective(_) => require_u8_decoded(input, "Perspective"),
-            Self::RandomPerspective(_) => require_u8_decoded(input, "RandomPerspective"),
-            Self::ElasticTransform(_) => require_u8_decoded(input, "ElasticTransform"),
-            Self::RandomApply { probability, ops } => {
-                validate_probability(*probability, "random_apply")?;
-                let output = transition_sequence(ops, input)?;
-                if output != input {
-                    return Err(invalid_pipeline(
-                        "RandomApply nested transforms must preserve image state",
-                    ));
-                }
-                Ok(input)
-            }
-            Self::RandomChoice { choices } => {
-                if choices.is_empty() {
-                    return Err(invalid_argument(
-                        "random_choice requires at least one choice",
-                    ));
-                }
-                let mut output = None;
-                for choice in choices {
-                    let choice_output = transition_sequence(choice, input)?;
-                    if let Some(expected) = output {
-                        if expected != choice_output {
-                            return Err(invalid_pipeline(
-                                "random_choice choices must produce the same image state",
-                            ));
-                        }
-                    } else {
-                        output = Some(choice_output);
-                    }
-                }
-                Ok(output.expect("random_choice choices is non-empty"))
-            }
-            Self::RandomOrder { ops } => {
-                let mut state = input;
-                for op in ops {
-                    let output = transition_sequence(std::slice::from_ref(op), input)?;
-                    if output != input {
-                        return Err(invalid_pipeline(
-                            "RandomOrder nested transforms must preserve image state",
-                        ));
-                    }
-                    state = output;
-                }
-                Ok(state)
-            }
-            Self::GaussianBlur(_) => require_u8_hwc(input, "GaussianBlur"),
-            Self::Grayscale(_) => require_u8_decoded(input, "Grayscale"),
-            Self::RandomGrayscale(_) => require_u8_decoded(input, "RandomGrayscale"),
-            Self::RandomErasing(_) => require_u8_or_f32_decoded(input, "RandomErasing"),
-            Self::ConvertImageDtype(op) => match input {
-                Encoded => Err(invalid_pipeline(
-                    "ConvertImageDtype requires a decoded image, current state is encoded",
-                )),
-                Decoded { axis_order, .. } => Ok(Decoded {
-                    dtype: op.dtype,
-                    axis_order,
-                }),
-            },
-            Self::Rotate(_) => require_u8_hwc(input, "Rotate"),
-            Self::Normalize(_) => match input {
-                Encoded => Err(invalid_pipeline(
-                    "Normalize requires a decoded image, current state is encoded",
-                )),
-                Decoded { axis_order, .. } => Ok(Decoded {
-                    dtype: DType::F32,
-                    axis_order,
-                }),
-            },
-            Self::Layout(op) => match input {
-                Encoded => Err(invalid_pipeline(
-                    "Layout requires a decoded image, current state is encoded",
-                )),
-                Decoded { dtype, .. } => Ok(Decoded {
-                    dtype,
-                    axis_order: op.axis_order,
-                }),
-            },
-        }
+        let properties = super::super::inference::properties_from_state(input);
+        let output = super::super::inference::infer_image_op(self, &properties)?;
+        super::super::inference::state_from_properties(&output)
     }
 
     pub fn apply(
@@ -813,23 +704,6 @@ fn validate_nested_ops(ops: &[ImageOp], op_name: &str) -> RivetResult<()> {
     Ok(())
 }
 
-fn transition_sequence(
-    ops: &[ImageOp],
-    mut state: PipelineImageState,
-) -> RivetResult<PipelineImageState> {
-    for op in ops {
-        op.validate()?;
-        if op.execution_kind() != ExecutionKind::Sample {
-            return Err(invalid_pipeline(format!(
-                "{} nested transforms must be sample-stage operations",
-                op.name()
-            )));
-        }
-        state = op.transition(state)?;
-    }
-    Ok(state)
-}
-
 fn apply_sequence(
     mut sample: ImageSample,
     ops: &[ImageOp],
@@ -879,57 +753,4 @@ fn required_rng(
     random_key
         .map(|key| ctx.stream(key))
         .ok_or_else(|| invalid_pipeline(format!("{op_name} is missing its random key")))
-}
-
-fn require_u8_decoded(input: PipelineImageState, op_name: &str) -> RivetResult<PipelineImageState> {
-    match input {
-        PipelineImageState::Encoded => Err(invalid_pipeline(format!(
-            "{op_name} requires a decoded image, current state is encoded"
-        ))),
-        PipelineImageState::Decoded {
-            dtype: DType::U8, ..
-        } => Ok(input),
-        PipelineImageState::Decoded { dtype, axis_order } => Err(invalid_pipeline(format!(
-            "{op_name} requires uint8 input, current state is {:?} {}",
-            dtype,
-            axis_order.as_str()
-        ))),
-    }
-}
-
-fn require_u8_or_f32_decoded(
-    input: PipelineImageState,
-    op_name: &str,
-) -> RivetResult<PipelineImageState> {
-    match input {
-        PipelineImageState::Encoded => Err(invalid_pipeline(format!(
-            "{op_name} requires a decoded image, current state is encoded"
-        ))),
-        PipelineImageState::Decoded {
-            dtype: DType::U8 | DType::F32,
-            ..
-        } => Ok(input),
-        PipelineImageState::Decoded { dtype, axis_order } => Err(invalid_pipeline(format!(
-            "{op_name} requires uint8 or float32 input, current state is {:?} {}",
-            dtype,
-            axis_order.as_str()
-        ))),
-    }
-}
-
-fn require_u8_hwc(input: PipelineImageState, op_name: &str) -> RivetResult<PipelineImageState> {
-    match input {
-        PipelineImageState::Encoded => Err(invalid_pipeline(format!(
-            "{op_name} requires a decoded image, current state is encoded"
-        ))),
-        PipelineImageState::Decoded {
-            dtype: DType::U8,
-            axis_order: ImageAxisOrder::Hwc,
-        } => Ok(input),
-        PipelineImageState::Decoded { dtype, axis_order } => Err(invalid_pipeline(format!(
-            "{op_name} requires uint8 HWC input, current state is {:?} {}",
-            dtype,
-            axis_order.as_str()
-        ))),
-    }
 }
