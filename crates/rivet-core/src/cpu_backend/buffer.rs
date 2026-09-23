@@ -46,6 +46,7 @@ impl<T> AlignedBuffer<T> {
         self.len
     }
 
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -74,6 +75,7 @@ impl<T> AlignedBuffer<T> {
         allocation_alignment::<T>()
     }
 
+    #[cfg(test)]
     pub(crate) fn is_aligned_to(&self, alignment: usize) -> bool {
         self.is_empty() || (alignment != 0 && (self.as_ptr() as usize) % alignment == 0)
     }
@@ -155,6 +157,7 @@ impl<T> AlignedBufferBuilder<T> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn remaining(&self) -> usize {
         self.len - self.initialized
     }
