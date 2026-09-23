@@ -4,6 +4,7 @@ members = [
     "crates/rivet-data",
     "crates/rivet-plan",
     "crates/rivet-exec",
+    "crates/rivet-text",
     "crates/rivet-kernels",
     "crates/rivet-python",
     "crates/rivet-vision",
@@ -22,6 +23,7 @@ arrow-array = "58.4.0"
 arrow-buffer = "58.4.0"
 arrow-ipc = "58.4.0"
 bytes = "1.12.1"
+criterion = "0.8.2"
 cudarc = { version = "0.19.8", default-features = false, features = [
     "std",
     "driver",
@@ -39,6 +41,7 @@ rivet-core = { path = "crates/rivet-core" }
 rivet-data = { path = "crates/rivet-data", default-features = false }
 rivet-plan = { path = "crates/rivet-plan" }
 rivet-exec = { path = "crates/rivet-exec" }
+rivet-text = { path = "crates/rivet-text" }
 rivet-kernels = { path = "crates/rivet-kernels" }
 rivet-vision = { path = "crates/rivet-vision", default-features = false }
 thiserror = "2.0.17"

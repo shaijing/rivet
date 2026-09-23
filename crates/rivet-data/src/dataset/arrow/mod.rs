@@ -8,4 +8,4 @@ mod row;
 mod table;
 
 pub use row::ArrowRow;
-pub use table::MmapArrowTable;
+pub use table::{ArrowRowGroup, MmapArrowTable, RequestedRow};

@@ -1,0 +1,18 @@
+[package]
+name = "rivet-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Text operations and planning hooks for Rivet"
+
+[dependencies]
+arrow.workspace = true
+arrow-array.workspace = true
+arrow-ipc.workspace = true
+rivet-core.workspace = true
+rivet-plan.workspace = true
+thiserror.workspace = true
+
+[[example]]
+name = "inspect_sst5_arrowtext"

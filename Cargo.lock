@@ -4893,6 +4893,7 @@ dependencies = [
  "arrow-buffer",
  "arrow-ipc",
  "bytes",
+ "criterion",
  "lance",
  "memmap2",
  "serde",
@@ -4938,6 +4939,18 @@ dependencies = [
  "rivet-core",
  "rivet-data",
  "rivet-vision",
+]
+
+[[package]]
+name = "rivet-text"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "arrow-array",
+ "arrow-ipc",
+ "rivet-core",
+ "rivet-plan",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
