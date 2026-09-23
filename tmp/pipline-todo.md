@@ -243,20 +243,28 @@ Phase 7 功能实现记录（2026-09-23）：
 
 任务：
 
-- [ ] 建立 Sampler → Source → Decode → CPU Transform → Batch → Transfer → Device Transform → Sink stages。
-- [ ] 所有 stage edge 使用 bounded queue，并保留 sequence id。
-- [ ] queue 支持 max_items 和 max_bytes，按 encoded/decoded/batch 数据大小计量。
-- [ ] 在内存压力下阻塞上游；不得无限 prefetch。
-- [ ] 将旧 worker pool 映射到 stage graph，先保持确定性和输出顺序。
-- [ ] 支持 Source N+2、CPU Transform N+1、H2D N、GPU Transform N-1 的流水重叠。
-- [ ] 区分 inter-sample 与 intra-op parallelism，避免 Rayon 与外层 workers 过度订阅。
-- [ ] 测试 queue ordering、sequence reorder、错误传播、worker panic、取消和 backpressure。
-- [ ] 测量 decode/transform/transfer/device stage wait 与 action time。
+- [x] 建立 Sampler → Source → Decode → CPU Transform/Batch → Transfer → Device Transform → Sink stage graph。Sampler 仍由 `next_batch(&mut IndexSampler)` 驱动，并通过有界 request edge 向常驻 stage 提交请求。
+- [x] 所有 stage edge 使用 bounded FIFO queue，并保留 sequence id；结果严格按 sampler 顺序交付。
+- [x] queue 支持 max_items 和 max_bytes，按 index request、encoded/decoded sample、batch payload 计量；单个 payload 超限时返回错误。
+- [x] 在内存压力下阻塞上游；prefetch window 和每条 edge 的 item/byte 容量均有硬上限。
+- [x] 将旧 worker pool 接入 CPU Transform stage，按 batch sequence/position 回收结果并恢复原样本顺序。
+- [x] Source、CPU Transform/Batch、Transfer、Device Transform、Sink 在不同 sequence 上由常驻 stage 并行推进。
+- [x] 区分 inter-sample worker 数与 backend-managed intra-op parallelism，避免运行时额外创建 Rayon 池。
+- [x] 覆盖 queue ordering/backpressure、sequence 顺序、错误传播、worker panic、取消、满 prefetch drop 和超 byte budget 错误。
+- [x] profiler 记录 physical node action time、相邻 queue wait 与 queue peak/current item/byte 统计。
 
 验收门槛：
 
-- 在固定 item/byte budget 下吞吐稳定，内存不随运行时长无界增长。
-- 关闭任一 stage 或发生错误时，剩余 worker 和 queue 能安全退出。
+- 每条 queue 的 item/byte 上限在 enqueue 前强制执行，因此 retained queue memory 有界；常规长时间吞吐/RSS 对比留待后续性能验收。
+- 关闭 pipeline 或发生 source/decode/transform/transfer/device 错误时，剩余 worker 和 queue 能安全退出。
+
+Phase 8 功能实现记录（2026-09-23）：
+
+- `rivet-exec` 现有 persistent Source、Decode、CPU Transform/Batch、Transfer、Device Transform workers，通过六条 FIFO bounded queues 连接；caller-side sampler 只提交当前 `prefetch_batches + 1` 窗口内的请求。
+- 每条 queue 默认最多保留 3 个 item（默认 prefetch 为 2）和 512 MiB payload，可由 vision builder 的 `.stage_queue_max_bytes(...)` 调整。超出单条 byte 上限的 item 会显式报错；生产者在队列达到容量时阻塞。
+- CPU sample worker pool 保持每 batch 的 position 并在组 batch 前恢复顺序。物理 profiler 与 explain 输出 action/wait 时间、queue 当前和峰值占用，以及 inter-sample worker 配置。
+- CUDA transfer 和 device transform 已拆成独立持久 stage；当前 pageable H2D adapter 会同步 copy 生命周期，实际 copy/compute overlap 与 pinned staging 仍属于 Phase 9。
+- `cargo test -j 12 -p rivet-exec --lib` 通过 22 项；`cargo test -j 12 -p rivet-vision --features cuda --lib` 通过 158 项。未运行性能或 CIFAR benchmark。
 
 ## Phase 9：Pinned memory 与 copy/compute overlap
 

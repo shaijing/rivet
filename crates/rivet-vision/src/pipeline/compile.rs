@@ -134,6 +134,7 @@ impl ImagePipeline {
         };
         let num_workers = self.runtime.num_workers;
         let prefetch_batches = self.runtime.prefetch_batches;
+        let stage_queue_max_bytes = self.runtime.stage_queue_max_bytes;
         let plan = Arc::new(plan);
 
         ImageDataLoader::new(
@@ -141,6 +142,7 @@ impl ImagePipeline {
             IndexSampler::new(plan.sampler.clone(), start),
             num_workers,
             prefetch_batches,
+            stage_queue_max_bytes,
             physical,
             sink_device,
         )
@@ -175,9 +177,13 @@ impl PhysicalLowering for VisionPhysicalLowering {
                     .and_then(|properties| properties.operator)
                     .map(|operator| operator.stage)
                     .unwrap_or(OperatorStage::Sample);
-                let kernel = match stage {
-                    OperatorStage::Batch => KernelStage::Batch,
-                    OperatorStage::Sample | OperatorStage::Source => KernelStage::Sample,
+                let kernel = if matches!(node.payload_as::<ImageOp>(), Some(ImageOp::Decode(_))) {
+                    KernelStage::Decode
+                } else {
+                    match stage {
+                        OperatorStage::Batch => KernelStage::Batch,
+                        OperatorStage::Sample | OperatorStage::Source => KernelStage::Sample,
+                    }
                 };
                 (PhysicalNodeKind::Kernel(kernel), ExecutionLane::Cpu)
             }

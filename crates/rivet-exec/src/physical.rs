@@ -37,6 +37,7 @@ pub enum ExecutionLane {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum KernelStage {
+    Decode,
     Sample,
     Batch,
 }
@@ -66,6 +67,7 @@ impl fmt::Display for PhysicalNodeKind {
         match self {
             Self::Sampler => f.write_str("Sampler"),
             Self::Source => f.write_str("Source"),
+            Self::Kernel(KernelStage::Decode) => f.write_str("Decode"),
             Self::Kernel(KernelStage::Sample) => f.write_str("SampleKernel"),
             Self::Kernel(KernelStage::Batch) => f.write_str("BatchKernel"),
             Self::Batch => f.write_str("Batch"),
@@ -725,7 +727,11 @@ pub enum PhysicalLoweringError {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NodeProfile {
     pub executions: u64,
+    /// Time spent executing this physical node's action.
     pub elapsed: Duration,
+    /// Time spent blocked on adjacent bounded stage queues.
+    pub wait_elapsed: Duration,
+    pub wait_events: u64,
     pub input_bytes: u64,
     pub output_bytes: u64,
 }
@@ -750,6 +756,16 @@ impl PhysicalProfiler {
         profile.elapsed += elapsed;
         profile.input_bytes += input as u64;
         profile.output_bytes += output as u64;
+    }
+
+    pub(crate) fn record_wait(&self, id: PhysNodeId, elapsed: Duration) {
+        if elapsed.is_zero() {
+            return;
+        }
+        let mut nodes = self.nodes.lock().expect("physical profiler mutex poisoned");
+        let profile = nodes.entry(id).or_default();
+        profile.wait_elapsed += elapsed;
+        profile.wait_events += 1;
     }
 }
 

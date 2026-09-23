@@ -9,7 +9,8 @@ use crate::physical::{
     PhysicalProfiler, TransferKind,
 };
 
-use super::{PrefetchCoordinator, RuntimeError, RuntimeResult, WorkerPool, runtime_error};
+use super::stages::{PersistentStageGraph, StageNodes};
+use super::{RuntimeError, RuntimeResult, StageQueueLimits, runtime_error};
 
 /// Domain callbacks used by the physical pipeline executor. The executor owns
 /// sampling order, source-to-worker dispatch, prefetch, result ordering, and
@@ -25,6 +26,15 @@ pub trait PhysicalPipelineAdapter: Send + Sync + 'static {
     fn drop_last(&self) -> bool;
     fn is_batch_native(&self) -> bool;
     fn fetch_samples(&self, indices: &[usize]) -> Result<Vec<Self::Sample>, Self::Error>;
+    /// Decode or normalize source representation before CPU semantic ops.
+    /// The default is identity for adapters whose source is already decoded.
+    fn decode_sample(
+        &self,
+        sample: Self::Sample,
+        _sample_index: usize,
+    ) -> Result<Self::Sample, Self::Error> {
+        Ok(sample)
+    }
     fn process_sample(
         &self,
         sample: Self::Sample,
@@ -126,32 +136,21 @@ impl<E: fmt::Display> fmt::Display for PipelineError<E> {
 
 impl<E: std::error::Error + 'static> std::error::Error for PipelineError<E> {}
 
-enum ExecutorState<P: PhysicalPipelineAdapter> {
-    Inline,
-    Workers(
-        WorkerPool<P::Sample, P::Output, P::Error>,
-        PrefetchCoordinator<P::Output>,
-    ),
-    Failed,
-}
-
-/// CPU physical pipeline runtime used by domain adapters such as vision.
-///
-/// Its physical graph is the executable stage contract. The executor owns all
-/// generic scheduling and worker lifetimes; callbacks retain domain behavior.
+/// Persistent physical pipeline runtime used by domain adapters such as vision.
+/// Stage queues bound retained work, while sequence ids preserve sampler order.
 pub struct PhysicalPipelineExecutor<P: PhysicalPipelineAdapter> {
     adapter: Arc<P>,
-    state: ExecutorState<P>,
     max_in_flight_batches: usize,
     graph: PhysicalGraph,
     sampler_node: Option<PhysNodeId>,
-    source_node: PhysNodeId,
-    sample_node: Option<PhysNodeId>,
-    batch_node: PhysNodeId,
-    batch_kernel_node: PhysNodeId,
-    device_batch_kernel: bool,
-    transfer_nodes: Vec<(PhysNodeId, TransferKind, ExecutionLane)>,
+    stages: PersistentStageGraph<P>,
     profiler: PhysicalProfiler,
+    num_workers: usize,
+    next_sequence_id: u64,
+    next_output_sequence_id: u64,
+    in_flight_batches: usize,
+    source_exhausted: bool,
+    failed: bool,
 }
 
 impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
@@ -169,6 +168,22 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         adapter: Arc<P>,
         num_workers: usize,
         prefetch_batches: usize,
+        graph: PhysicalGraph,
+    ) -> RuntimeResult<Self> {
+        Self::with_graph_limits(
+            adapter,
+            num_workers,
+            prefetch_batches,
+            512 * 1024 * 1024,
+            graph,
+        )
+    }
+
+    pub fn with_graph_limits(
+        adapter: Arc<P>,
+        num_workers: usize,
+        prefetch_batches: usize,
+        stage_queue_max_bytes: usize,
         mut graph: PhysicalGraph,
     ) -> RuntimeResult<Self> {
         let batch_size = adapter.batch_size();
@@ -187,13 +202,24 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         let source_node = find_node(&graph, |kind| kind == PhysicalNodeKind::Source)
             .ok_or_else(|| runtime_error("physical pipeline graph has no source node"))?;
         let sampler_node = find_node(&graph, |kind| kind == PhysicalNodeKind::Sampler);
+        let decode_node = find_node(&graph, |kind| {
+            kind == PhysicalNodeKind::Kernel(KernelStage::Decode)
+        });
         let sample_node = find_node(&graph, |kind| {
             kind == PhysicalNodeKind::Kernel(KernelStage::Sample)
         });
-        if sample_node
-            .is_some_and(|sample| positions[sample.index()] <= positions[source_node.index()])
+        if decode_node
+            .is_some_and(|decode| positions[decode.index()] <= positions[source_node.index()])
         {
-            return Err(runtime_error("sample kernel must follow source reads"));
+            return Err(runtime_error("decode stage must follow source reads"));
+        }
+        if sample_node.is_some_and(|sample| {
+            let previous = decode_node.unwrap_or(source_node);
+            positions[sample.index()] <= positions[previous.index()]
+        }) {
+            return Err(runtime_error(
+                "sample kernel must follow source/decode stages",
+            ));
         }
         let batch_node = find_node(&graph, |kind| kind == PhysicalNodeKind::Batch);
         let batch_node =
@@ -283,86 +309,75 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             ));
         }
 
-        let state = if num_workers == 0 || adapter.is_batch_native() {
-            ExecutorState::Inline
+        let max_in_flight_batches = prefetch_batches
+            .checked_add(1)
+            .ok_or_else(|| runtime_error("stage graph batch window overflow"))?;
+        let worker_capacity = batch_size;
+        let queue_limits = StageQueueLimits {
+            max_items: max_in_flight_batches,
+            max_bytes: stage_queue_max_bytes,
+        }
+        .validate()?;
+        let batch_kernel_node = batch_kernel.unwrap_or(if transfer_nodes.is_empty() {
+            root
         } else {
-            // The current batch plus all configured future batches are
-            // allowed in flight. Check before channel allocation.
-            let max_in_flight_batches = prefetch_batches.saturating_add(1);
-            let max_samples = batch_size
-                .checked_mul(max_in_flight_batches)
-                .ok_or_else(|| runtime_error("worker queue capacity overflow"))?;
-            let worker_adapter = Arc::clone(&adapter);
-            let profiler = PhysicalProfiler::default();
-            let worker_profiler = profiler.clone();
-            // A domain may compile an empty sample stage (for example, only
-            // converting an already-decoded source sample into the typed
-            // runtime value). Attribute its work to Source until the planner
-            // materializes an explicit no-op/sample-conversion kernel node.
-            let sample_node_id = sample_node.unwrap_or(source_node);
-            let pool = WorkerPool::new(
-                num_workers,
-                max_samples,
-                move |sample, index| {
-                    let started = Instant::now();
-                    let input_bytes = worker_adapter.sample_bytes(&sample);
-                    let result = worker_adapter.process_sample(sample, index);
-                    let output_bytes = result
-                        .as_ref()
-                        .map(|output| worker_adapter.output_bytes(output))
-                        .unwrap_or(0);
-                    worker_profiler.record(
-                        sample_node_id,
-                        started.elapsed(),
-                        input_bytes,
-                        output_bytes,
-                    );
-                    result
-                },
-                {
-                    let adapter = Arc::clone(&adapter);
-                    move |worker, index| adapter.worker_panic_error(worker, index)
-                },
-            )?;
-            // Worker stage timing is recorded from worker threads in the
-            // closure above. Share this same profiler for the rest of runtime.
-            return Ok(Self {
-                adapter,
-                state: ExecutorState::Workers(
-                    pool,
-                    PrefetchCoordinator::new(max_in_flight_batches),
-                ),
-                max_in_flight_batches,
-                graph,
-                sampler_node,
-                source_node,
-                sample_node,
-                batch_node,
-                batch_kernel_node,
-                device_batch_kernel,
-                transfer_nodes,
-                profiler,
-            });
+            batch_node
+        });
+        let decode_node = decode_node.unwrap_or(source_node);
+        let device_target = graph
+            .node(batch_kernel_node)
+            .map_err(graph_runtime_error)?
+            .lane;
+        let nodes = StageNodes {
+            source: source_node,
+            decode: decode_node,
+            sample: sample_node,
+            batch: batch_node,
+            batch_kernel: batch_kernel_node,
+            sink: root,
+            device_batch_kernel,
+            device_target,
+            transfer_nodes,
         };
+        let profiler = PhysicalProfiler::default();
+        let inter_sample_workers = if adapter.is_batch_native() {
+            0
+        } else {
+            num_workers
+        };
+        let stages = PersistentStageGraph::new(
+            Arc::clone(&adapter),
+            inter_sample_workers,
+            worker_capacity,
+            queue_limits,
+            nodes,
+            profiler.clone(),
+        )?;
 
         Ok(Self {
             adapter,
-            state,
-            max_in_flight_batches: 1,
+            max_in_flight_batches,
             graph,
             sampler_node,
-            source_node,
-            sample_node,
-            batch_node,
-            batch_kernel_node,
-            device_batch_kernel,
-            transfer_nodes,
-            profiler: PhysicalProfiler::default(),
+            stages,
+            profiler,
+            num_workers,
+            next_sequence_id: 0,
+            next_output_sequence_id: 0,
+            in_flight_batches: 0,
+            source_exhausted: false,
+            failed: false,
         })
     }
 
     pub fn physical_explain(&mut self) -> Result<String, RuntimeError> {
-        self.graph.explain().map_err(graph_runtime_error)
+        let mut explanation = self.graph.explain().map_err(graph_runtime_error)?;
+        explanation.push_str(&format!(
+            "Runtime parallelism: inter_sample_workers={} intra_op=backend_managed\n",
+            self.num_workers
+        ));
+        explanation.push_str(&self.stages.queue_explain());
+        Ok(explanation)
     }
 
     pub fn profiler(&self) -> PhysicalProfiler {
@@ -373,272 +388,105 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         &mut self,
         sampler: &mut IndexSampler,
     ) -> Result<Option<P::Batch>, PipelineError<P::Error>> {
-        let state = std::mem::replace(&mut self.state, ExecutorState::Failed);
-        let (result, next_state) = match state {
-            ExecutorState::Inline => {
-                let result = self.next_batch_inline(sampler);
-                let next_state = if result.is_err() {
-                    ExecutorState::Failed
-                } else {
-                    ExecutorState::Inline
-                };
-                (result, next_state)
-            }
-            ExecutorState::Workers(pool, mut coordinator) => {
-                let result = self.next_batch_workers(sampler, &pool, &mut coordinator);
-                let next_state = if result.is_err() {
-                    ExecutorState::Failed
-                } else {
-                    ExecutorState::Workers(pool, coordinator)
-                };
-                (result, next_state)
-            }
-            ExecutorState::Failed => (
-                Err(PipelineError::Runtime(runtime_error(
-                    "loader is in failed state after a previous iteration error",
-                ))),
-                ExecutorState::Failed,
-            ),
-        };
-        self.state = next_state;
-        result
-    }
-
-    fn next_indices(&mut self, sampler: &mut IndexSampler) -> Option<Vec<usize>> {
-        let started = Instant::now();
-        let indices = sampler.next_indices(self.adapter.batch_size())?;
-        let output = if self.adapter.drop_last() && indices.len() < self.adapter.batch_size() {
-            None
-        } else {
-            Some(indices)
-        };
-        if let Some(node) = self.sampler_node {
-            let bytes = output
-                .as_ref()
-                .map(|indices| indices.len().saturating_mul(std::mem::size_of::<usize>()))
-                .unwrap_or(0);
-            self.profiler.record(node, started.elapsed(), 0, bytes);
+        if self.failed {
+            return Err(PipelineError::Runtime(runtime_error(
+                "loader is in failed state after a previous iteration error",
+            )));
         }
-        output
-    }
 
-    fn next_batch_inline(
-        &mut self,
-        sampler: &mut IndexSampler,
-    ) -> Result<Option<P::Batch>, PipelineError<P::Error>> {
-        let Some(indices) = self.next_indices(sampler) else {
-            return Ok(None);
-        };
-        if self.adapter.is_batch_native() {
+        while self.in_flight_batches < self.max_in_flight_batches && !self.source_exhausted {
             let started = Instant::now();
-            let batch = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.adapter.fetch_batch(&indices)
-            }))
-            .map_err(|_| {
-                PipelineError::Runtime(runtime_error(
-                    "dataset get_batch panicked while fetching a batch",
-                ))
-            })?
-            .map_err(PipelineError::Domain)?
-            .ok_or_else(|| {
-                PipelineError::Runtime(runtime_error("batch-native source capability disappeared"))
+            let Some(indices) = sampler.next_indices(self.adapter.batch_size()) else {
+                self.source_exhausted = true;
+                self.stages.close_requests();
+                break;
+            };
+            if self.adapter.drop_last() && indices.len() < self.adapter.batch_size() {
+                self.source_exhausted = true;
+                self.stages.close_requests();
+                break;
+            }
+            let sequence_id = self.next_sequence_id;
+            let bytes = indices.len().saturating_mul(std::mem::size_of::<usize>());
+            if let Some(node) = self.sampler_node {
+                self.profiler.record(node, started.elapsed(), 0, bytes);
+            }
+            let waited = match self.stages.submit(sequence_id, indices) {
+                Ok(waited) => waited,
+                Err(error) => {
+                    self.failed = true;
+                    self.stages.cancel_upstream();
+                    return Err(PipelineError::Runtime(error));
+                }
+            };
+            if let Some(node) = self.sampler_node {
+                self.profiler.record_wait(node, waited);
+            }
+            self.next_sequence_id = self.next_sequence_id.checked_add(1).ok_or_else(|| {
+                self.failed = true;
+                PipelineError::Runtime(runtime_error("stage sequence id overflow"))
             })?;
-            let bytes = self.adapter.batch_bytes(&batch);
-            self.profiler
-                .record(self.source_node, started.elapsed(), 0, bytes);
-            return self.apply_batch(batch, &indices).map(Some);
+            self.in_flight_batches += 1;
         }
 
-        let samples = self.fetch_samples(&indices)?;
-        let capacity = samples.len();
-        let mut builder = self.adapter.batch_builder(capacity);
-        for (&index, sample) in indices.iter().zip(samples) {
-            let started = Instant::now();
-            let input_bytes = self.adapter.sample_bytes(&sample);
-            let output = self
-                .adapter
-                .process_sample(sample, index)
-                .map_err(PipelineError::Domain)?;
-            if let Some(sample_node) = self.sample_node {
-                self.profiler.record(
-                    sample_node,
-                    started.elapsed(),
-                    input_bytes,
-                    self.adapter.output_bytes(&output),
-                );
-            }
-            self.adapter
-                .push_batch_sample(&mut builder, output)
-                .map_err(PipelineError::Domain)?;
+        if self.in_flight_batches == 0 && self.source_exhausted {
+            return Ok(None);
         }
-        let started = Instant::now();
-        let batch = self
-            .adapter
-            .finish_batch(builder)
-            .map_err(PipelineError::Domain)?;
-        let output_bytes = self.adapter.batch_bytes(&batch);
-        self.profiler
-            .record(self.batch_node, started.elapsed(), 0, output_bytes);
-        self.apply_batch(batch, &indices).map(Some)
-    }
 
-    fn next_batch_workers(
-        &mut self,
-        sampler: &mut IndexSampler,
-        pool: &WorkerPool<P::Sample, P::Output, P::Error>,
-        coordinator: &mut PrefetchCoordinator<P::Output>,
-    ) -> Result<Option<P::Batch>, PipelineError<P::Error>> {
-        loop {
-            while coordinator.in_flight < coordinator.max_in_flight && !coordinator.closed {
-                match self.next_indices(sampler) {
-                    Some(indices) => {
-                        let samples = self.fetch_samples(&indices)?;
-                        coordinator
-                            .submit(indices, samples, pool)
-                            .map_err(PipelineError::Runtime)?;
-                    }
-                    None => coordinator.closed = true,
-                }
-            }
-
-            if let Some(pending) = coordinator.take_ready().map_err(PipelineError::Runtime)? {
-                let (batch_indices, pending_samples) = pending.into_parts();
-                let capacity = batch_indices.len();
-                let mut builder = self.adapter.batch_builder(capacity);
-                for sample in pending_samples {
-                    let sample = sample.map_err(PipelineError::Runtime)?;
-                    self.adapter
-                        .push_batch_sample(&mut builder, sample)
-                        .map_err(PipelineError::Domain)?;
-                }
-                let started = Instant::now();
-                let batch = self
-                    .adapter
-                    .finish_batch(builder)
-                    .map_err(PipelineError::Domain)?;
-                let output_bytes = self.adapter.batch_bytes(&batch);
-                self.profiler
-                    .record(self.batch_node, started.elapsed(), 0, output_bytes);
-                return self.apply_batch(batch, &batch_indices).map(Some);
-            }
-
-            if coordinator.closed && coordinator.in_flight == 0 {
-                return Ok(None);
-            }
-
-            let result = pool.recv().map_err(PipelineError::Runtime)?;
-            match result.result {
-                Ok(sample) => coordinator
-                    .record(result.batch_id, result.position, sample)
-                    .map_err(PipelineError::Runtime)?,
-                Err(error) => return Err(PipelineError::Domain(error)),
-            }
-        }
-    }
-
-    fn fetch_samples(
-        &mut self,
-        indices: &[usize],
-    ) -> Result<Vec<P::Sample>, PipelineError<P::Error>> {
-        let started = Instant::now();
-        let samples = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.adapter.fetch_samples(indices)
-        }))
-        .map_err(|_| {
-            PipelineError::Runtime(runtime_error(
-                "dataset get_many panicked while fetching a batch",
-            ))
-        })?
-        .map_err(PipelineError::Domain)?;
-        if samples.len() != indices.len() {
+        let (message, waited) = self.stages.recv_output().map_err(PipelineError::Runtime)?;
+        self.profiler.record_wait(
+            self.graph
+                .root()
+                .map_err(graph_runtime_error)
+                .map_err(PipelineError::Runtime)?,
+            waited,
+        );
+        let Some(message) = message else {
+            self.failed = true;
+            self.stages.cancel_upstream();
+            return if self.in_flight_batches == 0 && self.source_exhausted {
+                Ok(None)
+            } else {
+                Err(PipelineError::Runtime(runtime_error(
+                    "stage graph ended before all submitted sequences reached the sink",
+                )))
+            };
+        };
+        if message.sequence_id != self.next_output_sequence_id {
+            self.failed = true;
+            self.stages.cancel_upstream();
             return Err(PipelineError::Runtime(runtime_error(format!(
-                "source returned {} samples for {} indices",
-                samples.len(),
-                indices.len()
+                "stage graph delivered sequence {}, expected {}",
+                message.sequence_id, self.next_output_sequence_id
             ))));
         }
-        let bytes = samples
-            .iter()
-            .map(|sample| self.adapter.sample_bytes(sample))
-            .sum();
-        self.profiler
-            .record(self.source_node, started.elapsed(), 0, bytes);
-        Ok(samples)
-    }
-
-    fn apply_batch(
-        &mut self,
-        batch: P::Batch,
-        indices: &[usize],
-    ) -> Result<P::Batch, PipelineError<P::Error>> {
-        let mut batch = batch;
-        if self.device_batch_kernel {
-            batch = self.transfer_before_device_kernel(batch)?;
-            let started = Instant::now();
-            let input_bytes = self.adapter.batch_bytes(&batch);
-            let target = self
-                .graph
-                .node(self.batch_kernel_node)
-                .map_err(graph_runtime_error)
-                .map_err(PipelineError::Runtime)?
-                .lane;
-            batch = self
-                .adapter
-                .apply_device_batch_with_indices(batch, target, indices)?;
-            self.profiler.record(
-                self.batch_kernel_node,
-                started.elapsed(),
-                input_bytes,
-                self.adapter.batch_bytes(&batch),
-            );
-        } else {
-            let started = Instant::now();
-            let input_bytes = self.adapter.batch_bytes(&batch);
-            batch = self
-                .adapter
-                .apply_batch_with_indices(batch, indices)
-                .map_err(PipelineError::Domain)?;
-            self.profiler.record(
-                self.batch_kernel_node,
-                started.elapsed(),
-                input_bytes,
-                self.adapter.batch_bytes(&batch),
-            );
-            for (node, kind, target) in self.transfer_nodes.iter().copied() {
-                let started = Instant::now();
-                let input_bytes = self.adapter.batch_bytes(&batch);
-                batch = self.adapter.transfer_batch(batch, kind, target)?;
-                self.profiler.record(
-                    node,
-                    started.elapsed(),
-                    input_bytes,
-                    self.adapter.batch_bytes(&batch),
-                );
+        self.next_output_sequence_id = match self.next_output_sequence_id.checked_add(1) {
+            Some(sequence_id) => sequence_id,
+            None => {
+                self.failed = true;
+                self.stages.cancel_upstream();
+                return Err(PipelineError::Runtime(runtime_error(
+                    "output sequence id overflow",
+                )));
+            }
+        };
+        self.in_flight_batches = self.in_flight_batches.saturating_sub(1);
+        match message.value {
+            Ok(batch) => Ok(Some(batch)),
+            Err(error) => {
+                self.failed = true;
+                self.stages.cancel_upstream();
+                Err(error)
             }
         }
-        Ok(batch)
-    }
-
-    fn transfer_before_device_kernel(
-        &mut self,
-        mut batch: P::Batch,
-    ) -> Result<P::Batch, PipelineError<P::Error>> {
-        for (node, kind, target) in self.transfer_nodes.iter().copied() {
-            let started = Instant::now();
-            let input_bytes = self.adapter.batch_bytes(&batch);
-            batch = self.adapter.transfer_batch(batch, kind, target)?;
-            self.profiler.record(
-                node,
-                started.elapsed(),
-                input_bytes,
-                self.adapter.batch_bytes(&batch),
-            );
-        }
-        Ok(batch)
     }
 
     pub fn max_in_flight_batches(&self) -> usize {
         self.max_in_flight_batches
+    }
+
+    pub fn stage_queue_limits(&self) -> StageQueueLimits {
+        self.stages.limits()
     }
 }
 
@@ -658,8 +506,16 @@ fn default_graph(batch_native: bool) -> Result<PhysicalGraph, crate::physical::P
         PhysicalNodeSpec::new(PhysicalNodeKind::Source, ExecutionLane::Io),
         [sampler],
     );
+    let decode = graph.add_node(
+        None,
+        PhysicalNodeSpec::new(
+            PhysicalNodeKind::Kernel(KernelStage::Decode),
+            ExecutionLane::Cpu,
+        ),
+        [source],
+    );
     let sample_input = if batch_native {
-        source
+        decode
     } else {
         graph.add_node(
             None,
@@ -667,7 +523,7 @@ fn default_graph(batch_native: bool) -> Result<PhysicalGraph, crate::physical::P
                 PhysicalNodeKind::Kernel(KernelStage::Sample),
                 ExecutionLane::Cpu,
             ),
-            [source],
+            [decode],
         )
     };
     let batch = graph.add_node(
@@ -710,11 +566,20 @@ mod tests {
     use crate::physical::TransferKind;
     use rivet_data::sampler::SamplerPlan;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread;
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct OverlapProbe {
+        device_started: std::sync::atomic::AtomicBool,
+        source_during_device: AtomicUsize,
+    }
 
     struct Adapter {
         calls: AtomicUsize,
         transfers: AtomicUsize,
         fail_transfer: bool,
+        overlap_probe: Option<Arc<OverlapProbe>>,
     }
 
     impl PhysicalPipelineAdapter for Adapter {
@@ -735,6 +600,12 @@ mod tests {
         }
         fn fetch_samples(&self, indices: &[usize]) -> Result<Vec<usize>, String> {
             self.calls.fetch_add(1, Ordering::Relaxed);
+            if let Some(probe) = &self.overlap_probe {
+                thread::sleep(Duration::from_millis(30));
+                if probe.device_started.load(Ordering::Relaxed) {
+                    probe.source_during_device.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             Ok(indices.to_vec())
         }
         fn process_sample(&self, sample: usize, index: usize) -> Result<usize, String> {
@@ -756,6 +627,12 @@ mod tests {
         fn batch_bytes(&self, batch: &Vec<usize>) -> usize {
             batch.len() * std::mem::size_of::<usize>()
         }
+        fn sample_bytes(&self, _sample: &usize) -> usize {
+            std::mem::size_of::<usize>()
+        }
+        fn output_bytes(&self, _output: &usize) -> usize {
+            std::mem::size_of::<usize>()
+        }
         fn apply_batch(&self, batch: Vec<usize>) -> Result<Vec<usize>, String> {
             Ok(batch)
         }
@@ -769,6 +646,10 @@ mod tests {
             assert_eq!(target, ExecutionLane::Device { ordinal: 0 });
             if self.fail_transfer {
                 return Err(PipelineError::Domain("transfer failed".to_owned()));
+            }
+            if let Some(probe) = &self.overlap_probe {
+                probe.device_started.store(true, Ordering::Relaxed);
+                thread::sleep(Duration::from_millis(120));
             }
             self.transfers.fetch_add(1, Ordering::Relaxed);
             Ok(batch)
@@ -833,6 +714,7 @@ mod tests {
                 calls: AtomicUsize::new(0),
                 transfers: AtomicUsize::new(0),
                 fail_transfer: false,
+                overlap_probe: None,
             });
             let mut executor = PhysicalPipelineExecutor::new(adapter, workers, 2).unwrap();
             let mut sampler = IndexSampler::new(
@@ -856,14 +738,77 @@ mod tests {
     }
 
     #[test]
+    fn persistent_stages_overlap_source_with_device_work_and_keep_sequence_order() {
+        let probe = Arc::new(OverlapProbe::default());
+        let adapter = Arc::new(Adapter {
+            calls: AtomicUsize::new(0),
+            transfers: AtomicUsize::new(0),
+            fail_transfer: false,
+            overlap_probe: Some(Arc::clone(&probe)),
+        });
+        let (graph, transfer) = h2d_graph();
+        let sink = graph.root().unwrap();
+        let mut executor = PhysicalPipelineExecutor::with_graph(adapter, 3, 2, graph).unwrap();
+        assert_eq!(executor.stage_queue_limits().max_items, 3);
+        assert!(executor.stage_queue_limits().max_bytes > 0);
+
+        let mut sampler = IndexSampler::new(SamplerPlan::Sequential { start: 0, end: 9 }, 0);
+        let mut batches = Vec::new();
+        while let Some(batch) = executor.next_batch(&mut sampler).unwrap() {
+            batches.push(batch);
+        }
+        assert_eq!(batches, [vec![0, 2, 4], vec![6, 8, 10], vec![12, 14, 16]]);
+        assert!(probe.source_during_device.load(Ordering::Relaxed) > 0);
+
+        let profile = executor.profiler().snapshot();
+        assert!(profile[&transfer].elapsed >= Duration::from_millis(120));
+        assert!(profile[&sink].wait_elapsed > Duration::ZERO);
+        assert!(profile[&sink].wait_events > 0);
+        assert!(profile.values().any(|node| node.executions > 0));
+        let explanation = executor.physical_explain().unwrap();
+        assert!(explanation.contains("Runtime stage queues:"));
+        assert!(explanation.contains("inter_sample_workers=3"));
+        assert!(explanation.contains("Sampler->Source: max_items=3"));
+        assert!(explanation.contains("CPU->Transfer: max_items=3"));
+        assert!(explanation.contains("Transfer->Device: max_items=3"));
+        assert!(explanation.contains("max_items=3"));
+        assert!(explanation.contains("max_bytes="));
+    }
+
+    #[test]
     fn worker_batch_prefetch_limit_is_explicit_and_checked() {
         let adapter = Arc::new(Adapter {
             calls: AtomicUsize::new(0),
             transfers: AtomicUsize::new(0),
             fail_transfer: false,
+            overlap_probe: None,
         });
         let executor = PhysicalPipelineExecutor::new(adapter, 2, 4).unwrap();
         assert_eq!(executor.max_in_flight_batches(), 5);
+    }
+
+    #[test]
+    fn source_payload_over_byte_budget_is_reported_and_terminal() {
+        let adapter = Arc::new(Adapter {
+            calls: AtomicUsize::new(0),
+            transfers: AtomicUsize::new(0),
+            fail_transfer: false,
+            overlap_probe: None,
+        });
+        let graph = default_graph(false).unwrap();
+        let mut executor =
+            PhysicalPipelineExecutor::with_graph_limits(adapter, 0, 0, 24, graph).unwrap();
+        let mut sampler = IndexSampler::new(SamplerPlan::Sequential { start: 0, end: 3 }, 0);
+        assert!(matches!(
+            executor.next_batch(&mut sampler),
+            Err(PipelineError::Runtime(RuntimeError::Message(message)))
+                if message.contains("source batch is 48 bytes")
+        ));
+        assert!(matches!(
+            executor.next_batch(&mut sampler),
+            Err(PipelineError::Runtime(RuntimeError::Message(message)))
+                if message.contains("failed state")
+        ));
     }
 
     #[test]
@@ -872,6 +817,7 @@ mod tests {
             calls: AtomicUsize::new(0),
             transfers: AtomicUsize::new(0),
             fail_transfer: false,
+            overlap_probe: None,
         });
         let (graph, transfer) = h2d_graph();
 
@@ -899,6 +845,7 @@ mod tests {
             calls: AtomicUsize::new(0),
             transfers: AtomicUsize::new(0),
             fail_transfer: true,
+            overlap_probe: None,
         });
         let (graph, _) = h2d_graph();
         let mut executor = PhysicalPipelineExecutor::with_graph(adapter, 0, 0, graph).unwrap();

@@ -7,7 +7,7 @@ use rivet_core::Device;
 #[cfg(feature = "cuda")]
 use rivet_core::DeviceLocation;
 use rivet_exec::physical::{
-    ExecutionLane, KernelStage, PhysicalGraph, PhysicalNodeKind, TransferKind,
+    ExecutionLane, KernelStage, PhysicalGraph, PhysicalNodeKind, PhysicalProfiler, TransferKind,
 };
 use rivet_exec::runtime::{PhysicalPipelineAdapter, PhysicalPipelineExecutor, PipelineError};
 use std::sync::Arc;
@@ -41,12 +41,20 @@ impl PhysicalPipelineAdapter for ImagePipelineAdapter {
         self.plan.source.get_many(indices)
     }
 
+    fn decode_sample(
+        &self,
+        sample: ImageSample,
+        sample_index: usize,
+    ) -> Result<ImageSample, RivetError> {
+        self.plan.decode_sample(sample, sample_index)
+    }
+
     fn process_sample(
         &self,
         sample: ImageSample,
         sample_index: usize,
     ) -> Result<DecodedSample, RivetError> {
-        self.plan.apply_sample_ops(sample, sample_index)
+        self.plan.apply_sample_transforms(sample, sample_index)
     }
 
     fn worker_panic_error(&self, worker_id: usize, sample_index: usize) -> RivetError {
@@ -200,10 +208,12 @@ impl PhysicalPipelineAdapter for ImagePipelineAdapter {
                     ),
                 ));
             }
-            self.plan
+            let output = self
+                .plan
                 .apply_cuda_batch_ops(batch, indices)
                 .map_err(RivetError::from)
-                .map_err(PipelineError::Domain)
+                .map_err(PipelineError::Domain)?;
+            Ok(output)
         }
         #[cfg(not(feature = "cuda"))]
         {
@@ -229,6 +239,7 @@ impl ImageDataLoader {
         sampler: IndexSampler,
         num_workers: usize,
         prefetch_batches: usize,
+        stage_queue_max_bytes: usize,
         physical: PhysicalGraph,
         sink_device: Option<Device>,
     ) -> RivetResult<Self> {
@@ -241,9 +252,14 @@ impl ImageDataLoader {
             sink_device,
             cuda_batch_kernel,
         });
-        let executor =
-            PhysicalPipelineExecutor::with_graph(adapter, num_workers, prefetch_batches, physical)
-                .map_err(|error| RivetError::Worker(error.to_string()))?;
+        let executor = PhysicalPipelineExecutor::with_graph_limits(
+            adapter,
+            num_workers,
+            prefetch_batches,
+            stage_queue_max_bytes,
+            physical,
+        )
+        .map_err(|error| RivetError::Worker(error.to_string()))?;
 
         Ok(Self {
             plan,
@@ -267,6 +283,12 @@ impl ImageDataLoader {
             .physical_explain()
             .map_err(|error| RivetError::Worker(error.to_string()))
     }
+
+    /// Snapshot per-stage action and queue-wait timings accumulated so far.
+    pub fn profiler(&self) -> PhysicalProfiler {
+        self.executor.profiler()
+    }
+
     /// Convenience wrapper for `(&mut self).into_iter()`.
     pub fn iter(&mut self) -> ImageDataLoaderIter<'_> {
         ImageDataLoaderIter {
@@ -444,10 +466,13 @@ mod tests {
         assert!(physical.contains("PhysicalGraph"));
         assert!(physical.contains("Sampler lane=Cpu"));
         assert!(physical.contains("Source lane=Io"));
-        assert!(physical.contains("SampleKernel lane=Cpu"));
+        assert!(physical.contains("Decode lane=Cpu"));
         assert!(physical.contains("Batch lane=Cpu"));
         assert!(physical.contains("BatchKernel lane=Cpu"));
         assert!(physical.contains("Sink lane=Cpu"));
+        assert!(physical.contains("Runtime stage queues:"));
+        assert!(physical.contains("max_items=3"));
+        assert!(physical.contains("max_bytes=536870912"));
         assert!(
             physical.find("Batch lane=Cpu").unwrap()
                 < physical.find("BatchKernel lane=Cpu").unwrap()
@@ -459,7 +484,6 @@ mod tests {
         assert_eq!(drain(&mut loader).len(), 2);
         assert!(
             loader
-                .executor
                 .profiler()
                 .snapshot()
                 .values()

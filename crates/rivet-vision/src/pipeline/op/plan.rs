@@ -103,6 +103,10 @@ impl CompiledProgram {
 
 #[allow(dead_code)]
 impl CompiledSampleOp {
+    pub(crate) fn is_decode(&self) -> bool {
+        matches!(self.kernel, SampleKernel::Semantic(ImageOp::Decode(_)))
+    }
+
     pub(crate) fn execute(
         &self,
         mut sample: ImageSample,
@@ -272,15 +276,49 @@ impl ExecutionPlan {
 
     pub fn apply_sample_ops(
         &self,
+        sample: ImageSample,
+        sample_index: usize,
+    ) -> RivetResult<DecodedSample> {
+        self.apply_sample_ops_filtered(sample, sample_index, false)
+    }
+
+    pub fn apply_sample_transforms(
+        &self,
+        sample: ImageSample,
+        sample_index: usize,
+    ) -> RivetResult<DecodedSample> {
+        self.apply_sample_ops_filtered(sample, sample_index, true)
+    }
+
+    fn apply_sample_ops_filtered(
+        &self,
         mut sample: ImageSample,
         sample_index: usize,
+        skip_decode: bool,
     ) -> RivetResult<DecodedSample> {
         let ctx = SampleContext::with_random(sample_index, self.random);
         for op in &self.sample_ops {
+            if skip_decode && op.is_decode() {
+                continue;
+            }
             sample = op.execute(sample, &ctx)?;
         }
 
         sample.into_decoded()
+    }
+
+    pub fn decode_sample(
+        &self,
+        mut sample: ImageSample,
+        sample_index: usize,
+    ) -> RivetResult<ImageSample> {
+        let ctx = SampleContext::with_random(sample_index, self.random);
+        for op in &self.sample_ops {
+            if op.is_decode() {
+                sample = op.execute(sample, &ctx)?;
+            }
+        }
+        Ok(sample)
     }
 
     pub fn apply_batch_ops(&self, batch: ImageBatch) -> RivetResult<ImageBatch> {

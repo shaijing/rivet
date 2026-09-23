@@ -1,11 +1,14 @@
 mod pipeline;
 mod pool;
 mod reorder;
+mod stage_queue;
+mod stages;
 mod work;
 
 pub use pipeline::{PhysicalPipelineAdapter, PhysicalPipelineExecutor, PipelineError};
 pub use pool::WorkerPool;
 pub use reorder::{PendingBatch, PendingSamples, PrefetchCoordinator};
+pub use stage_queue::{BoundedStageQueue, StageMessage, StageQueueLimits, StageQueueSnapshot};
 pub use work::{WorkItem, WorkResult};
 
 #[derive(Debug, thiserror::Error)]

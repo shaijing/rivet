@@ -818,6 +818,7 @@ mod tests {
             .hwc_to_chw()
             .workers(3)
             .prefetch_batches(4)
+            .stage_queue_max_bytes(16_384)
             .seed(91)
             .epoch(7)
             .batch(2, true);
@@ -846,6 +847,7 @@ mod tests {
         assert!(restored.batch.unwrap().drop_last);
         assert_eq!(restored.runtime.num_workers, 3);
         assert_eq!(restored.runtime.prefetch_batches, 4);
+        assert_eq!(restored.runtime.stage_queue_max_bytes, 16_384);
         assert_eq!(restored.epoch, 7);
         assert_eq!(restored.global_seed, Some(91));
     }
@@ -1291,6 +1293,7 @@ mod tests {
             .random_resized_crop(2, 2)
             .normalize(mean, std)
             .hwc_to_chw()
+            .prefetch_batches(0)
             .batch(2, false);
 
         let mut cpu_loader = pipeline.clone().compile().unwrap();

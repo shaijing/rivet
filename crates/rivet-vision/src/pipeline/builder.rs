@@ -380,20 +380,30 @@ impl ImagePipeline {
         self
     }
 
-    /// Execute sample loading on a persistent pool of `num_workers` threads
-    /// (`0` keeps the synchronous inline path). Ordering, batching and
-    /// sampling semantics are unaffected by the worker count.
+    /// Execute per-sample semantic transforms on a persistent pool of
+    /// `num_workers` inter-sample workers (`0` executes them on the CPU
+    /// transform stage thread). Decode runs on its own persistent stage;
+    /// backend-internal parallelism remains controlled by each kernel/backend.
+    /// Ordering, batching and sampling semantics do not depend on worker count.
     pub fn workers(mut self, num_workers: usize) -> Self {
         self.runtime.num_workers = num_workers;
         self
     }
 
-    /// Prepare up to `prefetch_batches` future batches while the caller
-    /// consumes the current one (worker pools only; the current batch is
-    /// always in flight, so total in-flight = `prefetch_batches + 1`).
-    /// Delivery stays in sampler order.
+    /// Allow up to `prefetch_batches` future batches behind the current
+    /// delivery (`prefetch_batches + 1` outstanding sequences total). Stage
+    /// queues apply the configured item and byte bounds; delivery stays in
+    /// sampler order.
     pub fn prefetch_batches(mut self, prefetch_batches: usize) -> Self {
         self.runtime.prefetch_batches = prefetch_batches;
+        self
+    }
+
+    /// Bound the retained payload size of each persistent stage queue.
+    /// Defaults to 512 MiB. An individual encoded image or batch larger than
+    /// this limit returns a runtime error instead of exceeding the budget.
+    pub fn stage_queue_max_bytes(mut self, max_bytes: usize) -> Self {
+        self.runtime.stage_queue_max_bytes = max_bytes;
         self
     }
 }
