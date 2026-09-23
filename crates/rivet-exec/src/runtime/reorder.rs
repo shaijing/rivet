@@ -220,6 +220,6 @@ mod tests {
                 .unwrap(),
             vec![20]
         );
-        assert_eq!(coordinator.take_ready().unwrap(), None);
+        assert!(coordinator.take_ready().unwrap().is_none());
     }
 }

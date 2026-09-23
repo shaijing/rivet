@@ -159,16 +159,18 @@
 
 - [x] workspace 中已建立 rivet-exec crate，并允许依赖 plan/core/data。
 - [x] 通用 worker/prefetch 与通用 cache 已迁入 rivet-exec。
-- [ ] 定义 PhysNodeId、PhysicalGraph、PhysicalNode 和 Source/Kernel/Batch/Transfer/Cache/Sink node。
-- [ ] 定义 LogicalPlan → PhysicalGraph lowering contract。
-- [ ] 定义 PhysicalOperator 和 execution value protocol；首批值类型限定为 encoded samples、decoded samples、Tensor。
-- [ ] 定义 Morsel、sequence id、source index、bytes、shape/dtype、residency、granularity metadata。
-- [ ] 定义 IO、CPU、Transfer、Device execution lanes；logical IR 不携带 CUDA stream/context。
-- [ ] 将现有 ExecutionPlan、ImageDataLoader、scheduler、batch builder 逐步迁至 rivet-exec。
-- [ ] 将现有单 worker-pool 路径表示为 Source → SampleStage → Batch → BatchStage → Sink。
-- [ ] 迁移期保留 rivet-vision 用户 API，由 vision plugin/adapter 构造 domain ops 和 kernel implementations。
-- [ ] physical graph 支持 last-use metadata 和 profiler instrumentation。
-- [ ] 增加 physical plan explain/snapshot 和迁移前后 runtime 等价检查。
+- [x] 定义 PhysNodeId、PhysicalGraph、PhysicalNode 和 Source/Kernel/Batch/Transfer/Cache/Sink node。
+- [x] 定义 LogicalPlan → PhysicalGraph lowering contract；vision lowering 按属性标注构造物理节点，并将 batch kernel 放到 Batch barrier 之后。
+- [x] 定义 PhysicalOperator 和 execution value protocol；首批值类型限定为 encoded samples、decoded samples、Tensor。
+- [x] 定义 Morsel、sequence id、source index、bytes、shape/dtype、residency、granularity metadata。
+- [x] 定义 IO、CPU、Transfer、Device execution lanes；logical IR 不携带 CUDA stream/context。
+- [x] 将通用 ImageDataLoader 调度、sampler 消费、worker/prefetch 状态和 batch-builder 生命周期编排迁至 rivet-exec；ExecutionPlan 和图像 batch builder 保留在 vision adapter，提供领域语义回调。
+- [x] 将现有单 worker-pool路径表示为 Sampler → Source → SampleStage → Batch → BatchStage → Sink；batch-native source 可跳过逐样本 stage。
+- [x] 迁移期保留 rivet-vision 用户 API，由 vision adapter 提供 source、domain kernels 和 batch builder 实现。
+- [x] physical graph 支持 last-use metadata 和按节点记录执行次数、耗时与输入/输出字节的 profiler instrumentation。
+- [x] 增加 physical plan explain 稳定快照，以及 rivet-exec inline/worker 顺序测试和 vision loader 对直接 ExecutionPlan 结果的等价检查。
+
+当前边界：首版 GraphExecutor 只执行线性 graph；vision CPU path 的通用采样、调度、预取和批次阶段由 rivet-exec 的 PhysicalPipelineExecutor 驱动，领域回调由 vision adapter 提供。Transfer/Device node 与对应异构执行仍由 Phase 6 接入。
 
 验收门槛：
 

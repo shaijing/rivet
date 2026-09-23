@@ -8,6 +8,10 @@ use crate::runtime::ImageDataLoader;
 use crate::sample::image::ImageAxisOrder;
 use crate::sampler::IndexSampler;
 use rivet_data::random::{OpKey, RandomContext};
+use rivet_exec::physical::{
+    ExecutionLane, KernelStage, PhysicalGraph, PhysicalLowering, PhysicalNodeKind, PhysicalNodeSpec,
+};
+use rivet_plan::{LogicalNode, LogicalPlan, NodeId, NodeKind, OperatorStage, PropertyAnnotations};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -19,10 +23,21 @@ impl ImagePipeline {
     pub fn compile_from(self, start: usize) -> RivetResult<ImageDataLoader> {
         let mut logical = self.to_logical_plan();
         super::optimizer::optimize_vision_plan(&mut logical, self.runtime.num_workers)?;
-        Self::from_logical_plan(&logical)?.compile_legacy_from(start)
+        let physical = lower_vision_physical(&logical, self.runtime.num_workers)?;
+        Self::from_logical_plan(&logical)?.compile_legacy_from_physical(start, physical)
     }
 
+    #[cfg(test)]
     fn compile_legacy_from(self, start: usize) -> RivetResult<ImageDataLoader> {
+        let physical = lower_vision_physical(&self.to_logical_plan(), self.runtime.num_workers)?;
+        self.compile_legacy_from_physical(start, physical)
+    }
+
+    fn compile_legacy_from_physical(
+        self,
+        start: usize,
+        physical: PhysicalGraph,
+    ) -> RivetResult<ImageDataLoader> {
         let input_state = self.source.state();
         let compiled_ops = compile_image_ops(self.ops, input_state, self.runtime.num_workers)?;
 
@@ -66,6 +81,7 @@ impl ImagePipeline {
             IndexSampler::new(plan.sampler.clone(), start),
             num_workers,
             prefetch_batches,
+            physical,
         )
     }
 
@@ -73,6 +89,53 @@ impl ImagePipeline {
     pub(super) fn compile_legacy_for_test(self, start: usize) -> RivetResult<ImageDataLoader> {
         self.compile_legacy_from(start)
     }
+}
+
+struct VisionPhysicalLowering {
+    annotations: PropertyAnnotations,
+}
+
+impl PhysicalLowering for VisionPhysicalLowering {
+    fn lower_node(
+        &self,
+        logical_id: NodeId,
+        node: &LogicalNode,
+        _physical_inputs: &[rivet_exec::physical::PhysNodeId],
+    ) -> rivet_exec::runtime::RuntimeResult<PhysicalNodeSpec> {
+        let (kind, lane) = match node.kind() {
+            NodeKind::Source => (PhysicalNodeKind::Source, ExecutionLane::Io),
+            NodeKind::Index => (PhysicalNodeKind::Sampler, ExecutionLane::Cpu),
+            NodeKind::Op => {
+                let stage = self
+                    .annotations
+                    .get(logical_id)
+                    .and_then(|properties| properties.operator)
+                    .map(|operator| operator.stage)
+                    .unwrap_or(OperatorStage::Sample);
+                let kernel = match stage {
+                    OperatorStage::Batch => KernelStage::Batch,
+                    OperatorStage::Sample | OperatorStage::Source => KernelStage::Sample,
+                };
+                (PhysicalNodeKind::Kernel(kernel), ExecutionLane::Cpu)
+            }
+            NodeKind::Batch => (PhysicalNodeKind::Batch, ExecutionLane::Cpu),
+            NodeKind::Cache => (PhysicalNodeKind::Cache, ExecutionLane::Io),
+            NodeKind::Sink => (PhysicalNodeKind::Sink, ExecutionLane::Cpu),
+        };
+        Ok(PhysicalNodeSpec::new(kind, lane))
+    }
+}
+
+fn lower_vision_physical(logical: &LogicalPlan, workers: usize) -> RivetResult<PhysicalGraph> {
+    let annotations = logical
+        .infer_properties(&super::inference::VisionPropertyInference::new(workers))
+        .map_err(super::logical::inference_error)?;
+    let mut physical = PhysicalGraph::lower(logical, &VisionPhysicalLowering { annotations })
+        .map_err(|error| invalid_pipeline(format!("physical lowering failed: {error}")))?;
+    physical
+        .ensure_sampler_before_source()
+        .map_err(|error| invalid_pipeline(format!("physical sampler planning failed: {error}")))?;
+    Ok(physical)
 }
 
 struct CompiledImageOps {

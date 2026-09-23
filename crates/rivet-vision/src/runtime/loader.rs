@@ -1,26 +1,100 @@
-use super::batch::next_batch_inline;
-use super::scheduler::{next_batch_workers, validate_worker_capacity};
-use super::{runtime_error, ImagePrefetchCoordinator, ImageWorkerPool};
+use crate::batch::ImageBatchBuilder;
 use crate::errors::{RivetError, RivetResult};
 use crate::pipeline::op::ExecutionPlan;
-use crate::sample::image::ImageBatch;
+use crate::sample::image::{DecodedSample, ImageBatch, ImageSample};
 use crate::sampler::IndexSampler;
+use rivet_exec::physical::PhysicalGraph;
+use rivet_exec::runtime::{PhysicalPipelineAdapter, PhysicalPipelineExecutor, PipelineError};
 use std::sync::Arc;
 
-enum LoaderExecutor {
-    /// Direct synchronous execution, either because workers are disabled or
-    /// because a dense decoded source can read a complete batch natively.
-    Inline,
-    /// Persistent worker pool with bounded cross-batch prefetch.
-    Workers(ImageWorkerPool, ImagePrefetchCoordinator),
-    /// A sample/worker error terminated the loader; iteration is over.
-    Failed,
+struct ImagePipelineAdapter {
+    plan: Arc<ExecutionPlan>,
+}
+
+impl PhysicalPipelineAdapter for ImagePipelineAdapter {
+    type Sample = ImageSample;
+    type Output = DecodedSample;
+    type Batch = ImageBatch;
+    type BatchBuilder = ImageBatchBuilder;
+    type Error = RivetError;
+
+    fn batch_size(&self) -> usize {
+        self.plan.batch.size
+    }
+
+    fn drop_last(&self) -> bool {
+        self.plan.batch.drop_last
+    }
+
+    fn is_batch_native(&self) -> bool {
+        self.plan.can_use_batch_native()
+    }
+
+    fn fetch_samples(&self, indices: &[usize]) -> Result<Vec<ImageSample>, RivetError> {
+        self.plan.source.get_many(indices)
+    }
+
+    fn process_sample(
+        &self,
+        sample: ImageSample,
+        sample_index: usize,
+    ) -> Result<DecodedSample, RivetError> {
+        self.plan.apply_sample_ops(sample, sample_index)
+    }
+
+    fn worker_panic_error(&self, worker_id: usize, sample_index: usize) -> RivetError {
+        RivetError::Worker(format!(
+            "worker {worker_id} panicked while processing sample {sample_index}"
+        ))
+    }
+
+    fn sample_bytes(&self, sample: &ImageSample) -> usize {
+        match sample {
+            ImageSample::Encoded(sample) => sample.image.len(),
+            ImageSample::Decoded(sample) => sample.image.logical_bytes(),
+        }
+    }
+
+    fn output_bytes(&self, output: &DecodedSample) -> usize {
+        output.image.logical_bytes()
+    }
+
+    fn batch_bytes(&self, batch: &ImageBatch) -> usize {
+        batch
+            .images
+            .logical_bytes()
+            .saturating_add(batch.labels.logical_bytes())
+    }
+
+    fn fetch_batch(&self, indices: &[usize]) -> Result<Option<ImageBatch>, RivetError> {
+        self.plan.source.get_batch(indices).transpose()
+    }
+
+    fn batch_builder(&self, capacity: usize) -> ImageBatchBuilder {
+        ImageBatchBuilder::with_capacity(capacity)
+    }
+
+    fn push_batch_sample(
+        &self,
+        builder: &mut ImageBatchBuilder,
+        sample: DecodedSample,
+    ) -> Result<(), RivetError> {
+        builder.push(sample)
+    }
+
+    fn finish_batch(&self, builder: ImageBatchBuilder) -> Result<ImageBatch, RivetError> {
+        builder.finish()
+    }
+
+    fn apply_batch(&self, batch: ImageBatch) -> Result<ImageBatch, RivetError> {
+        self.plan.apply_batch_ops(batch)
+    }
 }
 
 pub struct ImageDataLoader {
     pub plan: Arc<ExecutionPlan>,
     pub sampler: IndexSampler,
-    executor: LoaderExecutor,
+    executor: PhysicalPipelineExecutor<ImagePipelineAdapter>,
 }
 
 impl ImageDataLoader {
@@ -29,30 +103,14 @@ impl ImageDataLoader {
         sampler: IndexSampler,
         num_workers: usize,
         prefetch_batches: usize,
+        physical: PhysicalGraph,
     ) -> RivetResult<Self> {
-        let executor = if num_workers == 0 || plan.can_use_batch_native() {
-            LoaderExecutor::Inline
-        } else {
-            // prefetch_batches counts *future* batches: the current batch
-            // plus that many prepared ahead are in flight.
-            let max_in_flight = prefetch_batches.saturating_add(1);
-            // Reject absurd sizes before constructing any channel: a wrap
-            // here would silently produce a broken bounded queue.
-            let max_in_flight_samples = validate_worker_capacity(&plan, max_in_flight)?;
-            let worker_plan = Arc::clone(&plan);
-            let pool = ImageWorkerPool::new(
-                num_workers,
-                max_in_flight_samples,
-                move |sample, index| worker_plan.apply_sample_ops(sample, index),
-                move |worker_id, index| {
-                    RivetError::Worker(format!(
-                        "worker {worker_id} panicked while processing sample {index}"
-                    ))
-                },
-            )
-            .map_err(runtime_error)?;
-            LoaderExecutor::Workers(pool, ImagePrefetchCoordinator::new(max_in_flight))
-        };
+        let adapter = Arc::new(ImagePipelineAdapter {
+            plan: Arc::clone(&plan),
+        });
+        let executor =
+            PhysicalPipelineExecutor::with_graph(adapter, num_workers, prefetch_batches, physical)
+                .map_err(|error| RivetError::Worker(error.to_string()))?;
 
         Ok(Self {
             plan,
@@ -62,38 +120,19 @@ impl ImageDataLoader {
     }
 
     pub fn next_batch(&mut self) -> RivetResult<Option<ImageBatch>> {
-        let Self {
-            plan,
-            sampler,
-            executor,
-        } = self;
+        self.executor
+            .next_batch(&mut self.sampler)
+            .map_err(|error| match error {
+                PipelineError::Runtime(error) => RivetError::Worker(error.to_string()),
+                PipelineError::Domain(error) => error,
+            })
+    }
 
-        match executor {
-            LoaderExecutor::Inline => match next_batch_inline(plan, sampler) {
-                Ok(batch) => Ok(batch),
-                Err(err) => {
-                    *executor = LoaderExecutor::Failed;
-                    Err(err)
-                }
-            },
-            LoaderExecutor::Workers(pool, coordinator) => {
-                match next_batch_workers(plan, sampler, pool, coordinator) {
-                    Ok(batch) => Ok(batch),
-                    Err(err) => {
-                        // Terminal: a failed sample leaves its pending slot
-                        // unfilled forever (and inline has already advanced
-                        // the sampler), so the loader must not be used
-                        // again instead of waiting for results that will
-                        // never come or silently skipping a failed batch.
-                        *executor = LoaderExecutor::Failed;
-                        Err(err)
-                    }
-                }
-            }
-            LoaderExecutor::Failed => Err(RivetError::Worker(
-                "loader is in failed state after a previous iteration error".to_string(),
-            )),
-        }
+    /// Deterministic physical stage graph selected by this loader.
+    pub fn physical_explain(&mut self) -> RivetResult<String> {
+        self.executor
+            .physical_explain()
+            .map_err(|error| RivetError::Worker(error.to_string()))
     }
     /// Convenience wrapper for `(&mut self).into_iter()`.
     pub fn iter(&mut self) -> ImageDataLoaderIter<'_> {
@@ -259,6 +298,67 @@ mod tests {
             assert_eq!(batches.len(), 4);
             assert_eq!(calls.load(Ordering::Relaxed), 4, "workers={workers}");
         }
+    }
+
+    #[test]
+    fn image_loader_exposes_logical_to_physical_stage_lowering() {
+        let mut loader = pipeline(4, 0)
+            .normalize(vec![0.0; 3], vec![1.0; 3])
+            .batch(2, false)
+            .compile()
+            .unwrap();
+        let physical = loader.physical_explain().unwrap();
+        assert!(physical.contains("PhysicalGraph"));
+        assert!(physical.contains("Sampler lane=Cpu"));
+        assert!(physical.contains("Source lane=Io"));
+        assert!(physical.contains("SampleKernel lane=Cpu"));
+        assert!(physical.contains("Batch lane=Cpu"));
+        assert!(physical.contains("BatchKernel lane=Cpu"));
+        assert!(physical.contains("Sink lane=Cpu"));
+        assert!(
+            physical.find("Batch lane=Cpu").unwrap()
+                < physical.find("BatchKernel lane=Cpu").unwrap()
+        );
+        assert!(
+            physical.find("Sampler lane=Cpu").unwrap() < physical.find("Source lane=Io").unwrap()
+        );
+
+        assert_eq!(drain(&mut loader).len(), 2);
+        assert!(
+            loader
+                .executor
+                .profiler()
+                .snapshot()
+                .values()
+                .any(|entry| { entry.executions > 0 && entry.elapsed.as_nanos() > 0 })
+        );
+    }
+
+    #[test]
+    fn physical_runtime_matches_direct_execution_plan_batches() {
+        let mut loader = pipeline(9, 3)
+            .resize(1, 1)
+            .batch(4, false)
+            .compile()
+            .unwrap();
+        let plan = Arc::clone(&loader.plan);
+        let physical = drain(&mut loader);
+
+        let mut direct = Vec::new();
+        for start in (0..plan.source.len()).step_by(plan.batch.size) {
+            let end = start.saturating_add(plan.batch.size).min(plan.source.len());
+            let indices = (start..end).collect::<Vec<_>>();
+            let samples = plan.source.get_many(&indices).unwrap();
+            let mut builder = ImageBatchBuilder::with_capacity(indices.len());
+            for (index, sample) in indices.into_iter().zip(samples) {
+                builder
+                    .push(plan.apply_sample_ops(sample, index).unwrap())
+                    .unwrap();
+            }
+            direct.push(plan.apply_batch_ops(builder.finish().unwrap()).unwrap());
+        }
+
+        assert_batches_equal(&physical, &direct);
     }
 
     fn drain(loader: &mut ImageDataLoader) -> Vec<ImageBatch> {

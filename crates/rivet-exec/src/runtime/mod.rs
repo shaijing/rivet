@@ -1,7 +1,9 @@
+mod pipeline;
 mod pool;
 mod reorder;
 mod work;
 
+pub use pipeline::{PhysicalPipelineAdapter, PhysicalPipelineExecutor, PipelineError};
 pub use pool::WorkerPool;
 pub use reorder::{PendingBatch, PendingSamples, PrefetchCoordinator};
 pub use work::{WorkItem, WorkResult};
