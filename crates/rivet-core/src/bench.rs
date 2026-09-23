@@ -14,14 +14,22 @@ pub fn builder_sequential(values: &[u8]) -> Result<usize> {
     for &value in values {
         builder.write_next(value)?;
     }
-    Ok(builder.finish()?.len())
+    let output = builder.finish()?;
+    // Keep the constructed bytes observable in optimized Criterion builds;
+    // returning only len lets LLVM remove the allocation and every write.
+    std::hint::black_box(output.as_slice());
+    Ok(output.len())
 }
 
 /// Builds an aligned buffer with one bulk copy.
 pub fn builder_extend_from_slice(values: &[u8]) -> Result<usize> {
     let mut builder = AlignedBufferBuilder::new(values.len())?;
     builder.extend_from_slice(values)?;
-    Ok(builder.finish()?.len())
+    let output = builder.finish()?;
+    // Keep the constructed bytes observable in optimized Criterion builds;
+    // returning only len lets LLVM remove the allocation and copy.
+    std::hint::black_box(output.as_slice());
+    Ok(output.len())
 }
 
 /// Sums a strided view using a checked slice lookup for every element.
