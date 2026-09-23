@@ -6,7 +6,7 @@ use rivet_data::sampler::IndexSampler;
 
 use crate::physical::{
     ExecutionLane, KernelStage, PhysNodeId, PhysicalGraph, PhysicalNodeKind, PhysicalNodeSpec,
-    PhysicalProfiler,
+    PhysicalProfiler, TransferKind,
 };
 
 use super::{PrefetchCoordinator, RuntimeError, RuntimeResult, WorkerPool, runtime_error};
@@ -59,6 +59,20 @@ pub trait PhysicalPipelineAdapter: Send + Sync + 'static {
     ) -> Result<(), Self::Error>;
     fn finish_batch(&self, builder: Self::BatchBuilder) -> Result<Self::Batch, Self::Error>;
     fn apply_batch(&self, batch: Self::Batch) -> Result<Self::Batch, Self::Error>;
+
+    /// Execute one explicitly planned residency transition. Adapters that do
+    /// not support transfer nodes fail closed instead of hiding a copy in a
+    /// kernel or sink callback.
+    fn transfer_batch(
+        &self,
+        _batch: Self::Batch,
+        _kind: TransferKind,
+        _target: ExecutionLane,
+    ) -> Result<Self::Batch, PipelineError<Self::Error>> {
+        Err(PipelineError::Runtime(runtime_error(
+            "physical graph contains a transfer node unsupported by this adapter",
+        )))
+    }
 }
 
 #[derive(Debug)]
@@ -101,6 +115,7 @@ pub struct PhysicalPipelineExecutor<P: PhysicalPipelineAdapter> {
     sample_node: Option<PhysNodeId>,
     batch_node: PhysNodeId,
     batch_kernel_node: PhysNodeId,
+    transfer_nodes: Vec<(PhysNodeId, TransferKind, ExecutionLane)>,
     profiler: PhysicalProfiler,
 }
 
@@ -174,7 +189,45 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         if graph.node(root).map_err(graph_runtime_error)?.kind != PhysicalNodeKind::Sink {
             return Err(runtime_error("physical pipeline graph root must be a sink"));
         }
-        let batch_kernel_node = batch_kernel.unwrap_or(root);
+        let mut transfer_nodes = Vec::new();
+        for id in &order {
+            let node = graph.node(*id).map_err(graph_runtime_error)?;
+            if let PhysicalNodeKind::Transfer(kind) = node.kind {
+                let target = node.transfer_target.ok_or_else(|| {
+                    runtime_error(format!("transfer node p{} has no target lane", id.index()))
+                })?;
+                transfer_nodes.push((*id, kind, target));
+            }
+        }
+        if transfer_nodes.len() > 1 {
+            return Err(runtime_error(
+                "the initial physical pipeline supports one transfer boundary",
+            ));
+        }
+        let batch_kernel_node = batch_kernel.unwrap_or(if transfer_nodes.is_empty() {
+            root
+        } else {
+            batch_node
+        });
+        if transfer_nodes.iter().any(|(transfer, _, _)| {
+            positions[transfer.index()] <= positions[batch_kernel_node.index()] || *transfer == root
+        }) {
+            return Err(runtime_error(
+                "pipeline transfer nodes must follow batch kernels and precede the sink",
+            ));
+        }
+        if let Some((transfer, _, _)) = transfer_nodes.first() {
+            let sink_inputs = graph
+                .node(root)
+                .map_err(graph_runtime_error)?
+                .inputs
+                .as_slice();
+            if sink_inputs != std::slice::from_ref(transfer) {
+                return Err(runtime_error(
+                    "the initial physical pipeline requires its transfer to feed the sink directly",
+                ));
+            }
+        }
 
         let state = if num_workers == 0 || adapter.is_batch_native() {
             ExecutorState::Inline
@@ -232,6 +285,7 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
                 sample_node,
                 batch_node,
                 batch_kernel_node,
+                transfer_nodes,
                 profiler,
             });
         };
@@ -246,6 +300,7 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             sample_node,
             batch_node,
             batch_kernel_node,
+            transfer_nodes,
             profiler: PhysicalProfiler::default(),
         })
     }
@@ -467,6 +522,18 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             input_bytes,
             self.adapter.batch_bytes(&batch),
         );
+        let mut batch = batch;
+        for (node, kind, target) in self.transfer_nodes.iter().copied() {
+            let started = Instant::now();
+            let input_bytes = self.adapter.batch_bytes(&batch);
+            batch = self.adapter.transfer_batch(batch, kind, target)?;
+            self.profiler.record(
+                node,
+                started.elapsed(),
+                input_bytes,
+                self.adapter.batch_bytes(&batch),
+            );
+        }
         Ok(batch)
     }
 
@@ -540,11 +607,14 @@ fn find_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::physical::TransferKind;
     use rivet_data::sampler::SamplerPlan;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Adapter {
         calls: AtomicUsize,
+        transfers: AtomicUsize,
+        fail_transfer: bool,
     }
 
     impl PhysicalPipelineAdapter for Adapter {
@@ -583,9 +653,77 @@ mod tests {
         fn finish_batch(&self, builder: Vec<usize>) -> Result<Vec<usize>, String> {
             Ok(builder)
         }
+        fn batch_bytes(&self, batch: &Vec<usize>) -> usize {
+            batch.len() * std::mem::size_of::<usize>()
+        }
         fn apply_batch(&self, batch: Vec<usize>) -> Result<Vec<usize>, String> {
             Ok(batch)
         }
+        fn transfer_batch(
+            &self,
+            batch: Vec<usize>,
+            kind: TransferKind,
+            target: ExecutionLane,
+        ) -> Result<Vec<usize>, PipelineError<String>> {
+            assert_eq!(kind, TransferKind::HostToDevice);
+            assert_eq!(target, ExecutionLane::Device { ordinal: 0 });
+            if self.fail_transfer {
+                return Err(PipelineError::Domain("transfer failed".to_owned()));
+            }
+            self.transfers.fetch_add(1, Ordering::Relaxed);
+            Ok(batch)
+        }
+    }
+
+    fn h2d_graph() -> (PhysicalGraph, PhysNodeId) {
+        let mut graph = PhysicalGraph::new();
+        let sampler = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Sampler, ExecutionLane::Cpu),
+            [],
+        );
+        let source = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Source, ExecutionLane::Io),
+            [sampler],
+        );
+        let sample = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(
+                PhysicalNodeKind::Kernel(KernelStage::Sample),
+                ExecutionLane::Cpu,
+            ),
+            [source],
+        );
+        let batch = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Batch, ExecutionLane::Cpu),
+            [sample],
+        );
+        let batch_kernel = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(
+                PhysicalNodeKind::Kernel(KernelStage::Batch),
+                ExecutionLane::Cpu,
+            ),
+            [batch],
+        );
+        let transfer = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(
+                PhysicalNodeKind::Transfer(TransferKind::HostToDevice),
+                ExecutionLane::Transfer,
+            )
+            .with_transfer_target(ExecutionLane::Device { ordinal: 0 }),
+            [batch_kernel],
+        );
+        let sink = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Sink, ExecutionLane::Device { ordinal: 0 }),
+            [transfer],
+        );
+        graph.set_root(sink).unwrap();
+        (graph, transfer)
     }
 
     #[test]
@@ -593,6 +731,8 @@ mod tests {
         for workers in [0, 3] {
             let adapter = Arc::new(Adapter {
                 calls: AtomicUsize::new(0),
+                transfers: AtomicUsize::new(0),
+                fail_transfer: false,
             });
             let mut executor = PhysicalPipelineExecutor::new(adapter, workers, 2).unwrap();
             let mut sampler = IndexSampler::new(
@@ -619,8 +759,58 @@ mod tests {
     fn worker_batch_prefetch_limit_is_explicit_and_checked() {
         let adapter = Arc::new(Adapter {
             calls: AtomicUsize::new(0),
+            transfers: AtomicUsize::new(0),
+            fail_transfer: false,
         });
         let executor = PhysicalPipelineExecutor::new(adapter, 2, 4).unwrap();
         assert_eq!(executor.max_in_flight_batches(), 5);
+    }
+
+    #[test]
+    fn physical_runtime_executes_and_profiles_explicit_transfer() {
+        let adapter = Arc::new(Adapter {
+            calls: AtomicUsize::new(0),
+            transfers: AtomicUsize::new(0),
+            fail_transfer: false,
+        });
+        let (graph, transfer) = h2d_graph();
+
+        let mut executor =
+            PhysicalPipelineExecutor::with_graph(adapter.clone(), 0, 0, graph).unwrap();
+        let mut sampler = IndexSampler::new(SamplerPlan::Sequential { start: 0, end: 2 }, 0);
+        let output = executor.next_batch(&mut sampler).unwrap().unwrap();
+        assert_eq!(output, [0, 2]);
+        assert_eq!(adapter.transfers.load(Ordering::Relaxed), 1);
+        let profile = executor.profiler().snapshot();
+        assert_eq!(profile[&transfer].executions, 1);
+        assert_eq!(
+            profile[&transfer].input_bytes,
+            2 * std::mem::size_of::<usize>() as u64
+        );
+        assert_eq!(
+            profile[&transfer].output_bytes,
+            profile[&transfer].input_bytes
+        );
+    }
+
+    #[test]
+    fn transfer_failure_is_reported_and_makes_the_executor_terminal() {
+        let adapter = Arc::new(Adapter {
+            calls: AtomicUsize::new(0),
+            transfers: AtomicUsize::new(0),
+            fail_transfer: true,
+        });
+        let (graph, _) = h2d_graph();
+        let mut executor = PhysicalPipelineExecutor::with_graph(adapter, 0, 0, graph).unwrap();
+        let mut sampler = IndexSampler::new(SamplerPlan::Sequential { start: 0, end: 2 }, 0);
+        assert!(matches!(
+            executor.next_batch(&mut sampler),
+            Err(PipelineError::Domain(error)) if error == "transfer failed"
+        ));
+        assert!(matches!(
+            executor.next_batch(&mut sampler),
+            Err(PipelineError::Runtime(RuntimeError::Message(message)))
+                if message.contains("failed state")
+        ));
     }
 }

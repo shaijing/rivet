@@ -194,7 +194,8 @@ pub enum PlacementError {
 }
 
 /// Select only explicitly registered implementations. A small transition
-/// penalty and the optional sink constraint favor longer same-device regions.
+/// penalty favors same-device regions; an optional sink constraint selects
+/// the sink lane and records any required producer-to-sink transfer.
 pub fn place(
     plan: &LogicalPlan,
     annotations: &PropertyAnnotations,
@@ -237,9 +238,10 @@ pub fn place(
                 },
             });
         }
-        let is_sink_producer =
-            position + 1 < ids.len() && plan.node(ids[position + 1])?.kind() == NodeKind::Sink;
-        if is_sink_producer {
+        // A sink placement describes where its consumed value must reside.
+        // Let the producer stay on its compatible lane; the explicit transfer
+        // boundary below then accounts for a CPU -> device sink handoff.
+        if plan.node(id)?.kind() == NodeKind::Sink {
             if let Some(sink_device) = &machine.preferred_sink_device {
                 compatible.retain(|candidate| &candidate.device == sink_device);
                 if compatible.is_empty() {

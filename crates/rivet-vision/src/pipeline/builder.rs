@@ -371,6 +371,15 @@ impl ImagePipeline {
         self
     }
 
+    /// Request that batches be returned on the CUDA device at `ordinal`.
+    /// Physical lowering inserts one explicit H2D transfer after all current
+    /// CPU operations. This path uses one device and its default stream.
+    #[cfg(feature = "cuda")]
+    pub fn cuda_sink(mut self, ordinal: usize) -> Self {
+        self.runtime.sink_device_ordinal = Some(ordinal);
+        self
+    }
+
     /// Execute sample loading on a persistent pool of `num_workers` threads
     /// (`0` keeps the synchronous inline path). Ordering, batching and
     /// sampling semantics are unaffected by the worker count.

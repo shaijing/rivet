@@ -1114,6 +1114,7 @@ mod tests {
         assert!(multi.contains("source access=RandomAccess"));
     }
 
+    #[cfg(not(feature = "cuda"))]
     #[test]
     fn placement_rejects_cuda_sink_without_registered_cuda_kernels() {
         let pipeline = decoded_stub()
@@ -1132,6 +1133,83 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("no compatible registered kernel"));
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_sink_placement_costs_one_explicit_transfer_boundary() {
+        let pipeline = decoded_stub().batch(1, false);
+        let explanation = pipeline
+            .placement_explain(rivet_plan::MachineProfile {
+                cpu_threads: 1,
+                available_devices: vec![
+                    rivet_plan::DeviceClass::Cpu,
+                    rivet_plan::DeviceClass::Cuda,
+                ],
+                preferred_sink_device: Some(rivet_plan::DeviceClass::Cuda),
+                ..rivet_plan::MachineProfile::default()
+            })
+            .unwrap();
+        assert!(explanation.contains("device=Cuda"), "{explanation}");
+        assert_eq!(explanation.matches("transfer before %").count(), 1);
+        let cuda_sink = explanation
+            .lines()
+            .find(|line| line.contains("device=Cuda"))
+            .expect("CUDA sink placement is present");
+        assert!(
+            cuda_sink.contains("transfer=") && !cuda_sink.contains("transfer=0B"),
+            "{cuda_sink}"
+        );
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_sink_returns_shape_dtype_and_values_on_device_after_ordered_h2d() {
+        let Ok(_device) = Device::cuda(0) else {
+            eprintln!("skipping CUDA sink test because device 0 is unavailable");
+            return;
+        };
+        let mut loader = decoded_stub()
+            .batch(1, false)
+            .cuda_sink(0)
+            .compile()
+            .unwrap();
+        let explanation = loader.physical_explain().unwrap();
+        assert_eq!(explanation.matches("Transfer(H2D)").count(), 1);
+        assert!(explanation.contains("target=Device { ordinal: 0 }"));
+        assert!(explanation.contains("estimated_transfer_bytes="));
+
+        let batch = loader.next_batch().unwrap().unwrap();
+        assert_eq!(batch.images.dims(), [1, 1, 1, 3]);
+        assert_eq!(batch.images.dtype(), DType::U8);
+        assert_eq!(batch.labels.dims(), [1]);
+        assert_eq!(batch.labels.dtype(), DType::I64);
+        assert!(batch.images.device().is_cuda());
+        assert!(batch.labels.device().is_cuda());
+        if let Device::Cuda(device) = batch.images.device() {
+            let stats = device.debug_stats();
+            assert_eq!(stats.h2d_count, 2);
+            assert!(stats.synchronize_count >= 1);
+        }
+        assert_eq!(batch.images.to_vec::<u8>().unwrap(), [255, 0, 0]);
+        assert_eq!(batch.labels.to_vec::<i64>().unwrap(), [7]);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_sink_ordinal_round_trips_as_plain_logical_runtime_metadata() {
+        let pipeline = decoded_stub().batch(1, false).cuda_sink(2);
+        let restored = ImagePipeline::from_logical_plan(&pipeline.to_logical_plan()).unwrap();
+        assert_eq!(restored.runtime.sink_device_ordinal, Some(2));
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    #[test]
+    fn cuda_sink_request_without_feature_is_an_explicit_error() {
+        let mut pipeline = decoded_stub().batch(1, false);
+        pipeline.runtime.sink_device_ordinal = Some(0);
+        let error = compile_err(pipeline);
+        assert!(error.contains("without the cuda feature"));
     }
 
     #[test]

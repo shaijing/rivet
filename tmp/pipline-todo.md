@@ -183,19 +183,27 @@
 
 任务：
 
-- [ ] 定义 TransferKind::HostToDevice/DeviceToHost/DeviceToDevice 和显式 transfer node。
-- [ ] physical lowering 按 placement 插入 transfer；kernel 不得暗中调用 to_device。
-- [ ] transfer 参与 cost、lane、memory lifetime 和 profiler。
-- [ ] 第一版限制为单 CUDA device、单 default stream。
-- [ ] physical runtime 通过 Device lane 使用 stream；不把 stream/context 暴露到 LogicalPlan。
-- [ ] 明确 storage/view 在 transfer 前后的所有权和生命周期。
-- [ ] 未支持的 op 保留在 CPU region；任何 fallback 都通过显式 transfer node 表达。
-- [ ] 增加 transfer shape/dtype/residency、边界数量、错误路径和 stream ordering 测试。
+- [x] 定义 TransferKind::HostToDevice/DeviceToHost/DeviceToDevice 和显式 transfer node。
+- [x] physical lowering 按 placement 插入 transfer；kernel 不得暗中调用 to_device。
+- [x] transfer 参与 cost、lane、memory lifetime 和 profiler。
+- [x] 第一版限制为单 CUDA device、单 default stream。
+- [x] physical runtime 通过 Device lane 使用 stream；不把 stream/context 暴露到 LogicalPlan。
+- [x] 明确 storage/view 在 transfer 前后的所有权和生命周期。
+- [x] 未支持的 op 保留在 CPU region；任何 fallback 都通过显式 transfer node 表达。
+- [x] 增加 transfer shape/dtype/residency、边界数量、错误路径和 stream ordering 测试。
 
 验收门槛：
 
-- 生成 CPU → H2D → CUDA → Sink 的 physical plan，并可 explain。
-- 没有计划外 D2H/H2D，也没有依赖默认隐式同步的生命周期漏洞。
+- [x] 生成 CPU → H2D → CUDA → Sink 的 physical plan，并可 explain。
+- [x] 没有计划外 D2H/H2D，也没有依赖默认隐式同步的生命周期漏洞。
+
+Phase 6 完成记录（2026-09-23）：
+
+- `rivet-vision/cuda` 是 opt-in feature；`ImagePipeline::cuda_sink(ordinal)` 只请求目标 ordinal，LogicalPlan 不持有 CUDA runtime handle。当前所有 image op 仍留在 CPU；placement 选择 CUDA sink 并把 CPU→CUDA 边界作为单个 transfer boundary 计价，physical lowering 将其物化为 Transfer(H2D)。
+- `PhysicalNode` 记录 transfer target、估算字节数和 last-use；pipeline runtime 对 transfer 单独计时并记录实际输入/输出字节。当前 vision path 只执行 H2D，而且要求 H2D 直接馈入 sink。
+- `Tensor::to_device` 仅由显式 transfer callback 调用。images 与 labels 使用同一个 `Device` 的 default stream；返回前显式 synchronize，保证 pageable host batch 在异步 copy 完成前保持存活。Pinned staging 与 copy/compute overlap 留在 Phase 9。
+- 验证：`cargo check -j 12 -p rivet-exec --lib`、`cargo check -j 12 -p rivet-vision --lib`、`cargo check -j 12 -p rivet-vision --lib --features cuda` 均通过；`cargo test -j 12 -p rivet-exec --lib`（16 项）、`cargo test -j 12 -p rivet-plan --lib`（9 项）、vision 默认 feature（153 项）和 CUDA feature（154 项）均通过。CUDA sink 测试在 RTX 4070 Ti 上实际运行，覆盖一个 H2D 边界、shape/dtype/residency/value、两个 H2D copy、stream 同步和物理 explain。
+- 限制：vision runtime 当前不执行 D2H/D2D 节点，也不支持 transfer 后接 CUDA kernel；这些类型已在 physical IR 表达，后续随着相应执行 lane/capability 接入。
 
 ## Phase 7：CUDA batch-native kernel 与第一条完整 vision pipeline
 

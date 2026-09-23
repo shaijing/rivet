@@ -16,19 +16,47 @@ use super::op::{ImageOp, IndexOp};
 use crate::errors::invalid_pipeline;
 use crate::sample::image::ImageAxisOrder;
 
+#[cfg(test)]
 pub(crate) fn optimize_vision_plan(
     plan: &mut LogicalPlan,
     workers: usize,
 ) -> Result<OptimizerContext, crate::errors::VisionError> {
-    let machine = MachineProfile {
+    optimize_vision_plan_for_sink(plan, workers, None).map(|(context, _)| context)
+}
+
+pub(crate) fn optimize_vision_plan_for_sink(
+    plan: &mut LogicalPlan,
+    workers: usize,
+    sink_device_ordinal: Option<usize>,
+) -> Result<(OptimizerContext, rivet_plan::PlacementPlan), crate::errors::VisionError> {
+    let machine = vision_machine_profile(workers, sink_device_ordinal.is_some());
+    let mut registry = PlanRegistry::default();
+    registry.register_plugin(&VisionPlanPlugin {
+        workers,
+        machine: machine.clone(),
+    });
+    let (context, _) = rivet_plan::optimize(plan, &registry)
+        .map_err(|error| invalid_pipeline(format!("logical optimizer failed: {error}")))?;
+    let placement = rivet_plan::place(
+        plan,
+        context.annotations(),
+        &vision_kernel_capabilities(),
+        &machine,
+    )
+    .map_err(|error| invalid_pipeline(format!("physical placement failed: {error}")))?;
+    Ok((context, placement))
+}
+
+fn vision_machine_profile(workers: usize, cuda_sink: bool) -> MachineProfile {
+    let mut machine = MachineProfile {
         cpu_threads: workers.max(1),
         ..MachineProfile::default()
     };
-    let mut registry = PlanRegistry::default();
-    registry.register_plugin(&VisionPlanPlugin { workers, machine });
-    rivet_plan::optimize(plan, &registry)
-        .map(|(context, _)| context)
-        .map_err(|error| invalid_pipeline(format!("logical optimizer failed: {error}")))
+    if cuda_sink {
+        machine.available_devices.push(DeviceClass::Cuda);
+        machine.preferred_sink_device = Some(DeviceClass::Cuda);
+    }
+    machine
 }
 
 impl super::builder::ImagePipeline {
@@ -683,10 +711,20 @@ impl PhysicalCandidateProvider for VisionPhysicalCandidates {
     ) -> Vec<PhysicalCandidate> {
         let Some(payload) = node.payload() else {
             if node.kind() == NodeKind::Sink {
-                return vec![PhysicalCandidate {
+                let candidates = vec![PhysicalCandidate {
                     name: "vision-output-sink".to_owned(),
                     backend: "cpu".to_owned(),
                 }];
+                #[cfg(feature = "cuda")]
+                let candidates = {
+                    let mut candidates = candidates;
+                    candidates.push(PhysicalCandidate {
+                        name: "vision-output-sink-cuda".to_owned(),
+                        backend: "cuda".to_owned(),
+                    });
+                    candidates
+                };
+                return candidates;
             }
             return Vec::new();
         };
@@ -727,7 +765,7 @@ impl PhysicalCandidateProvider for VisionPhysicalCandidates {
     }
 }
 
-fn vision_kernel_capabilities() -> KernelCapabilities {
+pub(super) fn vision_kernel_capabilities() -> KernelCapabilities {
     use rivet_plan::NodeKind;
 
     let mut caps = KernelCapabilities::default();
@@ -836,6 +874,30 @@ fn vision_kernel_capabilities() -> KernelCapabilities {
         );
     }
     drop(register);
+    #[cfg(feature = "cuda")]
+    for stage in [
+        OperatorStage::Source,
+        OperatorStage::Sample,
+        OperatorStage::Batch,
+    ] {
+        caps.register(KernelCapability {
+            name: format!("vision-output-sink-cuda-{stage:?}"),
+            operator: "rivet::Sink".to_owned(),
+            node_kind: NodeKind::Sink,
+            device: DeviceClass::Cuda,
+            class: KernelClass::Sink,
+            requirements: KernelRequirements {
+                output_stage: Some(stage),
+                ..KernelRequirements::default()
+            },
+            fusion_tags: Vec::new(),
+            alignment_bytes: cpu_alignment,
+            contiguity: Contiguity::Unknown,
+            temporary_bytes: 0,
+            in_place: true,
+            parallel: false,
+        });
+    }
     caps.register(KernelCapability {
         name: "vision::NormalizeToChw-cpu-Fused".to_owned(),
         operator: "vision::FusionGroup".to_owned(),

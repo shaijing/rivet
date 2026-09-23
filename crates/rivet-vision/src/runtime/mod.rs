@@ -12,6 +12,9 @@ pub struct RuntimeConfig {
     /// one at a time (worker pools only); the current batch plus that many
     /// are in flight, so `0` keeps only the current batch ahead of nothing.
     pub prefetch_batches: usize,
+    /// Requested output residency. The ordinal is plain placement metadata,
+    /// not a CUDA context or stream handle; one selected device is used.
+    pub sink_device_ordinal: Option<usize>,
 }
 
 impl Default for RuntimeConfig {
@@ -19,6 +22,7 @@ impl Default for RuntimeConfig {
         Self {
             num_workers: 0,
             prefetch_batches: 2,
+            sink_device_ordinal: None,
         }
     }
 }

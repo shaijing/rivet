@@ -9,6 +9,7 @@ description = "Image semantics, transforms, and image dataset adapters for Rivet
 [features]
 default = ["lance"]
 lance = ["rivet-data/lance", "dep:lance"]
+cuda = ["rivet-core/cuda"]
 
 [dependencies]
 arrow.workspace = true

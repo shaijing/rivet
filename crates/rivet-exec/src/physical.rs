@@ -145,6 +145,11 @@ pub struct PhysicalNodeSpec {
     pub kind: PhysicalNodeKind,
     pub lane: ExecutionLane,
     pub operator: Option<Arc<dyn PhysicalOperator>>,
+    /// Destination lane for a transfer node. Transfer execution itself runs on
+    /// the transfer lane; the target remains explicit for planning/runtime.
+    pub transfer_target: Option<ExecutionLane>,
+    /// Estimated payload size from placement cost analysis, when known.
+    pub estimated_transfer_bytes: Option<u64>,
 }
 
 impl PhysicalNodeSpec {
@@ -153,11 +158,23 @@ impl PhysicalNodeSpec {
             kind,
             lane,
             operator: None,
+            transfer_target: None,
+            estimated_transfer_bytes: None,
         }
     }
 
     pub fn with_operator(mut self, operator: Arc<dyn PhysicalOperator>) -> Self {
         self.operator = Some(operator);
+        self
+    }
+
+    pub fn with_transfer_target(mut self, target: ExecutionLane) -> Self {
+        self.transfer_target = Some(target);
+        self
+    }
+
+    pub fn with_estimated_transfer_bytes(mut self, bytes: u64) -> Self {
+        self.estimated_transfer_bytes = Some(bytes);
         self
     }
 }
@@ -182,6 +199,8 @@ pub struct PhysicalNode {
     /// root result retained by the caller.
     pub last_use_count: usize,
     pub operator: Option<Arc<dyn PhysicalOperator>>,
+    pub transfer_target: Option<ExecutionLane>,
+    pub estimated_transfer_bytes: Option<u64>,
 }
 
 impl fmt::Debug for PhysicalNode {
@@ -194,6 +213,8 @@ impl fmt::Debug for PhysicalNode {
             .field("inputs", &self.inputs)
             .field("last_use_count", &self.last_use_count)
             .field("operator", &self.operator.as_ref().map(|op| op.name()))
+            .field("transfer_target", &self.transfer_target)
+            .field("estimated_transfer_bytes", &self.estimated_transfer_bytes)
             .finish()
     }
 }
@@ -242,6 +263,8 @@ impl PhysicalGraph {
             inputs: inputs.into_iter().collect(),
             last_use_count: 0,
             operator: spec.operator,
+            transfer_target: spec.transfer_target,
+            estimated_transfer_bytes: spec.estimated_transfer_bytes,
         });
         id
     }
@@ -268,6 +291,62 @@ impl PhysicalGraph {
 
     pub fn execution_order(&self) -> Result<Vec<PhysNodeId>, PhysicalGraphError> {
         self.topological_order()
+    }
+
+    /// Add explicit transfer nodes for host/device lane changes on the
+    /// initial linear physical path. Host I/O and CPU lanes share residency;
+    /// a future multi-input runtime can extend this edge-local lowering.
+    pub fn insert_transfers_for_lane_changes(
+        &mut self,
+    ) -> Result<Vec<PhysNodeId>, PhysicalGraphError> {
+        let order = self.topological_order()?;
+        let original_len = self.nodes.len();
+        let mut inserted = Vec::new();
+        for consumer in order {
+            if consumer.index() >= original_len {
+                continue;
+            }
+            let consumer_lane = self.node(consumer)?.lane;
+            let inputs = self.node(consumer)?.inputs.clone();
+            for (input_position, input) in inputs.into_iter().enumerate() {
+                let producer_lane = output_lane(self.node(input)?);
+                let Some(kind) = transfer_for_lanes(producer_lane, consumer_lane) else {
+                    continue;
+                };
+                let transfer = self.add_node(
+                    None,
+                    PhysicalNodeSpec::new(
+                        PhysicalNodeKind::Transfer(kind),
+                        ExecutionLane::Transfer,
+                    )
+                    .with_transfer_target(consumer_lane),
+                    [input],
+                );
+                self.nodes[consumer.index()].inputs[input_position] = transfer;
+                inserted.push(transfer);
+            }
+        }
+        self.validate()?;
+        Ok(inserted)
+    }
+
+    pub fn set_transfer_estimate(
+        &mut self,
+        id: PhysNodeId,
+        bytes: u64,
+    ) -> Result<(), PhysicalGraphError> {
+        let node = self
+            .nodes
+            .get_mut(id.index())
+            .ok_or(PhysicalGraphError::InvalidNode(id.index()))?;
+        if !matches!(node.kind, PhysicalNodeKind::Transfer(_)) {
+            return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
+                "p{} is not a transfer node",
+                id.index()
+            )));
+        }
+        node.estimated_transfer_bytes = Some(bytes);
+        Ok(())
     }
 
     /// Materialize an implicit sequential sampler before source reads when a
@@ -343,8 +422,61 @@ impl PhysicalGraph {
         self.node(root)?;
         let mut consumers = vec![0usize; self.nodes.len()];
         for node in &self.nodes {
+            match node.kind {
+                PhysicalNodeKind::Transfer(_) => {
+                    if node.lane != ExecutionLane::Transfer
+                        || node.transfer_target.is_none()
+                        || node.inputs.len() != 1
+                    {
+                        return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
+                            "p{} transfer requires one input, a Transfer lane, and an explicit target",
+                            node.id.index()
+                        )));
+                    }
+                    let source_lane = output_lane(self.node(node.inputs[0])?);
+                    let expected = transfer_for_lanes(
+                        source_lane,
+                        node.transfer_target.expect("checked transfer target"),
+                    );
+                    if expected
+                        != Some(match node.kind {
+                            PhysicalNodeKind::Transfer(kind) => kind,
+                            _ => unreachable!(),
+                        })
+                    {
+                        return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
+                            "p{} transfer kind does not match its source and target lanes",
+                            node.id.index()
+                        )));
+                    }
+                }
+                _ if node.transfer_target.is_some() => {
+                    return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
+                        "p{} has a transfer target but is not a transfer node",
+                        node.id.index()
+                    )));
+                }
+                _ if node.estimated_transfer_bytes.is_some() => {
+                    return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
+                        "p{} has a transfer estimate but is not a transfer node",
+                        node.id.index()
+                    )));
+                }
+                _ => {}
+            }
             for input in &node.inputs {
-                let _ = self.node(*input)?;
+                let producer = self.node(*input)?;
+                if let PhysicalNodeKind::Transfer(_) = producer.kind {
+                    let target = producer.transfer_target.expect("validated transfer target");
+                    if !lanes_match(target, node.lane) {
+                        return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
+                            "transfer p{} targets {target:?}, but consumer p{} runs on {:?}",
+                            producer.id.index(),
+                            node.id.index(),
+                            node.lane
+                        )));
+                    }
+                }
                 consumers[input.0] += 1;
             }
         }
@@ -377,13 +509,23 @@ impl PhysicalGraph {
                 .as_ref()
                 .map(|op| format!(" op={}", op.name()))
                 .unwrap_or_default();
+            let transfer_target = node
+                .transfer_target
+                .map(|target| format!(" target={target:?}"))
+                .unwrap_or_default();
+            let transfer_estimate = node
+                .estimated_transfer_bytes
+                .map(|bytes| format!(" estimated_transfer_bytes={bytes}"))
+                .unwrap_or_default();
             out.push_str(&format!(
-                "  p{} {} lane={:?}{}{} <- [{}] last_uses={}\n",
+                "  p{} {} lane={:?}{}{}{}{} <- [{}] last_uses={}\n",
                 node.id.index(),
                 node.kind,
                 node.lane,
                 logical,
                 operator,
+                transfer_target,
+                transfer_estimate,
                 inputs,
                 node.last_use_count
             ));
@@ -534,6 +676,37 @@ impl PhysicalGraph {
             };
         }
         Ok(())
+    }
+}
+
+fn transfer_for_lanes(from: ExecutionLane, to: ExecutionLane) -> Option<TransferKind> {
+    match (from, to) {
+        (ExecutionLane::Cpu | ExecutionLane::Io, ExecutionLane::Device { .. }) => {
+            Some(TransferKind::HostToDevice)
+        }
+        (ExecutionLane::Device { .. }, ExecutionLane::Cpu | ExecutionLane::Io) => {
+            Some(TransferKind::DeviceToHost)
+        }
+        (ExecutionLane::Device { ordinal: from }, ExecutionLane::Device { ordinal: to })
+            if from != to =>
+        {
+            Some(TransferKind::DeviceToDevice)
+        }
+        _ => None,
+    }
+}
+
+fn output_lane(node: &PhysicalNode) -> ExecutionLane {
+    node.transfer_target.unwrap_or(node.lane)
+}
+
+fn lanes_match(lhs: ExecutionLane, rhs: ExecutionLane) -> bool {
+    match (lhs, rhs) {
+        (ExecutionLane::Cpu | ExecutionLane::Io, ExecutionLane::Cpu | ExecutionLane::Io) => true,
+        (ExecutionLane::Device { ordinal: lhs }, ExecutionLane::Device { ordinal: rhs }) => {
+            lhs == rhs
+        }
+        _ => false,
     }
 }
 
@@ -777,5 +950,82 @@ mod tests {
             PhysicalNodeKind::Sampler
         );
         assert_eq!(graph.node(order[1]).unwrap().kind, PhysicalNodeKind::Source);
+    }
+
+    #[test]
+    fn lane_changes_insert_explicit_h2d_with_transfer_liveness() {
+        let mut graph = PhysicalGraph::new();
+        let source = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Source, ExecutionLane::Io),
+            [],
+        );
+        let batch = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Batch, ExecutionLane::Cpu),
+            [source],
+        );
+        let sink = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Sink, ExecutionLane::Device { ordinal: 2 }),
+            [batch],
+        );
+        graph.set_root(sink).unwrap();
+
+        let transfers = graph.insert_transfers_for_lane_changes().unwrap();
+        assert_eq!(transfers.len(), 1);
+        let transfer = graph.node(transfers[0]).unwrap();
+        assert_eq!(
+            transfer.kind,
+            PhysicalNodeKind::Transfer(TransferKind::HostToDevice)
+        );
+        assert_eq!(transfer.lane, ExecutionLane::Transfer);
+        assert_eq!(
+            transfer.transfer_target,
+            Some(ExecutionLane::Device { ordinal: 2 })
+        );
+        assert_eq!(transfer.inputs, [batch]);
+        assert_eq!(graph.node(batch).unwrap().last_use_count, 1);
+        graph.set_transfer_estimate(transfers[0], 512).unwrap();
+        assert!(graph.explain().unwrap().contains(
+            "Transfer(H2D) lane=Transfer target=Device { ordinal: 2 } estimated_transfer_bytes=512"
+        ));
+    }
+
+    #[test]
+    fn malformed_transfer_lane_and_target_is_rejected() {
+        let mut graph = PhysicalGraph::new();
+        let source = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Source, ExecutionLane::Cpu),
+            [],
+        );
+        let transfer = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(
+                PhysicalNodeKind::Transfer(TransferKind::HostToDevice),
+                ExecutionLane::Transfer,
+            )
+            .with_transfer_target(ExecutionLane::Cpu),
+            [source],
+        );
+        let sink = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Sink, ExecutionLane::Cpu),
+            [transfer],
+        );
+        graph.set_root(sink).unwrap();
+        assert!(graph.validate().is_err());
+        assert_eq!(
+            transfer_for_lanes(ExecutionLane::Device { ordinal: 0 }, ExecutionLane::Cpu),
+            Some(TransferKind::DeviceToHost)
+        );
+        assert_eq!(
+            transfer_for_lanes(
+                ExecutionLane::Device { ordinal: 0 },
+                ExecutionLane::Device { ordinal: 1 }
+            ),
+            Some(TransferKind::DeviceToDevice)
+        );
     }
 }

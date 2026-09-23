@@ -21,15 +21,41 @@ impl ImagePipeline {
     }
 
     pub fn compile_from(self, start: usize) -> RivetResult<ImageDataLoader> {
+        #[cfg(not(feature = "cuda"))]
+        if self.runtime.sink_device_ordinal.is_some() {
+            return Err(invalid_pipeline(
+                "CUDA sink requested, but rivet-vision was built without the cuda feature",
+            ));
+        }
         let mut logical = self.to_logical_plan();
-        super::optimizer::optimize_vision_plan(&mut logical, self.runtime.num_workers)?;
-        let physical = lower_vision_physical(&logical, self.runtime.num_workers)?;
+        let (_, placement) = super::optimizer::optimize_vision_plan_for_sink(
+            &mut logical,
+            self.runtime.num_workers,
+            self.runtime.sink_device_ordinal,
+        )?;
+        let physical = lower_vision_physical(
+            &logical,
+            self.runtime.num_workers,
+            &placement,
+            self.runtime.sink_device_ordinal,
+        )?;
         Self::from_logical_plan(&logical)?.compile_legacy_from_physical(start, physical)
     }
 
     #[cfg(test)]
     fn compile_legacy_from(self, start: usize) -> RivetResult<ImageDataLoader> {
-        let physical = lower_vision_physical(&self.to_logical_plan(), self.runtime.num_workers)?;
+        let mut logical = self.to_logical_plan();
+        let (_, placement) = super::optimizer::optimize_vision_plan_for_sink(
+            &mut logical,
+            self.runtime.num_workers,
+            self.runtime.sink_device_ordinal,
+        )?;
+        let physical = lower_vision_physical(
+            &logical,
+            self.runtime.num_workers,
+            &placement,
+            self.runtime.sink_device_ordinal,
+        )?;
         self.compile_legacy_from_physical(start, physical)
     }
 
@@ -38,6 +64,22 @@ impl ImagePipeline {
         start: usize,
         physical: PhysicalGraph,
     ) -> RivetResult<ImageDataLoader> {
+        let sink_device = match self.runtime.sink_device_ordinal {
+            None => None,
+            Some(ordinal) => {
+                #[cfg(feature = "cuda")]
+                {
+                    Some(rivet_core::Device::cuda(ordinal)?)
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
+                    let _ = ordinal;
+                    return Err(invalid_pipeline(
+                        "CUDA sink requested, but rivet-vision was built without the cuda feature",
+                    ));
+                }
+            }
+        };
         let input_state = self.source.state();
         let compiled_ops = compile_image_ops(self.ops, input_state, self.runtime.num_workers)?;
 
@@ -82,6 +124,7 @@ impl ImagePipeline {
             num_workers,
             prefetch_batches,
             physical,
+            sink_device,
         )
     }
 
@@ -93,6 +136,8 @@ impl ImagePipeline {
 
 struct VisionPhysicalLowering {
     annotations: PropertyAnnotations,
+    placement: rivet_plan::PlacementPlan,
+    sink_device_ordinal: Option<usize>,
 }
 
 impl PhysicalLowering for VisionPhysicalLowering {
@@ -102,7 +147,7 @@ impl PhysicalLowering for VisionPhysicalLowering {
         node: &LogicalNode,
         _physical_inputs: &[rivet_exec::physical::PhysNodeId],
     ) -> rivet_exec::runtime::RuntimeResult<PhysicalNodeSpec> {
-        let (kind, lane) = match node.kind() {
+        let (kind, default_lane) = match node.kind() {
             NodeKind::Source => (PhysicalNodeKind::Source, ExecutionLane::Io),
             NodeKind::Index => (PhysicalNodeKind::Sampler, ExecutionLane::Cpu),
             NodeKind::Op => {
@@ -122,19 +167,80 @@ impl PhysicalLowering for VisionPhysicalLowering {
             NodeKind::Cache => (PhysicalNodeKind::Cache, ExecutionLane::Io),
             NodeKind::Sink => (PhysicalNodeKind::Sink, ExecutionLane::Cpu),
         };
+        let selected_device = self
+            .placement
+            .candidates
+            .iter()
+            .find(|candidate| candidate.node == logical_id)
+            .map(|candidate| &candidate.device);
+        let lane = match selected_device {
+            Some(rivet_plan::DeviceClass::Cuda) if node.kind() == NodeKind::Sink => {
+                ExecutionLane::Device {
+                    ordinal: self.sink_device_ordinal.ok_or_else(|| {
+                        rivet_exec::runtime::RuntimeError::Message(
+                            "CUDA sink placement has no requested device ordinal".to_owned(),
+                        )
+                    })?,
+                }
+            }
+            Some(rivet_plan::DeviceClass::Cuda) => {
+                return Err(rivet_exec::runtime::RuntimeError::Message(format!(
+                    "CUDA execution for logical node %{} is not implemented in this phase",
+                    logical_id.index()
+                )));
+            }
+            _ => default_lane,
+        };
         Ok(PhysicalNodeSpec::new(kind, lane))
     }
 }
 
-fn lower_vision_physical(logical: &LogicalPlan, workers: usize) -> RivetResult<PhysicalGraph> {
+fn lower_vision_physical(
+    logical: &LogicalPlan,
+    workers: usize,
+    placement: &rivet_plan::PlacementPlan,
+    sink_device_ordinal: Option<usize>,
+) -> RivetResult<PhysicalGraph> {
     let annotations = logical
         .infer_properties(&super::inference::VisionPropertyInference::new(workers))
         .map_err(super::logical::inference_error)?;
-    let mut physical = PhysicalGraph::lower(logical, &VisionPhysicalLowering { annotations })
-        .map_err(|error| invalid_pipeline(format!("physical lowering failed: {error}")))?;
+    let mut physical = PhysicalGraph::lower(
+        logical,
+        &VisionPhysicalLowering {
+            annotations,
+            placement: placement.clone(),
+            sink_device_ordinal,
+        },
+    )
+    .map_err(|error| invalid_pipeline(format!("physical lowering failed: {error}")))?;
     physical
         .ensure_sampler_before_source()
         .map_err(|error| invalid_pipeline(format!("physical sampler planning failed: {error}")))?;
+    let transfers = physical
+        .insert_transfers_for_lane_changes()
+        .map_err(|error| invalid_pipeline(format!("physical transfer planning failed: {error}")))?;
+    for transfer in transfers {
+        let consumer_logical_id = physical
+            .nodes()
+            .iter()
+            .find(|node| node.inputs.contains(&transfer))
+            .and_then(|node| node.logical_id);
+        if let Some(estimate) = consumer_logical_id
+            .and_then(|logical_id| {
+                placement
+                    .candidates
+                    .iter()
+                    .find(|candidate| candidate.node == logical_id)
+            })
+            .map(|candidate| candidate.cost.transfer_bytes)
+        {
+            physical
+                .set_transfer_estimate(transfer, estimate)
+                .map_err(|error| {
+                    invalid_pipeline(format!("physical transfer costing failed: {error}"))
+                })?;
+        }
+    }
     Ok(physical)
 }
 
