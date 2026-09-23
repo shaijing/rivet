@@ -14,9 +14,6 @@ pub struct RuntimeConfig {
     /// Maximum retained payload bytes on each persistent stage-graph edge.
     /// Oversized items fail explicitly instead of exceeding this bound.
     pub stage_queue_max_bytes: usize,
-    /// Requested output residency. The ordinal is plain placement metadata,
-    /// not a CUDA context or stream handle; one selected device is used.
-    pub sink_device_ordinal: Option<usize>,
 }
 
 impl Default for RuntimeConfig {
@@ -25,7 +22,6 @@ impl Default for RuntimeConfig {
             num_workers: 0,
             prefetch_batches: 2,
             stage_queue_max_bytes: 512 * 1024 * 1024,
-            sink_device_ordinal: None,
         }
     }
 }

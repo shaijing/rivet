@@ -12,8 +12,6 @@ use rivet_plan::{
 
 use super::inference::VisionPropertyInference;
 use super::logical::FusionGroupPayload;
-#[cfg(feature = "cuda")]
-use super::op::BatchConfig;
 use super::op::{ImageOp, IndexOp, SourceOp};
 use crate::errors::invalid_pipeline;
 use crate::sample::image::ImageAxisOrder;
@@ -23,21 +21,18 @@ pub(crate) fn optimize_vision_plan(
     plan: &mut LogicalPlan,
     workers: usize,
 ) -> Result<OptimizerContext, crate::errors::VisionError> {
-    optimize_vision_plan_for_sink(plan, workers, None).map(|(context, _)| context)
+    optimize_vision_plan_with_placement(plan, workers).map(|(context, _)| context)
 }
 
-pub(crate) fn optimize_vision_plan_for_sink(
+pub(crate) fn optimize_vision_plan_with_placement(
     plan: &mut LogicalPlan,
     workers: usize,
-    sink_device_ordinal: Option<usize>,
 ) -> Result<(OptimizerContext, rivet_plan::PlacementPlan), crate::errors::VisionError> {
-    let machine = vision_machine_profile(workers, sink_device_ordinal.is_some());
-    let enable_cuda_augmentation_fusion =
-        sink_device_ordinal.is_some() && has_fixed_shape_batch_source(plan);
+    let machine = vision_machine_profile(workers);
     let mut registry = PlanRegistry::default();
     registry.register_plugin(&VisionPlanPlugin {
         workers,
-        enable_cuda_augmentation_fusion,
+        enable_cuda_augmentation_fusion: false,
         machine: machine.clone(),
     });
     let (context, _) = rivet_plan::optimize(plan, &registry)
@@ -49,122 +44,13 @@ pub(crate) fn optimize_vision_plan_for_sink(
         &machine,
     )
     .map_err(|error| invalid_pipeline(format!("physical placement failed: {error}")))?;
-    #[cfg(feature = "cuda")]
-    let placement = {
-        let mut placement = placement;
-        if sink_device_ordinal.is_some() {
-            place_fused_vision_batch_on_cuda(plan, context.annotations(), &machine, &mut placement);
-        }
-        placement
-    };
     Ok((context, placement))
 }
-
-#[cfg(feature = "cuda")]
-fn place_fused_vision_batch_on_cuda(
-    plan: &LogicalPlan,
-    annotations: &PropertyAnnotations,
-    machine: &MachineProfile,
-    placement: &mut rivet_plan::PlacementPlan,
-) {
-    let Some((id, node)) = plan.nodes().find(|(_, node)| {
-        node.payload_as::<FusionGroupPayload>()
-            .is_some_and(|group| group.name == "NormalizeToChw")
-    }) else {
-        return;
-    };
-    let Some(input) = node.inputs().get(0).and_then(|id| annotations.get(id)) else {
-        return;
-    };
-    let Some(output) = annotations.get(id) else {
-        return;
-    };
-    if input.dtype != Some(rivet_plan::DataType::U8)
-        || input.axis_order != Some(AxisOrder::Hwc)
-        || output.dtype != Some(rivet_plan::DataType::F32)
-        || output.axis_order != Some(AxisOrder::Chw)
-    {
-        return;
-    }
-    let Some(candidate) = placement
-        .candidates
-        .iter_mut()
-        .find(|candidate| candidate.node == id)
-    else {
-        return;
-    };
-    let batch_size = plan
-        .nodes()
-        .find_map(|(_, node)| node.payload_as::<BatchConfig>().map(|batch| batch.size))
-        .unwrap_or(1) as u64;
-    let input_bytes_per_sample = estimate_property_bytes(input, machine.unknown_value_bytes);
-    let transfer_bytes = input_bytes_per_sample.saturating_mul(batch_size);
-    let output_bytes =
-        estimate_property_bytes(output, machine.unknown_value_bytes).saturating_mul(batch_size);
-    let mut cost = candidate.cost.clone();
-    cost.host_bytes = 0;
-    cost.device_bytes = output_bytes;
-    cost.transfer_bytes = transfer_bytes;
-    cost.launch_count = 1;
-    cost.synchronization_count = 0;
-    cost.compute_score = output_bytes.max(1) as f64 / 1_000_000_000.0;
-    cost.total_score = cost.compute_score
-        + transfer_bytes as f64 / machine.host_to_device_bytes_per_sec.max(1) as f64
-        + cost.allocation_count as f64 * 0.000_001
-        + machine.kernel_launch_seconds;
-    candidate.kernel = "vision::NormalizeToChw-cuda-Fused".to_owned();
-    candidate.device = DeviceClass::Cuda;
-    candidate.cost = cost;
-    candidate.alternatives.push(format!(
-        "vision::NormalizeToChw-cuda-Fused@Cuda={:.6}",
-        candidate.cost.total_score
-    ));
-    placement.transfer_boundaries.clear();
-    placement
-        .transfer_boundaries
-        .push((id, DeviceClass::Cpu, DeviceClass::Cuda));
-}
-
-#[cfg(feature = "cuda")]
-fn estimate_property_bytes(properties: &ValueProperties, fallback: u64) -> u64 {
-    let Some(shape) = properties.shape.as_ref() else {
-        return fallback;
-    };
-    let Some(elements) = shape.0.iter().try_fold(1u64, |count, dim| match dim {
-        rivet_plan::ShapeDim::Known(value) => count.checked_mul(*value as u64),
-        rivet_plan::ShapeDim::Dynamic => None,
-    }) else {
-        return fallback;
-    };
-    let element_bytes = match properties.dtype.as_ref() {
-        Some(rivet_plan::DataType::U8 | rivet_plan::DataType::I8 | rivet_plan::DataType::Bool) => 1,
-        Some(
-            rivet_plan::DataType::U16
-            | rivet_plan::DataType::I16
-            | rivet_plan::DataType::F16
-            | rivet_plan::DataType::BF16,
-        ) => 2,
-        Some(rivet_plan::DataType::U32 | rivet_plan::DataType::I32 | rivet_plan::DataType::F32) => {
-            4
-        }
-        Some(rivet_plan::DataType::U64 | rivet_plan::DataType::I64 | rivet_plan::DataType::F64) => {
-            8
-        }
-        _ => return fallback,
-    };
-    elements.saturating_mul(element_bytes)
-}
-
-fn vision_machine_profile(workers: usize, cuda_sink: bool) -> MachineProfile {
-    let mut machine = MachineProfile {
+fn vision_machine_profile(workers: usize) -> MachineProfile {
+    MachineProfile {
         cpu_threads: workers.max(1),
         ..MachineProfile::default()
-    };
-    if cuda_sink {
-        machine.available_devices.push(DeviceClass::Cuda);
-        machine.preferred_sink_device = Some(DeviceClass::Cuda);
     }
-    machine
 }
 
 impl super::builder::ImagePipeline {
@@ -172,8 +58,16 @@ impl super::builder::ImagePipeline {
     /// supplied machine profile. Only registered implementations are eligible.
     pub fn placement_explain(
         &self,
-        machine: MachineProfile,
+        mut machine: MachineProfile,
     ) -> Result<String, crate::errors::VisionError> {
+        if !self.device_cuts.is_empty() {
+            return Err(invalid_pipeline(
+                "DeviceCut placement validation is not implemented yet",
+            ));
+        }
+        // A backend's registered capabilities describe what could execute on
+        // that device; they do not opt a pipeline into device execution.
+        machine.available_devices = vec![DeviceClass::Cpu];
         let mut plan = self.to_logical_plan();
         let enable_cuda_augmentation_fusion =
             machine.available_devices.contains(&DeviceClass::Cuda)
@@ -903,20 +797,10 @@ impl PhysicalCandidateProvider for VisionPhysicalCandidates {
     ) -> Vec<PhysicalCandidate> {
         let Some(payload) = node.payload() else {
             if node.kind() == NodeKind::Sink {
-                let candidates = vec![PhysicalCandidate {
+                return vec![PhysicalCandidate {
                     name: "vision-output-sink".to_owned(),
                     backend: "cpu".to_owned(),
                 }];
-                #[cfg(feature = "cuda")]
-                let candidates = {
-                    let mut candidates = candidates;
-                    candidates.push(PhysicalCandidate {
-                        name: "vision-output-sink-cuda".to_owned(),
-                        backend: "cuda".to_owned(),
-                    });
-                    candidates
-                };
-                return candidates;
             }
             return Vec::new();
         };
@@ -1079,30 +963,6 @@ pub(super) fn vision_kernel_capabilities() -> KernelCapabilities {
         );
     }
     drop(register);
-    #[cfg(feature = "cuda")]
-    for stage in [
-        OperatorStage::Source,
-        OperatorStage::Sample,
-        OperatorStage::Batch,
-    ] {
-        caps.register(KernelCapability {
-            name: format!("vision-output-sink-cuda-{stage:?}"),
-            operator: "rivet::Sink".to_owned(),
-            node_kind: NodeKind::Sink,
-            device: DeviceClass::Cuda,
-            class: KernelClass::Sink,
-            requirements: KernelRequirements {
-                output_stage: Some(stage),
-                ..KernelRequirements::default()
-            },
-            fusion_tags: Vec::new(),
-            alignment_bytes: cpu_alignment,
-            contiguity: Contiguity::Unknown,
-            temporary_bytes: 0,
-            in_place: true,
-            parallel: false,
-        });
-    }
     caps.register(KernelCapability {
         name: "vision::NormalizeToChw-cpu-Fused".to_owned(),
         operator: "vision::FusionGroup".to_owned(),
@@ -1143,4 +1003,43 @@ pub(super) fn vision_kernel_capabilities() -> KernelCapabilities {
         caps.register(cuda_fused);
     }
     caps
+}
+
+#[cfg(test)]
+mod device_cut_tests {
+    use super::*;
+    use crate::pipeline::op::ImageOp;
+    use rivet_plan::{DeviceCut, DeviceTarget, LogicalNode};
+
+    #[test]
+    fn normalize_layout_fusion_does_not_cross_a_device_cut() {
+        let mut plan = LogicalPlan::new();
+        let source = plan.add_node(LogicalNode::new(NodeKind::Source, [], None));
+        let normalize = plan.add_node(LogicalNode::new(
+            NodeKind::Op,
+            [source],
+            Some(Arc::new(ImageOp::normalize(vec![0.5; 3], vec![0.5; 3]))),
+        ));
+        let cut = plan.add_node(LogicalNode::new(
+            NodeKind::DeviceCut,
+            [normalize],
+            Some(Arc::new(DeviceCut::new(DeviceTarget::cuda(0)))),
+        ));
+        let layout = plan.add_node(LogicalNode::new(
+            NodeKind::Op,
+            [cut],
+            Some(Arc::new(ImageOp::hwc_to_chw())),
+        ));
+        let sink = plan.add_node(LogicalNode::new(NodeKind::Sink, [layout], None));
+        plan.set_root(sink).unwrap();
+
+        let candidates = NormalizeLayoutFusion {
+            workers: 0,
+            enable_cuda_augmentation_fusion: true,
+        }
+        .discover(&plan, &PropertyAnnotations::default())
+        .unwrap();
+        assert!(candidates.is_empty());
+        assert!(plan.validate().is_ok());
+    }
 }

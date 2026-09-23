@@ -30,6 +30,58 @@ pub use properties::{
     ValueGranularity, ValueProperties, ValueShape,
 };
 
+/// Device selected by an explicit logical boundary. This contains only stable
+/// planning data; runtime device/context/queue handles are resolved later.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DeviceTarget {
+    pub class: DeviceClass,
+    pub ordinal: usize,
+}
+
+impl DeviceTarget {
+    pub fn new(class: DeviceClass, ordinal: usize) -> Self {
+        Self { class, ordinal }
+    }
+
+    pub fn cuda(ordinal: usize) -> Self {
+        Self::new(DeviceClass::Cuda, ordinal)
+    }
+
+    pub fn metal(ordinal: usize) -> Self {
+        Self::new(DeviceClass::Metal, ordinal)
+    }
+}
+
+/// Fixed semantic boundary from the host region into an accelerator region.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DeviceCut {
+    pub target: DeviceTarget,
+}
+
+impl DeviceCut {
+    pub fn new(target: DeviceTarget) -> Self {
+        Self { target }
+    }
+}
+
+impl PlanPayload for DeviceCut {
+    fn domain(&self) -> &'static str {
+        "rivet"
+    }
+
+    fn name(&self) -> &'static str {
+        match self.target.class {
+            DeviceClass::Cuda => "DeviceCutToCuda",
+            DeviceClass::Metal => "DeviceCutToMetal",
+            _ => "DeviceCut",
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 /// Type-erased semantic value carried by a logical node or plan context.
 pub trait PlanPayload: Any + Send + Sync {
     fn domain(&self) -> &'static str;
@@ -58,6 +110,12 @@ pub enum PlanError {
     InvalidInput { node: usize, input: usize },
     #[error("logical plan contains a cycle through node {0}")]
     Cycle(usize),
+    #[error("device cut node {0} must carry a rivet DeviceCut payload")]
+    InvalidDeviceCutPayload(usize),
+    #[error("device cut node {0} must have exactly one input")]
+    InvalidDeviceCutArity(usize),
+    #[error("device cut node {0} cannot target the CPU device class")]
+    InvalidDeviceCutTarget(usize),
 }
 
 /// Stable logical node category. Domain details live in the erased payload.
@@ -68,6 +126,7 @@ pub enum NodeKind {
     Op,
     Batch,
     Cache,
+    DeviceCut,
     Sink,
 }
 
@@ -394,6 +453,17 @@ impl LogicalPlan {
         let root = self.root()?;
         self.arena.get(root)?;
         for (node_id, node) in self.arena.iter() {
+            if node.kind == NodeKind::DeviceCut {
+                if node.inputs.len() != 1 {
+                    return Err(PlanError::InvalidDeviceCutArity(node_id.index()));
+                }
+                let Some(cut) = node.payload_as::<DeviceCut>() else {
+                    return Err(PlanError::InvalidDeviceCutPayload(node_id.index()));
+                };
+                if cut.target.class == DeviceClass::Cpu {
+                    return Err(PlanError::InvalidDeviceCutTarget(node_id.index()));
+                }
+            }
             for input in node.inputs.iter() {
                 if input.0 >= self.arena.len() {
                     return Err(PlanError::InvalidInput {
@@ -429,11 +499,22 @@ impl LogicalPlan {
         let root = self.root()?;
         let mut out = format!("LogicalPlan(root=%{})\n", root.0);
         for (id, node) in self.arena.iter() {
-            let label = node
-                .payload
-                .as_ref()
-                .map(|p| format!(" {}::{}", p.domain(), p.name()))
-                .unwrap_or_default();
+            let label = if let Some(cut) = node.payload_as::<DeviceCut>() {
+                match &cut.target.class {
+                    DeviceClass::Cuda | DeviceClass::Metal => {
+                        format!(" rivet::{}({})", cut.name(), cut.target.ordinal)
+                    }
+                    class => format!(
+                        " rivet::DeviceCut({class:?}, ordinal={})",
+                        cut.target.ordinal
+                    ),
+                }
+            } else {
+                node.payload
+                    .as_ref()
+                    .map(|p| format!(" {}::{}", p.domain(), p.name()))
+                    .unwrap_or_default()
+            };
             let inputs = node
                 .inputs
                 .iter()
@@ -528,6 +609,84 @@ mod tests {
         assert_eq!(
             plan.explain().unwrap(),
             "LogicalPlan(root=%2)\n  %0 Source <- []\n  %1 Op test::op <- [%0]\n  %2 Sink <- [%1]\n"
+        );
+    }
+
+    #[test]
+    fn device_cut_is_plain_target_data_and_participates_in_plan_traversal() {
+        let mut plan = LogicalPlan::new();
+        let source = plan.add_node(LogicalNode::new(NodeKind::Source, [], None));
+        let cuda_cut = plan.add_node(LogicalNode::new(
+            NodeKind::DeviceCut,
+            [source],
+            Some(Arc::new(DeviceCut::new(DeviceTarget::cuda(3)))),
+        ));
+        let sink = plan.add_node(LogicalNode::new(NodeKind::Sink, [cuda_cut], None));
+        plan.set_root(sink).unwrap();
+
+        let traversal = plan.preorder().unwrap();
+        assert_eq!(traversal, [sink, cuda_cut, source]);
+        assert_eq!(plan.clone().preorder().unwrap(), traversal);
+        assert_eq!(plan.parents(cuda_cut).unwrap(), [source]);
+        assert_eq!(plan.children(cuda_cut).unwrap(), [sink]);
+        let explanation = plan.explain().unwrap();
+        assert!(explanation.contains("DeviceCutToCuda(3)"), "{explanation}");
+
+        let cuda = plan
+            .node(cuda_cut)
+            .unwrap()
+            .payload_as::<DeviceCut>()
+            .unwrap();
+        assert_eq!(cuda.target, DeviceTarget::cuda(3));
+        assert_eq!(cuda.target.class, DeviceClass::Cuda);
+        assert_eq!(cuda.target.ordinal, 3);
+
+        let metal = DeviceCut::new(DeviceTarget::metal(1));
+        assert_eq!(metal.name(), "DeviceCutToMetal");
+        assert_eq!(metal.target.class, DeviceClass::Metal);
+    }
+
+    #[test]
+    fn device_cut_validation_rejects_missing_payload_bad_arity_and_cpu_target() {
+        let mut missing_payload = LogicalPlan::new();
+        let source = missing_payload.add_node(LogicalNode::new(NodeKind::Source, [], None));
+        let cut = missing_payload.add_node(LogicalNode::new(NodeKind::DeviceCut, [source], None));
+        let sink = missing_payload.add_node(LogicalNode::new(NodeKind::Sink, [cut], None));
+        missing_payload.set_root(sink).unwrap();
+        assert_eq!(
+            missing_payload.validate(),
+            Err(PlanError::InvalidDeviceCutPayload(cut.index()))
+        );
+
+        let mut bad_arity = LogicalPlan::new();
+        let source = bad_arity.add_node(LogicalNode::new(NodeKind::Source, [], None));
+        let cut = bad_arity.add_node(LogicalNode::new(
+            NodeKind::DeviceCut,
+            [source, source],
+            Some(Arc::new(DeviceCut::new(DeviceTarget::cuda(0)))),
+        ));
+        let sink = bad_arity.add_node(LogicalNode::new(NodeKind::Sink, [cut], None));
+        bad_arity.set_root(sink).unwrap();
+        assert_eq!(
+            bad_arity.validate(),
+            Err(PlanError::InvalidDeviceCutArity(cut.index()))
+        );
+
+        let mut cpu_target = LogicalPlan::new();
+        let source = cpu_target.add_node(LogicalNode::new(NodeKind::Source, [], None));
+        let cut = cpu_target.add_node(LogicalNode::new(
+            NodeKind::DeviceCut,
+            [source],
+            Some(Arc::new(DeviceCut::new(DeviceTarget::new(
+                DeviceClass::Cpu,
+                0,
+            )))),
+        ));
+        let sink = cpu_target.add_node(LogicalNode::new(NodeKind::Sink, [cut], None));
+        cpu_target.set_root(sink).unwrap();
+        assert_eq!(
+            cpu_target.validate(),
+            Err(PlanError::InvalidDeviceCutTarget(cut.index()))
         );
     }
 

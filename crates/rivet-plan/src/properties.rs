@@ -78,6 +78,7 @@ pub enum Contiguity {
 pub enum DeviceClass {
     Cpu,
     Cuda,
+    Metal,
     Other(Arc<str>),
 }
 

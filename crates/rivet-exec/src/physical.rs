@@ -836,6 +836,11 @@ mod tests {
                 NodeKind::Op => PhysicalNodeKind::Kernel(KernelStage::Sample),
                 NodeKind::Batch => PhysicalNodeKind::Batch,
                 NodeKind::Cache => PhysicalNodeKind::Cache,
+                NodeKind::DeviceCut => {
+                    return Err(RuntimeError::Message(
+                        "DeviceCut requires device-aware physical lowering".to_owned(),
+                    ));
+                }
                 NodeKind::Sink => PhysicalNodeKind::Sink,
             };
             Ok(PhysicalNodeSpec::new(kind, ExecutionLane::Cpu))

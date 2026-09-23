@@ -187,7 +187,7 @@ pub enum PlacementError {
     Plan(#[from] crate::PlanError),
     #[error("no registered compatible kernel for node %{node}: {reason}")]
     NoKernel { node: usize, reason: String },
-    #[error("placement requires more than one CPU/CUDA boundary")]
+    #[error("placement requires more than one CPU/device boundary")]
     TooManyTransferBoundaries,
     #[error("sink requires {device:?}, but no compatible registered kernel can produce it")]
     SinkDeviceUnavailable { device: DeviceClass },
@@ -418,7 +418,7 @@ fn estimate_cost(
         .and_then(byte_size)
         .unwrap_or(machine.unknown_value_bytes)
         .saturating_add(temporary_bytes);
-    let device = matches!(kernel.device, DeviceClass::Cuda);
+    let device = !matches!(kernel.device, DeviceClass::Cpu);
     let transfer_bytes = if previous.is_some_and(|d| d != &kernel.device) {
         bytes
     } else {
@@ -430,7 +430,7 @@ fn estimate_cost(
     );
     let synchronization_count = launch_count;
     let compute_score = (bytes.max(1) as f64) / 1_000_000_000.0 / (parallelism.max(1) as f64);
-    let bandwidth = if previous.is_some_and(|d| matches!(d, DeviceClass::Cuda)) {
+    let bandwidth = if previous.is_some_and(|d| !matches!(d, DeviceClass::Cpu)) {
         machine.device_to_host_bytes_per_sec
     } else {
         machine.host_to_device_bytes_per_sec

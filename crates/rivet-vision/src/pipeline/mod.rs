@@ -17,11 +17,10 @@ mod tests {
     use crate::sample::image::{DecodedSample, EncodedImageSample, ImageAxisOrder};
     use crate::source::ImageSource;
     use crate::transforms::Point2;
-    #[cfg(feature = "cuda")]
-    use crate::transforms::{InterpolationMode, RandomResizedCropConfig};
     use arrow_buffer::Buffer;
     use rivet_core::{DType, Device, Tensor};
     use rivet_data::dataset::Dataset;
+    use rivet_plan::NodeKind;
     use std::sync::Arc;
 
     struct StubDataset {
@@ -98,30 +97,6 @@ mod tests {
         } else {
             ImageSource::from_decoded(dataset)
         }
-    }
-
-    #[cfg(feature = "cuda")]
-    fn spatial_dense_source() -> ImageSource {
-        let mut images = Vec::with_capacity(5 * 4 * 4 * 3);
-        for index in 0..5u8 {
-            for y in 0..4u8 {
-                for x in 0..4u8 {
-                    images.extend_from_slice(&[
-                        index * 17 + y * 13 + x * 3,
-                        index * 11 + y * 7 + x * 5,
-                        index * 5 + y * 3 + x * 9,
-                    ]);
-                }
-            }
-        }
-        let dataset = Arc::new(
-            DenseImageMemoryDataset::new(
-                Tensor::from_vec(images, [5, 4, 4, 3], &Device::Cpu).unwrap(),
-                Tensor::from_vec((0i64..5).collect(), [5], &Device::Cpu).unwrap(),
-            )
-            .unwrap(),
-        );
-        ImageSource::from_dense_decoded(dataset)
     }
 
     fn compile_err(pipeline: ImagePipeline) -> String {
@@ -1142,9 +1117,38 @@ mod tests {
         assert!(multi.contains("source access=RandomAccess"));
     }
 
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_capabilities_do_not_place_pipeline_without_device_request() {
+        assert!(
+            super::optimizer::vision_kernel_capabilities()
+                .iter()
+                .any(|capability| {
+                    capability.device == rivet_plan::DeviceClass::Cuda
+                        && capability.name == "vision::NormalizeToChw-cuda-Fused"
+                })
+        );
+        let mut loader = decoded_stub()
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .hwc_to_chw()
+            .batch(1, false)
+            .compile()
+            .unwrap();
+
+        let physical = loader.physical_explain().unwrap();
+        assert!(!physical.contains("Transfer(H2D)"), "{physical}");
+        assert!(!physical.contains("lane=Device"), "{physical}");
+        assert!(physical.contains("BatchKernel lane=Cpu"), "{physical}");
+
+        let batch = loader.next_batch().unwrap().unwrap();
+        assert!(batch.images.device().is_cpu());
+        assert_eq!(batch.images.dims(), [1, 3, 1, 1]);
+        assert_eq!(batch.images.dtype(), DType::F32);
+    }
+
     #[cfg(not(feature = "cuda"))]
     #[test]
-    fn placement_rejects_cuda_sink_without_registered_cuda_kernels() {
+    fn placement_rejects_unavailable_preferred_device_sink() {
         let pipeline = decoded_stub()
             .normalize(vec![0.5; 3], vec![0.5; 3])
             .batch(2, false);
@@ -1163,259 +1167,122 @@ mod tests {
         assert!(error.contains("no compatible registered kernel"));
     }
 
-    #[cfg(feature = "cuda")]
     #[test]
-    fn cuda_sink_placement_costs_one_explicit_transfer_boundary() {
-        let pipeline = decoded_stub().batch(1, false);
+    fn device_capabilities_do_not_place_a_pipeline_without_a_device_cut() {
+        let pipeline = decoded_stub()
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .batch(1, false);
         let explanation = pipeline
             .placement_explain(rivet_plan::MachineProfile {
-                cpu_threads: 1,
+                cpu_threads: 2,
                 available_devices: vec![
                     rivet_plan::DeviceClass::Cpu,
                     rivet_plan::DeviceClass::Cuda,
+                    rivet_plan::DeviceClass::Metal,
                 ],
-                preferred_sink_device: Some(rivet_plan::DeviceClass::Cuda),
                 ..rivet_plan::MachineProfile::default()
             })
             .unwrap();
-        assert!(explanation.contains("device=Cuda"), "{explanation}");
-        assert_eq!(explanation.matches("transfer before %").count(), 1);
-        let cuda_sink = explanation
-            .lines()
-            .find(|line| line.contains("device=Cuda"))
-            .expect("CUDA sink placement is present");
-        assert!(
-            cuda_sink.contains("transfer=") && !cuda_sink.contains("transfer=0B"),
-            "{cuda_sink}"
+        assert!(explanation.contains("device=Cpu"), "{explanation}");
+        assert!(!explanation.contains("device=Cuda"), "{explanation}");
+        assert!(!explanation.contains("device=Metal"), "{explanation}");
+    }
+
+    #[test]
+    fn device_cut_logical_round_trip_preserves_target_and_position() {
+        let pipeline = stub(10)
+            .decode_image()
+            .resize(8, 6)
+            .device_cut_to_cuda(2)
+            .normalize(vec![0.1, 0.2, 0.3], vec![1.0; 3])
+            .batch(2, true);
+        let logical = pipeline.to_logical_plan();
+        let explain = logical.explain().unwrap();
+        assert!(explain.contains("DeviceCutToCuda(2)"), "{explain}");
+
+        let ordered = logical
+            .nodes()
+            .map(|(_, node)| node.kind())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered,
+            [
+                NodeKind::Source,
+                NodeKind::Op,
+                NodeKind::Op,
+                NodeKind::DeviceCut,
+                NodeKind::Op,
+                NodeKind::Batch,
+                NodeKind::Sink,
+            ]
         );
+
+        let cloned = logical.clone();
+        assert_eq!(cloned.explain().unwrap(), explain);
+        let restored = ImagePipeline::from_logical_plan(&cloned).unwrap();
+        assert_eq!(
+            restored.ops.iter().map(|op| op.name()).collect::<Vec<_>>(),
+            ["Decode", "Resize", "Normalize"]
+        );
+        let round_trip = restored.to_logical_plan();
+        let targets = round_trip
+            .nodes()
+            .filter_map(|(_, node)| node.payload_as::<rivet_plan::DeviceCut>())
+            .map(|cut| cut.target.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(targets, [rivet_plan::DeviceTarget::cuda(2)]);
+        assert_eq!(
+            round_trip
+                .nodes()
+                .map(|(_, node)| node.kind())
+                .collect::<Vec<_>>(),
+            ordered
+        );
+        assert_eq!(restored.batch.unwrap().size, 2);
+
+        let metal = stub(1).device_cut_to_metal(1).to_logical_plan();
+        assert!(metal.explain().unwrap().contains("DeviceCutToMetal(1)"));
     }
 
-    #[cfg(feature = "cuda")]
     #[test]
-    fn cuda_sink_returns_shape_dtype_and_values_on_device_after_ordered_h2d() {
-        let Ok(_device) = Device::cuda(0) else {
-            eprintln!("skipping CUDA sink test because device 0 is unavailable");
-            return;
-        };
-        let mut loader = decoded_stub()
-            .batch(1, false)
-            .cuda_sink(0)
-            .compile()
-            .unwrap();
-        let explanation = loader.physical_explain().unwrap();
-        assert_eq!(explanation.matches("Transfer(H2D)").count(), 1);
-        assert!(explanation.contains("target=Device { ordinal: 0 }"));
-        assert!(explanation.contains("estimated_transfer_bytes="));
-
-        let batch = loader.next_batch().unwrap().unwrap();
-        assert_eq!(batch.images.dims(), [1, 1, 1, 3]);
-        assert_eq!(batch.images.dtype(), DType::U8);
-        assert_eq!(batch.labels.dims(), [1]);
-        assert_eq!(batch.labels.dtype(), DType::I64);
-        assert!(batch.images.device().is_cuda());
-        assert!(batch.labels.device().is_cuda());
-        if let Device::Cuda(device) = batch.images.device() {
-            let stats = device.debug_stats();
-            assert_eq!(stats.h2d_count, 2);
-            assert!(stats.synchronize_count >= 1);
-        }
-        assert_eq!(batch.images.to_vec::<u8>().unwrap(), [255, 0, 0]);
-        assert_eq!(batch.labels.to_vec::<i64>().unwrap(), [7]);
-    }
-
-    #[cfg(feature = "cuda")]
-    #[test]
-    fn cuda_sink_runs_fused_nhwc_normalize_to_nchw_batch_kernel() {
-        let Ok(_device) = Device::cuda(0) else {
-            eprintln!("skipping CUDA fused vision test because device 0 is unavailable");
-            return;
-        };
-        let mean = vec![0.5, 0.25, 0.0];
-        let std = vec![0.5, 0.5, 1.0];
-        let cpu_pipeline = decoded_stub()
-            .normalize(mean.clone(), std.clone())
-            .hwc_to_chw()
-            .batch(1, false);
-        let mut cpu_loader = cpu_pipeline.clone().compile().unwrap();
-        let cpu_batch = cpu_loader.next_batch().unwrap().unwrap();
-
-        let mut cuda_loader = cpu_pipeline.cuda_sink(0).compile().unwrap();
-        let physical = cuda_loader.physical_explain().unwrap();
-        let transfer_at = physical.find("Transfer(H2D)").unwrap();
-        let kernel_at = physical.find("BatchKernel lane=Device").unwrap();
-        assert!(transfer_at < kernel_at, "{physical}");
-        assert_eq!(physical.matches("Transfer(H2D)").count(), 1, "{physical}");
-
-        let cuda_batch = cuda_loader.next_batch().unwrap().unwrap();
-        assert_eq!(cuda_batch.images.dims(), [1, 3, 1, 1]);
-        assert_eq!(cuda_batch.images.dtype(), DType::F32);
-        assert_eq!(cuda_batch.axis_order, ImageAxisOrder::Chw);
-        assert!(cuda_batch.images.device().is_cuda());
-        if let Device::Cuda(device) = cuda_batch.images.device() {
-            let stats = device.debug_stats();
-            assert_eq!(stats.kernel_launch_count, 1, "{stats:?}");
-            assert_eq!(
-                stats.h2d_count, 4,
-                "image + label + scale + bias: {stats:?}"
-            );
-        }
-        let cpu_values = cpu_batch.images.to_vec::<f32>().unwrap();
-        let cuda_values = cuda_batch.images.to_vec::<f32>().unwrap();
-        for (actual, expected) in cuda_values.iter().zip(cpu_values) {
-            assert!((actual - expected).abs() <= 1e-6, "{actual} != {expected}");
-        }
-        assert_eq!(cuda_batch.labels.to_vec::<i64>().unwrap(), [7]);
-    }
-
-    #[cfg(feature = "cuda")]
-    #[test]
-    fn cuda_sink_fuses_semantic_flip_crop_resize_and_normalize_for_the_batch() {
-        let Ok(_device) = Device::cuda(0) else {
-            eprintln!("skipping CUDA augmentation test because device 0 is unavailable");
-            return;
-        };
-        let fallback = decoded_stub()
-            .random_horizontal_flip(1.0)
-            .random_resized_crop(2, 2)
+    fn device_cut_sets_output_residency_without_changing_value_properties() {
+        let logical = decoded_stub()
+            .device_cut_to_cuda(0)
             .normalize(vec![0.5; 3], vec![0.5; 3])
             .hwc_to_chw()
             .batch(1, false)
-            .cuda_sink(0)
-            .compile()
+            .to_logical_plan();
+        let annotations = logical
+            .infer_properties(&super::inference::VisionPropertyInference::default())
             .unwrap();
-        assert_eq!(fallback.plan.sample_op_count(), 2);
-        assert_eq!(fallback.plan.first_batch_op_name(), Some("NormalizeToChw"));
-
-        let mean = vec![0.5, 0.25, 0.0];
-        let std = vec![0.5, 0.5, 1.0];
-        let pipeline = ImagePipeline::from_source(spatial_dense_source())
-            .random_horizontal_flip(1.0)
-            .random_resized_crop(2, 2)
-            .normalize(mean, std)
-            .hwc_to_chw()
-            .prefetch_batches(0)
-            .batch(2, false);
-
-        let mut cpu_loader = pipeline.clone().compile().unwrap();
-        let cpu_batch = cpu_loader.next_batch().unwrap().unwrap();
-        let mut cuda_loader = pipeline.cuda_sink(0).compile().unwrap();
-        assert_eq!(cuda_loader.plan.sample_op_count(), 0);
+        let nodes = logical.nodes().collect::<Vec<_>>();
+        let before = annotations.get(nodes[0].0).unwrap();
+        let cut = annotations.get(nodes[1].0).unwrap();
+        assert_eq!(before.representation, cut.representation);
+        assert_eq!(before.dtype, cut.dtype);
+        assert_eq!(before.shape, cut.shape);
+        assert_eq!(before.granularity, cut.granularity);
+        assert_eq!(before.residency, Some(rivet_plan::Residency::Host));
         assert_eq!(
-            cuda_loader.plan.first_batch_op_name(),
-            Some("VisionAugmentNormalizeToChw")
+            cut.residency,
+            Some(rivet_plan::Residency::Device(rivet_plan::DeviceClass::Cuda))
         );
-        let explanation = cuda_loader.physical_explain().unwrap();
+        let after_batch = annotations.get(nodes[4].0).unwrap();
+        assert_eq!(after_batch.dtype, Some(rivet_plan::DataType::F32));
+        assert_eq!(after_batch.axis_order, Some(rivet_plan::AxisOrder::Nchw));
         assert_eq!(
-            explanation.matches("Transfer(H2D)").count(),
-            1,
-            "{explanation}"
+            after_batch.residency,
+            Some(rivet_plan::Residency::Device(rivet_plan::DeviceClass::Cuda))
         );
-
-        let cuda_batch = cuda_loader.next_batch().unwrap().unwrap();
-        assert_eq!(cuda_batch.images.dims(), [2, 3, 2, 2]);
-        assert_eq!(cuda_batch.images.dtype(), DType::F32);
-        assert_eq!(cuda_batch.axis_order, ImageAxisOrder::Chw);
-        assert!(cuda_batch.images.device().is_cuda());
-        if let Device::Cuda(device) = cuda_batch.images.device() {
-            let stats = device.debug_stats();
-            assert_eq!(stats.kernel_launch_count, 1, "{stats:?}");
-            assert_eq!(
-                stats.h2d_count, 5,
-                "image + labels + semantic params + scale + bias: {stats:?}"
-            );
-        }
-        let cpu_values = cpu_batch.images.to_vec::<f32>().unwrap();
-        let cuda_values = cuda_batch.images.to_vec::<f32>().unwrap();
-        assert_eq!(cpu_values.len(), cuda_values.len());
-        for (actual, expected) in cuda_values.iter().zip(cpu_values) {
-            assert!((actual - expected).abs() <= 1e-6, "{actual} != {expected}");
-        }
-        assert_eq!(cuda_batch.labels.to_vec::<i64>().unwrap(), [0, 1]);
     }
 
-    #[cfg(feature = "cuda")]
     #[test]
-    fn cuda_random_parameters_match_cpu_across_workers_and_shuffled_sample_indices() {
-        let Ok(_device) = Device::cuda(0) else {
-            eprintln!("skipping CUDA random parity test because device 0 is unavailable");
-            return;
-        };
-        let source = spatial_dense_source();
-        let configure = |workers, interpolation| {
-            ImagePipeline::from_source(source.clone())
-                .resize(4, 4)
-                .random_horizontal_flip(0.5)
-                .random_resized_crop_with_config(
-                    RandomResizedCropConfig::new(3, 2).with_interpolation(interpolation),
-                )
-                .horizontal_flip()
-                .vertical_flip()
-                .normalize(vec![0.2, 0.3, 0.4], vec![0.7, 0.8, 0.9])
-                .hwc_to_chw()
-                .shuffle(71)
-                .seed(0xB47C_09D1)
-                .epoch(6)
-                .workers(workers)
-                .batch(2, false)
-        };
-        let collect = |mut loader: crate::runtime::ImageDataLoader| {
-            let mut batches = Vec::new();
-            while let Some(batch) = loader.next_batch().unwrap() {
-                batches.push(batch);
-            }
-            batches
-        };
-        for interpolation in [
-            InterpolationMode::Nearest,
-            InterpolationMode::Bilinear,
-            InterpolationMode::Bicubic,
-            InterpolationMode::Lanczos3,
-        ] {
-            let inline = collect(configure(0, interpolation).compile().unwrap());
-            let worker_cpu = collect(configure(3, interpolation).compile().unwrap());
-            let cuda = collect(configure(3, interpolation).cuda_sink(0).compile().unwrap());
-            assert_eq!(inline.len(), worker_cpu.len());
-            assert_eq!(inline.len(), cuda.len());
-            for ((reference, worker), device) in inline.iter().zip(&worker_cpu).zip(&cuda) {
-                assert_eq!(
-                    reference.labels.to_vec::<i64>().unwrap(),
-                    worker.labels.to_vec::<i64>().unwrap()
-                );
-                assert_eq!(
-                    reference.labels.to_vec::<i64>().unwrap(),
-                    device.labels.to_vec::<i64>().unwrap()
-                );
-                assert_eq!(&reference.images.dims()[1..], [3, 2, 3]);
-                let expected = reference.images.to_vec::<f32>().unwrap();
-                assert_eq!(expected, worker.images.to_vec::<f32>().unwrap());
-                let actual = device.images.to_vec::<f32>().unwrap();
-                assert_eq!(expected.len(), actual.len());
-                for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
-                    assert!(
-                        (actual - expected).abs() <= 1e-6,
-                        "{interpolation:?}, labels={:?}, offset={index}, CUDA={actual}, CPU={expected}",
-                        reference.labels.to_vec::<i64>().unwrap()
-                    );
-                }
-            }
-        }
-    }
-
-    #[cfg(feature = "cuda")]
-    #[test]
-    fn cuda_sink_ordinal_round_trips_as_plain_logical_runtime_metadata() {
-        let pipeline = decoded_stub().batch(1, false).cuda_sink(2);
-        let restored = ImagePipeline::from_logical_plan(&pipeline.to_logical_plan()).unwrap();
-        assert_eq!(restored.runtime.sink_device_ordinal, Some(2));
-    }
-
-    #[cfg(not(feature = "cuda"))]
-    #[test]
-    fn cuda_sink_request_without_feature_is_an_explicit_error() {
-        let mut pipeline = decoded_stub().batch(1, false);
-        pipeline.runtime.sink_device_ordinal = Some(0);
-        let error = compile_err(pipeline);
-        assert!(error.contains("without the cuda feature"));
+    fn device_cut_compile_fails_until_physical_lowering_exists() {
+        let error = compile_err(decoded_stub().device_cut_to_cuda(0).batch(1, false));
+        assert!(
+            error.contains("DeviceCut execution is not implemented yet"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1431,6 +1298,38 @@ mod tests {
                     .unwrap_or(&legacy_error)
             ),
             "legacy error: {legacy_error}; logical error: {logical_error}"
+        );
+    }
+
+    #[test]
+    fn device_cut_after_batch_round_trips_after_the_batch_node() {
+        let pipeline = decoded_stub().batch(3, false).device_cut_to_cuda(4);
+        let logical = pipeline.to_logical_plan();
+        let order = logical
+            .nodes()
+            .map(|(_, node)| node.kind())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            [
+                NodeKind::Source,
+                NodeKind::Batch,
+                NodeKind::DeviceCut,
+                NodeKind::Sink
+            ]
+        );
+        let restored = ImagePipeline::from_logical_plan(&logical).unwrap();
+        assert_eq!(
+            restored.to_logical_plan().explain().unwrap(),
+            logical.explain().unwrap()
+        );
+        let annotations = logical
+            .infer_properties(&super::inference::VisionPropertyInference::default())
+            .unwrap();
+        let sink = logical.root().unwrap();
+        assert_eq!(
+            annotations.get(sink).unwrap().residency,
+            Some(rivet_plan::Residency::Device(rivet_plan::DeviceClass::Cuda))
         );
     }
 

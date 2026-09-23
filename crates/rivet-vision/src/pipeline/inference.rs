@@ -2,9 +2,9 @@
 
 use rivet_core::DType as CoreDType;
 use rivet_plan::{
-    AxisOrder, Contiguity, DataType, LogicalNode, NodeKind, OperatorProperties, OperatorStage,
-    PropertyInference, Representation, Residency, ShapeDim, ValueGranularity, ValueProperties,
-    ValueShape,
+    AxisOrder, Contiguity, DataType, DeviceCut, LogicalNode, NodeKind, OperatorProperties,
+    OperatorStage, PropertyInference, Representation, Residency, ShapeDim, ValueGranularity,
+    ValueProperties, ValueShape,
 };
 
 use super::logical::FusionGroupPayload;
@@ -47,11 +47,20 @@ impl PropertyInference for VisionPropertyInference {
             }
             NodeKind::Op => {
                 let input = single_input(inputs, node.kind())?;
+                // Property inference describes operator semantics independently
+                // of the backend that will execute them. Capability validation
+                // decides whether an op is legal after a DeviceCut; shape and
+                // dtype inference still need to propagate through that region.
+                let mut semantic_input = input.clone();
+                semantic_input.residency = Some(Residency::Host);
                 if let Some(op) = node.payload_as::<ImageOp>() {
-                    infer_image_op_with_workers(op, input, self.num_workers)
-                        .map_err(|error| error.to_string())?
+                    let mut output =
+                        infer_image_op_with_workers(op, &semantic_input, self.num_workers)
+                            .map_err(|error| error.to_string())?;
+                    output.residency = input.residency.clone();
+                    output
                 } else if let Some(group) = node.payload_as::<FusionGroupPayload>() {
-                    let mut properties = input.clone();
+                    let mut properties = semantic_input;
                     for op in &group.ops {
                         properties = infer_image_op_with_workers(op, &properties, self.num_workers)
                             .map_err(|error| error.to_string())?;
@@ -61,6 +70,7 @@ impl PropertyInference for VisionPropertyInference {
                     if group.name == "NormalizeToChw" {
                         properties.contiguity = Some(Contiguity::Contiguous);
                     }
+                    properties.residency = input.residency.clone();
                     properties
                 } else {
                     return Err(
@@ -74,6 +84,14 @@ impl PropertyInference for VisionPropertyInference {
                     .ok_or_else(|| "batch node is missing its BatchConfig payload".to_owned())?;
                 infer_batch(batch, single_input(inputs, node.kind())?)
                     .map_err(|error| error.to_string())?
+            }
+            NodeKind::DeviceCut => {
+                let cut = node
+                    .payload_as::<DeviceCut>()
+                    .ok_or_else(|| "device cut node is missing its DeviceCut payload".to_owned())?;
+                let mut properties = single_input(inputs, node.kind())?.clone();
+                properties.residency = Some(Residency::Device(cut.target.class.clone()));
+                properties
             }
             NodeKind::Cache | NodeKind::Sink => single_input(inputs, node.kind())?.clone(),
         };
@@ -527,14 +545,6 @@ fn infer_sequence(ops: &[ImageOp], input: &ValueProperties) -> RivetResult<Value
 
 fn infer_batch(config: &BatchConfig, input: &ValueProperties) -> RivetResult<ValueProperties> {
     config.validate()?;
-    match input.residency.as_ref() {
-        Some(Residency::Host | Residency::Unknown) | None => {}
-        Some(Residency::Device(_)) => {
-            return Err(invalid_pipeline(
-                "batch requires host-resident input in the CPU vision planner",
-            ));
-        }
-    }
     if input.granularity != Some(ValueGranularity::Sample) {
         return Err(invalid_pipeline(format!(
             "batch requires sample granularity, current granularity is {}",

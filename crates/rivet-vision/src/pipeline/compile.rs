@@ -21,85 +21,45 @@ impl ImagePipeline {
     }
 
     pub fn compile_from(self, start: usize) -> RivetResult<ImageDataLoader> {
-        #[cfg(not(feature = "cuda"))]
-        if self.runtime.sink_device_ordinal.is_some() {
+        let mut logical = self.to_logical_plan();
+        logical
+            .validate()
+            .map_err(|error| invalid_pipeline(format!("invalid logical plan: {error}")))?;
+        if logical
+            .nodes()
+            .any(|(_, node)| node.kind() == NodeKind::DeviceCut)
+        {
             return Err(invalid_pipeline(
-                "CUDA sink requested, but rivet-vision was built without the cuda feature",
+                "vision DeviceCut execution is not implemented yet",
             ));
         }
-        let enable_cuda_augmentation_fusion =
-            self.runtime.sink_device_ordinal.is_some() && self.source.supports_batch_read();
-        let mut logical = self.to_logical_plan();
-        let (_, placement) = super::optimizer::optimize_vision_plan_for_sink(
+        let (_, placement) = super::optimizer::optimize_vision_plan_with_placement(
             &mut logical,
             self.runtime.num_workers,
-            self.runtime.sink_device_ordinal,
         )?;
-        let physical = lower_vision_physical(
-            &logical,
-            self.runtime.num_workers,
-            &placement,
-            self.runtime.sink_device_ordinal,
-        )?;
-        Self::from_logical_plan(&logical)?.compile_legacy_from_physical(
-            start,
-            physical,
-            enable_cuda_augmentation_fusion,
-        )
+        let physical = lower_vision_physical(&logical, self.runtime.num_workers, &placement)?;
+        Self::from_logical_plan(&logical)?.compile_legacy_from_physical(start, physical)
     }
 
     #[cfg(test)]
     fn compile_legacy_from(self, start: usize) -> RivetResult<ImageDataLoader> {
-        let enable_cuda_augmentation_fusion =
-            self.runtime.sink_device_ordinal.is_some() && self.source.supports_batch_read();
         let mut logical = self.to_logical_plan();
-        let (_, placement) = super::optimizer::optimize_vision_plan_for_sink(
+        let (_, placement) = super::optimizer::optimize_vision_plan_with_placement(
             &mut logical,
             self.runtime.num_workers,
-            self.runtime.sink_device_ordinal,
         )?;
-        let physical = lower_vision_physical(
-            &logical,
-            self.runtime.num_workers,
-            &placement,
-            self.runtime.sink_device_ordinal,
-        )?;
-        self.compile_legacy_from_physical(start, physical, enable_cuda_augmentation_fusion)
+        let physical = lower_vision_physical(&logical, self.runtime.num_workers, &placement)?;
+        self.compile_legacy_from_physical(start, physical)
     }
 
     fn compile_legacy_from_physical(
         self,
         start: usize,
         physical: PhysicalGraph,
-        enable_cuda_augmentation_fusion: bool,
     ) -> RivetResult<ImageDataLoader> {
-        let sink_device = match self.runtime.sink_device_ordinal {
-            None => None,
-            Some(ordinal) => {
-                #[cfg(feature = "cuda")]
-                {
-                    Some(rivet_core::Device::cuda(ordinal)?)
-                }
-                #[cfg(not(feature = "cuda"))]
-                {
-                    let _ = ordinal;
-                    return Err(invalid_pipeline(
-                        "CUDA sink requested, but rivet-vision was built without the cuda feature",
-                    ));
-                }
-            }
-        };
         let input_state = self.source.state();
-        let cuda_batch_kernel = physical.nodes().iter().any(|node| {
-            node.kind == PhysicalNodeKind::Kernel(KernelStage::Batch)
-                && matches!(node.lane, ExecutionLane::Device { .. })
-        });
-        let compiled_ops = compile_image_ops(
-            self.ops,
-            input_state,
-            self.runtime.num_workers,
-            cuda_batch_kernel && enable_cuda_augmentation_fusion,
-        )?;
+        let compiled_ops =
+            compile_image_ops(self.ops, input_state, self.runtime.num_workers, false)?;
 
         let batch = self
             .batch
@@ -144,7 +104,6 @@ impl ImagePipeline {
             prefetch_batches,
             stage_queue_max_bytes,
             physical,
-            sink_device,
         )
     }
 
@@ -157,7 +116,6 @@ impl ImagePipeline {
 struct VisionPhysicalLowering {
     annotations: PropertyAnnotations,
     placement: rivet_plan::PlacementPlan,
-    sink_device_ordinal: Option<usize>,
 }
 
 impl PhysicalLowering for VisionPhysicalLowering {
@@ -189,6 +147,11 @@ impl PhysicalLowering for VisionPhysicalLowering {
             }
             NodeKind::Batch => (PhysicalNodeKind::Batch, ExecutionLane::Cpu),
             NodeKind::Cache => (PhysicalNodeKind::Cache, ExecutionLane::Io),
+            NodeKind::DeviceCut => {
+                return Err(rivet_exec::runtime::RuntimeError::Message(
+                    "DeviceCut requires device-aware physical lowering".to_owned(),
+                ));
+            }
             NodeKind::Sink => (PhysicalNodeKind::Sink, ExecutionLane::Cpu),
         };
         let selected_device = self
@@ -198,30 +161,9 @@ impl PhysicalLowering for VisionPhysicalLowering {
             .find(|candidate| candidate.node == logical_id)
             .map(|candidate| &candidate.device);
         let lane = match selected_device {
-            Some(rivet_plan::DeviceClass::Cuda) if node.kind() == NodeKind::Sink => {
-                ExecutionLane::Device {
-                    ordinal: self.sink_device_ordinal.ok_or_else(|| {
-                        rivet_exec::runtime::RuntimeError::Message(
-                            "CUDA sink placement has no requested device ordinal".to_owned(),
-                        )
-                    })?,
-                }
-            }
-            Some(rivet_plan::DeviceClass::Cuda)
-                if kind == PhysicalNodeKind::Kernel(KernelStage::Batch) =>
-            {
-                ExecutionLane::Device {
-                    ordinal: self.sink_device_ordinal.ok_or_else(|| {
-                        rivet_exec::runtime::RuntimeError::Message(
-                            "CUDA batch kernel placement has no requested device ordinal"
-                                .to_owned(),
-                        )
-                    })?,
-                }
-            }
-            Some(rivet_plan::DeviceClass::Cuda) => {
+            Some(device) if device != &rivet_plan::DeviceClass::Cpu => {
                 return Err(rivet_exec::runtime::RuntimeError::Message(format!(
-                    "CUDA execution for logical node %{} is not implemented in this phase",
+                    "device {device:?} execution for logical node %{} is not implemented in this phase",
                     logical_id.index()
                 )));
             }
@@ -235,7 +177,6 @@ fn lower_vision_physical(
     logical: &LogicalPlan,
     workers: usize,
     placement: &rivet_plan::PlacementPlan,
-    sink_device_ordinal: Option<usize>,
 ) -> RivetResult<PhysicalGraph> {
     let annotations = logical
         .infer_properties(&super::inference::VisionPropertyInference::new(workers))
@@ -245,7 +186,6 @@ fn lower_vision_physical(
         &VisionPhysicalLowering {
             annotations,
             placement: placement.clone(),
-            sink_device_ordinal,
         },
     )
     .map_err(|error| invalid_pipeline(format!("physical lowering failed: {error}")))?;

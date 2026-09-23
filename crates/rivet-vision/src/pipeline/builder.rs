@@ -9,7 +9,15 @@ use crate::transforms::{
 };
 use rivet_core::DType;
 use rivet_data::dataset::Dataset;
+use rivet_plan::DeviceTarget;
 use std::sync::Arc;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DeviceCutPlacement {
+    pub(crate) after_ops: usize,
+    pub(crate) after_batch: bool,
+    pub(crate) target: DeviceTarget,
+}
 
 #[derive(Clone)]
 pub struct ImagePipeline {
@@ -17,6 +25,7 @@ pub struct ImagePipeline {
     pub index_ops: Vec<IndexOp>,
     pub ops: Vec<ImageOp>,
     pub batch: Option<BatchConfig>,
+    pub(crate) device_cuts: Vec<DeviceCutPlacement>,
     pub runtime: RuntimeConfig,
     pub epoch: u64,
     pub global_seed: Option<u64>,
@@ -36,6 +45,7 @@ impl ImagePipeline {
             index_ops: Vec::new(),
             ops: Vec::new(),
             batch: None,
+            device_cuts: Vec::new(),
             runtime: RuntimeConfig::default(),
             epoch: 0,
             global_seed: None,
@@ -371,12 +381,31 @@ impl ImagePipeline {
         self
     }
 
-    /// Request that batches be returned on the CUDA device at `ordinal`.
-    /// Physical lowering inserts one explicit H2D transfer after all current
-    /// CPU operations. This path uses one device and its default stream.
-    #[cfg(feature = "cuda")]
-    pub fn cuda_sink(mut self, ordinal: usize) -> Self {
-        self.runtime.sink_device_ordinal = Some(ordinal);
+    /// Insert a fixed host-to-CUDA semantic boundary after the image
+    /// transformations appended so far. If `.batch(...)` has already been
+    /// configured, the cut follows the batch node; otherwise the batch node
+    /// follows the image transformation chain.
+    pub fn device_cut_to_cuda(self, ordinal: usize) -> Self {
+        self.device_cut(DeviceTarget::cuda(ordinal))
+    }
+
+    /// Insert a fixed host-to-Metal semantic boundary after the image
+    /// transformations appended so far, with the same batch ordering as
+    /// [`Self::device_cut_to_cuda`]. Runtime execution requires a Metal
+    /// backend implementation.
+    pub fn device_cut_to_metal(self, ordinal: usize) -> Self {
+        self.device_cut(DeviceTarget::metal(ordinal))
+    }
+
+    /// Insert a fixed host-to-device semantic boundary after the image
+    /// transformations appended so far, with the same batch ordering as
+    /// [`Self::device_cut_to_cuda`].
+    pub fn device_cut(mut self, target: DeviceTarget) -> Self {
+        self.device_cuts.push(DeviceCutPlacement {
+            after_ops: self.ops.len(),
+            after_batch: self.batch.is_some(),
+            target,
+        });
         self
     }
 

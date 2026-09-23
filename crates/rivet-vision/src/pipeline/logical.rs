@@ -4,7 +4,7 @@ use std::any::Any;
 use std::sync::Arc;
 
 use rivet_plan::{
-    InferenceError, LogicalNode, LogicalPlan, NodeId, NodeKind, PlanError, PlanPayload,
+    DeviceCut, InferenceError, LogicalNode, LogicalPlan, NodeId, NodeKind, PlanError, PlanPayload,
     PropertyAnnotations,
 };
 
@@ -93,18 +93,38 @@ impl ImagePipeline {
                 Some(Arc::new(op.clone())),
             ));
         }
-        for op in &self.ops {
-            previous = plan.add_node(LogicalNode::new(
-                NodeKind::Op,
-                [previous],
-                Some(Arc::new(op.clone())),
-            ));
+        for position in 0..=self.ops.len() {
+            for cut in self
+                .device_cuts
+                .iter()
+                .filter(|cut| !cut.after_batch && cut.after_ops == position)
+            {
+                previous = plan.add_node(LogicalNode::new(
+                    NodeKind::DeviceCut,
+                    [previous],
+                    Some(Arc::new(DeviceCut::new(cut.target.clone()))),
+                ));
+            }
+            if let Some(op) = self.ops.get(position) {
+                previous = plan.add_node(LogicalNode::new(
+                    NodeKind::Op,
+                    [previous],
+                    Some(Arc::new(op.clone())),
+                ));
+            }
         }
         if let Some(batch) = self.batch {
             previous = plan.add_node(LogicalNode::new(
                 NodeKind::Batch,
                 [previous],
                 Some(Arc::new(batch)),
+            ));
+        }
+        for cut in self.device_cuts.iter().filter(|cut| cut.after_batch) {
+            previous = plan.add_node(LogicalNode::new(
+                NodeKind::DeviceCut,
+                [previous],
+                Some(Arc::new(DeviceCut::new(cut.target.clone()))),
             ));
         }
         let root = plan.add_node(LogicalNode::new(NodeKind::Sink, [previous], None));
@@ -149,6 +169,7 @@ impl ImagePipeline {
         let mut source = None;
         let mut index_ops = Vec::new();
         let mut ops = Vec::new();
+        let mut device_cuts = Vec::new();
         let mut batch = None;
         let last = reversed.last().copied();
         for id in reversed {
@@ -164,6 +185,14 @@ impl ImagePipeline {
                     } else {
                         ops.push(payload::<ImageOp>(node, id)?.clone());
                     }
+                }
+                NodeKind::DeviceCut => {
+                    let cut = payload::<DeviceCut>(node, id)?;
+                    device_cuts.push(super::builder::DeviceCutPlacement {
+                        after_ops: ops.len(),
+                        after_batch: batch.is_some(),
+                        target: cut.target.clone(),
+                    });
                 }
                 NodeKind::Batch if batch.is_none() => {
                     batch = Some(*payload::<BatchConfig>(node, id)?);
@@ -183,6 +212,7 @@ impl ImagePipeline {
             index_ops,
             ops,
             batch,
+            device_cuts,
             runtime: context.runtime,
             epoch: context.epoch,
             global_seed: context.global_seed,

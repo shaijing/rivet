@@ -3,18 +3,16 @@ use crate::errors::{RivetError, RivetResult};
 use crate::pipeline::op::ExecutionPlan;
 use crate::sample::image::{DecodedSample, ImageBatch, ImageSample};
 use crate::sampler::IndexSampler;
-use rivet_core::Device;
 #[cfg(feature = "cuda")]
 use rivet_core::DeviceLocation;
 use rivet_exec::physical::{
-    ExecutionLane, KernelStage, PhysicalGraph, PhysicalNodeKind, PhysicalProfiler, TransferKind,
+    ExecutionLane, KernelStage, PhysicalGraph, PhysicalNodeKind, PhysicalProfiler,
 };
 use rivet_exec::runtime::{PhysicalPipelineAdapter, PhysicalPipelineExecutor, PipelineError};
 use std::sync::Arc;
 
 struct ImagePipelineAdapter {
     plan: Arc<ExecutionPlan>,
-    sink_device: Option<Device>,
     cuda_batch_kernel: bool,
 }
 
@@ -109,73 +107,6 @@ impl PhysicalPipelineAdapter for ImagePipelineAdapter {
         }
     }
 
-    fn transfer_batch(
-        &self,
-        batch: ImageBatch,
-        kind: TransferKind,
-        target: ExecutionLane,
-    ) -> Result<ImageBatch, PipelineError<RivetError>> {
-        let ExecutionLane::Device { ordinal } = target else {
-            return Err(PipelineError::Runtime(
-                rivet_exec::runtime::RuntimeError::Message(
-                    "vision currently supports transfers only to a CUDA sink".to_owned(),
-                ),
-            ));
-        };
-        if kind != TransferKind::HostToDevice {
-            return Err(PipelineError::Runtime(
-                rivet_exec::runtime::RuntimeError::Message(format!(
-                    "vision transfer {kind:?} is not implemented in this phase"
-                )),
-            ));
-        }
-        let device = self.sink_device.as_ref().ok_or_else(|| {
-            PipelineError::Runtime(rivet_exec::runtime::RuntimeError::Message(
-                "physical graph requested a device transfer without a runtime device".to_owned(),
-            ))
-        })?;
-        #[cfg(feature = "cuda")]
-        if device.location() != (DeviceLocation::Cuda { ordinal }) {
-            return Err(PipelineError::Runtime(
-                rivet_exec::runtime::RuntimeError::Message(
-                    "physical transfer target does not match the runtime CUDA device".to_owned(),
-                ),
-            ));
-        }
-        #[cfg(not(feature = "cuda"))]
-        let _ = ordinal;
-        if !batch.images.device().is_cpu() || !batch.labels.device().is_cpu() {
-            return Err(PipelineError::Runtime(
-                rivet_exec::runtime::RuntimeError::Message(
-                    "H2D transfer node received a non-host image batch".to_owned(),
-                ),
-            ));
-        }
-
-        let images = batch
-            .images
-            .to_device(device)
-            .map_err(RivetError::from)
-            .map_err(PipelineError::Domain)?;
-        let labels = batch
-            .labels
-            .to_device(device)
-            .map_err(RivetError::from)
-            .map_err(PipelineError::Domain)?;
-        // Pageable host input is owned by `batch`. Complete both ordered
-        // copies before its tensors are dropped; async overlap belongs to the
-        // later pinned-memory phase.
-        images
-            .synchronize()
-            .map_err(RivetError::from)
-            .map_err(PipelineError::Domain)?;
-        Ok(ImageBatch {
-            images,
-            labels,
-            axis_order: batch.axis_order,
-        })
-    }
-
     fn apply_device_batch_with_indices(
         &self,
         batch: ImageBatch,
@@ -241,7 +172,6 @@ impl ImageDataLoader {
         prefetch_batches: usize,
         stage_queue_max_bytes: usize,
         physical: PhysicalGraph,
-        sink_device: Option<Device>,
     ) -> RivetResult<Self> {
         let cuda_batch_kernel = physical.nodes().iter().any(|node| {
             node.kind == PhysicalNodeKind::Kernel(KernelStage::Batch)
@@ -249,7 +179,6 @@ impl ImageDataLoader {
         });
         let adapter = Arc::new(ImagePipelineAdapter {
             plan: Arc::clone(&plan),
-            sink_device,
             cuda_batch_kernel,
         });
         let executor = PhysicalPipelineExecutor::with_graph_limits(
