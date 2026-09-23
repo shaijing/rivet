@@ -14,6 +14,7 @@ use std::sync::Arc;
 struct ImagePipelineAdapter {
     plan: Arc<ExecutionPlan>,
     cuda_batch_kernel: bool,
+    decode_stage: bool,
 }
 
 impl PhysicalPipelineAdapter for ImagePipelineAdapter {
@@ -52,7 +53,11 @@ impl PhysicalPipelineAdapter for ImagePipelineAdapter {
         sample: ImageSample,
         sample_index: usize,
     ) -> Result<DecodedSample, RivetError> {
-        self.plan.apply_sample_transforms(sample, sample_index)
+        if self.decode_stage {
+            self.plan.apply_sample_transforms(sample, sample_index)
+        } else {
+            self.plan.apply_sample_ops(sample, sample_index)
+        }
     }
 
     fn worker_panic_error(&self, worker_id: usize, sample_index: usize) -> RivetError {
@@ -177,9 +182,14 @@ impl ImageDataLoader {
             node.kind == PhysicalNodeKind::Kernel(KernelStage::Batch)
                 && matches!(node.lane, ExecutionLane::Device { .. })
         });
+        let decode_stage = physical
+            .nodes()
+            .iter()
+            .any(|node| node.kind == PhysicalNodeKind::Kernel(KernelStage::Decode));
         let adapter = Arc::new(ImagePipelineAdapter {
             plan: Arc::clone(&plan),
             cuda_batch_kernel,
+            decode_stage,
         });
         let executor = PhysicalPipelineExecutor::with_graph_limits(
             adapter,

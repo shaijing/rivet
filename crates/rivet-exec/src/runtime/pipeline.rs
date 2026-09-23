@@ -1,4 +1,5 @@
 use std::fmt;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -9,8 +10,9 @@ use crate::physical::{
     PhysicalProfiler, TransferKind,
 };
 
+use super::reorder::PrefetchCoordinator;
 use super::stages::{PersistentStageGraph, StageNodes};
-use super::{RuntimeError, RuntimeResult, StageQueueLimits, runtime_error};
+use super::{RuntimeError, RuntimeResult, StageQueueLimits, WorkerPool, runtime_error};
 
 /// Domain callbacks used by the physical pipeline executor. The executor owns
 /// sampling order, source-to-worker dispatch, prefetch, result ordering, and
@@ -143,7 +145,9 @@ pub struct PhysicalPipelineExecutor<P: PhysicalPipelineAdapter> {
     max_in_flight_batches: usize,
     graph: PhysicalGraph,
     sampler_node: Option<PhysNodeId>,
-    stages: PersistentStageGraph<P>,
+    stages: Option<PersistentStageGraph<P>>,
+    cpu_only: Option<CpuOnlyPipeline<P>>,
+    stage_queue_limits: StageQueueLimits,
     profiler: PhysicalProfiler,
     num_workers: usize,
     next_sequence_id: u64,
@@ -151,6 +155,13 @@ pub struct PhysicalPipelineExecutor<P: PhysicalPipelineAdapter> {
     in_flight_batches: usize,
     source_exhausted: bool,
     failed: bool,
+}
+
+struct CpuOnlyPipeline<P: PhysicalPipelineAdapter> {
+    nodes: StageNodes,
+    max_bytes: usize,
+    workers: Option<WorkerPool<P::Sample, (P::Output, usize), P::Error>>,
+    pending: PrefetchCoordinator<(P::Output, usize)>,
 }
 
 impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
@@ -312,7 +323,6 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         let max_in_flight_batches = prefetch_batches
             .checked_add(1)
             .ok_or_else(|| runtime_error("stage graph batch window overflow"))?;
-        let worker_capacity = batch_size;
         let queue_limits = StageQueueLimits {
             max_items: max_in_flight_batches,
             max_bytes: stage_queue_max_bytes,
@@ -340,19 +350,92 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             transfer_nodes,
         };
         let profiler = PhysicalProfiler::default();
-        let inter_sample_workers = if adapter.is_batch_native() {
-            0
+        // CPU-only graphs need cross-batch worker prefetch, but no persistent
+        // source/decode/transfer/device stage threads.
+        let cpu_only_path = nodes.transfer_nodes.is_empty() && !nodes.device_batch_kernel;
+        let worker_capacity = if cpu_only_path && !adapter.is_batch_native() && num_workers > 0 {
+            batch_size
+                .checked_mul(max_in_flight_batches)
+                .ok_or_else(|| runtime_error("worker queue capacity overflow"))?
         } else {
-            num_workers
+            batch_size
         };
-        let stages = PersistentStageGraph::new(
-            Arc::clone(&adapter),
-            inter_sample_workers,
-            worker_capacity,
-            queue_limits,
-            nodes,
-            profiler.clone(),
-        )?;
+        let (stages, cpu_only) = if cpu_only_path {
+            let workers = if num_workers > 0 && !adapter.is_batch_native() {
+                let worker_adapter = Arc::clone(&adapter);
+                let worker_nodes = nodes.clone();
+                let worker_profiler = profiler.clone();
+                let decode_stage = nodes.decode != nodes.source;
+                Some(WorkerPool::new(
+                    num_workers,
+                    worker_capacity,
+                    move |sample, sample_index| {
+                        let sample = if decode_stage {
+                            let started = Instant::now();
+                            let input_bytes = worker_adapter.sample_bytes(&sample);
+                            let result = worker_adapter.decode_sample(sample, sample_index);
+                            let output_bytes = result
+                                .as_ref()
+                                .map(|sample| worker_adapter.sample_bytes(sample))
+                                .unwrap_or(0);
+                            worker_profiler.record(
+                                worker_nodes.decode,
+                                started.elapsed(),
+                                input_bytes,
+                                output_bytes,
+                            );
+                            result?
+                        } else {
+                            sample
+                        };
+                        let started = Instant::now();
+                        let input_bytes = worker_adapter.sample_bytes(&sample);
+                        let result = worker_adapter.process_sample(sample, sample_index);
+                        let output_bytes = result
+                            .as_ref()
+                            .map(|output| worker_adapter.output_bytes(output))
+                            .unwrap_or(0);
+                        worker_profiler.record(
+                            worker_nodes.sample.unwrap_or(worker_nodes.decode),
+                            started.elapsed(),
+                            input_bytes,
+                            output_bytes,
+                        );
+                        result.map(|output| (output, input_bytes))
+                    },
+                    {
+                        let worker_adapter = Arc::clone(&adapter);
+                        move |worker, index| worker_adapter.worker_panic_error(worker, index)
+                    },
+                )?)
+            } else {
+                None
+            };
+            (
+                None,
+                Some(CpuOnlyPipeline {
+                    nodes,
+                    max_bytes: queue_limits.max_bytes,
+                    workers,
+                    pending: PrefetchCoordinator::new(max_in_flight_batches),
+                }),
+            )
+        } else {
+            let inter_sample_workers = if adapter.is_batch_native() {
+                0
+            } else {
+                num_workers
+            };
+            let stages = PersistentStageGraph::new(
+                Arc::clone(&adapter),
+                inter_sample_workers,
+                batch_size,
+                queue_limits,
+                nodes,
+                profiler.clone(),
+            )?;
+            (Some(stages), None)
+        };
 
         Ok(Self {
             adapter,
@@ -360,6 +443,8 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             graph,
             sampler_node,
             stages,
+            cpu_only,
+            stage_queue_limits: queue_limits,
             profiler,
             num_workers,
             next_sequence_id: 0,
@@ -376,7 +461,13 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             "Runtime parallelism: inter_sample_workers={} intra_op=backend_managed\n",
             self.num_workers
         ));
-        explanation.push_str(&self.stages.queue_explain());
+        if let Some(stages) = &self.stages {
+            explanation.push_str(&stages.queue_explain());
+        } else {
+            explanation.push_str(
+                "Runtime path: fused CPU pull executor (source, sample, and batch; optional decode)\n",
+            );
+        }
         Ok(explanation)
     }
 
@@ -388,6 +479,10 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         &mut self,
         sampler: &mut IndexSampler,
     ) -> Result<Option<P::Batch>, PipelineError<P::Error>> {
+        if self.cpu_only.is_some() {
+            return self.next_batch_cpu_only(sampler);
+        }
+
         if self.failed {
             return Err(PipelineError::Runtime(runtime_error(
                 "loader is in failed state after a previous iteration error",
@@ -398,12 +493,18 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             let started = Instant::now();
             let Some(indices) = sampler.next_indices(self.adapter.batch_size()) else {
                 self.source_exhausted = true;
-                self.stages.close_requests();
+                self.stages
+                    .as_ref()
+                    .expect("non-CPU path has a persistent stage graph")
+                    .close_requests();
                 break;
             };
             if self.adapter.drop_last() && indices.len() < self.adapter.batch_size() {
                 self.source_exhausted = true;
-                self.stages.close_requests();
+                self.stages
+                    .as_ref()
+                    .expect("non-CPU path has a persistent stage graph")
+                    .close_requests();
                 break;
             }
             let sequence_id = self.next_sequence_id;
@@ -411,11 +512,19 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             if let Some(node) = self.sampler_node {
                 self.profiler.record(node, started.elapsed(), 0, bytes);
             }
-            let waited = match self.stages.submit(sequence_id, indices) {
+            let waited = match self
+                .stages
+                .as_ref()
+                .expect("non-CPU path has a persistent stage graph")
+                .submit(sequence_id, indices)
+            {
                 Ok(waited) => waited,
                 Err(error) => {
                     self.failed = true;
-                    self.stages.cancel_upstream();
+                    self.stages
+                        .as_ref()
+                        .expect("non-CPU path has a persistent stage graph")
+                        .cancel_upstream();
                     return Err(PipelineError::Runtime(error));
                 }
             };
@@ -433,7 +542,12 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             return Ok(None);
         }
 
-        let (message, waited) = self.stages.recv_output().map_err(PipelineError::Runtime)?;
+        let (message, waited) = self
+            .stages
+            .as_ref()
+            .expect("non-CPU path has a persistent stage graph")
+            .recv_output()
+            .map_err(PipelineError::Runtime)?;
         self.profiler.record_wait(
             self.graph
                 .root()
@@ -443,7 +557,10 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         );
         let Some(message) = message else {
             self.failed = true;
-            self.stages.cancel_upstream();
+            self.stages
+                .as_ref()
+                .expect("non-CPU path has a persistent stage graph")
+                .cancel_upstream();
             return if self.in_flight_batches == 0 && self.source_exhausted {
                 Ok(None)
             } else {
@@ -454,7 +571,10 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         };
         if message.sequence_id != self.next_output_sequence_id {
             self.failed = true;
-            self.stages.cancel_upstream();
+            self.stages
+                .as_ref()
+                .expect("non-CPU path has a persistent stage graph")
+                .cancel_upstream();
             return Err(PipelineError::Runtime(runtime_error(format!(
                 "stage graph delivered sequence {}, expected {}",
                 message.sequence_id, self.next_output_sequence_id
@@ -464,7 +584,10 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             Some(sequence_id) => sequence_id,
             None => {
                 self.failed = true;
-                self.stages.cancel_upstream();
+                self.stages
+                    .as_ref()
+                    .expect("non-CPU path has a persistent stage graph")
+                    .cancel_upstream();
                 return Err(PipelineError::Runtime(runtime_error(
                     "output sequence id overflow",
                 )));
@@ -475,10 +598,45 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             Ok(batch) => Ok(Some(batch)),
             Err(error) => {
                 self.failed = true;
-                self.stages.cancel_upstream();
+                self.stages
+                    .as_ref()
+                    .expect("non-CPU path has a persistent stage graph")
+                    .cancel_upstream();
                 Err(error)
             }
         }
+    }
+
+    fn next_batch_cpu_only(
+        &mut self,
+        sampler: &mut IndexSampler,
+    ) -> Result<Option<P::Batch>, PipelineError<P::Error>> {
+        if self.failed {
+            return Err(PipelineError::Runtime(runtime_error(
+                "loader is in failed state after a previous iteration error",
+            )));
+        }
+
+        let cpu_only = self
+            .cpu_only
+            .as_mut()
+            .expect("CPU-only path has a pull executor");
+        let result = next_cpu_batch(
+            &self.adapter,
+            cpu_only,
+            sampler,
+            self.max_in_flight_batches,
+            &mut self.source_exhausted,
+            self.sampler_node,
+            &self.profiler,
+        );
+        if result.is_err() {
+            self.failed = true;
+            if let Some(cpu_only) = &mut self.cpu_only {
+                cpu_only.workers.take();
+            }
+        }
+        result
     }
 
     pub fn max_in_flight_batches(&self) -> usize {
@@ -486,8 +644,321 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
     }
 
     pub fn stage_queue_limits(&self) -> StageQueueLimits {
-        self.stages.limits()
+        self.stage_queue_limits
     }
+}
+
+fn next_cpu_batch<P: PhysicalPipelineAdapter>(
+    adapter: &Arc<P>,
+    cpu_only: &mut CpuOnlyPipeline<P>,
+    sampler: &mut IndexSampler,
+    max_in_flight_batches: usize,
+    source_exhausted: &mut bool,
+    sampler_node: Option<PhysNodeId>,
+    profiler: &PhysicalProfiler,
+) -> Result<Option<P::Batch>, PipelineError<P::Error>> {
+    if let Some(pool) = cpu_only.workers.as_ref() {
+        loop {
+            while cpu_only.pending.in_flight < max_in_flight_batches && !cpu_only.pending.closed {
+                let Some(indices) =
+                    take_cpu_indices(adapter.as_ref(), sampler, sampler_node, profiler)
+                else {
+                    *source_exhausted = true;
+                    cpu_only.pending.closed = true;
+                    break;
+                };
+                let samples = fetch_cpu_samples(
+                    adapter,
+                    &indices,
+                    &cpu_only.nodes,
+                    cpu_only.max_bytes,
+                    profiler,
+                )?;
+                cpu_only
+                    .pending
+                    .submit(indices, samples, pool)
+                    .map_err(PipelineError::Runtime)?;
+            }
+
+            if let Some(pending) = cpu_only
+                .pending
+                .take_ready()
+                .map_err(PipelineError::Runtime)?
+            {
+                let (indices, outputs) = pending.into_parts();
+                return finish_cpu_batch(
+                    adapter,
+                    outputs.map(|output| output.map_err(PipelineError::Runtime)),
+                    &indices,
+                    &cpu_only.nodes,
+                    cpu_only.max_bytes,
+                    profiler,
+                )
+                .map(Some);
+            }
+
+            if cpu_only.pending.closed && cpu_only.pending.in_flight == 0 {
+                return Ok(None);
+            }
+
+            let result = pool.recv().map_err(PipelineError::Runtime)?;
+            match result.result {
+                Ok(output) => cpu_only
+                    .pending
+                    .record(result.batch_id, result.position, output)
+                    .map_err(PipelineError::Runtime)?,
+                Err(error) => return Err(PipelineError::Domain(error)),
+            }
+        }
+    }
+
+    let Some(indices) = take_cpu_indices(adapter.as_ref(), sampler, sampler_node, profiler) else {
+        *source_exhausted = true;
+        return Ok(None);
+    };
+
+    if adapter.is_batch_native() {
+        let started = Instant::now();
+        let batch = catch_unwind(AssertUnwindSafe(|| adapter.fetch_batch(&indices)))
+            .map_err(|_| {
+                PipelineError::Runtime(runtime_error(
+                    "dataset get_batch panicked while fetching a batch",
+                ))
+            })?
+            .map_err(PipelineError::Domain)?
+            .ok_or_else(|| {
+                PipelineError::Runtime(runtime_error("batch-native source capability disappeared"))
+            })?;
+        let source_bytes = adapter
+            .batch_bytes(&batch)
+            .saturating_add(indices.len().saturating_mul(std::mem::size_of::<usize>()));
+        if source_bytes > cpu_only.max_bytes {
+            return Err(PipelineError::Runtime(runtime_error(format!(
+                "source batch is {source_bytes} bytes, exceeding stage queue max_bytes {}",
+                cpu_only.max_bytes
+            ))));
+        }
+        profiler.record(cpu_only.nodes.source, started.elapsed(), 0, source_bytes);
+        return apply_cpu_batch(
+            adapter,
+            batch,
+            &indices,
+            &cpu_only.nodes,
+            cpu_only.max_bytes,
+            profiler,
+        )
+        .map(Some);
+    }
+
+    let samples = fetch_cpu_samples(
+        adapter,
+        &indices,
+        &cpu_only.nodes,
+        cpu_only.max_bytes,
+        profiler,
+    )?;
+    let mut outputs = Vec::with_capacity(samples.len());
+    for (sample_index, sample) in indices.iter().copied().zip(samples) {
+        outputs.push(Ok(process_cpu_sample_inline(
+            adapter,
+            sample,
+            sample_index,
+            &cpu_only.nodes,
+            profiler,
+        )?));
+    }
+    finish_cpu_batch(
+        adapter,
+        outputs,
+        &indices,
+        &cpu_only.nodes,
+        cpu_only.max_bytes,
+        profiler,
+    )
+    .map(Some)
+}
+
+fn take_cpu_indices<P: PhysicalPipelineAdapter>(
+    adapter: &P,
+    sampler: &mut IndexSampler,
+    sampler_node: Option<PhysNodeId>,
+    profiler: &PhysicalProfiler,
+) -> Option<Vec<usize>> {
+    let started = Instant::now();
+    let indices = sampler.next_indices(adapter.batch_size())?;
+    let indices = if adapter.drop_last() && indices.len() < adapter.batch_size() {
+        None
+    } else {
+        Some(indices)
+    };
+    if let Some(node) = sampler_node {
+        let bytes = indices
+            .as_ref()
+            .map(|indices| indices.len().saturating_mul(std::mem::size_of::<usize>()))
+            .unwrap_or(0);
+        profiler.record(node, started.elapsed(), 0, bytes);
+    }
+    indices
+}
+
+fn fetch_cpu_samples<P: PhysicalPipelineAdapter>(
+    adapter: &Arc<P>,
+    indices: &[usize],
+    nodes: &StageNodes,
+    max_bytes: usize,
+    profiler: &PhysicalProfiler,
+) -> Result<Vec<P::Sample>, PipelineError<P::Error>> {
+    let started = Instant::now();
+    let samples = catch_unwind(AssertUnwindSafe(|| adapter.fetch_samples(indices)))
+        .map_err(|_| {
+            PipelineError::Runtime(runtime_error(
+                "dataset get_many panicked while fetching a batch",
+            ))
+        })?
+        .map_err(PipelineError::Domain)?;
+    if samples.len() != indices.len() {
+        return Err(PipelineError::Runtime(runtime_error(format!(
+            "source returned {} samples for {} indices",
+            samples.len(),
+            indices.len()
+        ))));
+    }
+    let sample_bytes = samples.iter().fold(0usize, |total, sample| {
+        total.saturating_add(adapter.sample_bytes(sample))
+    });
+    let bytes =
+        sample_bytes.saturating_add(indices.len().saturating_mul(std::mem::size_of::<usize>()));
+    if bytes > max_bytes {
+        return Err(PipelineError::Runtime(runtime_error(format!(
+            "source batch is {bytes} bytes, exceeding stage queue max_bytes {max_bytes}"
+        ))));
+    }
+    profiler.record(nodes.source, started.elapsed(), 0, sample_bytes);
+    Ok(samples)
+}
+
+fn process_cpu_sample_inline<P: PhysicalPipelineAdapter>(
+    adapter: &Arc<P>,
+    sample: P::Sample,
+    sample_index: usize,
+    nodes: &StageNodes,
+    profiler: &PhysicalProfiler,
+) -> Result<(P::Output, usize), PipelineError<P::Error>> {
+    let sample = if nodes.decode != nodes.source {
+        let started = Instant::now();
+        let input_bytes = adapter.sample_bytes(&sample);
+        let decoded = catch_unwind(AssertUnwindSafe(|| {
+            adapter.decode_sample(sample, sample_index)
+        }))
+        .map_err(|_| {
+            PipelineError::Runtime(runtime_error(format!(
+                "decode stage panicked at sample {sample_index}"
+            )))
+        })?
+        .map_err(PipelineError::Domain)?;
+        profiler.record(
+            nodes.decode,
+            started.elapsed(),
+            input_bytes,
+            adapter.sample_bytes(&decoded),
+        );
+        decoded
+    } else {
+        sample
+    };
+
+    let started = Instant::now();
+    let input_bytes = adapter.sample_bytes(&sample);
+    let output = catch_unwind(AssertUnwindSafe(|| {
+        adapter.process_sample(sample, sample_index)
+    }))
+    .map_err(|_| {
+        PipelineError::Runtime(runtime_error(format!(
+            "CPU transform stage panicked at sample {sample_index}"
+        )))
+    })?
+    .map_err(PipelineError::Domain)?;
+    let output_bytes = adapter.output_bytes(&output);
+    profiler.record(
+        nodes.sample.unwrap_or(nodes.decode),
+        started.elapsed(),
+        input_bytes,
+        output_bytes,
+    );
+    Ok((output, input_bytes))
+}
+
+fn finish_cpu_batch<P: PhysicalPipelineAdapter>(
+    adapter: &Arc<P>,
+    outputs: impl IntoIterator<Item = Result<(P::Output, usize), PipelineError<P::Error>>>,
+    indices: &[usize],
+    nodes: &StageNodes,
+    max_bytes: usize,
+    profiler: &PhysicalProfiler,
+) -> Result<P::Batch, PipelineError<P::Error>> {
+    let started = Instant::now();
+    let capacity = indices.len();
+    let batch = catch_unwind(AssertUnwindSafe(|| {
+        let mut builder = adapter.batch_builder(capacity);
+        let mut decoded_bytes = indices
+            .len()
+            .saturating_mul(std::mem::size_of::<usize>());
+        for output in outputs {
+            let (output, bytes) = output?;
+            decoded_bytes = decoded_bytes.saturating_add(bytes);
+            if decoded_bytes > max_bytes {
+                return Err(PipelineError::Runtime(runtime_error(format!(
+                    "decoded batch is {decoded_bytes} bytes, exceeding stage queue max_bytes {max_bytes}"
+                ))));
+            }
+            adapter
+                .push_batch_sample(&mut builder, output)
+                .map_err(PipelineError::Domain)?;
+        }
+        adapter.finish_batch(builder).map_err(PipelineError::Domain)
+    }))
+    .unwrap_or_else(|_| {
+        Err(PipelineError::Runtime(runtime_error(
+            "batch builder panicked while assembling a logical batch",
+        )))
+    })?;
+    profiler.record(
+        nodes.batch,
+        started.elapsed(),
+        0,
+        adapter.batch_bytes(&batch),
+    );
+    apply_cpu_batch(adapter, batch, indices, nodes, max_bytes, profiler)
+}
+
+fn apply_cpu_batch<P: PhysicalPipelineAdapter>(
+    adapter: &Arc<P>,
+    batch: P::Batch,
+    indices: &[usize],
+    nodes: &StageNodes,
+    max_bytes: usize,
+    profiler: &PhysicalProfiler,
+) -> Result<P::Batch, PipelineError<P::Error>> {
+    let started = Instant::now();
+    let input_bytes = adapter.batch_bytes(&batch);
+    let batch = catch_unwind(AssertUnwindSafe(|| {
+        adapter.apply_batch_with_indices(batch, indices)
+    }))
+    .map_err(|_| PipelineError::Runtime(runtime_error("CPU batch transform stage panicked")))?
+    .map_err(PipelineError::Domain)?;
+    let output_bytes = adapter.batch_bytes(&batch);
+    profiler.record(
+        nodes.batch_kernel,
+        started.elapsed(),
+        input_bytes,
+        output_bytes,
+    );
+    if output_bytes > max_bytes {
+        return Err(PipelineError::Runtime(runtime_error(format!(
+            "sink batch is {output_bytes} bytes, exceeding stage queue max_bytes {max_bytes}"
+        ))));
+    }
+    Ok(batch)
 }
 
 fn graph_runtime_error(error: impl fmt::Display) -> RuntimeError {

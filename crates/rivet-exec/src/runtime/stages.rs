@@ -28,6 +28,20 @@ struct StageChannels<P: PhysicalPipelineAdapter> {
     sink: BoundedStageQueue<StageResult<P::Batch, P::Error>>,
 }
 
+#[derive(Clone, Copy)]
+enum CpuStageOutput {
+    Transfer,
+    Device,
+    Sink,
+}
+
+#[derive(Clone, Copy)]
+struct StageTopology {
+    decode: bool,
+    transfer: bool,
+    device: bool,
+}
+
 type StageResult<T, E> = Result<T, PipelineError<E>>;
 
 impl<P: PhysicalPipelineAdapter> StageChannels<P> {
@@ -71,6 +85,7 @@ pub(crate) struct PersistentStageGraph<P: PhysicalPipelineAdapter> {
     channels: Arc<StageChannels<P>>,
     handles: Vec<JoinHandle<()>>,
     limits: StageQueueLimits,
+    topology: StageTopology,
 }
 
 impl<P: PhysicalPipelineAdapter> PersistentStageGraph<P> {
@@ -83,6 +98,18 @@ impl<P: PhysicalPipelineAdapter> PersistentStageGraph<P> {
         profiler: PhysicalProfiler,
     ) -> RuntimeResult<Self> {
         let limits = limits.validate()?;
+        let topology = StageTopology {
+            decode: nodes.decode != nodes.source,
+            transfer: !nodes.transfer_nodes.is_empty(),
+            device: nodes.device_batch_kernel,
+        };
+        let cpu_output = if topology.transfer {
+            CpuStageOutput::Transfer
+        } else if topology.device {
+            CpuStageOutput::Device
+        } else {
+            CpuStageOutput::Sink
+        };
         let channels = Arc::new(StageChannels {
             requests: BoundedStageQueue::new(limits)?,
             source: BoundedStageQueue::new(limits)?,
@@ -91,10 +118,20 @@ impl<P: PhysicalPipelineAdapter> PersistentStageGraph<P> {
             device: BoundedStageQueue::new(limits)?,
             sink: BoundedStageQueue::new(limits)?,
         });
+        if !topology.decode {
+            channels.source.close();
+        }
+        if !topology.transfer {
+            channels.transfer.close();
+        }
+        if !topology.device {
+            channels.device.close();
+        }
         let mut stages = Self {
             channels: Arc::clone(&channels),
             handles: Vec::with_capacity(5),
             limits,
+            topology,
         };
 
         let source_adapter = Arc::clone(&adapter);
@@ -107,21 +144,24 @@ impl<P: PhysicalPipelineAdapter> PersistentStageGraph<P> {
                 source_channels,
                 source_nodes,
                 source_profiler,
+                topology.decode,
             )
         })?;
 
-        let decode_adapter = Arc::clone(&adapter);
-        let decode_channels = Arc::clone(&channels);
-        let decode_profiler = profiler.clone();
-        let decode_nodes = nodes.clone();
-        stages.spawn("rivet-decode", move || {
-            run_decode_stage(
-                decode_adapter,
-                decode_channels,
-                decode_nodes,
-                decode_profiler,
-            )
-        })?;
+        if topology.decode {
+            let decode_adapter = Arc::clone(&adapter);
+            let decode_channels = Arc::clone(&channels);
+            let decode_profiler = profiler.clone();
+            let decode_nodes = nodes.clone();
+            stages.spawn("rivet-decode", move || {
+                run_decode_stage(
+                    decode_adapter,
+                    decode_channels,
+                    decode_nodes,
+                    decode_profiler,
+                )
+            })?;
+        }
 
         let worker_pool = if workers > 0 && !adapter.is_batch_native() {
             let worker_adapter = Arc::clone(&adapter);
@@ -165,27 +205,34 @@ impl<P: PhysicalPipelineAdapter> PersistentStageGraph<P> {
                 cpu_nodes,
                 cpu_profiler,
                 worker_pool,
+                cpu_output,
             )
         })?;
 
-        let transfer_channels = Arc::clone(&channels);
-        let transfer_nodes = nodes.clone();
-        let transfer_adapter = Arc::clone(&adapter);
-        let transfer_profiler = profiler.clone();
-        stages.spawn("rivet-transfer", move || {
-            run_transfer_stage(
-                transfer_adapter,
-                transfer_channels,
-                transfer_nodes,
-                transfer_profiler,
-            )
-        })?;
+        if topology.transfer {
+            let transfer_channels = Arc::clone(&channels);
+            let transfer_nodes = nodes.clone();
+            let transfer_adapter = Arc::clone(&adapter);
+            let transfer_profiler = profiler.clone();
+            let transfer_device = topology.device;
+            stages.spawn("rivet-transfer", move || {
+                run_transfer_stage(
+                    transfer_adapter,
+                    transfer_channels,
+                    transfer_nodes,
+                    transfer_profiler,
+                    transfer_device,
+                )
+            })?;
+        }
 
-        let device_channels = Arc::clone(&channels);
-        let device_nodes = nodes;
-        stages.spawn("rivet-device", move || {
-            run_device_stage(adapter, device_channels, device_nodes, profiler)
-        })?;
+        if topology.device {
+            let device_channels = Arc::clone(&channels);
+            let device_nodes = nodes;
+            stages.spawn("rivet-device", move || {
+                run_device_stage(adapter, device_channels, device_nodes, profiler)
+            })?;
+        }
 
         Ok(stages)
     }
@@ -233,14 +280,29 @@ impl<P: PhysicalPipelineAdapter> PersistentStageGraph<P> {
     }
 
     pub(crate) fn queue_explain(&self) -> String {
-        let rows = [
-            ("Sampler->Source", self.channels.requests.snapshot()),
-            ("Source->Decode", self.channels.source.snapshot()),
-            ("Decode->CPU", self.channels.decoded.snapshot()),
-            ("CPU->Transfer", self.channels.transfer.snapshot()),
-            ("Transfer->Device", self.channels.device.snapshot()),
-            ("Device->Sink", self.channels.sink.snapshot()),
-        ];
+        let mut rows = vec![("Sampler->Source", self.channels.requests.snapshot())];
+        if self.topology.decode {
+            rows.push(("Source->Decode", self.channels.source.snapshot()));
+            rows.push(("Decode->CPU", self.channels.decoded.snapshot()));
+        } else {
+            rows.push(("Source->CPU", self.channels.decoded.snapshot()));
+        }
+        match (self.topology.transfer, self.topology.device) {
+            (true, true) => {
+                rows.push(("CPU->Transfer", self.channels.transfer.snapshot()));
+                rows.push(("Transfer->Device", self.channels.device.snapshot()));
+                rows.push(("Device->Sink", self.channels.sink.snapshot()));
+            }
+            (true, false) => {
+                rows.push(("CPU->Transfer", self.channels.transfer.snapshot()));
+                rows.push(("Transfer->Sink", self.channels.sink.snapshot()));
+            }
+            (false, true) => {
+                rows.push(("CPU->Device", self.channels.device.snapshot()));
+                rows.push(("Device->Sink", self.channels.sink.snapshot()));
+            }
+            (false, false) => rows.push(("CPU->Sink", self.channels.sink.snapshot())),
+        }
         let mut output = String::from("Runtime stage queues:\n");
         for (name, stats) in rows {
             output.push_str(&format!(
@@ -259,10 +321,6 @@ impl<P: PhysicalPipelineAdapter> PersistentStageGraph<P> {
         }
         output
     }
-
-    pub(crate) fn limits(&self) -> StageQueueLimits {
-        self.limits
-    }
 }
 
 impl<P: PhysicalPipelineAdapter> Drop for PersistentStageGraph<P> {
@@ -279,6 +337,7 @@ fn run_source_stage<P: PhysicalPipelineAdapter>(
     channels: Arc<StageChannels<P>>,
     nodes: StageNodes,
     profiler: PhysicalProfiler,
+    decode_stage: bool,
 ) {
     loop {
         let (request, waited) = match channels.requests.recv() {
@@ -330,10 +389,15 @@ fn run_source_stage<P: PhysicalPipelineAdapter>(
             .as_ref()
             .map(|payload| source_payload_bytes(payload, &*adapter))
             .unwrap_or(0);
-        let fetched = if output_bytes > channels.source.limits().max_bytes {
+        let output = if decode_stage {
+            &channels.source
+        } else {
+            &channels.decoded
+        };
+        let fetched = if output_bytes > output.limits().max_bytes {
             Err(PipelineError::Runtime(runtime_error(format!(
                 "source batch is {output_bytes} bytes, exceeding stage queue max_bytes {}",
-                channels.source.limits().max_bytes
+                output.limits().max_bytes
             ))))
         } else {
             fetched
@@ -343,13 +407,17 @@ fn run_source_stage<P: PhysicalPipelineAdapter>(
         if fetched.is_err() {
             channels.requests.cancel();
         }
-        let waited = match channels.source.send(sequence_id, fetched, output_bytes) {
+        let waited = match output.send(sequence_id, fetched, output_bytes) {
             Ok(waited) => waited,
             Err(_) => break,
         };
         profiler.record_wait(nodes.source, waited);
     }
-    channels.source.close();
+    if decode_stage {
+        channels.source.close();
+    } else {
+        channels.decoded.close();
+    }
 }
 
 fn run_decode_stage<P: PhysicalPipelineAdapter>(
@@ -436,6 +504,7 @@ fn run_cpu_stage<P: PhysicalPipelineAdapter>(
     nodes: StageNodes,
     profiler: PhysicalProfiler,
     worker_pool: Option<WorkerPool<P::Sample, P::Output, P::Error>>,
+    output: CpuStageOutput,
 ) {
     loop {
         let (message, waited) = match channels.decoded.recv() {
@@ -463,36 +532,77 @@ fn run_cpu_stage<P: PhysicalPipelineAdapter>(
                 execute_cpu_batch(&adapter, batch, indices, &nodes, &profiler)
             }),
         };
-        let bytes = result
-            .as_ref()
-            .map(|batch| {
-                adapter.batch_bytes(&batch.batch).saturating_add(
-                    batch
-                        .indices
-                        .len()
-                        .saturating_mul(std::mem::size_of::<usize>()),
-                )
-            })
-            .unwrap_or(0);
-        let result = if bytes > channels.device.limits().max_bytes {
-            Err(PipelineError::Runtime(runtime_error(format!(
-                "CPU output batch is {bytes} bytes, exceeding stage queue max_bytes {}",
-                channels.device.limits().max_bytes
-            ))))
-        } else {
-            result
+        let waited = match output {
+            CpuStageOutput::Sink => {
+                let result = result.map(|indexed| indexed.batch);
+                let output_bytes = result
+                    .as_ref()
+                    .map(|batch| adapter.batch_bytes(batch))
+                    .unwrap_or(0);
+                let result = if output_bytes > channels.sink.limits().max_bytes {
+                    Err(PipelineError::Runtime(runtime_error(format!(
+                        "CPU output batch is {output_bytes} bytes, exceeding stage queue max_bytes {}",
+                        channels.sink.limits().max_bytes
+                    ))))
+                } else {
+                    result
+                };
+                if result.is_err() {
+                    channels.cancel_cpu_inputs();
+                }
+                let bytes = if result.is_ok() { output_bytes } else { 0 };
+                channels.sink.send(sequence_id, result, bytes)
+            }
+            CpuStageOutput::Transfer | CpuStageOutput::Device => {
+                let output_bytes = result
+                    .as_ref()
+                    .map(|indexed| {
+                        adapter.batch_bytes(&indexed.batch).saturating_add(
+                            indexed
+                                .indices
+                                .len()
+                                .saturating_mul(std::mem::size_of::<usize>()),
+                        )
+                    })
+                    .unwrap_or(0);
+                let output_queue = match output {
+                    CpuStageOutput::Transfer => &channels.transfer,
+                    CpuStageOutput::Device => &channels.device,
+                    CpuStageOutput::Sink => unreachable!(),
+                };
+                let result = if output_bytes > output_queue.limits().max_bytes {
+                    Err(PipelineError::Runtime(runtime_error(format!(
+                        "CPU output batch is {output_bytes} bytes, exceeding stage queue max_bytes {}",
+                        output_queue.limits().max_bytes
+                    ))))
+                } else {
+                    result
+                };
+                if result.is_err() {
+                    channels.cancel_cpu_inputs();
+                }
+                let bytes = if result.is_ok() { output_bytes } else { 0 };
+                output_queue.send(sequence_id, result, bytes)
+            }
         };
-        let bytes = if result.is_ok() { bytes } else { 0 };
-        if result.is_err() {
-            channels.cancel_cpu_inputs();
-        }
-        let waited = match channels.transfer.send(sequence_id, result, bytes) {
+        let waited = match waited {
             Ok(waited) => waited,
             Err(_) => break,
         };
-        profiler.record_wait(nodes.batch, waited);
+        profiler.record_wait(
+            if matches!(output, CpuStageOutput::Sink) {
+                nodes.sink
+            } else {
+                nodes.batch
+            },
+            waited,
+        );
     }
-    channels.transfer.close();
+    match output {
+        CpuStageOutput::Sink => channels.sink.close(),
+        CpuStageOutput::Transfer => channels.transfer.close(),
+        CpuStageOutput::Device => channels.device.close(),
+    }
 }
 
 fn process_batch_samples<P: PhysicalPipelineAdapter>(
@@ -647,6 +757,7 @@ fn run_transfer_stage<P: PhysicalPipelineAdapter>(
     channels: Arc<StageChannels<P>>,
     nodes: StageNodes,
     profiler: PhysicalProfiler,
+    device_stage: bool,
 ) {
     loop {
         let (message, waited) = match channels.transfer.recv() {
@@ -668,36 +779,62 @@ fn run_transfer_stage<P: PhysicalPipelineAdapter>(
                     .map(|batch| IndexedBatch { indices, batch })
             }
         };
-        let bytes = result
-            .as_ref()
-            .map(|indexed| {
-                adapter.batch_bytes(&indexed.batch).saturating_add(
-                    indexed
-                        .indices
-                        .len()
-                        .saturating_mul(std::mem::size_of::<usize>()),
-                )
-            })
-            .unwrap_or(0);
-        let result = if bytes > channels.sink.limits().max_bytes {
-            Err(PipelineError::Runtime(runtime_error(format!(
-                "device input batch is {bytes} bytes, exceeding stage queue max_bytes {}",
-                channels.device.limits().max_bytes
-            ))))
+        let waited = if device_stage {
+            let output_bytes = result
+                .as_ref()
+                .map(|indexed| {
+                    adapter.batch_bytes(&indexed.batch).saturating_add(
+                        indexed
+                            .indices
+                            .len()
+                            .saturating_mul(std::mem::size_of::<usize>()),
+                    )
+                })
+                .unwrap_or(0);
+            let result = if output_bytes > channels.device.limits().max_bytes {
+                Err(PipelineError::Runtime(runtime_error(format!(
+                    "device input batch is {output_bytes} bytes, exceeding stage queue max_bytes {}",
+                    channels.device.limits().max_bytes
+                ))))
+            } else {
+                result
+            };
+            if result.is_err() {
+                channels.cancel_cpu_inputs();
+            }
+            let bytes = if result.is_ok() { output_bytes } else { 0 };
+            channels.device.send(sequence_id, result, bytes)
         } else {
-            result
+            let result = result.map(|indexed| indexed.batch);
+            let output_bytes = result
+                .as_ref()
+                .map(|batch| adapter.batch_bytes(batch))
+                .unwrap_or(0);
+            let result = if output_bytes > channels.sink.limits().max_bytes {
+                Err(PipelineError::Runtime(runtime_error(format!(
+                    "sink batch is {output_bytes} bytes, exceeding stage queue max_bytes {}",
+                    channels.sink.limits().max_bytes
+                ))))
+            } else {
+                result
+            };
+            if result.is_err() {
+                channels.cancel_cpu_inputs();
+            }
+            let bytes = if result.is_ok() { output_bytes } else { 0 };
+            channels.sink.send(sequence_id, result, bytes)
         };
-        let bytes = if result.is_ok() { bytes } else { 0 };
-        if result.is_err() {
-            channels.cancel_cpu_inputs();
-        }
-        let waited = match channels.device.send(sequence_id, result, bytes) {
+        let waited = match waited {
             Ok(waited) => waited,
             Err(_) => break,
         };
         profiler.record_wait(profile_node, waited);
     }
-    channels.device.close();
+    if device_stage {
+        channels.device.close();
+    } else {
+        channels.sink.close();
+    }
 }
 
 fn run_device_stage<P: PhysicalPipelineAdapter>(
