@@ -84,6 +84,18 @@ impl Dataset for ImageFolderDatasetCore {
         self.samples.len()
     }
 
+    fn capabilities(&self) -> rivet_data::dataset::SourceCapabilities {
+        rivet_data::dataset::SourceCapabilities {
+            access_pattern: rivet_data::dataset::AccessPattern::RandomAccess,
+            batched_reads: false,
+            preferred_batch_size: None,
+            zero_copy: false,
+            parallel_reads: true,
+            async_reads: false,
+            read_device: Some("cpu"),
+        }
+    }
+
     fn get_many(&self, indices: &[usize]) -> DataResult<Vec<Self::Item>> {
         if indices.is_empty() {
             return Ok(Vec::new());

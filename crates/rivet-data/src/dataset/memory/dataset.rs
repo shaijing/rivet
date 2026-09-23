@@ -33,6 +33,18 @@ where
         self.items.len()
     }
 
+    fn capabilities(&self) -> crate::dataset::SourceCapabilities {
+        crate::dataset::SourceCapabilities {
+            access_pattern: crate::dataset::AccessPattern::RandomAccess,
+            batched_reads: true,
+            preferred_batch_size: None,
+            zero_copy: false,
+            parallel_reads: true,
+            async_reads: false,
+            read_device: None,
+        }
+    }
+
     fn get_many(&self, indices: &[usize]) -> DataResult<Vec<Self::Item>> {
         validate_indices(indices, self.items.len())?;
 
@@ -73,6 +85,21 @@ mod tests {
         let dataset = MemoryDataset::new(vec![10, 20, 30]);
 
         assert!(dataset.get_many(&[0, 3]).is_err());
+    }
+
+    #[test]
+    fn capabilities_describe_immutable_batched_memory_reads_conservatively() {
+        let dataset = MemoryDataset::new(vec![1, 2, 3]);
+        let capabilities = dataset.capabilities();
+        assert_eq!(
+            capabilities.access_pattern,
+            crate::dataset::AccessPattern::RandomAccess
+        );
+        assert!(capabilities.batched_reads);
+        assert!(capabilities.parallel_reads);
+        assert!(!capabilities.zero_copy);
+        assert!(!capabilities.async_reads);
+        assert_eq!(capabilities.read_device, None);
     }
 
     #[test]

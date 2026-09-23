@@ -69,6 +69,10 @@ impl Dataset for LanceImageDataset {
             access_pattern: AccessPattern::RandomAccess,
             batched_reads: true,
             preferred_batch_size: None,
+            zero_copy: false,
+            parallel_reads: false,
+            async_reads: false,
+            read_device: Some("cpu"),
         }
     }
 

@@ -3,8 +3,10 @@
 use std::sync::Arc;
 
 use rivet_plan::{
-    AxisOrder, FusionCandidate, FusionRule, LogicalPlan, OptimizerContext, OptimizerPass,
-    PassResult, PlanPlugin, PlanRegistry, PropertyAnnotations, PropertyInference, ValueProperties,
+    AxisOrder, Contiguity, DeviceClass, FusionCandidate, FusionRule, KernelCapabilities,
+    KernelCapability, KernelClass, KernelRequirements, LogicalPlan, MachineProfile, OperatorStage,
+    OptimizerContext, OptimizerPass, PassResult, PlanPlugin, PlanRegistry, PropertyAnnotations,
+    PropertyInference, ValueProperties,
 };
 
 use super::inference::VisionPropertyInference;
@@ -16,15 +18,44 @@ pub(crate) fn optimize_vision_plan(
     plan: &mut LogicalPlan,
     workers: usize,
 ) -> Result<OptimizerContext, crate::errors::VisionError> {
+    let machine = MachineProfile {
+        cpu_threads: workers.max(1),
+        ..MachineProfile::default()
+    };
     let mut registry = PlanRegistry::default();
-    registry.register_plugin(&VisionPlanPlugin { workers });
+    registry.register_plugin(&VisionPlanPlugin { workers, machine });
     rivet_plan::optimize(plan, &registry)
         .map(|(context, _)| context)
         .map_err(|error| invalid_pipeline(format!("logical optimizer failed: {error}")))
 }
 
+impl super::builder::ImagePipeline {
+    /// Produce a deterministic placement explanation for this pipeline on the
+    /// supplied machine profile. Only registered implementations are eligible.
+    pub fn placement_explain(
+        &self,
+        machine: MachineProfile,
+    ) -> Result<String, crate::errors::VisionError> {
+        let mut plan = self.to_logical_plan();
+        let mut registry = PlanRegistry::default();
+        registry.register_plugin(&VisionPlanPlugin {
+            workers: self.runtime.num_workers,
+            machine,
+        });
+        let (context, _) = rivet_plan::optimize(&mut plan, &registry)
+            .map_err(|error| invalid_pipeline(format!("logical optimizer failed: {error}")))?;
+        context
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "placement.explain")
+            .map(|diagnostic| diagnostic.message.clone())
+            .ok_or_else(|| invalid_pipeline("optimizer did not produce placement explanation"))
+    }
+}
+
 struct VisionPlanPlugin {
     workers: usize,
+    machine: MachineProfile,
 }
 impl PlanPlugin for VisionPlanPlugin {
     fn name(&self) -> &'static str {
@@ -46,7 +77,10 @@ impl PlanPlugin for VisionPlanPlugin {
             )))),
             Arc::new(SemanticRewriteBoundary),
             Arc::new(FusionDiscovery),
-            Arc::new(PlacementBoundary),
+            Arc::new(PlacementBoundary {
+                capabilities: vision_kernel_capabilities(),
+                machine: self.machine.clone(),
+            }),
         ]
     }
     fn fusion_rules(&self) -> Vec<Arc<dyn FusionRule>> {
@@ -258,19 +292,166 @@ impl FusionRule for NormalizeLayoutFusion {
     }
 }
 
-struct PlacementBoundary;
+struct PlacementBoundary {
+    capabilities: KernelCapabilities,
+    machine: MachineProfile,
+}
+
 impl OptimizerPass for PlacementBoundary {
     fn name(&self) -> &'static str {
         "placement-boundary"
     }
     fn run(
         &self,
-        _plan: &mut LogicalPlan,
-        _context: &mut OptimizerContext,
+        plan: &mut LogicalPlan,
+        context: &mut OptimizerContext,
     ) -> Result<PassResult, String> {
-        Ok(PassResult::unchanged().diagnostic(
-            "placement.deferred",
-            "physical placement is handled by the existing CPU compiler",
-        ))
+        let placement = rivet_plan::place(
+            plan,
+            context.annotations(),
+            &self.capabilities,
+            &self.machine,
+        )
+        .map_err(|error| error.to_string())?;
+        let mut explanation = placement
+            .explain(plan, context.annotations())
+            .map_err(|error| error.to_string())?;
+        for diagnostic in context
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code.starts_with("fusion."))
+        {
+            explanation.push_str(&format!(
+                "  {}: {}\n",
+                diagnostic.code, diagnostic.message
+            ));
+        }
+        if let Some(source) = plan
+            .nodes()
+            .find_map(|(_, node)| node.payload_as::<super::op::SourceOp>())
+        {
+            let capability = source.capabilities();
+            explanation.push_str(&format!(
+                "  source access={:?} batched={} zero_copy={} parallel={} async={} read_device={:?}\n",
+                capability.access_pattern,
+                capability.batched_reads,
+                capability.zero_copy,
+                capability.parallel_reads,
+                capability.async_reads,
+                capability.read_device,
+            ));
+        }
+        Ok(PassResult::unchanged().diagnostic("placement.explain", explanation))
     }
+}
+
+fn vision_kernel_capabilities() -> KernelCapabilities {
+    use rivet_plan::NodeKind;
+
+    let mut caps = KernelCapabilities::default();
+    let cpu = DeviceClass::Cpu;
+    let cpu_alignment = rivet_core::CPU_STORAGE_ALIGNMENT;
+    let mut register = |operator: &str,
+                        node_kind,
+                        class,
+                        stage,
+                        parallel,
+                        in_place,
+                        contiguity,
+                        fusion_tags: &[&str]| {
+        caps.register(KernelCapability {
+            name: format!("{operator}-cpu-{stage:?}"),
+            operator: operator.to_owned(),
+            node_kind,
+            device: cpu.clone(),
+            class,
+            requirements: KernelRequirements {
+                output_stage: Some(stage),
+                ..KernelRequirements::default()
+            },
+            fusion_tags: fusion_tags.iter().map(|tag| (*tag).to_owned()).collect(),
+            alignment_bytes: cpu_alignment,
+            contiguity,
+            temporary_bytes: 0,
+            in_place,
+            parallel,
+        });
+    };
+    register(
+        "vision::Source",
+        NodeKind::Source,
+        KernelClass::Source,
+        OperatorStage::Source,
+        false,
+        true,
+        Contiguity::Unknown,
+        &[],
+    );
+    register(
+        "vision::IndexOp",
+        NodeKind::Index,
+        KernelClass::Source,
+        OperatorStage::Source,
+        false,
+        true,
+        Contiguity::Unknown,
+        &[],
+    );
+    register(
+        "vision::ImageOp",
+        NodeKind::Op,
+        KernelClass::Sample,
+        OperatorStage::Sample,
+        true,
+        false,
+        Contiguity::Unknown,
+        &[],
+    );
+    register(
+        "vision::ImageOp",
+        NodeKind::Op,
+        KernelClass::Batch,
+        OperatorStage::Batch,
+        false,
+        false,
+        Contiguity::Unknown,
+        &["Normalize", "Layout"],
+    );
+    register(
+        "vision::ImageOp",
+        NodeKind::Op,
+        KernelClass::Sample,
+        OperatorStage::Source,
+        false,
+        true,
+        Contiguity::Unknown,
+        &[],
+    );
+    register(
+        "vision::BatchConfig",
+        NodeKind::Batch,
+        KernelClass::Batch,
+        OperatorStage::Batch,
+        false,
+        false,
+        Contiguity::Contiguous,
+        &[],
+    );
+    for stage in [
+        OperatorStage::Source,
+        OperatorStage::Sample,
+        OperatorStage::Batch,
+    ] {
+        register(
+            "rivet::Sink",
+            NodeKind::Sink,
+            KernelClass::Sink,
+            stage,
+            false,
+            true,
+            Contiguity::Unknown,
+            &[],
+        );
+    }
+    caps
 }

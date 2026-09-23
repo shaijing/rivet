@@ -11,6 +11,14 @@ pub struct SourceCapabilities {
     pub batched_reads: bool,
     /// A source-preferred maximum request size, if it has one.
     pub preferred_batch_size: Option<usize>,
+    /// Whether returned values can share immutable source storage.
+    pub zero_copy: bool,
+    /// Whether independent reads may safely run at the same time.
+    pub parallel_reads: bool,
+    /// Whether the source exposes a non-blocking read implementation.
+    pub async_reads: bool,
+    /// Device where the source can directly produce values, if any.
+    pub read_device: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,6 +33,10 @@ impl Default for SourceCapabilities {
             access_pattern: AccessPattern::RandomAccess,
             batched_reads: false,
             preferred_batch_size: None,
+            zero_copy: false,
+            parallel_reads: false,
+            async_reads: false,
+            read_device: None,
         }
     }
 }

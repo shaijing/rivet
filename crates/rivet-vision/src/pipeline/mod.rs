@@ -860,6 +860,48 @@ mod tests {
     }
 
     #[test]
+    fn placement_profile_changes_parallel_strategy_and_explains_cost() {
+        let pipeline = decoded_stub().resize(8, 8).batch(2, false);
+        let single = pipeline
+            .placement_explain(rivet_plan::MachineProfile {
+                cpu_threads: 1,
+                ..rivet_plan::MachineProfile::default()
+            })
+            .unwrap();
+        let multi = pipeline
+            .placement_explain(rivet_plan::MachineProfile {
+                cpu_threads: 4,
+                ..rivet_plan::MachineProfile::default()
+            })
+            .unwrap();
+        assert!(single.contains("kernel=vision::ImageOp-cpu-Sample"));
+        assert!(single.contains("cost="));
+        assert!(single.contains("parallelism=1"));
+        assert!(multi.contains("parallelism=4"));
+        assert!(multi.contains("source access=RandomAccess"));
+    }
+
+    #[test]
+    fn placement_rejects_cuda_sink_without_registered_cuda_kernels() {
+        let pipeline = decoded_stub()
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .batch(2, false);
+        let error = pipeline
+            .placement_explain(rivet_plan::MachineProfile {
+                cpu_threads: 4,
+                available_devices: vec![
+                    rivet_plan::DeviceClass::Cpu,
+                    rivet_plan::DeviceClass::Cuda,
+                ],
+                preferred_sink_device: Some(rivet_plan::DeviceClass::Cuda),
+                ..rivet_plan::MachineProfile::default()
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no compatible registered kernel"));
+    }
+
+    #[test]
     fn logical_round_trip_preserves_compile_errors() {
         let invalid = stub(10).resize(8, 8).batch(4, false);
         let legacy_error = legacy_compile_err(invalid.clone());

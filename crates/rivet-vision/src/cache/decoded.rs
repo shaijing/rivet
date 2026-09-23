@@ -111,6 +111,18 @@ impl Dataset for DenseImageMemoryDataset {
         self.images.dims()[0]
     }
 
+    fn capabilities(&self) -> rivet_data::dataset::SourceCapabilities {
+        rivet_data::dataset::SourceCapabilities {
+            access_pattern: rivet_data::dataset::AccessPattern::RandomAccess,
+            batched_reads: true,
+            preferred_batch_size: None,
+            zero_copy: true,
+            parallel_reads: true,
+            async_reads: false,
+            read_device: Some("cpu"),
+        }
+    }
+
     fn get_many(&self, indices: &[usize]) -> DataResult<Vec<Self::Item>> {
         validate_indices(indices, self.len())?;
         indices
@@ -148,6 +160,18 @@ impl Dataset for VariableImageMemoryDataset {
 
     fn len(&self) -> usize {
         self.inner.len()
+    }
+
+    fn capabilities(&self) -> rivet_data::dataset::SourceCapabilities {
+        rivet_data::dataset::SourceCapabilities {
+            access_pattern: rivet_data::dataset::AccessPattern::RandomAccess,
+            batched_reads: true,
+            preferred_batch_size: None,
+            zero_copy: true,
+            parallel_reads: true,
+            async_reads: false,
+            read_device: Some("cpu"),
+        }
     }
 
     fn get_many(&self, indices: &[usize]) -> DataResult<Vec<Self::Item>> {

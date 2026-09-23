@@ -104,6 +104,10 @@ impl Dataset for ArrowImageDataset {
             access_pattern: AccessPattern::RandomAccess,
             batched_reads: true,
             preferred_batch_size: None,
+            zero_copy: true,
+            parallel_reads: true,
+            async_reads: false,
+            read_device: Some("cpu"),
         }
     }
 

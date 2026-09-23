@@ -233,6 +233,12 @@ pub fn optimize(
             message: error.to_string(),
         })?;
         snapshot.push_str(&fusion_snapshot);
+        for diagnostic in &context.diagnostics {
+            snapshot.push_str(&format!(
+                "  Diagnostic {}: {}\n",
+                diagnostic.code, diagnostic.message
+            ));
+        }
         context.snapshots.push((pass.name().to_string(), snapshot));
     }
     report.diagnostics = context.diagnostics.clone();

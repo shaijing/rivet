@@ -11,12 +11,17 @@ use std::sync::Arc;
 use thiserror::Error;
 
 mod optimizer;
+mod placement;
 mod properties;
 
 pub use optimizer::{
     Diagnostic, FusionCandidate, FusionRule, OptimizationReport, OptimizerContext, OptimizerError,
     OptimizerPass, PassResult, PhysicalCandidate, PhysicalCandidateProvider, PlanPlugin,
     PlanRegistry, optimize, run_fixed_point,
+};
+pub use placement::{
+    CostEstimate, KernelCapabilities, KernelCapability, KernelClass, KernelRequirements,
+    MachineProfile, PlacementCandidate, PlacementError, PlacementPlan, place,
 };
 
 pub use properties::{

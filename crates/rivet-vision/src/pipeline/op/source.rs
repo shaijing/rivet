@@ -32,6 +32,10 @@ impl SourceOp {
         self.source.supports_batch_read()
     }
 
+    pub fn capabilities(&self) -> rivet_data::dataset::SourceCapabilities {
+        self.source.capabilities()
+    }
+
     pub fn get_batch(&self, indices: &[usize]) -> Option<RivetResult<ImageBatch>> {
         self.source.get_batch(indices)
     }

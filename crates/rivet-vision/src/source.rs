@@ -8,7 +8,7 @@ use crate::pipeline::op::PipelineImageState;
 use crate::sample::image::ImageAxisOrder;
 use crate::sample::image::{DecodedSample, EncodedImageSample, ImageBatch, ImageSample};
 use rivet_core::DType;
-use rivet_data::dataset::{Dataset, Source};
+use rivet_data::dataset::{Dataset, Source, SourceCapabilities};
 use rivet_exec::cache::materialize_to_memory;
 use std::sync::Arc;
 
@@ -130,6 +130,20 @@ impl ImageSource {
 
     pub fn supports_batch_read(&self) -> bool {
         matches!(self, Self::DenseDecoded(..))
+    }
+
+    pub fn capabilities(&self) -> SourceCapabilities {
+        let mut capabilities = match self {
+            Self::Encoded(source) => source.capabilities(),
+            Self::Decoded(source) | Self::DenseDecoded(source, _) => source.capabilities(),
+        };
+        if matches!(self, Self::DenseDecoded(..)) {
+            capabilities.batched_reads = true;
+            capabilities.zero_copy = true;
+            capabilities.parallel_reads = true;
+            capabilities.read_device = Some("cpu");
+        }
+        capabilities
     }
 
     pub fn get_batch(&self, indices: &[usize]) -> Option<RivetResult<ImageBatch>> {

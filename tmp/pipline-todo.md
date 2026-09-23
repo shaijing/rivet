@@ -127,21 +127,23 @@
 
 任务：
 
-- [ ] 定义 KernelCapability、KernelRequirements、PlacementCandidate 和 KernelClass。
-- [ ] 定义显式 KernelCapabilities registry；只注册已有实现。
-- [ ] 记录输入/输出属性约束、device、granularity、fusion tags、alignment、contiguity、temporary bytes 和 in-place 能力。
-- [ ] 定义 CostEstimate：host/device bytes、transfer bytes、allocation、launch、sync 和 compute score。
-- [ ] 定义 MachineProfile：CPU threads、available devices 和传输带宽。
-- [ ] 实现静态 heuristic，不引入 autotuner 或 ML cost model。
+- [x] 定义 KernelCapability、KernelRequirements、PlacementCandidate 和 KernelClass。
+- [x] 定义显式 KernelCapabilities registry；只注册已有实现。
+- [x] 记录输入/输出属性约束、device、granularity、fusion tags、alignment、contiguity、temporary bytes 和 in-place 能力。
+- [x] 定义 CostEstimate：host/device bytes、transfer bytes、allocation、launch、sync 和 compute score。
+- [x] 定义 MachineProfile：CPU threads、available devices 和传输带宽。
+- [x] 实现静态 heuristic，不引入 autotuner 或 ML cost model。
 - [ ] 从最终 Sink 约束向前/向后计算候选，优先形成较长的 same-device region。
-- [ ] 把 transfer、allocation、launch 和同步代价纳入区域选择，避免逐 op 贪心切换。
-- [ ] 第一版只允许一个主要 CPU → CUDA boundary；Decode 和普通 augmentation 默认 CPU。
-- [ ] CUDA sink 下仅将已有 GPU-friendly batch op 作为 CUDA 候选。
+- [x] 把 transfer、allocation、launch 和同步代价纳入区域选择，避免逐 op 贪心切换。
+- [x] 第一版只允许一个主要 CPU → CUDA boundary；Decode 和普通 augmentation 默认 CPU。
+- [x] CUDA sink 下仅将已有 GPU-friendly batch op 作为 CUDA 候选。
 - [ ] 逐步移除 ImageOp::execution_kind() 对 placement 的主导作用。
-- [ ] 扩展 SourceCapabilities，明确 random/batch/zero-copy/parallel/async/read-device 等实际 source 能力。
-- [ ] 为 Lance、filesystem、memory source 声明准确 capability，未知能力保持保守值。
-- [ ] 输出 placement explain：候选、选择、cost、fusion、transfer boundary、shape/dtype/layout 和 parallelism。
-- [ ] 增加 placement snapshot、source strategy、CPU-only op 与 sink-device constraint 测试。
+- [x] 扩展 SourceCapabilities，明确 random/batch/zero-copy/parallel/async/read-device 等实际 source 能力。
+- [x] 为 Lance、filesystem、memory source 声明准确 capability，未知能力保持保守值。
+- [x] 输出 placement explain：候选、选择、cost、fusion、transfer boundary、shape/dtype/layout 和 parallelism。
+- [x] 增加 placement snapshot、source strategy、CPU-only op 与 sink-device constraint 测试。
+
+当前落地范围：vision 显式注册现有 CPU source/index/sample/batch/sink 路径；没有注册 CUDA vision kernel，因此 CUDA sink 请求会明确失败，避免选中未实现路径。planner 已生成 CPU placement 与成本说明，profile 会影响 CPU 并行策略。多设备 region 的全局动态规划和执行计划消费 placement 结果仍待后续阶段接入。
 
 验收门槛：
 
