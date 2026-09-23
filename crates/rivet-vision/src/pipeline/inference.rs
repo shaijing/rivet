@@ -7,6 +7,7 @@ use rivet_plan::{
     ValueShape,
 };
 
+use super::logical::FusionGroupPayload;
 use super::op::{BatchConfig, ImageOp, IndexOp, PipelineImageState, SourceOp};
 use crate::errors::{RivetResult, invalid_pipeline};
 use crate::sample::image::ImageAxisOrder;
@@ -45,15 +46,27 @@ impl PropertyInference for VisionPropertyInference {
                 single_input(inputs, node.kind())?.clone()
             }
             NodeKind::Op => {
-                let op = node
-                    .payload_as::<ImageOp>()
-                    .ok_or_else(|| "op node is missing its vision ImageOp payload".to_owned())?;
-                infer_image_op_with_workers(
-                    op,
-                    single_input(inputs, node.kind())?,
-                    self.num_workers,
-                )
-                .map_err(|error| error.to_string())?
+                let input = single_input(inputs, node.kind())?;
+                if let Some(op) = node.payload_as::<ImageOp>() {
+                    infer_image_op_with_workers(op, input, self.num_workers)
+                        .map_err(|error| error.to_string())?
+                } else if let Some(group) = node.payload_as::<FusionGroupPayload>() {
+                    let mut properties = input.clone();
+                    for op in &group.ops {
+                        properties = infer_image_op_with_workers(op, &properties, self.num_workers)
+                            .map_err(|error| error.to_string())?;
+                    }
+                    // Normalize + HWC-to-CHW has a dedicated contiguous output
+                    // kernel even though the unfused layout is a strided view.
+                    if group.name == "NormalizeToChw" {
+                        properties.contiguity = Some(Contiguity::Contiguous);
+                    }
+                    properties
+                } else {
+                    return Err(
+                        "op node is missing its vision ImageOp or FusionGroup payload".to_owned(),
+                    );
+                }
             }
             NodeKind::Batch => {
                 let batch = node

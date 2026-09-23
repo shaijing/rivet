@@ -842,6 +842,237 @@ mod tests {
                 .iter()
                 .any(|(name, _)| name == "fusion-discovery")
         );
+        assert!(plan.nodes().any(|(_, node)| {
+            node.payload()
+                .is_some_and(|payload| payload.name() == "FusionGroup")
+        }));
+        assert!(
+            context.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "fusion.applied" && diagnostic.message.contains("NormalizeToChw")
+            }),
+            "diagnostics: {:?}",
+            context.diagnostics
+        );
+        let explain = pipeline
+            .placement_explain(rivet_plan::MachineProfile::default())
+            .unwrap();
+        assert!(explain.contains("physical candidate"));
+        assert!(explain.contains("vision-normalize-to-chw-fused"));
+    }
+
+    #[test]
+    fn late_dtype_promotion_matches_explicit_convert_then_normalize() {
+        let original = decoded_stub()
+            .convert_image_dtype(DType::F32)
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .batch(1, false);
+        let mut plan = original.to_logical_plan();
+        let context = super::optimizer::optimize_vision_plan(&mut plan, 0).unwrap();
+        assert!(
+            context
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.code == "rewrite.dtype-late-promotion" })
+        );
+        assert!(!plan.nodes().any(|(_, node)| {
+            node.payload()
+                .is_some_and(|payload| payload.name() == "ImageOp")
+                && node
+                    .payload_as::<crate::pipeline::op::ImageOp>()
+                    .is_some_and(|op| op.name() == "ConvertImageDtype")
+        }));
+
+        let optimized = ImagePipeline::from_logical_plan(&plan).unwrap();
+        assert_eq!(
+            optimized.ops.iter().map(|op| op.name()).collect::<Vec<_>>(),
+            ["Normalize"]
+        );
+        let mut baseline_loader = original.compile_legacy_for_test(0).unwrap();
+        let mut optimized_loader = optimized.compile().unwrap();
+        let baseline = baseline_loader.next_batch().unwrap().unwrap();
+        let rewritten = optimized_loader.next_batch().unwrap().unwrap();
+        assert_eq!(baseline.images.dims(), rewritten.images.dims());
+        assert_eq!(
+            baseline.images.to_vec::<f32>().unwrap(),
+            rewritten.images.to_vec::<f32>().unwrap()
+        );
+    }
+
+    #[test]
+    fn late_dtype_promotion_preserves_worker_batch_barrier() {
+        let pipeline = stub(1)
+            .decode_image()
+            .horizontal_flip()
+            .convert_image_dtype(DType::F32)
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .workers(2)
+            .batch(1, false);
+        let mut plan = pipeline.to_logical_plan();
+        let context = super::optimizer::optimize_vision_plan(&mut plan, 2).unwrap();
+        assert!(
+            !context
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "rewrite.dtype-late-promotion")
+        );
+        let lowered = ImagePipeline::from_logical_plan(&plan).unwrap();
+        assert_eq!(
+            lowered.ops.iter().map(|op| op.name()).collect::<Vec<_>>(),
+            ["Decode", "Flip", "ConvertImageDtype", "Normalize"]
+        );
+    }
+
+    #[test]
+    fn identity_dtype_conversion_is_removed() {
+        let original = decoded_stub()
+            .convert_image_dtype(DType::U8)
+            .batch(1, false);
+        let mut plan = original.to_logical_plan();
+        let context = super::optimizer::optimize_vision_plan(&mut plan, 0).unwrap();
+        assert!(
+            context
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "rewrite.identity-dtype")
+        );
+        let optimized = ImagePipeline::from_logical_plan(&plan).unwrap();
+        assert!(optimized.ops.is_empty());
+
+        let mut baseline_loader = original.compile_legacy_for_test(0).unwrap();
+        let mut optimized_loader = optimized.compile().unwrap();
+        let baseline = baseline_loader.next_batch().unwrap().unwrap();
+        let rewritten = optimized_loader.next_batch().unwrap().unwrap();
+        assert_eq!(baseline.images.dims(), rewritten.images.dims());
+        assert_eq!(
+            baseline.images.to_vec::<u8>().unwrap(),
+            rewritten.images.to_vec::<u8>().unwrap()
+        );
+    }
+
+    #[test]
+    fn convert_normalize_layout_rewrites_to_one_fusion_group_and_matches_legacy() {
+        let original = decoded_stub()
+            .convert_image_dtype(DType::F32)
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .hwc_to_chw()
+            .batch(1, false);
+        let mut plan = original.to_logical_plan();
+        let context = super::optimizer::optimize_vision_plan(&mut plan, 0).unwrap();
+        assert!(
+            context
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.code == "rewrite.dtype-late-promotion" })
+        );
+        assert!(context.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "fusion.applied" && diagnostic.message.contains("NormalizeToChw")
+        }));
+        let fused_id = plan
+            .nodes()
+            .find_map(|(id, node)| {
+                node.payload()
+                    .is_some_and(|payload| payload.name() == "FusionGroup")
+                    .then_some(id)
+            })
+            .unwrap();
+        let fused_properties = context.annotations().get(fused_id).unwrap();
+        assert_eq!(fused_properties.dtype, Some(rivet_plan::DataType::F32));
+        assert_eq!(
+            fused_properties.axis_order,
+            Some(rivet_plan::AxisOrder::Chw)
+        );
+        assert_eq!(
+            fused_properties.contiguity,
+            Some(rivet_plan::Contiguity::Contiguous)
+        );
+
+        let optimized = ImagePipeline::from_logical_plan(&plan).unwrap();
+        let mut baseline_loader = original.compile_legacy_for_test(0).unwrap();
+        let mut optimized_loader = optimized.compile().unwrap();
+        let baseline = baseline_loader.next_batch().unwrap().unwrap();
+        let rewritten = optimized_loader.next_batch().unwrap().unwrap();
+        assert_eq!(baseline.images.dims(), rewritten.images.dims());
+        assert_eq!(
+            baseline.images.to_vec::<f32>().unwrap(),
+            rewritten.images.to_vec::<f32>().unwrap()
+        );
+    }
+
+    #[test]
+    fn fusion_discovery_records_unsafe_or_unimplemented_reorders() {
+        let crop_resize = stub(1)
+            .decode_image()
+            .crop(0, 0, 1, 1)
+            .resize(2, 2)
+            .batch(1, false);
+        let mut plan = crop_resize.to_logical_plan();
+        let context = super::optimizer::optimize_vision_plan(&mut plan, 0).unwrap();
+        assert!(context.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "fusion.illegal"
+                && diagnostic.message.contains("CropResize")
+                && diagnostic
+                    .message
+                    .contains("interpolation/border semantics")
+        }));
+
+        let flip_normalize = decoded_stub()
+            .horizontal_flip()
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .batch(1, false);
+        let mut plan = flip_normalize.to_logical_plan();
+        let context = super::optimizer::optimize_vision_plan(&mut plan, 0).unwrap();
+        assert!(context.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "fusion.illegal"
+                && diagnostic.message.contains("FlipNormalize")
+                && diagnostic.message.contains("no cross-stage fused kernel")
+        }));
+    }
+
+    #[test]
+    fn known_full_image_crop_is_removed_before_following_resize() {
+        let original = decoded_stub()
+            .resize(1, 1)
+            .crop(0, 0, 1, 1)
+            .resize(2, 2)
+            .batch(1, false);
+        let mut plan = original.to_logical_plan();
+        let context = super::optimizer::optimize_vision_plan(&mut plan, 0).unwrap();
+        assert!(context.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "rewrite.identity-crop"
+                && diagnostic.message.contains("known input shape")
+        }));
+        let optimized = ImagePipeline::from_logical_plan(&plan).unwrap();
+        assert_eq!(
+            optimized.ops.iter().map(|op| op.name()).collect::<Vec<_>>(),
+            ["Resize", "Resize"]
+        );
+        let mut baseline_loader = original.compile_legacy_for_test(0).unwrap();
+        let mut optimized_loader = optimized.compile().unwrap();
+        let baseline = baseline_loader.next_batch().unwrap().unwrap();
+        let rewritten = optimized_loader.next_batch().unwrap().unwrap();
+        assert_eq!(baseline.images.dims(), rewritten.images.dims());
+        assert_eq!(
+            baseline.images.to_vec::<u8>().unwrap(),
+            rewritten.images.to_vec::<u8>().unwrap()
+        );
+    }
+
+    #[test]
+    fn skip_take_shuffle_are_compiled_before_source_reads() {
+        let pipeline = decoded_stub()
+            .skip(0)
+            .take(1)
+            .shuffle(7)
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .batch(1, false);
+        let mut plan = pipeline.to_logical_plan();
+        let context = super::optimizer::optimize_vision_plan(&mut plan, 0).unwrap();
+        assert!(context.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "rewrite.index-source-pushdown"
+                && diagnostic
+                    .message
+                    .contains("before reads and image transforms")
+        }));
     }
 
     #[test]
@@ -877,6 +1108,8 @@ mod tests {
         assert!(single.contains("kernel=vision::ImageOp-cpu-Sample"));
         assert!(single.contains("cost="));
         assert!(single.contains("parallelism=1"));
+        assert!(single.contains("physical candidate"));
+        assert!(single.contains("vision-image-cpu"));
         assert!(multi.contains("parallelism=4"));
         assert!(multi.contains("source access=RandomAccess"));
     }

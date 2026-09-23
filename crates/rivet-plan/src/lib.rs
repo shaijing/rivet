@@ -287,7 +287,17 @@ impl LogicalPlan {
     /// Compact the arena to root-reachable nodes and return the old-to-new ID map.
     /// Callers must discard node annotations after compaction because IDs change.
     pub fn prune_unreachable(&mut self) -> Result<Vec<Option<NodeId>>, PlanError> {
-        let reachable = self.preorder()?;
+        let preorder = self.preorder()?;
+        let mut is_reachable = vec![false; self.arena.len()];
+        for id in preorder {
+            is_reachable[id.index()] = true;
+        }
+        // Keep existing arena order for surviving nodes. This makes ordinary
+        // pipelines retain stable IDs while removing dead branches.
+        let reachable = (0..self.arena.len())
+            .filter(|index| is_reachable[*index])
+            .map(NodeId)
+            .collect::<Vec<_>>();
         let mut remap = vec![None; self.arena.len()];
         for (new, old) in reachable.iter().enumerate() {
             remap[old.index()] = Some(NodeId(new));
@@ -308,6 +318,13 @@ impl LogicalPlan {
             .root
             .map(|id| remap[id.index()].expect("root is reachable"));
         Ok(remap)
+    }
+
+    /// Validate and canonicalize the arena by dropping unreachable nodes while
+    /// preserving insertion order and therefore stable IDs for live nodes.
+    pub fn canonicalize(&mut self) -> Result<Vec<Option<NodeId>>, PlanError> {
+        self.validate()?;
+        self.prune_unreachable()
     }
 
     pub fn node(&self, id: NodeId) -> Result<&LogicalNode, PlanError> {
@@ -522,5 +539,33 @@ mod tests {
         plan.replace_node(source, LogicalNode::new(NodeKind::Op, [source], None))
             .unwrap();
         assert_eq!(plan.validate(), Err(PlanError::Cycle(source.index())));
+    }
+
+    #[test]
+    fn canonicalization_drops_unreachable_nodes_and_keeps_live_arena_order() {
+        let mut plan = LogicalPlan::new();
+        let source = plan.add_node(LogicalNode::new(NodeKind::Source, [], None));
+        let _dead = plan.add_node(LogicalNode::new(NodeKind::Source, [], None));
+        let op = plan.add_node(LogicalNode::new(
+            NodeKind::Op,
+            [source],
+            Some(Arc::new(TestPayload)),
+        ));
+        let sink = plan.add_node(LogicalNode::new(NodeKind::Sink, [op], None));
+        plan.set_root(sink).unwrap();
+
+        let mapping = plan.canonicalize().unwrap();
+        assert_eq!(
+            mapping,
+            [Some(NodeId(0)), None, Some(NodeId(1)), Some(NodeId(2))]
+        );
+        assert_eq!(plan.root().unwrap(), NodeId(2));
+        assert_eq!(plan.preorder().unwrap(), [NodeId(2), NodeId(1), NodeId(0)]);
+        assert_eq!(
+            plan.node(NodeId(1)).unwrap().inputs().get(0),
+            Some(NodeId(0))
+        );
+        assert_eq!(plan.arena.len(), 3);
+        assert!(plan.validate().is_ok());
     }
 }

@@ -54,6 +54,24 @@ payload_impl!(IndexOp, "IndexOp");
 payload_impl!(ImageOp, "ImageOp");
 payload_impl!(BatchConfig, "BatchConfig");
 
+#[derive(Clone)]
+pub(crate) struct FusionGroupPayload {
+    pub(crate) name: &'static str,
+    pub(crate) ops: Vec<ImageOp>,
+}
+
+impl PlanPayload for FusionGroupPayload {
+    fn domain(&self) -> &'static str {
+        "vision"
+    }
+    fn name(&self) -> &'static str {
+        "FusionGroup"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 impl ImagePipeline {
     /// Lower the builder's ordered operations into an arena-backed logical plan.
     pub fn to_logical_plan(&self) -> LogicalPlan {
@@ -140,7 +158,13 @@ impl ImagePipeline {
                     source = Some(payload::<SourceOp>(node, id)?.clone());
                 }
                 NodeKind::Index => index_ops.push(payload::<IndexOp>(node, id)?.clone()),
-                NodeKind::Op => ops.push(payload::<ImageOp>(node, id)?.clone()),
+                NodeKind::Op => {
+                    if let Some(group) = node.payload_as::<FusionGroupPayload>() {
+                        ops.extend(group.ops.iter().cloned());
+                    } else {
+                        ops.push(payload::<ImageOp>(node, id)?.clone());
+                    }
+                }
                 NodeKind::Batch if batch.is_none() => {
                     batch = Some(*payload::<BatchConfig>(node, id)?);
                 }

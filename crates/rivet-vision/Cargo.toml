@@ -27,9 +27,14 @@ walkdir = "2.5.0"
 [dev-dependencies]
 arrow-ipc.workspace = true
 bytes.workspace = true
+criterion.workspace = true
 futures = "0.3.34"
 memmap2.workspace = true
 num_cpus = "1.17"
+
+[[bench]]
+name = "phase3_fusions"
+harness = false
 
 [[example]]
 name = "lance"
