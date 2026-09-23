@@ -1,4 +1,4 @@
-use crate::errors::{invalid_argument, invalid_shape, RivetResult};
+use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
 use rivet_core::{CpuStorageRef, DType, Device, ExactOutput, Tensor};
 
@@ -159,6 +159,21 @@ impl NormalizeConfig {
         }
 
         Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    pub(crate) fn expanded_affine(
+        &self,
+        channel_count: usize,
+    ) -> RivetResult<(Vec<f32>, Vec<f32>)> {
+        self.validate()?;
+        if self.mean.len() != 1 && self.mean.len() != channel_count {
+            return Err(invalid_argument(format!(
+                "normalize mean/std length must be 1 or channel count {channel_count}, got {}",
+                self.mean.len()
+            )));
+        }
+        Ok(affine_params(&self.mean, &self.std, channel_count))
     }
 
     pub fn apply(&self, sample: ImageSample, layout: ImageAxisOrder) -> RivetResult<ImageSample> {
@@ -523,6 +538,41 @@ pub fn normalize_u8_batch_to_nchw_f32(
     normalize_u8_batch_to_nchw_f32_impl(input, mean, std, true)
 }
 
+#[cfg(feature = "cuda")]
+pub(crate) fn normalize_u8_batch_to_nchw_f32_cuda(
+    input: &Tensor,
+    mean: &[f32],
+    std: &[f32],
+) -> RivetResult<Tensor> {
+    if input.dtype() != DType::U8 {
+        return Err(invalid_argument(format!(
+            "normalize_u8_batch_to_nchw_f32_cuda requires uint8 input, got {:?}",
+            input.dtype()
+        )));
+    }
+    if input.dims().len() != 4 {
+        return Err(invalid_shape(format!(
+            "normalize_u8_batch_to_nchw_f32_cuda requires a rank-4 image batch, got shape {:?}",
+            input.dims()
+        )));
+    }
+    let channels = input.dims()[3];
+    if mean.is_empty() || mean.len() != std.len() || (mean.len() != 1 && mean.len() != channels) {
+        return Err(invalid_argument(format!(
+            "normalize mean/std length must be 1 or channel count {channels}, got {} and {}",
+            mean.len(),
+            std.len()
+        )));
+    }
+    if std.iter().any(|value| *value == 0.0) {
+        return Err(invalid_argument("normalize std values must be non-zero"));
+    }
+    let (scale, bias) = affine_params(mean, std, channels);
+    input
+        .cuda_normalize_u8_nhwc_to_nchw_f32(&scale, &bias)
+        .map_err(Into::into)
+}
+
 pub(crate) fn normalize_u8_batch_to_nchw_f32_trusted(
     input: &Tensor,
     mean: &[f32],
@@ -757,9 +807,11 @@ fn normalize_u8_to_f32_impl(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "cuda")]
+    use super::normalize_u8_batch_to_nchw_f32_cuda;
     use super::{
-        normalize_u8_batch_to_f32, normalize_u8_batch_to_nchw_f32, normalize_u8_to_f32,
-        NormalizeConfig,
+        NormalizeConfig, normalize_u8_batch_to_f32, normalize_u8_batch_to_nchw_f32,
+        normalize_u8_to_f32,
     };
     use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
     use rivet_core::{DType, Device, Tensor};
@@ -947,6 +999,35 @@ mod tests {
             .zip(expected.to_vec::<f32>().unwrap())
         {
             assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_fused_normalize_layout_matches_cpu_for_multi_image_rgb_batch() {
+        let Ok(device) = Device::cuda(0) else {
+            eprintln!("skipping CUDA normalize parity test because device 0 is unavailable");
+            return;
+        };
+        let input = Tensor::from_vec(
+            (0..2 * 2 * 3 * 3).map(|value| (value * 7) as u8).collect(),
+            [2, 2, 3, 3],
+            &Device::Cpu,
+        )
+        .unwrap();
+        let mean = [0.485, 0.456, 0.406];
+        let std = [0.229, 0.224, 0.225];
+        let expected = normalize_u8_batch_to_nchw_f32(&input, &mean, &std).unwrap();
+        let input = input.to_device(&device).unwrap();
+        let actual = normalize_u8_batch_to_nchw_f32_cuda(&input, &mean, &std).unwrap();
+
+        assert_eq!(actual.dims(), [2, 3, 2, 3]);
+        assert_eq!(actual.dtype(), DType::F32);
+        assert!(actual.device().is_cuda());
+        let expected = expected.to_vec::<f32>().unwrap();
+        let actual = actual.to_vec::<f32>().unwrap();
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!((actual - expected).abs() <= 1e-6, "{actual} != {expected}");
         }
     }
 }

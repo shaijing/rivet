@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 /// One in-flight logical batch being filled by workers.
 pub struct PendingBatch<R> {
     batch_id: u64,
+    indices: Vec<usize>,
     samples: Vec<Option<R>>,
     remaining: usize,
 }
@@ -22,12 +23,33 @@ impl<R> PendingBatch<R> {
         self.samples.len()
     }
 
+    pub fn indices(&self) -> &[usize] {
+        &self.indices
+    }
+
     pub fn into_results(self) -> PendingSamples<R> {
         PendingSamples {
             batch_id: self.batch_id,
             next_position: 0,
             samples: self.samples.into_iter(),
         }
+    }
+
+    pub fn into_parts(self) -> (Vec<usize>, PendingSamples<R>) {
+        let Self {
+            batch_id,
+            indices,
+            samples,
+            ..
+        } = self;
+        (
+            indices,
+            PendingSamples {
+                batch_id,
+                next_position: 0,
+                samples: samples.into_iter(),
+            },
+        )
     }
 }
 
@@ -98,6 +120,7 @@ impl<R> PrefetchCoordinator<R> {
             batch_id,
             PendingBatch {
                 batch_id,
+                indices: indices.clone(),
                 samples: std::iter::repeat_with(|| None)
                     .take(indices.len())
                     .collect(),
@@ -168,6 +191,7 @@ mod tests {
             0,
             PendingBatch {
                 batch_id: 0,
+                indices: vec![0, 1],
                 samples: std::iter::repeat_with(|| None).take(2).collect(),
                 remaining: 2,
             },
@@ -188,6 +212,7 @@ mod tests {
             0,
             PendingBatch {
                 batch_id: 0,
+                indices: vec![4, 2],
                 samples: vec![Some(10), Some(11)],
                 remaining: 0,
             },
@@ -196,6 +221,7 @@ mod tests {
             1,
             PendingBatch {
                 batch_id: 1,
+                indices: vec![3],
                 samples: vec![Some(20)],
                 remaining: 0,
             },
@@ -204,6 +230,7 @@ mod tests {
 
         let first = coordinator.take_ready().unwrap().unwrap();
         assert_eq!(first.len(), 2);
+        assert_eq!(first.indices(), [4, 2]);
         assert_eq!(
             first
                 .into_results()

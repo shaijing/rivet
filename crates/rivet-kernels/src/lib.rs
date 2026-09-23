@@ -22,9 +22,10 @@ pub enum Id {
     Reduce,
     Sort,
     Ternary,
+    VisionNormalize,
 }
 
-pub const ALL_IDS: [Id; 10] = [
+pub const ALL_IDS: [Id; 11] = [
     Id::Copy,
     Id::Fill,
     Id::Binary,
@@ -35,6 +36,7 @@ pub const ALL_IDS: [Id; 10] = [
     Id::Reduce,
     Id::Sort,
     Id::Ternary,
+    Id::VisionNormalize,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -83,16 +85,18 @@ module!(INDEXING, Indexing);
 module!(REDUCE, Reduce);
 module!(SORT, Sort);
 module!(TERNARY, Ternary);
+module!(VISION_NORMALIZE, VisionNormalize);
 
 #[cfg(test)]
 mod tests {
     use super::{
         AFFINE, ALL_IDS, BINARY, CAST, COPY, FILL, INDEXING, REDUCE, SORT, TERNARY, UNARY,
+        VISION_NORMALIZE,
     };
 
     #[test]
     fn exposes_all_modules() {
-        assert_eq!(ALL_IDS.len(), 10);
+        assert_eq!(ALL_IDS.len(), 11);
         assert_eq!(COPY.index(), 0);
         assert_eq!(FILL.index(), 1);
         assert_eq!(BINARY.index(), 2);
@@ -103,6 +107,7 @@ mod tests {
         assert_eq!(REDUCE.index(), 7);
         assert_eq!(SORT.index(), 8);
         assert_eq!(TERNARY.index(), 9);
+        assert_eq!(VISION_NORMALIZE.index(), 10);
         assert!(COPY.ptx().contains(".version"));
         assert!(FILL.ptx().contains("fill_f32"));
         assert!(BINARY.ptx().contains("add_f32"));
@@ -113,5 +118,10 @@ mod tests {
         assert!(REDUCE.ptx().contains("fast_sum_f32"));
         assert!(SORT.ptx().contains("asort_asc_f32"));
         assert!(TERNARY.ptx().contains("where_i64_f32"));
+        assert!(
+            VISION_NORMALIZE
+                .ptx()
+                .contains("normalize_nhwc_u8_to_nchw_f32")
+        );
     }
 }

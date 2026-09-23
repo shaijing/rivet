@@ -12,7 +12,9 @@ use rivet_plan::{
 
 use super::inference::VisionPropertyInference;
 use super::logical::FusionGroupPayload;
-use super::op::{ImageOp, IndexOp};
+#[cfg(feature = "cuda")]
+use super::op::BatchConfig;
+use super::op::{ImageOp, IndexOp, SourceOp};
 use crate::errors::invalid_pipeline;
 use crate::sample::image::ImageAxisOrder;
 
@@ -30,9 +32,12 @@ pub(crate) fn optimize_vision_plan_for_sink(
     sink_device_ordinal: Option<usize>,
 ) -> Result<(OptimizerContext, rivet_plan::PlacementPlan), crate::errors::VisionError> {
     let machine = vision_machine_profile(workers, sink_device_ordinal.is_some());
+    let enable_cuda_augmentation_fusion =
+        sink_device_ordinal.is_some() && has_fixed_shape_batch_source(plan);
     let mut registry = PlanRegistry::default();
     registry.register_plugin(&VisionPlanPlugin {
         workers,
+        enable_cuda_augmentation_fusion,
         machine: machine.clone(),
     });
     let (context, _) = rivet_plan::optimize(plan, &registry)
@@ -44,7 +49,110 @@ pub(crate) fn optimize_vision_plan_for_sink(
         &machine,
     )
     .map_err(|error| invalid_pipeline(format!("physical placement failed: {error}")))?;
+    #[cfg(feature = "cuda")]
+    let placement = {
+        let mut placement = placement;
+        if sink_device_ordinal.is_some() {
+            place_fused_vision_batch_on_cuda(plan, context.annotations(), &machine, &mut placement);
+        }
+        placement
+    };
     Ok((context, placement))
+}
+
+#[cfg(feature = "cuda")]
+fn place_fused_vision_batch_on_cuda(
+    plan: &LogicalPlan,
+    annotations: &PropertyAnnotations,
+    machine: &MachineProfile,
+    placement: &mut rivet_plan::PlacementPlan,
+) {
+    let Some((id, node)) = plan.nodes().find(|(_, node)| {
+        node.payload_as::<FusionGroupPayload>()
+            .is_some_and(|group| group.name == "NormalizeToChw")
+    }) else {
+        return;
+    };
+    let Some(input) = node.inputs().get(0).and_then(|id| annotations.get(id)) else {
+        return;
+    };
+    let Some(output) = annotations.get(id) else {
+        return;
+    };
+    if input.dtype != Some(rivet_plan::DataType::U8)
+        || input.axis_order != Some(AxisOrder::Hwc)
+        || output.dtype != Some(rivet_plan::DataType::F32)
+        || output.axis_order != Some(AxisOrder::Chw)
+    {
+        return;
+    }
+    let Some(candidate) = placement
+        .candidates
+        .iter_mut()
+        .find(|candidate| candidate.node == id)
+    else {
+        return;
+    };
+    let batch_size = plan
+        .nodes()
+        .find_map(|(_, node)| node.payload_as::<BatchConfig>().map(|batch| batch.size))
+        .unwrap_or(1) as u64;
+    let input_bytes_per_sample = estimate_property_bytes(input, machine.unknown_value_bytes);
+    let transfer_bytes = input_bytes_per_sample.saturating_mul(batch_size);
+    let output_bytes =
+        estimate_property_bytes(output, machine.unknown_value_bytes).saturating_mul(batch_size);
+    let mut cost = candidate.cost.clone();
+    cost.host_bytes = 0;
+    cost.device_bytes = output_bytes;
+    cost.transfer_bytes = transfer_bytes;
+    cost.launch_count = 1;
+    cost.synchronization_count = 0;
+    cost.compute_score = output_bytes.max(1) as f64 / 1_000_000_000.0;
+    cost.total_score = cost.compute_score
+        + transfer_bytes as f64 / machine.host_to_device_bytes_per_sec.max(1) as f64
+        + cost.allocation_count as f64 * 0.000_001
+        + machine.kernel_launch_seconds;
+    candidate.kernel = "vision::NormalizeToChw-cuda-Fused".to_owned();
+    candidate.device = DeviceClass::Cuda;
+    candidate.cost = cost;
+    candidate.alternatives.push(format!(
+        "vision::NormalizeToChw-cuda-Fused@Cuda={:.6}",
+        candidate.cost.total_score
+    ));
+    placement.transfer_boundaries.clear();
+    placement
+        .transfer_boundaries
+        .push((id, DeviceClass::Cpu, DeviceClass::Cuda));
+}
+
+#[cfg(feature = "cuda")]
+fn estimate_property_bytes(properties: &ValueProperties, fallback: u64) -> u64 {
+    let Some(shape) = properties.shape.as_ref() else {
+        return fallback;
+    };
+    let Some(elements) = shape.0.iter().try_fold(1u64, |count, dim| match dim {
+        rivet_plan::ShapeDim::Known(value) => count.checked_mul(*value as u64),
+        rivet_plan::ShapeDim::Dynamic => None,
+    }) else {
+        return fallback;
+    };
+    let element_bytes = match properties.dtype.as_ref() {
+        Some(rivet_plan::DataType::U8 | rivet_plan::DataType::I8 | rivet_plan::DataType::Bool) => 1,
+        Some(
+            rivet_plan::DataType::U16
+            | rivet_plan::DataType::I16
+            | rivet_plan::DataType::F16
+            | rivet_plan::DataType::BF16,
+        ) => 2,
+        Some(rivet_plan::DataType::U32 | rivet_plan::DataType::I32 | rivet_plan::DataType::F32) => {
+            4
+        }
+        Some(rivet_plan::DataType::U64 | rivet_plan::DataType::I64 | rivet_plan::DataType::F64) => {
+            8
+        }
+        _ => return fallback,
+    };
+    elements.saturating_mul(element_bytes)
 }
 
 fn vision_machine_profile(workers: usize, cuda_sink: bool) -> MachineProfile {
@@ -67,9 +175,13 @@ impl super::builder::ImagePipeline {
         machine: MachineProfile,
     ) -> Result<String, crate::errors::VisionError> {
         let mut plan = self.to_logical_plan();
+        let enable_cuda_augmentation_fusion =
+            machine.available_devices.contains(&DeviceClass::Cuda)
+                && has_fixed_shape_batch_source(&plan);
         let mut registry = PlanRegistry::default();
         registry.register_plugin(&VisionPlanPlugin {
             workers: self.runtime.num_workers,
+            enable_cuda_augmentation_fusion,
             machine,
         });
         let (context, _) = rivet_plan::optimize(&mut plan, &registry)
@@ -94,8 +206,16 @@ impl super::builder::ImagePipeline {
     }
 }
 
+fn has_fixed_shape_batch_source(plan: &LogicalPlan) -> bool {
+    plan.nodes().any(|(_, node)| {
+        node.payload_as::<SourceOp>()
+            .is_some_and(SourceOp::supports_batch_read)
+    })
+}
+
 struct VisionPlanPlugin {
     workers: usize,
+    enable_cuda_augmentation_fusion: bool,
     machine: MachineProfile,
 }
 impl PlanPlugin for VisionPlanPlugin {
@@ -137,6 +257,7 @@ impl PlanPlugin for VisionPlanPlugin {
     fn fusion_rules(&self) -> Vec<Arc<dyn FusionRule>> {
         vec![Arc::new(NormalizeLayoutFusion {
             workers: self.workers,
+            enable_cuda_augmentation_fusion: self.enable_cuda_augmentation_fusion,
         })]
     }
     fn physical_candidates(&self) -> Vec<Arc<dyn PhysicalCandidateProvider>> {
@@ -495,6 +616,7 @@ impl OptimizerPass for FusionDiscovery {
 
 struct NormalizeLayoutFusion {
     workers: usize,
+    enable_cuda_augmentation_fusion: bool,
 }
 impl FusionRule for NormalizeLayoutFusion {
     fn name(&self) -> &'static str {
@@ -519,19 +641,55 @@ impl FusionRule for NormalizeLayoutFusion {
                 ) {
                     continue;
                 }
-                let Some(input_id) = normalize.inputs().get(0) else {
+                let Some(normalize_input) = normalize.inputs().get(0) else {
                     continue;
                 };
+                let mut augmentation_ids = Vec::new();
+                let mut input_id = normalize_input;
+                if self.enable_cuda_augmentation_fusion {
+                    loop {
+                        let input_node = plan.node(input_id).map_err(|error| error.to_string())?;
+                        if !input_node
+                            .payload_as::<ImageOp>()
+                            .is_some_and(is_cuda_batch_augmentation)
+                        {
+                            break;
+                        }
+                        augmentation_ids.push(input_id);
+                        let Some(previous) = input_node.inputs().get(0) else {
+                            break;
+                        };
+                        input_id = previous;
+                    }
+                    augmentation_ids.reverse();
+                }
+                let mut crop_count = 0;
+                for augmentation_id in &augmentation_ids {
+                    let augmentation = plan
+                        .node(*augmentation_id)
+                        .map_err(|error| error.to_string())?;
+                    crop_count += usize::from(matches!(
+                        augmentation.payload_as::<ImageOp>(),
+                        Some(ImageOp::RandomResizedCrop(_))
+                    ));
+                }
+                if crop_count > 1 {
+                    augmentation_ids.clear();
+                    input_id = normalize_input;
+                }
                 let props = annotations.get(input_id);
+                let allow_sample_work =
+                    self.enable_cuda_augmentation_fusion && !augmentation_ids.is_empty();
                 let legal = props.is_some_and(|p| {
                     p.dtype == Some(rivet_plan::DataType::U8)
                         && axis_order(p) == Some(ImageAxisOrder::Hwc)
                         && layout_config.axis_order == ImageAxisOrder::Chw
-                        && !(self.workers > 0
-                            && p.operator.is_some_and(|operator| {
-                                operator.sample_stage_has_work
-                                    && operator.stage != rivet_plan::OperatorStage::Batch
-                            }))
+                        && (allow_sample_work
+                            || !(self.workers > 0
+                                && p.operator.is_some_and(|operator| {
+                                    operator.sample_stage_has_work
+                                        && operator.stage != rivet_plan::OperatorStage::Batch
+                                })))
                 });
                 let reason = if legal {
                     "requires U8 HWC input, CHW output, and batch-stage Normalize; properties satisfy the rule".to_owned()
@@ -541,7 +699,10 @@ impl FusionRule for NormalizeLayoutFusion {
                 };
                 candidates.push(FusionCandidate {
                     rule: self.name(),
-                    nodes: vec![normalize_id, id],
+                    nodes: augmentation_ids
+                        .into_iter()
+                        .chain([normalize_id, id])
+                        .collect(),
                     name: "NormalizeToChw".to_owned(),
                     legal,
                     reason,
@@ -572,7 +733,9 @@ impl FusionRule for NormalizeLayoutFusion {
             // A horizontal flip commutes with per-channel affine normalization
             // for the same HWC image values, but the available implementation
             // crosses sample and batch stages, so it remains unfused.
-            if matches!(node.payload_as::<ImageOp>(), Some(ImageOp::Normalize(_))) {
+            if !self.enable_cuda_augmentation_fusion
+                && matches!(node.payload_as::<ImageOp>(), Some(ImageOp::Normalize(_)))
+            {
                 if let Some(flip_id) = node.inputs().get(0) {
                     let flip = plan.node(flip_id).map_err(|error| error.to_string())?;
                     if matches!(flip.payload_as::<ImageOp>(), Some(ImageOp::Flip(_))) {
@@ -609,8 +772,12 @@ impl FusionRule for NormalizeLayoutFusion {
         if candidate.name != "NormalizeToChw" {
             return Ok(PassResult::unchanged());
         }
-        let [normalize_id, layout_id] = candidate.nodes.as_slice() else {
+        if candidate.nodes.len() < 2 {
             return Err("NormalizeToChw fusion requires two node ids".to_owned());
+        }
+        let (augmentation_ids, tail) = candidate.nodes.split_at(candidate.nodes.len() - 2);
+        let [normalize_id, layout_id] = tail else {
+            unreachable!("candidate length was checked")
         };
         let normalize_node = plan
             .node(*normalize_id)
@@ -622,19 +789,37 @@ impl FusionRule for NormalizeLayoutFusion {
         let Some(ImageOp::Layout(layout)) = layout_node.payload_as::<ImageOp>() else {
             return Err("NormalizeToChw fusion lost its Layout node".to_owned());
         };
-        let input = normalize_node
+        let mut input = normalize_node
             .inputs()
             .get(0)
             .ok_or_else(|| "Normalize node has no input".to_owned())?;
+        let mut ops = Vec::with_capacity(augmentation_ids.len() + 2);
+        if let Some(first_augmentation_id) = augmentation_ids.first() {
+            let first_augmentation = plan
+                .node(*first_augmentation_id)
+                .map_err(|error| error.to_string())?;
+            input = first_augmentation
+                .inputs()
+                .get(0)
+                .ok_or_else(|| "augmentation node has no input".to_owned())?;
+        }
+        for augmentation_id in augmentation_ids {
+            let augmentation = plan
+                .node(*augmentation_id)
+                .map_err(|error| error.to_string())?;
+            let Some(op) = augmentation.payload_as::<ImageOp>() else {
+                return Err("NormalizeToChw fusion lost an augmentation node".to_owned());
+            };
+            ops.push(op.clone());
+        }
+        ops.push(ImageOp::Normalize(normalize.clone()));
+        ops.push(ImageOp::Layout(*layout));
         let fused = plan.add_node(LogicalNode::new(
             NodeKind::Op,
             [input],
             Some(Arc::new(FusionGroupPayload {
                 name: "NormalizeToChw",
-                ops: vec![
-                    ImageOp::Normalize(normalize.clone()),
-                    ImageOp::Layout(*layout),
-                ],
+                ops,
             })),
         ));
         plan.redirect_uses(*layout_id, fused)
@@ -650,6 +835,13 @@ impl FusionRule for NormalizeLayoutFusion {
             ),
         ))
     }
+}
+
+fn is_cuda_batch_augmentation(op: &ImageOp) -> bool {
+    matches!(
+        op,
+        ImageOp::Flip(_) | ImageOp::RandomHorizontalFlip(_) | ImageOp::RandomResizedCrop(_)
+    )
 }
 
 struct PlacementBoundary {
@@ -758,10 +950,23 @@ impl PhysicalCandidateProvider for VisionPhysicalCandidates {
             (NodeKind::Batch, "BatchConfig") => "vision-batch-assembly".to_owned(),
             _ => return Vec::new(),
         };
-        vec![PhysicalCandidate {
+        let candidates = vec![PhysicalCandidate {
             name,
             backend: "cpu".to_owned(),
-        }]
+        }];
+        #[cfg(feature = "cuda")]
+        if node
+            .payload_as::<FusionGroupPayload>()
+            .is_some_and(|group| group.name == "NormalizeToChw")
+        {
+            let mut candidates = candidates;
+            candidates.push(PhysicalCandidate {
+                name: "vision-normalize-to-chw-fused".to_owned(),
+                backend: "cuda".to_owned(),
+            });
+            return candidates;
+        }
+        candidates
     }
 }
 
@@ -926,5 +1131,16 @@ pub(super) fn vision_kernel_capabilities() -> KernelCapabilities {
         in_place: false,
         parallel: false,
     });
+    #[cfg(feature = "cuda")]
+    {
+        let mut cuda_fused = caps
+            .iter()
+            .find(|capability| capability.name == "vision::NormalizeToChw-cpu-Fused")
+            .expect("CPU fused capability was registered above")
+            .clone();
+        cuda_fused.name = "vision::NormalizeToChw-cuda-Fused".to_owned();
+        cuda_fused.device = DeviceClass::Cuda;
+        caps.register(cuda_fused);
+    }
     caps
 }

@@ -37,6 +37,11 @@ num_cpus = "1.17"
 name = "phase3_fusions"
 harness = false
 
+[[bench]]
+name = "cuda_batch_normalize"
+harness = false
+required-features = ["cuda"]
+
 [[example]]
 name = "lance"
 required-features = ["lance"]

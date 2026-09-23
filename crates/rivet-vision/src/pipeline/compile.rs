@@ -27,6 +27,8 @@ impl ImagePipeline {
                 "CUDA sink requested, but rivet-vision was built without the cuda feature",
             ));
         }
+        let enable_cuda_augmentation_fusion =
+            self.runtime.sink_device_ordinal.is_some() && self.source.supports_batch_read();
         let mut logical = self.to_logical_plan();
         let (_, placement) = super::optimizer::optimize_vision_plan_for_sink(
             &mut logical,
@@ -39,11 +41,17 @@ impl ImagePipeline {
             &placement,
             self.runtime.sink_device_ordinal,
         )?;
-        Self::from_logical_plan(&logical)?.compile_legacy_from_physical(start, physical)
+        Self::from_logical_plan(&logical)?.compile_legacy_from_physical(
+            start,
+            physical,
+            enable_cuda_augmentation_fusion,
+        )
     }
 
     #[cfg(test)]
     fn compile_legacy_from(self, start: usize) -> RivetResult<ImageDataLoader> {
+        let enable_cuda_augmentation_fusion =
+            self.runtime.sink_device_ordinal.is_some() && self.source.supports_batch_read();
         let mut logical = self.to_logical_plan();
         let (_, placement) = super::optimizer::optimize_vision_plan_for_sink(
             &mut logical,
@@ -56,13 +64,14 @@ impl ImagePipeline {
             &placement,
             self.runtime.sink_device_ordinal,
         )?;
-        self.compile_legacy_from_physical(start, physical)
+        self.compile_legacy_from_physical(start, physical, enable_cuda_augmentation_fusion)
     }
 
     fn compile_legacy_from_physical(
         self,
         start: usize,
         physical: PhysicalGraph,
+        enable_cuda_augmentation_fusion: bool,
     ) -> RivetResult<ImageDataLoader> {
         let sink_device = match self.runtime.sink_device_ordinal {
             None => None,
@@ -81,7 +90,16 @@ impl ImagePipeline {
             }
         };
         let input_state = self.source.state();
-        let compiled_ops = compile_image_ops(self.ops, input_state, self.runtime.num_workers)?;
+        let cuda_batch_kernel = physical.nodes().iter().any(|node| {
+            node.kind == PhysicalNodeKind::Kernel(KernelStage::Batch)
+                && matches!(node.lane, ExecutionLane::Device { .. })
+        });
+        let compiled_ops = compile_image_ops(
+            self.ops,
+            input_state,
+            self.runtime.num_workers,
+            cuda_batch_kernel && enable_cuda_augmentation_fusion,
+        )?;
 
         let batch = self
             .batch
@@ -183,6 +201,18 @@ impl PhysicalLowering for VisionPhysicalLowering {
                     })?,
                 }
             }
+            Some(rivet_plan::DeviceClass::Cuda)
+                if kind == PhysicalNodeKind::Kernel(KernelStage::Batch) =>
+            {
+                ExecutionLane::Device {
+                    ordinal: self.sink_device_ordinal.ok_or_else(|| {
+                        rivet_exec::runtime::RuntimeError::Message(
+                            "CUDA batch kernel placement has no requested device ordinal"
+                                .to_owned(),
+                        )
+                    })?,
+                }
+            }
             Some(rivet_plan::DeviceClass::Cuda) => {
                 return Err(rivet_exec::runtime::RuntimeError::Message(format!(
                     "CUDA execution for logical node %{} is not implemented in this phase",
@@ -255,17 +285,37 @@ fn compile_image_ops(
     ops: Vec<ImageOp>,
     initial_state: PipelineImageState,
     num_workers: usize,
+    defer_cuda_augmentations: bool,
 ) -> RivetResult<CompiledImageOps> {
     let mut state = initial_state;
     let mut sample_ops = Vec::new();
     let mut random_occurrences = HashMap::<&'static str, u32>::new();
     let mut batch_ops = Vec::new();
+    let mut cuda_augmentations = Vec::new();
     let mut pre_batch_state = None;
     let mut batch_stage_started = false;
 
-    let mut ops = ops.into_iter().peekable();
-    while let Some(op) = ops.next() {
+    let deferred_range = if defer_cuda_augmentations {
+        cuda_augmentation_prefix(&ops)
+    } else {
+        None
+    };
+
+    let mut ops = ops.into_iter().enumerate().peekable();
+    while let Some((op_index, op)) = ops.next() {
         op.validate()?;
+
+        if deferred_range
+            .as_ref()
+            .is_some_and(|range| range.contains(&op_index))
+        {
+            let input_state = state;
+            let (compiled_op, output_state) =
+                compile_sample_op(op, input_state, None, &mut random_occurrences)?;
+            state = output_state;
+            cuda_augmentations.push(compiled_op);
+            continue;
+        }
 
         if let ImageOp::Normalize(config) = &op {
             // Normalization is expensive per pixel. When sample workers are
@@ -273,7 +323,7 @@ fn compile_image_ops(
             // those workers and leave any following layout view for the
             // batch stage. A batch kernel is still preferable for pipelines
             // with no sample-stage work to parallelize.
-            if num_workers > 0 && !sample_ops.is_empty() {
+            if num_workers > 0 && !sample_ops.is_empty() && cuda_augmentations.is_empty() {
                 let sample_normalize = CompiledNormalize {
                     config: config.clone(),
                     input_layout: state_axis_order(state),
@@ -294,21 +344,29 @@ fn compile_image_ops(
                     axis_order: crate::sample::image::ImageAxisOrder::Hwc,
                 }
             ) && matches!(
-                ops.peek(),
+                ops.peek().map(|(_, op)| op),
                 Some(ImageOp::Layout(layout))
                     if layout.axis_order == crate::sample::image::ImageAxisOrder::Chw
             );
             if can_fuse {
-                let layout = ops.next().expect("peeked fused layout operation");
+                let (_, layout) = ops.next().expect("peeked fused layout operation");
                 layout.validate()?;
                 if !batch_stage_started {
                     pre_batch_state = Some(state);
                     batch_stage_started = true;
                 }
-                let fused = BatchKernel::NormalizeToChw(CompiledNormalize {
+                let normalize = CompiledNormalize {
                     config: config.clone(),
                     input_layout: ImageAxisOrder::Hwc,
-                });
+                };
+                let fused = if cuda_augmentations.is_empty() {
+                    BatchKernel::NormalizeToChw(normalize)
+                } else {
+                    BatchKernel::NormalizeToChwWithCudaAugmentations {
+                        normalize,
+                        augmentations: cuda_augmentations.clone(),
+                    }
+                };
                 state = fused.transition(state)?;
                 batch_ops.push(fused);
                 continue;
@@ -385,6 +443,38 @@ fn compile_image_ops(
         pre_batch_state,
         output_state,
     })
+}
+
+fn cuda_augmentation_prefix(ops: &[ImageOp]) -> Option<std::ops::Range<usize>> {
+    let normalize_index = ops.len().checked_sub(2)?;
+    if !matches!(ops.get(normalize_index), Some(ImageOp::Normalize(_)))
+        || !matches!(ops.get(normalize_index + 1), Some(ImageOp::Layout(layout)) if layout.axis_order == ImageAxisOrder::Chw)
+    {
+        return None;
+    }
+    let mut start = normalize_index;
+    while start > 0 && ops.get(start - 1).is_some_and(is_cuda_augmentation) {
+        start -= 1;
+    }
+    if start == normalize_index {
+        return None;
+    }
+    if ops[start..normalize_index]
+        .iter()
+        .filter(|op| matches!(op, ImageOp::RandomResizedCrop(_)))
+        .count()
+        > 1
+    {
+        return None;
+    }
+    Some(start..normalize_index)
+}
+
+fn is_cuda_augmentation(op: &ImageOp) -> bool {
+    matches!(
+        op,
+        ImageOp::Flip(_) | ImageOp::RandomHorizontalFlip(_) | ImageOp::RandomResizedCrop(_)
+    )
 }
 
 fn compile_sample_program(

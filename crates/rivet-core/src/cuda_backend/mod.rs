@@ -10,5 +10,8 @@ mod module;
 mod storage;
 
 pub use device::{CudaDebugStats, CudaDevice};
+pub(crate) use kernels::{
+    normalize_u8_nhwc_to_nchw_f32, vision_augment_normalize_u8_nhwc_to_nchw_f32,
+};
 pub(crate) use storage::cuda_error;
 pub use storage::{CudaStorage, CudaStorageSlice, CudaStorageView};

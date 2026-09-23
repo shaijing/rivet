@@ -211,24 +211,31 @@ Phase 6 完成记录（2026-09-23）：
 
 任务：
 
-- [ ] 实现 U8 NHWC batch → normalized F32 NCHW CUDA fused kernel。
-- [ ] 再实现 batch Flip 和 CropResize kernel；先按收益/合法性排序。
-- [ ] semantic random parameter 用 seed + epoch + sample index + OpKey 生成，再传给 backend kernel。
-- [ ] 同一 semantic random parameters 在 worker count、lane 和 backend 变化时保持一致。
-- [ ] 验证每 batch 为 one/few launches，不对每个 sample 单独 launch。
-- [ ] physical planner 按 capability 选择 CPU 或 CUDA fused implementation。
-- [ ] 保留 CPU HWC/NHWC 三通道 normalize 和 NHWC → NCHW 专用 nested-loop/typed-writer path。
-- [ ] 直接从 CPU U8 HWC/NHWC 传输，避免先扩展为 CPU F32；输出写入最终对齐 allocation。
-- [ ] 不用通用 per-element iterator、动态回调 writer 或中间 Vec 替代热路径。
-- [ ] 实施 CPU/CUDA shape、dtype、layout、数值 tolerance 和随机性对照。
+- [x] 实现 U8 NHWC batch → normalized F32 NCHW CUDA fused kernel。
+- [x] 在同一 batch kernel 中实现 Flip 和 RandomResizedCrop/CropResize；目前融合路径要求固定 shape 的 batch-readable RGB HWC source、至多一个 RandomResizedCrop，并覆盖 nearest/bilinear/bicubic/lanczos3；其他来源继续走 CPU augment fallback。
+- [x] semantic random parameter 用 seed + epoch + sample index + OpKey 生成，再上传给 backend kernel。
+- [x] 同一 semantic random parameters 在 worker count、lane 和 backend 变化时保持一致；CPU/CUDA 对照覆盖乱序 sample indices 与 0/3 workers。
+- [x] 验证每 batch 为 one launch，不对每个 sample 单独 launch。
+- [x] physical planner 按 capability 选择 CPU 或 CUDA fused implementation；不满足融合条件的操作保留 CPU 执行。
+- [x] 保留 CPU HWC/NHWC 三通道 normalize 和 NHWC → NCHW 专用 nested-loop/typed-writer path。
+- [x] 直接从 CPU U8 HWC/NHWC 传输，避免先扩展为 CPU F32；输出写入最终 CUDA allocation。
+- [x] CUDA 热路径按 RGB 通道和插值模式静态特化，没有 per-element dynamic dispatch、回调 writer 或图像中间 CPU Vec。
+- [x] 实施 CPU/CUDA shape、dtype、layout、数值 tolerance 和随机性对照；覆盖四种 Resize 插值模式与前后翻转。
 - [ ] 用 batch 32/64/128/256、224×224×3 kernel benchmarks 调优。
-- [ ] 对 CIFAR-10 decoded benchmark 按 AGENTS.md 指定 release 命令重复测量，比较均值/范围/标准差。
+- [ ] 对 CIFAR-10 decoded benchmark 按 AGENTS.md 指定 release 命令重复测量，比较均值/范围/标准差（按用户要求，暂缓性能诊断）。
 
 验收门槛：
 
 - CUDA fused output 与 CPU reference 在规定 tolerance 内一致。
 - CUDA path 的 launch、transfer、allocation 数可解释。
 - CIFAR 和热点 benchmark 没有未解释的显著回退。
+
+Phase 7 功能实现记录（2026-09-23）：
+
+- `NormalizeToChw` 的 CUDA fusion 可以吸收相邻的 deterministic Flip、RandomHorizontalFlip 和一个 RandomResizedCrop；由 `RandomContext + sample index + OpKey` 在 host 端生成每个样本参数，worker 顺序与 sampler 排列不会改变参数。
+- 新 fused RGB kernel 单 launch 完成可选 flip/crop-resize、U8 采样、归一化和 NHWC→NCHW；nearest、bilinear、bicubic、lanczos3 采用静态 kernel specialization。图像保持 U8 到显式 H2D，最终 F32 tensor 直接分配在 CUDA。
+- 参数化 CPU/CUDA 对照验证了 output shape/dtype/layout/数值、shuffle 顺序、worker count 和 interpolation；Phase 7 功能测试通过。
+- 性能 bench 和 CIFAR-10 decoded 重复测量尚未执行；用户要求先完善功能，Phase 7 的性能验收仍待后续完成。
 
 ## Phase 8：Persistent Stage Graph 与 bounded backpressure
 

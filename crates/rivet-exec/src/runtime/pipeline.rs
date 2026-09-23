@@ -60,6 +60,17 @@ pub trait PhysicalPipelineAdapter: Send + Sync + 'static {
     fn finish_batch(&self, builder: Self::BatchBuilder) -> Result<Self::Batch, Self::Error>;
     fn apply_batch(&self, batch: Self::Batch) -> Result<Self::Batch, Self::Error>;
 
+    /// Execute a batch operation with the logical source indices that formed
+    /// this batch. Stochastic batch-native adapters use these indices to keep
+    /// augmentation parameters independent of worker scheduling and batching.
+    fn apply_batch_with_indices(
+        &self,
+        batch: Self::Batch,
+        _indices: &[usize],
+    ) -> Result<Self::Batch, Self::Error> {
+        self.apply_batch(batch)
+    }
+
     /// Execute one explicitly planned residency transition. Adapters that do
     /// not support transfer nodes fail closed instead of hiding a copy in a
     /// kernel or sink callback.
@@ -72,6 +83,29 @@ pub trait PhysicalPipelineAdapter: Send + Sync + 'static {
         Err(PipelineError::Runtime(runtime_error(
             "physical graph contains a transfer node unsupported by this adapter",
         )))
+    }
+
+    /// Execute a batch-stage kernel placed on a device lane after any explicit
+    /// transfer node. The default fails closed for adapters without device
+    /// kernels.
+    fn apply_device_batch(
+        &self,
+        _batch: Self::Batch,
+        _target: ExecutionLane,
+    ) -> Result<Self::Batch, PipelineError<Self::Error>> {
+        Err(PipelineError::Runtime(runtime_error(
+            "physical graph contains a device batch kernel unsupported by this adapter",
+        )))
+    }
+
+    /// Device-kernel counterpart of [`Self::apply_batch_with_indices`].
+    fn apply_device_batch_with_indices(
+        &self,
+        batch: Self::Batch,
+        target: ExecutionLane,
+        _indices: &[usize],
+    ) -> Result<Self::Batch, PipelineError<Self::Error>> {
+        self.apply_device_batch(batch, target)
     }
 }
 
@@ -115,6 +149,7 @@ pub struct PhysicalPipelineExecutor<P: PhysicalPipelineAdapter> {
     sample_node: Option<PhysNodeId>,
     batch_node: PhysNodeId,
     batch_kernel_node: PhysNodeId,
+    device_batch_kernel: bool,
     transfer_nodes: Vec<(PhysNodeId, TransferKind, ExecutionLane)>,
     profiler: PhysicalProfiler,
 }
@@ -209,24 +244,43 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         } else {
             batch_node
         });
-        if transfer_nodes.iter().any(|(transfer, _, _)| {
-            positions[transfer.index()] <= positions[batch_kernel_node.index()] || *transfer == root
-        }) {
-            return Err(runtime_error(
-                "pipeline transfer nodes must follow batch kernels and precede the sink",
-            ));
-        }
+        let device_batch_kernel = batch_kernel.is_some_and(|kernel| {
+            matches!(
+                graph.node(kernel).map(|node| node.lane),
+                Ok(ExecutionLane::Device { .. })
+            )
+        });
         if let Some((transfer, _, _)) = transfer_nodes.first() {
-            let sink_inputs = graph
-                .node(root)
+            let expected_consumer = if device_batch_kernel {
+                batch_kernel_node
+            } else {
+                root
+            };
+            let consumer_inputs = graph
+                .node(expected_consumer)
                 .map_err(graph_runtime_error)?
                 .inputs
                 .as_slice();
-            if sink_inputs != std::slice::from_ref(transfer) {
+            let is_after_batch = positions[transfer.index()] > positions[batch_node.index()];
+            let is_before_consumer =
+                positions[transfer.index()] < positions[expected_consumer.index()];
+            if !is_after_batch
+                || !is_before_consumer
+                || consumer_inputs != std::slice::from_ref(transfer)
+            {
                 return Err(runtime_error(
-                    "the initial physical pipeline requires its transfer to feed the sink directly",
+                    "the initial physical pipeline requires its transfer to feed the device batch kernel or sink directly",
                 ));
             }
+        }
+        if !device_batch_kernel
+            && transfer_nodes.iter().any(|(transfer, _, _)| {
+                positions[transfer.index()] <= positions[batch_kernel_node.index()]
+            })
+        {
+            return Err(runtime_error(
+                "CPU batch kernels must precede the explicit transfer boundary",
+            ));
         }
 
         let state = if num_workers == 0 || adapter.is_batch_native() {
@@ -285,6 +339,7 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
                 sample_node,
                 batch_node,
                 batch_kernel_node,
+                device_batch_kernel,
                 transfer_nodes,
                 profiler,
             });
@@ -300,6 +355,7 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             sample_node,
             batch_node,
             batch_kernel_node,
+            device_batch_kernel,
             transfer_nodes,
             profiler: PhysicalProfiler::default(),
         })
@@ -390,13 +446,13 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             let bytes = self.adapter.batch_bytes(&batch);
             self.profiler
                 .record(self.source_node, started.elapsed(), 0, bytes);
-            return self.apply_batch(batch).map(Some);
+            return self.apply_batch(batch, &indices).map(Some);
         }
 
         let samples = self.fetch_samples(&indices)?;
         let capacity = samples.len();
         let mut builder = self.adapter.batch_builder(capacity);
-        for (index, sample) in indices.into_iter().zip(samples) {
+        for (&index, sample) in indices.iter().zip(samples) {
             let started = Instant::now();
             let input_bytes = self.adapter.sample_bytes(&sample);
             let output = self
@@ -423,7 +479,7 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         let output_bytes = self.adapter.batch_bytes(&batch);
         self.profiler
             .record(self.batch_node, started.elapsed(), 0, output_bytes);
-        self.apply_batch(batch).map(Some)
+        self.apply_batch(batch, &indices).map(Some)
     }
 
     fn next_batch_workers(
@@ -446,9 +502,10 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             }
 
             if let Some(pending) = coordinator.take_ready().map_err(PipelineError::Runtime)? {
-                let capacity = pending.len();
+                let (batch_indices, pending_samples) = pending.into_parts();
+                let capacity = batch_indices.len();
                 let mut builder = self.adapter.batch_builder(capacity);
-                for sample in pending.into_results() {
+                for sample in pending_samples {
                     let sample = sample.map_err(PipelineError::Runtime)?;
                     self.adapter
                         .push_batch_sample(&mut builder, sample)
@@ -462,7 +519,7 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
                 let output_bytes = self.adapter.batch_bytes(&batch);
                 self.profiler
                     .record(self.batch_node, started.elapsed(), 0, output_bytes);
-                return self.apply_batch(batch).map(Some);
+                return self.apply_batch(batch, &batch_indices).map(Some);
             }
 
             if coordinator.closed && coordinator.in_flight == 0 {
@@ -509,20 +566,63 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         Ok(samples)
     }
 
-    fn apply_batch(&mut self, batch: P::Batch) -> Result<P::Batch, PipelineError<P::Error>> {
-        let started = Instant::now();
-        let input_bytes = self.adapter.batch_bytes(&batch);
-        let batch = self
-            .adapter
-            .apply_batch(batch)
-            .map_err(PipelineError::Domain)?;
-        self.profiler.record(
-            self.batch_kernel_node,
-            started.elapsed(),
-            input_bytes,
-            self.adapter.batch_bytes(&batch),
-        );
+    fn apply_batch(
+        &mut self,
+        batch: P::Batch,
+        indices: &[usize],
+    ) -> Result<P::Batch, PipelineError<P::Error>> {
         let mut batch = batch;
+        if self.device_batch_kernel {
+            batch = self.transfer_before_device_kernel(batch)?;
+            let started = Instant::now();
+            let input_bytes = self.adapter.batch_bytes(&batch);
+            let target = self
+                .graph
+                .node(self.batch_kernel_node)
+                .map_err(graph_runtime_error)
+                .map_err(PipelineError::Runtime)?
+                .lane;
+            batch = self
+                .adapter
+                .apply_device_batch_with_indices(batch, target, indices)?;
+            self.profiler.record(
+                self.batch_kernel_node,
+                started.elapsed(),
+                input_bytes,
+                self.adapter.batch_bytes(&batch),
+            );
+        } else {
+            let started = Instant::now();
+            let input_bytes = self.adapter.batch_bytes(&batch);
+            batch = self
+                .adapter
+                .apply_batch_with_indices(batch, indices)
+                .map_err(PipelineError::Domain)?;
+            self.profiler.record(
+                self.batch_kernel_node,
+                started.elapsed(),
+                input_bytes,
+                self.adapter.batch_bytes(&batch),
+            );
+            for (node, kind, target) in self.transfer_nodes.iter().copied() {
+                let started = Instant::now();
+                let input_bytes = self.adapter.batch_bytes(&batch);
+                batch = self.adapter.transfer_batch(batch, kind, target)?;
+                self.profiler.record(
+                    node,
+                    started.elapsed(),
+                    input_bytes,
+                    self.adapter.batch_bytes(&batch),
+                );
+            }
+        }
+        Ok(batch)
+    }
+
+    fn transfer_before_device_kernel(
+        &mut self,
+        mut batch: P::Batch,
+    ) -> Result<P::Batch, PipelineError<P::Error>> {
         for (node, kind, target) in self.transfer_nodes.iter().copied() {
             let started = Instant::now();
             let input_bytes = self.adapter.batch_bytes(&batch);

@@ -6,13 +6,16 @@ use crate::sampler::IndexSampler;
 use rivet_core::Device;
 #[cfg(feature = "cuda")]
 use rivet_core::DeviceLocation;
-use rivet_exec::physical::{ExecutionLane, PhysicalGraph, TransferKind};
+use rivet_exec::physical::{
+    ExecutionLane, KernelStage, PhysicalGraph, PhysicalNodeKind, TransferKind,
+};
 use rivet_exec::runtime::{PhysicalPipelineAdapter, PhysicalPipelineExecutor, PipelineError};
 use std::sync::Arc;
 
 struct ImagePipelineAdapter {
     plan: Arc<ExecutionPlan>,
     sink_device: Option<Device>,
+    cuda_batch_kernel: bool,
 }
 
 impl PhysicalPipelineAdapter for ImagePipelineAdapter {
@@ -91,7 +94,11 @@ impl PhysicalPipelineAdapter for ImagePipelineAdapter {
     }
 
     fn apply_batch(&self, batch: ImageBatch) -> Result<ImageBatch, RivetError> {
-        self.plan.apply_batch_ops(batch)
+        if self.cuda_batch_kernel {
+            Ok(batch)
+        } else {
+            self.plan.apply_batch_ops(batch)
+        }
     }
 
     fn transfer_batch(
@@ -160,6 +167,54 @@ impl PhysicalPipelineAdapter for ImagePipelineAdapter {
             axis_order: batch.axis_order,
         })
     }
+
+    fn apply_device_batch_with_indices(
+        &self,
+        batch: ImageBatch,
+        target: ExecutionLane,
+        indices: &[usize],
+    ) -> Result<ImageBatch, PipelineError<RivetError>> {
+        let ExecutionLane::Device { ordinal } = target else {
+            return Err(PipelineError::Runtime(
+                rivet_exec::runtime::RuntimeError::Message(
+                    "vision device batch kernel requires a CUDA execution lane".to_owned(),
+                ),
+            ));
+        };
+        #[cfg(feature = "cuda")]
+        {
+            let expected = DeviceLocation::Cuda { ordinal };
+            if batch.images.device().location() != expected
+                || batch.labels.device().location() != expected
+            {
+                return Err(PipelineError::Runtime(
+                    rivet_exec::runtime::RuntimeError::Message(
+                        "CUDA batch kernel input does not reside on its planned device".to_owned(),
+                    ),
+                ));
+            }
+            if !self.cuda_batch_kernel {
+                return Err(PipelineError::Runtime(
+                    rivet_exec::runtime::RuntimeError::Message(
+                        "physical graph scheduled an unplanned CUDA batch kernel".to_owned(),
+                    ),
+                ));
+            }
+            self.plan
+                .apply_cuda_batch_ops(batch, indices)
+                .map_err(RivetError::from)
+                .map_err(PipelineError::Domain)
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            let _ = (batch, ordinal, indices);
+            Err(PipelineError::Runtime(
+                rivet_exec::runtime::RuntimeError::Message(
+                    "vision CUDA batch kernels require the cuda feature".to_owned(),
+                ),
+            ))
+        }
+    }
 }
 
 pub struct ImageDataLoader {
@@ -177,9 +232,14 @@ impl ImageDataLoader {
         physical: PhysicalGraph,
         sink_device: Option<Device>,
     ) -> RivetResult<Self> {
+        let cuda_batch_kernel = physical.nodes().iter().any(|node| {
+            node.kind == PhysicalNodeKind::Kernel(KernelStage::Batch)
+                && matches!(node.lane, ExecutionLane::Device { .. })
+        });
         let adapter = Arc::new(ImagePipelineAdapter {
             plan: Arc::clone(&plan),
             sink_device,
+            cuda_batch_kernel,
         });
         let executor =
             PhysicalPipelineExecutor::with_graph(adapter, num_workers, prefetch_batches, physical)

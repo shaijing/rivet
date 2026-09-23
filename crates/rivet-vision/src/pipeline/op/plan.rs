@@ -61,6 +61,11 @@ pub(crate) enum SampleKernel {
 pub(crate) enum BatchKernel {
     Normalize(CompiledNormalize),
     NormalizeToChw(CompiledNormalize),
+    #[allow(dead_code)]
+    NormalizeToChwWithCudaAugmentations {
+        normalize: CompiledNormalize,
+        augmentations: Vec<CompiledSampleOp>,
+    },
     ConvertImageDtype {
         config: ConvertImageDtypeConfig,
         input_layout: ImageAxisOrder,
@@ -172,6 +177,7 @@ impl BatchKernel {
         match self {
             Self::Normalize(_) => "Normalize",
             Self::NormalizeToChw(_) => "NormalizeToChw",
+            Self::NormalizeToChwWithCudaAugmentations { .. } => "VisionAugmentNormalizeToChw",
             Self::ConvertImageDtype { .. } => "ConvertImageDtype",
             Self::Layout { .. } => "Layout",
         }
@@ -184,16 +190,18 @@ impl BatchKernel {
                 ImageOp::ConvertImageDtype(config.clone()).transition(input)
             }
             Self::Layout { config, .. } => ImageOp::Layout(config.clone()).transition(input),
-            Self::NormalizeToChw(_) => match input {
-                PipelineImageState::Decoded {
-                    dtype: DType::U8,
-                    axis_order: ImageAxisOrder::Hwc,
-                } => Ok(PipelineImageState::Decoded {
-                    dtype: DType::F32,
-                    axis_order: ImageAxisOrder::Chw,
-                }),
-                _ => Err(invalid_pipeline("NormalizeToChw requires U8 HWC input")),
-            },
+            Self::NormalizeToChw(_) | Self::NormalizeToChwWithCudaAugmentations { .. } => {
+                match input {
+                    PipelineImageState::Decoded {
+                        dtype: DType::U8,
+                        axis_order: ImageAxisOrder::Hwc,
+                    } => Ok(PipelineImageState::Decoded {
+                        dtype: DType::F32,
+                        axis_order: ImageAxisOrder::Chw,
+                    }),
+                    _ => Err(invalid_pipeline("NormalizeToChw requires U8 HWC input")),
+                }
+            }
         }
     }
 
@@ -204,6 +212,9 @@ impl BatchKernel {
                 debug_assert_eq!(op.input_layout, ImageAxisOrder::Hwc);
                 op.config.apply_batch_to_chw_trusted(batch)
             }
+            Self::NormalizeToChwWithCudaAugmentations { .. } => Err(invalid_pipeline(
+                "vision CUDA augmentation fusion must execute on its planned CUDA lane",
+            )),
             Self::ConvertImageDtype {
                 config,
                 input_layout,
@@ -293,6 +304,57 @@ impl ExecutionPlan {
         })
     }
 
+    #[cfg(feature = "cuda")]
+    pub(crate) fn apply_cuda_batch_ops(
+        &self,
+        batch: ImageBatch,
+        indices: &[usize],
+    ) -> RivetResult<ImageBatch> {
+        let (op, augmentations) = match self.batch_ops.as_slice() {
+            [BatchKernel::NormalizeToChw(op)] => (op, &[][..]),
+            [
+                BatchKernel::NormalizeToChwWithCudaAugmentations {
+                    normalize,
+                    augmentations,
+                },
+            ] => (normalize, augmentations.as_slice()),
+            _ => {
+                return Err(invalid_pipeline(
+                    "CUDA batch execution requires one fused NormalizeToChw kernel",
+                ));
+            }
+        };
+        if batch.axis_order != ImageAxisOrder::Hwc {
+            return Err(invalid_pipeline(
+                "CUDA NormalizeToChw kernel requires an NHWC input batch",
+            ));
+        }
+        let images = if augmentations.is_empty() {
+            crate::transforms::representation::normalize_u8_batch_to_nchw_f32_cuda(
+                &batch.images,
+                &op.config.mean,
+                &op.config.std,
+            )?
+        } else {
+            let (output_height, output_width, params, filter) =
+                cuda_augmentation_params(self, augmentations, &batch.images, indices)?;
+            let (scale, bias) = op.config.expanded_affine(3)?;
+            batch.images.cuda_augment_normalize_u8_nhwc_to_nchw_f32(
+                output_height,
+                output_width,
+                &params,
+                filter,
+                &scale,
+                &bias,
+            )?
+        };
+        Ok(ImageBatch {
+            images,
+            labels: batch.labels,
+            axis_order: ImageAxisOrder::Chw,
+        })
+    }
+
     pub fn stack_and_apply_batch_ops(
         &self,
         samples: impl IntoIterator<Item = DecodedSample>,
@@ -315,6 +377,151 @@ impl ExecutionPlan {
             builder.push(sample?)?;
         }
         self.apply_batch_ops(builder.finish()?)
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn cuda_augmentation_params(
+    plan: &ExecutionPlan,
+    augmentations: &[CompiledSampleOp],
+    input: &rivet_core::Tensor,
+    indices: &[usize],
+) -> RivetResult<(usize, usize, Vec<u32>, i32)> {
+    use crate::transforms::CropRegion;
+    use crate::transforms::geometry::FlipDirection;
+
+    let dims = input.dims();
+    if dims.len() != 4 || dims[3] != 3 || dims[0] != indices.len() {
+        return Err(invalid_pipeline(format!(
+            "CUDA image augmentations require a matching NHWC RGB batch and source indices, got shape {dims:?} and {} indices",
+            indices.len()
+        )));
+    }
+    let (input_height, input_width) = (dims[1], dims[2]);
+    let (mut output_height, mut output_width) = (input_height, input_width);
+    let mut params = Vec::with_capacity(indices.len().saturating_mul(8));
+    let mut filter = 1;
+    for &sample_index in indices {
+        let mut crop = CropRegion {
+            x: 0,
+            y: 0,
+            width: u32::try_from(input_width)
+                .map_err(|_| invalid_pipeline("CUDA image width exceeds u32"))?,
+            height: u32::try_from(input_height)
+                .map_err(|_| invalid_pipeline("CUDA image height exceeds u32"))?,
+        };
+        let mut source_reverse_x = false;
+        let mut source_reverse_y = false;
+        let mut output_flip_x = false;
+        let mut output_flip_y = false;
+        let mut has_crop = false;
+
+        for op in augmentations {
+            let SampleKernel::Semantic(image_op) = &op.kernel else {
+                return Err(invalid_pipeline(format!(
+                    "{} cannot be lowered into the CUDA vision augmentation kernel",
+                    op.name()
+                )));
+            };
+            match image_op {
+                ImageOp::Flip(config) => {
+                    let orientation = if has_crop {
+                        (&mut output_flip_x, &mut output_flip_y)
+                    } else {
+                        (&mut source_reverse_x, &mut source_reverse_y)
+                    };
+                    match config.direction {
+                        FlipDirection::Horizontal => *orientation.0 = !*orientation.0,
+                        FlipDirection::Vertical => *orientation.1 = !*orientation.1,
+                    }
+                }
+                ImageOp::RandomHorizontalFlip(config) => {
+                    let key = op.random_key.ok_or_else(|| {
+                        invalid_pipeline("RandomHorizontalFlip has no compiled OpKey")
+                    })?;
+                    let ctx = SampleContext::with_random(sample_index, plan.random);
+                    let mut rng = ctx.stream(key);
+                    if rng.gen_bool(config.probability)? {
+                        if has_crop {
+                            output_flip_x = !output_flip_x;
+                        } else {
+                            source_reverse_x = !source_reverse_x;
+                        }
+                    }
+                }
+                ImageOp::RandomResizedCrop(config) => {
+                    if has_crop {
+                        return Err(invalid_pipeline(
+                            "CUDA fusion currently supports one RandomResizedCrop per fused batch",
+                        ));
+                    }
+                    let key = op.random_key.ok_or_else(|| {
+                        invalid_pipeline("RandomResizedCrop has no compiled OpKey")
+                    })?;
+                    let ctx = SampleContext::with_random(sample_index, plan.random);
+                    let mut rng = ctx.stream(key);
+                    let region = config.resolve(crop.width.max(1), crop.height.max(1), &mut rng);
+                    let source_width = u32::try_from(input_width)
+                        .map_err(|_| invalid_pipeline("CUDA image width exceeds u32"))?;
+                    let source_height = u32::try_from(input_height)
+                        .map_err(|_| invalid_pipeline("CUDA image height exceeds u32"))?;
+                    crop = CropRegion {
+                        x: if source_reverse_x {
+                            source_width - region.x - region.width
+                        } else {
+                            region.x
+                        },
+                        y: if source_reverse_y {
+                            source_height - region.y - region.height
+                        } else {
+                            region.y
+                        },
+                        width: region.width,
+                        height: region.height,
+                    };
+                    output_flip_x = false;
+                    output_flip_y = false;
+                    output_width = config.width as usize;
+                    output_height = config.height as usize;
+                    filter = interpolation_id(config.interpolation);
+                    has_crop = true;
+                }
+                _ => {
+                    return Err(invalid_pipeline(format!(
+                        "{} is not supported by the CUDA vision augmentation fusion",
+                        image_op.name()
+                    )));
+                }
+            }
+        }
+
+        if !has_crop {
+            output_flip_x = source_reverse_x;
+            output_flip_y = source_reverse_y;
+            source_reverse_x = false;
+            source_reverse_y = false;
+        }
+        params.extend_from_slice(&[
+            crop.x,
+            crop.y,
+            crop.width,
+            crop.height,
+            u32::from(source_reverse_x),
+            u32::from(source_reverse_y),
+            u32::from(output_flip_x),
+            u32::from(output_flip_y),
+        ]);
+    }
+    Ok((output_height, output_width, params, filter))
+}
+
+#[cfg(feature = "cuda")]
+fn interpolation_id(interpolation: crate::transforms::InterpolationMode) -> i32 {
+    match interpolation {
+        crate::transforms::InterpolationMode::Nearest => 0,
+        crate::transforms::InterpolationMode::Bilinear => 1,
+        crate::transforms::InterpolationMode::Bicubic => 2,
+        crate::transforms::InterpolationMode::Lanczos3 => 3,
     }
 }
 

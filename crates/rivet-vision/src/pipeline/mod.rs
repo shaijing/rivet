@@ -17,6 +17,8 @@ mod tests {
     use crate::sample::image::{DecodedSample, EncodedImageSample, ImageAxisOrder};
     use crate::source::ImageSource;
     use crate::transforms::Point2;
+    #[cfg(feature = "cuda")]
+    use crate::transforms::{InterpolationMode, RandomResizedCropConfig};
     use arrow_buffer::Buffer;
     use rivet_core::{DType, Device, Tensor};
     use rivet_data::dataset::Dataset;
@@ -96,6 +98,30 @@ mod tests {
         } else {
             ImageSource::from_decoded(dataset)
         }
+    }
+
+    #[cfg(feature = "cuda")]
+    fn spatial_dense_source() -> ImageSource {
+        let mut images = Vec::with_capacity(5 * 4 * 4 * 3);
+        for index in 0..5u8 {
+            for y in 0..4u8 {
+                for x in 0..4u8 {
+                    images.extend_from_slice(&[
+                        index * 17 + y * 13 + x * 3,
+                        index * 11 + y * 7 + x * 5,
+                        index * 5 + y * 3 + x * 9,
+                    ]);
+                }
+            }
+        }
+        let dataset = Arc::new(
+            DenseImageMemoryDataset::new(
+                Tensor::from_vec(images, [5, 4, 4, 3], &Device::Cpu).unwrap(),
+                Tensor::from_vec((0i64..5).collect(), [5], &Device::Cpu).unwrap(),
+            )
+            .unwrap(),
+        );
+        ImageSource::from_dense_decoded(dataset)
     }
 
     fn compile_err(pipeline: ImagePipeline) -> String {
@@ -1193,6 +1219,183 @@ mod tests {
         }
         assert_eq!(batch.images.to_vec::<u8>().unwrap(), [255, 0, 0]);
         assert_eq!(batch.labels.to_vec::<i64>().unwrap(), [7]);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_sink_runs_fused_nhwc_normalize_to_nchw_batch_kernel() {
+        let Ok(_device) = Device::cuda(0) else {
+            eprintln!("skipping CUDA fused vision test because device 0 is unavailable");
+            return;
+        };
+        let mean = vec![0.5, 0.25, 0.0];
+        let std = vec![0.5, 0.5, 1.0];
+        let cpu_pipeline = decoded_stub()
+            .normalize(mean.clone(), std.clone())
+            .hwc_to_chw()
+            .batch(1, false);
+        let mut cpu_loader = cpu_pipeline.clone().compile().unwrap();
+        let cpu_batch = cpu_loader.next_batch().unwrap().unwrap();
+
+        let mut cuda_loader = cpu_pipeline.cuda_sink(0).compile().unwrap();
+        let physical = cuda_loader.physical_explain().unwrap();
+        let transfer_at = physical.find("Transfer(H2D)").unwrap();
+        let kernel_at = physical.find("BatchKernel lane=Device").unwrap();
+        assert!(transfer_at < kernel_at, "{physical}");
+        assert_eq!(physical.matches("Transfer(H2D)").count(), 1, "{physical}");
+
+        let cuda_batch = cuda_loader.next_batch().unwrap().unwrap();
+        assert_eq!(cuda_batch.images.dims(), [1, 3, 1, 1]);
+        assert_eq!(cuda_batch.images.dtype(), DType::F32);
+        assert_eq!(cuda_batch.axis_order, ImageAxisOrder::Chw);
+        assert!(cuda_batch.images.device().is_cuda());
+        if let Device::Cuda(device) = cuda_batch.images.device() {
+            let stats = device.debug_stats();
+            assert_eq!(stats.kernel_launch_count, 1, "{stats:?}");
+            assert_eq!(
+                stats.h2d_count, 4,
+                "image + label + scale + bias: {stats:?}"
+            );
+        }
+        let cpu_values = cpu_batch.images.to_vec::<f32>().unwrap();
+        let cuda_values = cuda_batch.images.to_vec::<f32>().unwrap();
+        for (actual, expected) in cuda_values.iter().zip(cpu_values) {
+            assert!((actual - expected).abs() <= 1e-6, "{actual} != {expected}");
+        }
+        assert_eq!(cuda_batch.labels.to_vec::<i64>().unwrap(), [7]);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_sink_fuses_semantic_flip_crop_resize_and_normalize_for_the_batch() {
+        let Ok(_device) = Device::cuda(0) else {
+            eprintln!("skipping CUDA augmentation test because device 0 is unavailable");
+            return;
+        };
+        let fallback = decoded_stub()
+            .random_horizontal_flip(1.0)
+            .random_resized_crop(2, 2)
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .hwc_to_chw()
+            .batch(1, false)
+            .cuda_sink(0)
+            .compile()
+            .unwrap();
+        assert_eq!(fallback.plan.sample_op_count(), 2);
+        assert_eq!(fallback.plan.first_batch_op_name(), Some("NormalizeToChw"));
+
+        let mean = vec![0.5, 0.25, 0.0];
+        let std = vec![0.5, 0.5, 1.0];
+        let pipeline = ImagePipeline::from_source(spatial_dense_source())
+            .random_horizontal_flip(1.0)
+            .random_resized_crop(2, 2)
+            .normalize(mean, std)
+            .hwc_to_chw()
+            .batch(2, false);
+
+        let mut cpu_loader = pipeline.clone().compile().unwrap();
+        let cpu_batch = cpu_loader.next_batch().unwrap().unwrap();
+        let mut cuda_loader = pipeline.cuda_sink(0).compile().unwrap();
+        assert_eq!(cuda_loader.plan.sample_op_count(), 0);
+        assert_eq!(
+            cuda_loader.plan.first_batch_op_name(),
+            Some("VisionAugmentNormalizeToChw")
+        );
+        let explanation = cuda_loader.physical_explain().unwrap();
+        assert_eq!(
+            explanation.matches("Transfer(H2D)").count(),
+            1,
+            "{explanation}"
+        );
+
+        let cuda_batch = cuda_loader.next_batch().unwrap().unwrap();
+        assert_eq!(cuda_batch.images.dims(), [2, 3, 2, 2]);
+        assert_eq!(cuda_batch.images.dtype(), DType::F32);
+        assert_eq!(cuda_batch.axis_order, ImageAxisOrder::Chw);
+        assert!(cuda_batch.images.device().is_cuda());
+        if let Device::Cuda(device) = cuda_batch.images.device() {
+            let stats = device.debug_stats();
+            assert_eq!(stats.kernel_launch_count, 1, "{stats:?}");
+            assert_eq!(
+                stats.h2d_count, 5,
+                "image + labels + semantic params + scale + bias: {stats:?}"
+            );
+        }
+        let cpu_values = cpu_batch.images.to_vec::<f32>().unwrap();
+        let cuda_values = cuda_batch.images.to_vec::<f32>().unwrap();
+        assert_eq!(cpu_values.len(), cuda_values.len());
+        for (actual, expected) in cuda_values.iter().zip(cpu_values) {
+            assert!((actual - expected).abs() <= 1e-6, "{actual} != {expected}");
+        }
+        assert_eq!(cuda_batch.labels.to_vec::<i64>().unwrap(), [0, 1]);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_random_parameters_match_cpu_across_workers_and_shuffled_sample_indices() {
+        let Ok(_device) = Device::cuda(0) else {
+            eprintln!("skipping CUDA random parity test because device 0 is unavailable");
+            return;
+        };
+        let source = spatial_dense_source();
+        let configure = |workers, interpolation| {
+            ImagePipeline::from_source(source.clone())
+                .resize(4, 4)
+                .random_horizontal_flip(0.5)
+                .random_resized_crop_with_config(
+                    RandomResizedCropConfig::new(3, 2).with_interpolation(interpolation),
+                )
+                .horizontal_flip()
+                .vertical_flip()
+                .normalize(vec![0.2, 0.3, 0.4], vec![0.7, 0.8, 0.9])
+                .hwc_to_chw()
+                .shuffle(71)
+                .seed(0xB47C_09D1)
+                .epoch(6)
+                .workers(workers)
+                .batch(2, false)
+        };
+        let collect = |mut loader: crate::runtime::ImageDataLoader| {
+            let mut batches = Vec::new();
+            while let Some(batch) = loader.next_batch().unwrap() {
+                batches.push(batch);
+            }
+            batches
+        };
+        for interpolation in [
+            InterpolationMode::Nearest,
+            InterpolationMode::Bilinear,
+            InterpolationMode::Bicubic,
+            InterpolationMode::Lanczos3,
+        ] {
+            let inline = collect(configure(0, interpolation).compile().unwrap());
+            let worker_cpu = collect(configure(3, interpolation).compile().unwrap());
+            let cuda = collect(configure(3, interpolation).cuda_sink(0).compile().unwrap());
+            assert_eq!(inline.len(), worker_cpu.len());
+            assert_eq!(inline.len(), cuda.len());
+            for ((reference, worker), device) in inline.iter().zip(&worker_cpu).zip(&cuda) {
+                assert_eq!(
+                    reference.labels.to_vec::<i64>().unwrap(),
+                    worker.labels.to_vec::<i64>().unwrap()
+                );
+                assert_eq!(
+                    reference.labels.to_vec::<i64>().unwrap(),
+                    device.labels.to_vec::<i64>().unwrap()
+                );
+                assert_eq!(&reference.images.dims()[1..], [3, 2, 3]);
+                let expected = reference.images.to_vec::<f32>().unwrap();
+                assert_eq!(expected, worker.images.to_vec::<f32>().unwrap());
+                let actual = device.images.to_vec::<f32>().unwrap();
+                assert_eq!(expected.len(), actual.len());
+                for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+                    assert!(
+                        (actual - expected).abs() <= 1e-6,
+                        "{interpolation:?}, labels={:?}, offset={index}, CUDA={actual}, CPU={expected}",
+                        reference.labels.to_vec::<i64>().unwrap()
+                    );
+                }
+            }
+        }
     }
 
     #[cfg(feature = "cuda")]
