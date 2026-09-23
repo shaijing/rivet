@@ -99,20 +99,22 @@
 
 任务：
 
-- [ ] 定义 optimizer pass protocol，返回 changed 和诊断信息。
-- [ ] 支持 pass 读取/写入 property annotation、替换节点、更新 root。
+- [x] 定义 optimizer pass protocol，返回 changed 和诊断信息。
+- [x] 支持 pass 读取/写入 property annotation、替换节点、更新 root。
 - [ ] 实现 canonicalization、validation/property inference、no-op elimination 和 dead-node elimination。
-- [ ] 实现有上限的 fixed-point runner；无变化时提前结束，超限时报出诊断。
-- [ ] 固定顺序为 canonicalization → inference/validation → simplify → pushdown/rewrite → fusion discovery → placement。
+- [x] 实现有上限的 fixed-point runner；无变化时提前结束，超限时报出诊断。
+- [x] 固定顺序为 canonicalization → inference/validation → simplify → pushdown/rewrite → fusion discovery → placement。
 - [ ] placement 前完成语义 rewrite；placement 后如需改写必须显式触发重规划。
 - [ ] 将 Normalize + Layout 现有融合迁移为正式 FusionGroup rule。
 - [ ] 评估 Convert + Normalize、Convert + Normalize + Layout、Crop + Resize、Flip + Normalize 等融合，逐项记录 legality 和 benchmark 结果。
 - [ ] 实现 late dtype promotion、合法的 crop/resize 提前和 Skip/Take/Shuffle source pushdown。
 - [ ] 每条 rewrite 明确 dtype、shape、layout、随机数和数值语义前置条件。
-- [ ] 定义最小 LogicalOp 扩展协议和 PlanRegistry；generic optimizer 不 downcast 具体 VisionOp。
+- [x] 定义最小 type-erased logical payload 协议和 PlanRegistry；generic optimizer 不 downcast 具体 VisionOp。
 - [ ] domain crate 通过显式 plugin 注册 property inference、rewrite、fusion 和 physical candidate。
-- [ ] 禁止依赖 inventory、linkme 或全局 mutable registry；由应用 composition root 显式组装插件。
-- [ ] 为 plan 前后 snapshots、rewrite legality、fixed-point 和 fusion discovery 增加测试。
+- [x] 禁止依赖 inventory、linkme 或全局 mutable registry；由应用 composition root 显式组装插件。
+- [x] 为 plan 前后 snapshots、rewrite legality、fixed-point 和 fusion discovery 增加测试。
+
+当前落地范围：通用 pass、registry、属性注解读写、有限 fixed-point、结构验证、恒等 Layout 消除和不可达节点清理已接入 vision compile；Normalize + Layout 通过显式 fusion rule 记录 legality，物理 compiler 继续使用已有 fused kernel。late dtype promotion、几何/source pushdown、其他融合及对应基准数据、placement 后重规划和 physical candidate 的 vision 注册仍待实现。
 
 验收门槛：
 

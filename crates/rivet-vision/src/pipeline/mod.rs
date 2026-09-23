@@ -3,6 +3,7 @@ mod compile;
 pub mod inference;
 mod logical;
 pub mod op;
+mod optimizer;
 mod transform;
 
 pub use builder::ImagePipeline;
@@ -821,6 +822,41 @@ mod tests {
         assert_eq!(restored.runtime.prefetch_batches, 4);
         assert_eq!(restored.epoch, 7);
         assert_eq!(restored.global_seed, Some(91));
+    }
+
+    #[test]
+    fn optimizer_discovers_legal_normalize_layout_fusion() {
+        let pipeline = stub(4)
+            .decode_image()
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .hwc_to_chw()
+            .batch(2, false);
+        let mut plan = pipeline.to_logical_plan();
+        let context = super::optimizer::optimize_vision_plan(&mut plan, 0).unwrap();
+        assert!(context.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "fusion.legal" && diagnostic.message.contains("normalize-layout")
+        }));
+        assert!(
+            context
+                .snapshots
+                .iter()
+                .any(|(name, _)| name == "fusion-discovery")
+        );
+    }
+
+    #[test]
+    fn optimizer_rejects_normalize_layout_fusion_after_worker_sample_ops() {
+        let pipeline = stub(4)
+            .decode_image()
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .hwc_to_chw()
+            .workers(2)
+            .batch(2, false);
+        let mut plan = pipeline.to_logical_plan();
+        let context = super::optimizer::optimize_vision_plan(&mut plan, 2).unwrap();
+        assert!(context.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "fusion.illegal" && diagnostic.message.contains("normalize-layout")
+        }));
     }
 
     #[test]

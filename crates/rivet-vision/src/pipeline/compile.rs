@@ -17,12 +17,8 @@ impl ImagePipeline {
     }
 
     pub fn compile_from(self, start: usize) -> RivetResult<ImageDataLoader> {
-        let logical = self.to_logical_plan();
-        logical
-            .infer_properties(&super::inference::VisionPropertyInference::new(
-                self.runtime.num_workers,
-            ))
-            .map_err(super::logical::inference_error)?;
+        let mut logical = self.to_logical_plan();
+        super::optimizer::optimize_vision_plan(&mut logical, self.runtime.num_workers)?;
         Self::from_logical_plan(&logical)?.compile_legacy_from(start)
     }
 

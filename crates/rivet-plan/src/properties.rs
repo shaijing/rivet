@@ -169,6 +169,14 @@ impl PropertyAnnotations {
     pub fn iter(&self) -> impl Iterator<Item = (NodeId, &ValueProperties)> {
         self.values.iter().map(|(id, properties)| (*id, properties))
     }
+
+    pub fn insert(&mut self, id: NodeId, properties: ValueProperties) -> Option<ValueProperties> {
+        self.values.insert(id, properties)
+    }
+
+    pub fn remove(&mut self, id: NodeId) -> Option<ValueProperties> {
+        self.values.remove(&id)
+    }
 }
 
 #[derive(Debug, Error)]

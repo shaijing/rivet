@@ -10,7 +10,14 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
+mod optimizer;
 mod properties;
+
+pub use optimizer::{
+    Diagnostic, FusionCandidate, FusionRule, OptimizationReport, OptimizerContext, OptimizerError,
+    OptimizerPass, PassResult, PhysicalCandidate, PhysicalCandidateProvider, PlanPlugin,
+    PlanRegistry, optimize, run_fixed_point,
+};
 
 pub use properties::{
     AxisOrder, Contiguity, DataType, DeviceClass, InferenceError, Mutability, OperatorProperties,
@@ -107,6 +114,18 @@ impl NodeInputs {
         } else {
             self.overflow.get(index - 2).copied()
         }
+    }
+
+    fn replace_input(&mut self, index: usize, input: NodeId) -> bool {
+        if index >= self.len {
+            return false;
+        }
+        if index < 2 {
+            self.inline[index] = Some(input);
+        } else {
+            self.overflow[index - 2] = input;
+        }
+        true
     }
 }
 
@@ -237,6 +256,53 @@ impl LogicalPlan {
 
     pub fn replace_node(&mut self, id: NodeId, node: LogicalNode) -> Result<(), PlanError> {
         self.arena.replace(id, node)
+    }
+
+    /// Replace all edges to `old` with `new` and update the root if necessary.
+    pub fn redirect_uses(&mut self, old: NodeId, new: NodeId) -> Result<(), PlanError> {
+        self.arena.get(old)?;
+        self.arena.get(new)?;
+        for node in &mut self.arena.nodes {
+            let positions = node
+                .inputs
+                .iter()
+                .enumerate()
+                .filter_map(|(index, input)| (input == old).then_some(index))
+                .collect::<Vec<_>>();
+            for index in positions {
+                node.inputs.replace_input(index, new);
+            }
+        }
+        if self.root == Some(old) {
+            self.root = Some(new);
+        }
+        Ok(())
+    }
+
+    /// Compact the arena to root-reachable nodes and return the old-to-new ID map.
+    /// Callers must discard node annotations after compaction because IDs change.
+    pub fn prune_unreachable(&mut self) -> Result<Vec<Option<NodeId>>, PlanError> {
+        let reachable = self.preorder()?;
+        let mut remap = vec![None; self.arena.len()];
+        for (new, old) in reachable.iter().enumerate() {
+            remap[old.index()] = Some(NodeId(new));
+        }
+        let old_nodes = std::mem::take(&mut self.arena.nodes);
+        self.arena.nodes = reachable
+            .iter()
+            .map(|old| {
+                let node = &old_nodes[old.index()];
+                let inputs = node
+                    .inputs
+                    .iter()
+                    .map(|id| remap[id.index()].expect("reachable input"));
+                LogicalNode::new(node.kind, inputs, node.payload.clone())
+            })
+            .collect();
+        self.root = self
+            .root
+            .map(|id| remap[id.index()].expect("root is reachable"));
+        Ok(remap)
     }
 
     pub fn node(&self, id: NodeId) -> Result<&LogicalNode, PlanError> {
