@@ -2,7 +2,7 @@ use super::row::read_encoded_sample;
 use super::schema::validate_schema;
 use crate::sample::image::EncodedImageSample;
 use rivet_data::dataset::lance::LanceTable;
-use rivet_data::dataset::source::{Dataset, validate_indices};
+use rivet_data::dataset::source::{AccessPattern, Dataset, SourceCapabilities, validate_indices};
 use rivet_data::errors::{DataResult, invalid_argument};
 use std::path::Path;
 use std::sync::Arc;
@@ -62,6 +62,14 @@ impl Dataset for LanceImageDataset {
 
     fn len(&self) -> usize {
         self.table.len()
+    }
+
+    fn capabilities(&self) -> SourceCapabilities {
+        SourceCapabilities {
+            access_pattern: AccessPattern::RandomAccess,
+            batched_reads: true,
+            preferred_batch_size: None,
+        }
     }
 
     fn get_many(&self, indices: &[usize]) -> DataResult<Vec<Self::Item>> {

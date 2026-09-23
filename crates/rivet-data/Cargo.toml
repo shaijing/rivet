@@ -16,7 +16,6 @@ arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-ipc.workspace = true
 bytes.workspace = true
-crossbeam-channel = "0.5"
 lance = { workspace = true, optional = true }
 memmap2.workspace = true
 serde = { version = "1.0.228", features = ["derive"] }

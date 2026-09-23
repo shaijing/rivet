@@ -1,6 +1,34 @@
 use crate::errors::{DataError, DataResult, invalid_argument};
 use std::sync::Arc;
 
+/// Storage access guarantees used by a planner to choose a read strategy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceCapabilities {
+    /// Whether arbitrary row indices may be requested, or rows must be read
+    /// in source order.
+    pub access_pattern: AccessPattern,
+    /// Whether one `get_many` call is preferable to repeated single-row reads.
+    pub batched_reads: bool,
+    /// A source-preferred maximum request size, if it has one.
+    pub preferred_batch_size: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccessPattern {
+    RandomAccess,
+    Sequential,
+}
+
+impl Default for SourceCapabilities {
+    fn default() -> Self {
+        Self {
+            access_pattern: AccessPattern::RandomAccess,
+            batched_reads: false,
+            preferred_batch_size: None,
+        }
+    }
+}
+
 /// A modality-agnostic dataset: storage backends implement this once per
 /// item type, and typed pipelines consume the associated item.
 ///
@@ -10,6 +38,12 @@ pub trait Dataset: Send + Sync {
     type Item: Send;
 
     fn len(&self) -> usize;
+
+    /// Describe storage access so planners can select a read strategy without
+    /// depending on a concrete dataset implementation.
+    fn capabilities(&self) -> SourceCapabilities {
+        SourceCapabilities::default()
+    }
 
     /// Fetch one logical batch of rows.
     ///
@@ -73,6 +107,10 @@ impl<T: Send> Source<T> {
 
     pub fn len(&self) -> usize {
         self.inner.len()
+    }
+
+    pub fn capabilities(&self) -> SourceCapabilities {
+        self.inner.capabilities()
     }
 
     pub fn get(&self, index: usize) -> DataResult<T> {

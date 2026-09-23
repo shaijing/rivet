@@ -2,9 +2,9 @@
 
 mod policy;
 
-use crate::dataset::memory::MemoryDataset;
-use crate::dataset::source::Dataset;
-use crate::errors::{DataResult, invalid_argument};
+use rivet_data::dataset::memory::MemoryDataset;
+use rivet_data::dataset::source::Dataset;
+use rivet_data::errors::{DataResult, invalid_argument};
 
 pub use policy::{CacheConfig, CacheLevel, CachePolicy, DEFAULT_CHUNK_SIZE};
 
@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn rejects_zero_chunk_size() {
-        let dataset = crate::dataset::MemoryDataset::new(vec![1usize]);
+        let dataset = rivet_data::dataset::MemoryDataset::new(vec![1usize]);
 
         assert!(
             materialize_to_memory(&dataset, 0)

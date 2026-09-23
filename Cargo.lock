@@ -4893,7 +4893,6 @@ dependencies = [
  "arrow-buffer",
  "arrow-ipc",
  "bytes",
- "crossbeam-channel",
  "lance",
  "memmap2",
  "serde",
@@ -4903,10 +4902,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "rivet-exec"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "rivet-core",
+ "rivet-data",
+ "rivet-plan",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "rivet-kernels"
 version = "0.1.0"
 dependencies = [
  "cudaforge",
+]
+
+[[package]]
+name = "rivet-plan"
+version = "0.1.0"
+dependencies = [
+ "rivet-core",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -4938,6 +4956,7 @@ dependencies = [
  "num_cpus",
  "rivet-core",
  "rivet-data",
+ "rivet-exec",
  "thiserror 2.0.20",
  "tokio",
  "walkdir",

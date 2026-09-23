@@ -9,7 +9,7 @@ use crate::sample::image::ImageAxisOrder;
 use crate::sample::image::{DecodedSample, EncodedImageSample, ImageBatch, ImageSample};
 use rivet_core::DType;
 use rivet_data::dataset::{Dataset, Source};
-use rivet_data::materialize_to_memory;
+use rivet_exec::cache::materialize_to_memory;
 use std::sync::Arc;
 
 /// A typed image source that keeps the pipeline's initial representation

@@ -13,7 +13,7 @@ pub use manifest::{
     LEGACY_MANIFEST_FILE_NAME, MANIFEST_FILE_NAME, SplitManifest, manifest_path,
 };
 pub use memory::MemoryDataset;
-pub use source::{Dataset, Source};
+pub use source::{AccessPattern, Dataset, Source, SourceCapabilities};
 
 /// Transitional aliases for the pre-P9 dataset namespace.
 ///

@@ -8,10 +8,10 @@ use crate::errors::RivetError;
 use crate::sample::image::{DecodedSample, ImageSample};
 
 pub(crate) type ImageWorkerPool =
-    rivet_data::runtime::WorkerPool<ImageSample, DecodedSample, RivetError>;
-pub(crate) type ImagePrefetchCoordinator = rivet_data::runtime::PrefetchCoordinator<DecodedSample>;
+    rivet_exec::runtime::WorkerPool<ImageSample, DecodedSample, RivetError>;
+pub(crate) type ImagePrefetchCoordinator = rivet_exec::runtime::PrefetchCoordinator<DecodedSample>;
 
-pub(crate) fn runtime_error(error: rivet_data::runtime::RuntimeError) -> RivetError {
+pub(crate) fn runtime_error(error: rivet_exec::runtime::RuntimeError) -> RivetError {
     RivetError::Worker(error.to_string())
 }
 
