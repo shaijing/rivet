@@ -20,15 +20,47 @@ pub use optimizer::{
     PlanRegistry, optimize, run_fixed_point,
 };
 pub use placement::{
-    CostEstimate, KernelCapabilities, KernelCapability, KernelClass, KernelRequirements,
-    MachineProfile, PlacementCandidate, PlacementError, PlacementPlan, place,
+    CostEstimate, DeviceDescriptor, DeviceLocation, KernelCapabilities, KernelCapability,
+    KernelClass, KernelCostHint, KernelRequirements, KernelSet, MachineProfile, PlacementCandidate,
+    PlacementError, PlacementPlan, TransferBoundary, TransferKind, place,
 };
 
 pub use properties::{
-    AxisOrder, Contiguity, DataType, DeviceClass, InferenceError, Mutability, OperatorProperties,
-    OperatorStage, PropertyAnnotations, PropertyInference, Representation, Residency, ShapeDim,
-    ValueGranularity, ValueProperties, ValueShape,
+    AxisOrder, Contiguity, DataType, DeviceClass, DomainProperties, DomainPropertiesValue,
+    InferenceError, Mutability, OperatorProperties, OperatorStage, PropertyAnnotations,
+    PropertyInference, Representation, Residency, ShapeDim, ValueGranularity, ValueProperties,
+    ValueShape,
 };
+
+/// Stable identity for a planning domain. IDs are coordinated by the
+/// application composition root and used for comparisons in planning code;
+/// names are retained separately for diagnostics and explain output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DomainId(u16);
+
+impl DomainId {
+    pub const fn new(id: u16) -> Self {
+        Self(id)
+    }
+
+    pub const fn index(self) -> u16 {
+        self.0
+    }
+}
+
+/// Stable identity for a semantic operation within its planning domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OpId(u32);
+
+impl OpId {
+    pub const fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+}
 
 /// Device selected by an explicit logical boundary. This contains only stable
 /// planning data; runtime device/context/queue handles are resolved later.
@@ -80,6 +112,10 @@ impl PlanPayload for DeviceCut {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    fn domain_id(&self) -> Option<DomainId> {
+        Some(DomainId::new(0))
+    }
 }
 
 /// Type-erased semantic value carried by a logical node or plan context.
@@ -87,6 +123,28 @@ pub trait PlanPayload: Any + Send + Sync {
     fn domain(&self) -> &'static str;
     fn name(&self) -> &'static str;
     fn as_any(&self) -> &dyn Any;
+
+    /// Numeric identity for domain-aware planning. Generic payloads may leave
+    /// this unset while they are being migrated to the registry protocol.
+    fn domain_id(&self) -> Option<DomainId> {
+        None
+    }
+
+    /// Numeric semantic-op identity, when this payload represents a domain op.
+    fn op_id(&self) -> Option<OpId> {
+        None
+    }
+
+    fn as_domain_op(&self) -> Option<&dyn DomainOp> {
+        None
+    }
+}
+
+/// Semantic operation protocol implemented by domain crates. Implementations
+/// describe planning semantics only; backend kernels and runtime handles belong
+/// to lowering and execution layers.
+pub trait DomainOp: PlanPayload {
+    fn infer_properties(&self, inputs: &[ValueProperties]) -> Result<ValueProperties, String>;
 }
 
 /// Stable arena index. IDs are local to the plan that created them.

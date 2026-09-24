@@ -803,7 +803,7 @@ mod tests {
         let explain = logical.explain().unwrap();
         assert!(explain.contains("LogicalPlan(root="));
         assert!(explain.contains("Source vision::Source"));
-        assert!(explain.contains("Op vision::ImageOp"));
+        assert!(explain.contains("Op vision::Resize"));
         assert!(explain.contains("Batch vision::BatchConfig"));
         assert!(explain.contains("Sink <-"));
 

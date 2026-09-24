@@ -4,8 +4,8 @@ use std::any::Any;
 use std::sync::Arc;
 
 use rivet_plan::{
-    DeviceCut, InferenceError, LogicalNode, LogicalPlan, NodeId, NodeKind, PlanError, PlanPayload,
-    PropertyAnnotations,
+    DeviceCut, DomainId, DomainOp, InferenceError, LogicalNode, LogicalPlan, NodeId, NodeKind,
+    OpId, PlanError, PlanPayload, PropertyAnnotations, ValueProperties,
 };
 
 use super::builder::ImagePipeline;
@@ -31,6 +31,9 @@ impl PlanPayload for ImagePipelineContext {
     fn as_any(&self) -> &dyn Any {
         self
     }
+    fn domain_id(&self) -> Option<DomainId> {
+        Some(crate::VISION_DOMAIN_ID)
+    }
 }
 
 macro_rules! payload_impl {
@@ -45,14 +48,50 @@ macro_rules! payload_impl {
             fn as_any(&self) -> &dyn Any {
                 self
             }
+            fn domain_id(&self) -> Option<DomainId> {
+                Some(crate::VISION_DOMAIN_ID)
+            }
         }
     };
 }
 
 payload_impl!(SourceOp, "Source");
 payload_impl!(IndexOp, "IndexOp");
-payload_impl!(ImageOp, "ImageOp");
 payload_impl!(BatchConfig, "BatchConfig");
+
+impl PlanPayload for ImageOp {
+    fn domain(&self) -> &'static str {
+        "vision"
+    }
+    fn name(&self) -> &'static str {
+        self.name()
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn domain_id(&self) -> Option<DomainId> {
+        Some(crate::VISION_DOMAIN_ID)
+    }
+    fn op_id(&self) -> Option<OpId> {
+        Some(OpId::new(self.planning_op_id()))
+    }
+    fn as_domain_op(&self) -> Option<&dyn DomainOp> {
+        Some(self)
+    }
+}
+
+impl DomainOp for ImageOp {
+    fn infer_properties(&self, inputs: &[ValueProperties]) -> Result<ValueProperties, String> {
+        let [input] = inputs else {
+            return Err(format!(
+                "vision {} requires one input, got {}",
+                self.name(),
+                inputs.len()
+            ));
+        };
+        super::inference::infer_image_op(self, input).map_err(|error| error.to_string())
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct FusionGroupPayload {
@@ -69,6 +108,9 @@ impl PlanPayload for FusionGroupPayload {
     }
     fn as_any(&self) -> &dyn Any {
         self
+    }
+    fn domain_id(&self) -> Option<DomainId> {
+        Some(crate::VISION_DOMAIN_ID)
     }
 }
 

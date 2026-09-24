@@ -12,8 +12,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use rivet_core::{DType, Tensor};
-use rivet_plan::{LogicalNode, LogicalPlan, NodeId, PlanError, ValueGranularity};
+use rivet_plan::{DeviceClass, LogicalNode, LogicalPlan, NodeId, PlanError, ValueGranularity};
 
+use crate::memory::KernelMemoryRequirements;
 use crate::runtime::{RuntimeError, RuntimeResult};
 
 /// Stable index into a [`PhysicalGraph`].
@@ -28,12 +29,12 @@ impl PhysNodeId {
 
 /// Runtime lane selected during physical planning. Device handles and streams
 /// remain runtime-owned and are deliberately absent from this description.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ExecutionLane {
     Io,
     Cpu,
     Transfer,
-    Device { ordinal: usize },
+    Device { class: DeviceClass, ordinal: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -41,6 +42,18 @@ pub enum KernelStage {
     Decode,
     Sample,
     Batch,
+}
+
+/// Where a physical kernel exposes parallel work. This lets the scheduler
+/// distinguish parallelizing samples from parallelizing one batch or device
+/// invocation, and helps avoid nested CPU oversubscription.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ParallelismClass {
+    #[default]
+    Serial,
+    AcrossSamples,
+    WithinBatch,
+    Device,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -128,10 +141,10 @@ impl Morsel {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum MorselResidency {
     Host,
-    Device { ordinal: usize },
+    Device { class: DeviceClass, ordinal: usize },
     Unknown,
 }
 
@@ -153,6 +166,9 @@ pub struct PhysicalNodeSpec {
     pub transfer_target: Option<ExecutionLane>,
     /// Estimated payload size from placement cost analysis, when known.
     pub estimated_transfer_bytes: Option<u64>,
+    pub parallelism: ParallelismClass,
+    pub memory_requirements: KernelMemoryRequirements,
+    pub estimated_output_bytes: Option<usize>,
 }
 
 impl PhysicalNodeSpec {
@@ -163,6 +179,9 @@ impl PhysicalNodeSpec {
             operator: None,
             transfer_target: None,
             estimated_transfer_bytes: None,
+            parallelism: ParallelismClass::Serial,
+            memory_requirements: KernelMemoryRequirements::default(),
+            estimated_output_bytes: None,
         }
     }
 
@@ -178,6 +197,21 @@ impl PhysicalNodeSpec {
 
     pub fn with_estimated_transfer_bytes(mut self, bytes: u64) -> Self {
         self.estimated_transfer_bytes = Some(bytes);
+        self
+    }
+
+    pub fn with_parallelism(mut self, parallelism: ParallelismClass) -> Self {
+        self.parallelism = parallelism;
+        self
+    }
+
+    pub fn with_memory_requirements(mut self, requirements: KernelMemoryRequirements) -> Self {
+        self.memory_requirements = requirements;
+        self
+    }
+
+    pub fn with_estimated_output_bytes(mut self, bytes: usize) -> Self {
+        self.estimated_output_bytes = Some(bytes);
         self
     }
 }
@@ -204,6 +238,9 @@ pub struct PhysicalNode {
     pub operator: Option<Arc<dyn PhysicalOperator>>,
     pub transfer_target: Option<ExecutionLane>,
     pub estimated_transfer_bytes: Option<u64>,
+    pub parallelism: ParallelismClass,
+    pub memory_requirements: KernelMemoryRequirements,
+    pub estimated_output_bytes: Option<usize>,
 }
 
 impl fmt::Debug for PhysicalNode {
@@ -218,6 +255,9 @@ impl fmt::Debug for PhysicalNode {
             .field("operator", &self.operator.as_ref().map(|op| op.name()))
             .field("transfer_target", &self.transfer_target)
             .field("estimated_transfer_bytes", &self.estimated_transfer_bytes)
+            .field("parallelism", &self.parallelism)
+            .field("memory_requirements", &self.memory_requirements)
+            .field("estimated_output_bytes", &self.estimated_output_bytes)
             .finish()
     }
 }
@@ -268,6 +308,9 @@ impl PhysicalGraph {
             operator: spec.operator,
             transfer_target: spec.transfer_target,
             estimated_transfer_bytes: spec.estimated_transfer_bytes,
+            parallelism: spec.parallelism,
+            memory_requirements: spec.memory_requirements,
+            estimated_output_bytes: spec.estimated_output_bytes,
         });
         id
     }
@@ -309,11 +352,11 @@ impl PhysicalGraph {
             if consumer.index() >= original_len {
                 continue;
             }
-            let consumer_lane = self.node(consumer)?.lane;
+            let consumer_lane = self.node(consumer)?.lane.clone();
             let inputs = self.node(consumer)?.inputs.clone();
             for (input_position, input) in inputs.into_iter().enumerate() {
                 let producer_lane = output_lane(self.node(input)?);
-                let Some(kind) = transfer_for_lanes(producer_lane, consumer_lane) else {
+                let Some(kind) = transfer_for_lanes(&producer_lane, &consumer_lane) else {
                     continue;
                 };
                 let transfer = self.add_node(
@@ -322,7 +365,7 @@ impl PhysicalGraph {
                         PhysicalNodeKind::Transfer(kind),
                         ExecutionLane::Transfer,
                     )
-                    .with_transfer_target(consumer_lane),
+                    .with_transfer_target(consumer_lane.clone()),
                     [input],
                 );
                 self.nodes[consumer.index()].inputs[input_position] = transfer;
@@ -438,8 +481,10 @@ impl PhysicalGraph {
                     }
                     let source_lane = output_lane(self.node(node.inputs[0])?);
                     let expected = transfer_for_lanes(
-                        source_lane,
-                        node.transfer_target.expect("checked transfer target"),
+                        &source_lane,
+                        node.transfer_target
+                            .as_ref()
+                            .expect("checked transfer target"),
                     );
                     if expected
                         != Some(match node.kind {
@@ -470,8 +515,11 @@ impl PhysicalGraph {
             for input in &node.inputs {
                 let producer = self.node(*input)?;
                 if let PhysicalNodeKind::Transfer(_) = producer.kind {
-                    let target = producer.transfer_target.expect("validated transfer target");
-                    if !lanes_match(target, node.lane) {
+                    let target = producer
+                        .transfer_target
+                        .as_ref()
+                        .expect("validated transfer target");
+                    if !lanes_match(target, &node.lane) {
                         return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
                             "transfer p{} targets {target:?}, but consumer p{} runs on {:?}",
                             producer.id.index(),
@@ -514,6 +562,7 @@ impl PhysicalGraph {
                 .unwrap_or_default();
             let transfer_target = node
                 .transfer_target
+                .as_ref()
                 .map(|target| format!(" target={target:?}"))
                 .unwrap_or_default();
             let transfer_estimate = node
@@ -521,10 +570,11 @@ impl PhysicalGraph {
                 .map(|bytes| format!(" estimated_transfer_bytes={bytes}"))
                 .unwrap_or_default();
             out.push_str(&format!(
-                "  p{} {} lane={:?}{}{}{}{} <- [{}] last_uses={}\n",
+                "  p{} {} lane={:?} parallelism={:?}{}{}{}{} <- [{}] last_uses={}\n",
                 node.id.index(),
                 node.kind,
                 node.lane,
+                node.parallelism,
                 logical,
                 operator,
                 transfer_target,
@@ -682,7 +732,7 @@ impl PhysicalGraph {
     }
 }
 
-fn transfer_for_lanes(from: ExecutionLane, to: ExecutionLane) -> Option<TransferKind> {
+fn transfer_for_lanes(from: &ExecutionLane, to: &ExecutionLane) -> Option<TransferKind> {
     match (from, to) {
         (ExecutionLane::Cpu | ExecutionLane::Io, ExecutionLane::Device { .. }) => {
             Some(TransferKind::HostToDevice)
@@ -690,25 +740,39 @@ fn transfer_for_lanes(from: ExecutionLane, to: ExecutionLane) -> Option<Transfer
         (ExecutionLane::Device { .. }, ExecutionLane::Cpu | ExecutionLane::Io) => {
             Some(TransferKind::DeviceToHost)
         }
-        (ExecutionLane::Device { ordinal: from }, ExecutionLane::Device { ordinal: to })
-            if from != to =>
-        {
-            Some(TransferKind::DeviceToDevice)
-        }
+        (
+            ExecutionLane::Device {
+                class: from_class,
+                ordinal: from,
+            },
+            ExecutionLane::Device {
+                class: to_class,
+                ordinal: to,
+            },
+        ) if from != to || from_class != to_class => Some(TransferKind::DeviceToDevice),
         _ => None,
     }
 }
 
 fn output_lane(node: &PhysicalNode) -> ExecutionLane {
-    node.transfer_target.unwrap_or(node.lane)
+    node.transfer_target
+        .clone()
+        .unwrap_or_else(|| node.lane.clone())
 }
 
-fn lanes_match(lhs: ExecutionLane, rhs: ExecutionLane) -> bool {
+fn lanes_match(lhs: &ExecutionLane, rhs: &ExecutionLane) -> bool {
     match (lhs, rhs) {
         (ExecutionLane::Cpu | ExecutionLane::Io, ExecutionLane::Cpu | ExecutionLane::Io) => true,
-        (ExecutionLane::Device { ordinal: lhs }, ExecutionLane::Device { ordinal: rhs }) => {
-            lhs == rhs
-        }
+        (
+            ExecutionLane::Device {
+                class: lhs_class,
+                ordinal: lhs,
+            },
+            ExecutionLane::Device {
+                class: rhs_class,
+                ordinal: rhs,
+            },
+        ) => lhs == rhs && lhs_class == rhs_class,
         _ => false,
     }
 }
@@ -827,20 +891,20 @@ impl Default for PhysicalProfiler {
     }
 }
 
-/// Executes attached operators along the initial single-path physical graph.
-/// The graph representation already tracks DAG edges and last uses; fan-out
-/// execution will be enabled once value ownership policies are specified.
+/// Executes attached operators in topological order. Fan-out shares the
+/// morsel's cloneable values; domain operators that mutate backing storage
+/// must use copy-on-write or produce a fresh output.
 pub struct GraphExecutor;
 
 impl GraphExecutor {
     pub fn execute(
         graph: &mut PhysicalGraph,
-        mut morsel: Morsel,
+        morsel: Morsel,
         profiler: &PhysicalProfiler,
     ) -> Result<Morsel, PhysicalGraphError> {
         graph.validate()?;
         let order = graph.topological_order()?;
-        let mut consumers = vec![0usize; graph.nodes.len()];
+        let mut remaining_uses = vec![0usize; graph.nodes.len()];
         for node in &graph.nodes {
             if node.inputs.len() > 1 {
                 return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
@@ -850,30 +914,47 @@ impl GraphExecutor {
                 )));
             }
             for input in &node.inputs {
-                consumers[input.0] += 1;
+                remaining_uses[input.index()] += 1;
             }
         }
-        if consumers.iter().any(|count| *count > 1) {
-            return Err(PhysicalGraphError::UnsupportedExecutionShape(
-                "fan-out requires a value-specific clone policy".to_string(),
-            ));
-        }
+        let root = graph.root()?;
+        remaining_uses[root.index()] += 1;
+        let mut outputs = vec![None::<Morsel>; graph.nodes.len()];
         for id in order {
             let node = graph.node(id)?;
-            let Some(operator) = &node.operator else {
-                continue;
+            let input = node.inputs.first().copied();
+            let mut value = if let Some(input) = input {
+                outputs[input.index()].as_ref().cloned().ok_or_else(|| {
+                    PhysicalGraphError::UnsupportedExecutionShape(format!(
+                        "input p{} has no execution value",
+                        input.index()
+                    ))
+                })?
+            } else {
+                morsel.clone()
             };
-            let profile = profiler.is_enabled();
-            let input_bytes = profile.then_some(morsel.bytes);
-            let started = profile.then(Instant::now);
-            morsel = operator
-                .execute(morsel)
-                .map_err(PhysicalGraphError::Operator)?;
-            if let (Some(started), Some(input_bytes)) = (started, input_bytes) {
-                profiler.record(id, started.elapsed(), input_bytes, morsel.bytes);
+            if let Some(input) = input {
+                remaining_uses[input.index()] -= 1;
+                if remaining_uses[input.index()] == 0 {
+                    outputs[input.index()] = None;
+                }
             }
+            if let Some(operator) = &node.operator {
+                let profile = profiler.is_enabled();
+                let input_bytes = profile.then_some(value.bytes);
+                let started = profile.then(Instant::now);
+                value = operator
+                    .execute(value)
+                    .map_err(PhysicalGraphError::Operator)?;
+                if let (Some(started), Some(input_bytes)) = (started, input_bytes) {
+                    profiler.record(id, started.elapsed(), input_bytes, value.bytes);
+                }
+            }
+            outputs[id.index()] = Some(value);
         }
-        Ok(morsel)
+        outputs[root.index()]
+            .take()
+            .ok_or(PhysicalGraphError::MissingRoot)
     }
 }
 
@@ -936,10 +1017,10 @@ mod tests {
             explanation,
             concat!(
                 "PhysicalGraph(root=p3)\n",
-                "  p0 Source lane=Cpu logical=%0 <- [] last_uses=1\n",
-                "  p1 SampleKernel lane=Cpu logical=%1 <- [p0] last_uses=1\n",
-                "  p2 Batch lane=Cpu logical=%2 <- [p1] last_uses=1\n",
-                "  p3 Sink lane=Cpu logical=%3 <- [p2] last_uses=1\n",
+                "  p0 Source lane=Cpu parallelism=Serial logical=%0 <- [] last_uses=1\n",
+                "  p1 SampleKernel lane=Cpu parallelism=Serial logical=%1 <- [p0] last_uses=1\n",
+                "  p2 Batch lane=Cpu parallelism=Serial logical=%2 <- [p1] last_uses=1\n",
+                "  p3 Sink lane=Cpu parallelism=Serial logical=%3 <- [p2] last_uses=1\n",
             )
         );
         assert_eq!(physical.nodes()[0].last_use_count, 1);
@@ -960,7 +1041,7 @@ mod tests {
             [source],
         );
         graph.set_root(sink).unwrap();
-        let profiler = PhysicalProfiler::enabled(physical.nodes().len());
+        let profiler = PhysicalProfiler::enabled(graph.nodes().len());
         let morsel = Morsel::new(42, vec![7, 3]);
 
         let output = GraphExecutor::execute(&mut graph, morsel, &profiler).unwrap();
@@ -1049,7 +1130,13 @@ mod tests {
         );
         let sink = graph.add_node(
             None,
-            PhysicalNodeSpec::new(PhysicalNodeKind::Sink, ExecutionLane::Device { ordinal: 2 }),
+            PhysicalNodeSpec::new(
+                PhysicalNodeKind::Sink,
+                ExecutionLane::Device {
+                    class: DeviceClass::Cuda,
+                    ordinal: 2,
+                },
+            ),
             [batch],
         );
         graph.set_root(sink).unwrap();
@@ -1064,13 +1151,16 @@ mod tests {
         assert_eq!(transfer.lane, ExecutionLane::Transfer);
         assert_eq!(
             transfer.transfer_target,
-            Some(ExecutionLane::Device { ordinal: 2 })
+            Some(ExecutionLane::Device {
+                class: DeviceClass::Cuda,
+                ordinal: 2
+            })
         );
         assert_eq!(transfer.inputs, [batch]);
         assert_eq!(graph.node(batch).unwrap().last_use_count, 1);
         graph.set_transfer_estimate(transfers[0], 512).unwrap();
         assert!(graph.explain().unwrap().contains(
-            "Transfer(H2D) lane=Transfer target=Device { ordinal: 2 } estimated_transfer_bytes=512"
+            "Transfer(H2D) lane=Transfer parallelism=Serial target=Device { class: Cuda, ordinal: 2 } estimated_transfer_bytes=512"
         ));
     }
 
@@ -1099,13 +1189,25 @@ mod tests {
         graph.set_root(sink).unwrap();
         assert!(graph.validate().is_err());
         assert_eq!(
-            transfer_for_lanes(ExecutionLane::Device { ordinal: 0 }, ExecutionLane::Cpu),
+            transfer_for_lanes(
+                &ExecutionLane::Device {
+                    class: DeviceClass::Cuda,
+                    ordinal: 0,
+                },
+                &ExecutionLane::Cpu,
+            ),
             Some(TransferKind::DeviceToHost)
         );
         assert_eq!(
             transfer_for_lanes(
-                ExecutionLane::Device { ordinal: 0 },
-                ExecutionLane::Device { ordinal: 1 }
+                &ExecutionLane::Device {
+                    class: DeviceClass::Cuda,
+                    ordinal: 0,
+                },
+                &ExecutionLane::Device {
+                    class: DeviceClass::Cuda,
+                    ordinal: 1,
+                }
             ),
             Some(TransferKind::DeviceToDevice)
         );

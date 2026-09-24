@@ -9,7 +9,8 @@ use crate::sample::image::ImageAxisOrder;
 use crate::sampler::IndexSampler;
 use rivet_data::random::{OpKey, RandomContext};
 use rivet_exec::physical::{
-    ExecutionLane, KernelStage, PhysicalGraph, PhysicalLowering, PhysicalNodeKind, PhysicalNodeSpec,
+    ExecutionLane, KernelStage, ParallelismClass, PhysicalGraph, PhysicalLowering,
+    PhysicalNodeKind, PhysicalNodeSpec,
 };
 use rivet_plan::{LogicalNode, LogicalPlan, NodeId, NodeKind, OperatorStage, PropertyAnnotations};
 use std::collections::HashMap;
@@ -171,7 +172,13 @@ impl PhysicalLowering for VisionPhysicalLowering {
             }
             _ => default_lane,
         };
-        Ok(PhysicalNodeSpec::new(kind, lane))
+        let parallelism = match (kind, &lane) {
+            (_, ExecutionLane::Device { .. }) => ParallelismClass::Device,
+            (PhysicalNodeKind::Kernel(KernelStage::Sample), _) => ParallelismClass::AcrossSamples,
+            (PhysicalNodeKind::Kernel(KernelStage::Batch), _) => ParallelismClass::WithinBatch,
+            _ => ParallelismClass::Serial,
+        };
+        Ok(PhysicalNodeSpec::new(kind, lane).with_parallelism(parallelism))
     }
 }
 

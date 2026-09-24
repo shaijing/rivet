@@ -116,6 +116,9 @@ impl PlanPlugin for VisionPlanPlugin {
     fn name(&self) -> &'static str {
         "vision"
     }
+    fn domain_id(&self) -> Option<rivet_plan::DomainId> {
+        Some(crate::VISION_DOMAIN_ID)
+    }
     fn property_inference(&self) -> Option<Arc<dyn PropertyInference>> {
         Some(Arc::new(VisionPropertyInference::new(self.workers)))
     }
@@ -499,6 +502,9 @@ impl OptimizerPass for FusionDiscovery {
     fn name(&self) -> &'static str {
         "fusion-discovery"
     }
+    fn is_fusion_discovery(&self) -> bool {
+        true
+    }
     fn run(
         &self,
         _plan: &mut LogicalPlan,
@@ -747,6 +753,9 @@ impl OptimizerPass for PlacementBoundary {
     fn name(&self) -> &'static str {
         "placement-boundary"
     }
+    fn is_placement_boundary(&self) -> bool {
+        true
+    }
     fn run(
         &self,
         plan: &mut LogicalPlan,
@@ -804,13 +813,13 @@ impl PhysicalCandidateProvider for VisionPhysicalCandidates {
             }
             return Vec::new();
         };
-        if payload.domain() != "vision" {
+        if payload.domain_id() != Some(crate::VISION_DOMAIN_ID) {
             return Vec::new();
         }
         let name = match (node.kind(), payload.name()) {
             (NodeKind::Source, "Source") => "vision-source-read".to_owned(),
             (NodeKind::Index, "IndexOp") => "vision-index-sampler".to_owned(),
-            (NodeKind::Op, "ImageOp") => {
+            (NodeKind::Op, _) if payload.as_domain_op().is_some() => {
                 // Defer concrete kernel compatibility to KernelCapabilities.
                 if properties.is_none() {
                     return Vec::new();
@@ -868,8 +877,12 @@ pub(super) fn vision_kernel_capabilities() -> KernelCapabilities {
                         in_place,
                         contiguity,
                         fusion_tags: &[&str]| {
+        let display_operator = operator
+            .strip_suffix("::*")
+            .map(|domain| format!("{domain}::ImageOp"))
+            .unwrap_or_else(|| operator.to_owned());
         caps.register(KernelCapability {
-            name: format!("{operator}-cpu-{stage:?}"),
+            name: format!("{display_operator}-cpu-{stage:?}"),
             operator: operator.to_owned(),
             node_kind,
             device: cpu.clone(),
@@ -882,6 +895,7 @@ pub(super) fn vision_kernel_capabilities() -> KernelCapabilities {
             alignment_bytes: cpu_alignment,
             contiguity,
             temporary_bytes: 0,
+            cost_hint: rivet_plan::KernelCostHint::default(),
             in_place,
             parallel,
         });
@@ -907,7 +921,7 @@ pub(super) fn vision_kernel_capabilities() -> KernelCapabilities {
         &[],
     );
     register(
-        "vision::ImageOp",
+        "vision::*",
         NodeKind::Op,
         KernelClass::Sample,
         OperatorStage::Sample,
@@ -917,7 +931,7 @@ pub(super) fn vision_kernel_capabilities() -> KernelCapabilities {
         &[],
     );
     register(
-        "vision::ImageOp",
+        "vision::*",
         NodeKind::Op,
         KernelClass::Batch,
         OperatorStage::Batch,
@@ -927,7 +941,7 @@ pub(super) fn vision_kernel_capabilities() -> KernelCapabilities {
         &["Normalize", "Layout"],
     );
     register(
-        "vision::ImageOp",
+        "vision::*",
         NodeKind::Op,
         KernelClass::Sample,
         OperatorStage::Source,
@@ -988,6 +1002,7 @@ pub(super) fn vision_kernel_capabilities() -> KernelCapabilities {
         alignment_bytes: cpu_alignment,
         contiguity: Contiguity::Contiguous,
         temporary_bytes: 0,
+        cost_hint: rivet_plan::KernelCostHint::default(),
         in_place: false,
         parallel: false,
     });

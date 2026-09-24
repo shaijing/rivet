@@ -2,9 +2,9 @@
 
 use rivet_core::DType as CoreDType;
 use rivet_plan::{
-    AxisOrder, Contiguity, DataType, DeviceCut, LogicalNode, NodeKind, OperatorProperties,
-    OperatorStage, PropertyInference, Representation, Residency, ShapeDim, ValueGranularity,
-    ValueProperties, ValueShape,
+    AxisOrder, Contiguity, DataType, DeviceCut, DomainPropertiesValue, LogicalNode, NodeKind,
+    OperatorProperties, OperatorStage, PropertyInference, Representation, Residency, ShapeDim,
+    ValueGranularity, ValueProperties, ValueShape,
 };
 
 use super::logical::FusionGroupPayload;
@@ -14,6 +14,21 @@ use crate::sample::image::ImageAxisOrder;
 
 pub struct VisionPropertyInference {
     num_workers: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum VisionRepresentation {
+    EncodedImage,
+    Image,
+}
+
+/// Vision-only facts are carried through the generic plan as an opaque domain
+/// property, while common dtype/shape/residency facts remain directly visible
+/// to generic planning passes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VisionProperties {
+    representation: VisionRepresentation,
+    axis_order: Option<ImageAxisOrder>,
 }
 
 impl VisionPropertyInference {
@@ -29,6 +44,10 @@ impl Default for VisionPropertyInference {
 }
 
 impl PropertyInference for VisionPropertyInference {
+    fn domain_id(&self) -> Option<rivet_plan::DomainId> {
+        Some(crate::VISION_DOMAIN_ID)
+    }
+
     fn infer_node(
         &self,
         node: &LogicalNode,
@@ -72,6 +91,8 @@ impl PropertyInference for VisionPropertyInference {
                     }
                     properties.residency = input.residency.clone();
                     properties
+                } else if let Some(op) = node.payload().and_then(|payload| payload.as_domain_op()) {
+                    op.infer_properties(inputs)?
                 } else {
                     return Err(
                         "op node is missing its vision ImageOp or FusionGroup payload".to_owned(),
@@ -111,7 +132,7 @@ fn single_input(inputs: &[ValueProperties], kind: NodeKind) -> Result<&ValueProp
 }
 
 pub(crate) fn properties_from_state(state: PipelineImageState) -> ValueProperties {
-    match state {
+    let properties = match state {
         PipelineImageState::Encoded => ValueProperties {
             representation: Some(Representation::EncodedImage),
             shape: Some(ValueShape(vec![ShapeDim::Dynamic])),
@@ -131,7 +152,8 @@ pub(crate) fn properties_from_state(state: PipelineImageState) -> ValuePropertie
             dynamic_image_shape(axis_order),
             Contiguity::Contiguous,
         ),
-    }
+    };
+    attach_vision_properties(properties)
 }
 
 fn properties_from_source(source: &SourceOp) -> ValueProperties {
@@ -526,7 +548,7 @@ fn infer_image_op_with_workers(
                 || sample_normalize,
         }
     });
-    Ok(output)
+    Ok(attach_vision_properties(output))
 }
 
 fn infer_sequence(ops: &[ImageOp], input: &ValueProperties) -> RivetResult<ValueProperties> {
@@ -588,7 +610,7 @@ fn infer_batch(config: &BatchConfig, input: &ValueProperties) -> RivetResult<Val
             .operator
             .is_some_and(|operator| operator.sample_stage_has_work),
     });
-    Ok(output)
+    Ok(attach_vision_properties(output))
 }
 
 fn require_u8_decoded(input: PipelineImageState, name: &str) -> RivetResult<()> {
@@ -765,7 +787,24 @@ fn image_properties(
             stage: OperatorStage::Source,
             sample_stage_has_work: false,
         }),
+        ..ValueProperties::default()
     }
+}
+
+fn attach_vision_properties(mut properties: ValueProperties) -> ValueProperties {
+    let representation = match properties.representation {
+        Some(Representation::EncodedImage) => VisionRepresentation::EncodedImage,
+        _ => VisionRepresentation::Image,
+    };
+    let axis_order = image_axis(properties.axis_order.as_ref());
+    properties.domain = Some(std::sync::Arc::new(DomainPropertiesValue::new(
+        crate::VISION_DOMAIN_ID,
+        VisionProperties {
+            representation,
+            axis_order,
+        },
+    )));
+    properties
 }
 
 fn dynamic_image_shape(axis_order: ImageAxisOrder) -> ValueShape {

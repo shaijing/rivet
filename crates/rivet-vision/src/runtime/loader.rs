@@ -9,6 +9,7 @@ use rivet_exec::physical::{
     ExecutionLane, KernelStage, PhysicalGraph, PhysicalNodeKind, PhysicalProfiler,
 };
 use rivet_exec::runtime::{PhysicalPipelineAdapter, PhysicalPipelineExecutor, PipelineError};
+use rivet_plan::DeviceClass;
 use std::sync::Arc;
 
 struct ImagePipelineAdapter {
@@ -39,16 +40,12 @@ impl PhysicalPipelineAdapter for ImagePipelineAdapter {
     fn worker_chunk_size_hint(&self) -> Option<usize> {
         let lightweight_dense_path = self.plan.source.supports_batch_read()
             && !self.plan.sample_ops.is_empty()
-            && self
-                .plan
-                .sample_ops
-                .iter()
-                .all(|op| {
-                    matches!(
-                        op.name(),
-                        "RandomCrop" | "RandomHorizontalFlip" | "NormalizeSample"
-                    )
-                });
+            && self.plan.sample_ops.iter().all(|op| {
+                matches!(
+                    op.name(),
+                    "RandomCrop" | "RandomHorizontalFlip" | "NormalizeSample"
+                )
+            });
         lightweight_dense_path.then_some(16)
     }
 
@@ -134,13 +131,20 @@ impl PhysicalPipelineAdapter for ImagePipelineAdapter {
         target: ExecutionLane,
         indices: &[usize],
     ) -> Result<ImageBatch, PipelineError<RivetError>> {
-        let ExecutionLane::Device { ordinal } = target else {
+        let ExecutionLane::Device { class, ordinal } = target else {
             return Err(PipelineError::Runtime(
                 rivet_exec::runtime::RuntimeError::Message(
                     "vision device batch kernel requires a CUDA execution lane".to_owned(),
                 ),
             ));
         };
+        if class != DeviceClass::Cuda {
+            return Err(PipelineError::Runtime(
+                rivet_exec::runtime::RuntimeError::Message(format!(
+                    "vision device batch kernel does not support {class:?}"
+                )),
+            ));
+        }
         #[cfg(feature = "cuda")]
         {
             let expected = DeviceLocation::Cuda { ordinal };
@@ -428,9 +432,7 @@ mod tests {
         assert!(physical.contains("Batch lane=Cpu"));
         assert!(physical.contains("BatchKernel lane=Cpu"));
         assert!(physical.contains("Sink lane=Cpu"));
-        assert!(physical.contains("Runtime stage queues:"));
-        assert!(physical.contains("max_items=3"));
-        assert!(physical.contains("max_bytes=536870912"));
+        assert!(physical.contains("Runtime path: fused CPU pull executor"));
         assert!(
             physical.find("Batch lane=Cpu").unwrap()
                 < physical.find("BatchKernel lane=Cpu").unwrap()

@@ -4,5 +4,6 @@
 //! be stored in the backend-independent logical plan.
 
 pub mod cache;
+pub mod memory;
 pub mod physical;
 pub mod runtime;

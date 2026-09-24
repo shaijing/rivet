@@ -288,7 +288,7 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         for id in &order {
             let node = graph.node(*id).map_err(graph_runtime_error)?;
             if let PhysicalNodeKind::Transfer(kind) = node.kind {
-                let target = node.transfer_target.ok_or_else(|| {
+                let target = node.transfer_target.clone().ok_or_else(|| {
                     runtime_error(format!("transfer node p{} has no target lane", id.index()))
                 })?;
                 transfer_nodes.push((*id, kind, target));
@@ -306,7 +306,7 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         });
         let device_batch_kernel = batch_kernel.is_some_and(|kernel| {
             matches!(
-                graph.node(kernel).map(|node| node.lane),
+                graph.node(kernel).map(|node| &node.lane),
                 Ok(ExecutionLane::Device { .. })
             )
         });
@@ -360,7 +360,8 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         let device_target = graph
             .node(batch_kernel_node)
             .map_err(graph_runtime_error)?
-            .lane;
+            .lane
+            .clone();
         let nodes = StageNodes {
             source: source_node,
             decode: decode_node,
@@ -1057,6 +1058,7 @@ mod tests {
     use super::*;
     use crate::physical::TransferKind;
     use rivet_data::sampler::SamplerPlan;
+    use rivet_plan::DeviceClass;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
     use std::time::Duration;
@@ -1135,7 +1137,13 @@ mod tests {
             target: ExecutionLane,
         ) -> Result<Vec<usize>, PipelineError<String>> {
             assert_eq!(kind, TransferKind::HostToDevice);
-            assert_eq!(target, ExecutionLane::Device { ordinal: 0 });
+            assert_eq!(
+                target,
+                ExecutionLane::Device {
+                    class: DeviceClass::Cuda,
+                    ordinal: 0
+                }
+            );
             if self.fail_transfer {
                 return Err(PipelineError::Domain("transfer failed".to_owned()));
             }
@@ -1187,12 +1195,21 @@ mod tests {
                 PhysicalNodeKind::Transfer(TransferKind::HostToDevice),
                 ExecutionLane::Transfer,
             )
-            .with_transfer_target(ExecutionLane::Device { ordinal: 0 }),
+            .with_transfer_target(ExecutionLane::Device {
+                class: DeviceClass::Cuda,
+                ordinal: 0,
+            }),
             [batch_kernel],
         );
         let sink = graph.add_node(
             None,
-            PhysicalNodeSpec::new(PhysicalNodeKind::Sink, ExecutionLane::Device { ordinal: 0 }),
+            PhysicalNodeSpec::new(
+                PhysicalNodeKind::Sink,
+                ExecutionLane::Device {
+                    class: DeviceClass::Cuda,
+                    ordinal: 0,
+                },
+            ),
             [transfer],
         );
         graph.set_root(sink).unwrap();
@@ -1270,7 +1287,7 @@ mod tests {
         assert!(explanation.contains("inter_sample_workers=3"));
         assert!(explanation.contains("Sampler->Source: max_items=3"));
         assert!(explanation.contains("CPU->Transfer: max_items=3"));
-        assert!(explanation.contains("Transfer->Device: max_items=3"));
+        assert!(explanation.contains("Transfer->Sink: max_items=3"));
         assert!(explanation.contains("max_items=3"));
         assert!(explanation.contains("max_bytes="));
     }

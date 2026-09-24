@@ -177,6 +177,48 @@ impl ImageOp {
         }
     }
 
+    /// Stable semantic operation identity used by the domain planning
+    /// protocol. Keep these values stable when variants are reordered.
+    pub const fn planning_op_id(&self) -> u32 {
+        match self {
+            Self::Decode(_) => 1,
+            Self::Resize(_) => 2,
+            Self::Crop(_) => 3,
+            Self::CenterCrop(_) => 4,
+            Self::Pad(_) => 5,
+            Self::Flip(_) => 6,
+            Self::RandomCrop(_) => 7,
+            Self::RandomResizedCrop(_) => 8,
+            Self::RandomHorizontalFlip(_) => 9,
+            Self::Brightness(_) => 10,
+            Self::Contrast(_) => 11,
+            Self::Hue(_) => 12,
+            Self::ColorJitter(_) => 13,
+            Self::Invert(_) => 14,
+            Self::Posterize(_) => 15,
+            Self::Solarize(_) => 16,
+            Self::Autocontrast(_) => 17,
+            Self::Equalize(_) => 18,
+            Self::Sharpness(_) => 19,
+            Self::ArbitraryRotate(_) => 20,
+            Self::RandomAffine(_) => 21,
+            Self::Perspective(_) => 22,
+            Self::RandomPerspective(_) => 23,
+            Self::ElasticTransform(_) => 24,
+            Self::RandomApply { .. } => 25,
+            Self::RandomChoice { .. } => 26,
+            Self::RandomOrder { .. } => 27,
+            Self::GaussianBlur(_) => 28,
+            Self::Grayscale(_) => 29,
+            Self::RandomGrayscale(_) => 30,
+            Self::RandomErasing(_) => 31,
+            Self::ConvertImageDtype(_) => 32,
+            Self::Rotate(_) => 33,
+            Self::Normalize(_) => 34,
+            Self::Layout(_) => 35,
+        }
+    }
+
     pub fn transition(&self, input: PipelineImageState) -> RivetResult<PipelineImageState> {
         let properties = super::super::inference::properties_from_state(input);
         let output = super::super::inference::infer_image_op(self, &properties)?;

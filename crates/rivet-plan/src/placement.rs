@@ -1,5 +1,6 @@
 //! Static kernel capability matching, cost estimates, and device placement.
 
+use std::collections::{BTreeSet, HashSet};
 use thiserror::Error;
 
 use crate::{
@@ -41,6 +42,7 @@ pub struct KernelRequirements {
 pub struct KernelCapability {
     pub name: String,
     /// Domain and payload name; `rivet::Sink` is used for a payload-free sink.
+    /// `domain::*` matches semantic `DomainOp` payloads in that domain.
     pub operator: String,
     pub node_kind: NodeKind,
     pub device: DeviceClass,
@@ -50,8 +52,29 @@ pub struct KernelCapability {
     pub alignment_bytes: usize,
     pub contiguity: Contiguity,
     pub temporary_bytes: usize,
+    pub cost_hint: KernelCostHint,
     pub in_place: bool,
     pub parallel: bool,
+}
+
+/// Static traffic and work estimates supplied by the backend capability.
+/// Pass counts describe full-value reads/writes; zero means the operation does
+/// not access that side of the edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KernelCostHint {
+    pub input_read_passes: u32,
+    pub output_write_passes: u32,
+    pub compute_ops_per_element: u32,
+}
+
+impl Default for KernelCostHint {
+    fn default() -> Self {
+        Self {
+            input_read_passes: 1,
+            output_write_passes: 1,
+            compute_ops_per_element: 1,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -72,40 +95,152 @@ impl KernelCapabilities {
         id: NodeId,
     ) -> Result<Vec<&'a KernelCapability>, PlacementError> {
         let node = plan.node(id)?;
-        let operator = match node.payload() {
-            Some(payload) => format!("{}::{}", payload.domain(), payload.name()),
-            None if node.kind() == NodeKind::Sink => "rivet::Sink".to_owned(),
-            None => String::new(),
+        let (operator, domain_operator) = match node.payload() {
+            Some(payload) => (
+                format!("{}::{}", payload.domain(), payload.name()),
+                payload
+                    .as_domain_op()
+                    .map(|_| format!("{}::*", payload.domain())),
+            ),
+            None if node.kind() == NodeKind::Sink => ("rivet::Sink".to_owned(), None),
+            None => (String::new(), None),
         };
         Ok(self
             .kernels
             .iter()
-            .filter(|kernel| kernel.node_kind == node.kind() && kernel.operator == operator)
+            .filter(|kernel| {
+                kernel.node_kind == node.kind()
+                    && (kernel.operator == operator
+                        || domain_operator
+                            .as_ref()
+                            .is_some_and(|wildcard| &kernel.operator == wildcard))
+            })
             .collect())
     }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CostEstimate {
+    /// Aggregate traffic summaries retained for compact explain output.
     pub host_bytes: u64,
     pub device_bytes: u64,
+    pub host_bytes_read: u64,
+    pub host_bytes_written: u64,
+    pub device_bytes_read: u64,
+    pub device_bytes_written: u64,
     pub transfer_bytes: u64,
     pub temporary_bytes: u64,
     pub allocation_count: u32,
     pub launch_count: u32,
     pub synchronization_count: u32,
     pub compute_score: f64,
+    pub transfer_score: f64,
     pub total_score: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceDescriptor {
+    pub class: DeviceClass,
+    pub ordinal: usize,
+    pub memory_bytes: Option<u64>,
+    pub async_copy: bool,
+    pub supported_kernels: KernelSet,
+}
+
+/// Stable backend-independent identity for a device. Runtime handles and
+/// stream identities are resolved after placement.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DeviceLocation {
+    Cpu,
+    Accelerator { class: DeviceClass, ordinal: usize },
+}
+
+impl DeviceDescriptor {
+    pub fn new(
+        class: DeviceClass,
+        ordinal: usize,
+        memory_bytes: Option<u64>,
+        async_copy: bool,
+        supported_kernels: KernelSet,
+    ) -> Self {
+        Self {
+            class,
+            ordinal,
+            memory_bytes,
+            async_copy,
+            supported_kernels,
+        }
+    }
+
+    pub fn location(&self) -> DeviceLocation {
+        if self.class == DeviceClass::Cpu {
+            DeviceLocation::Cpu
+        } else {
+            DeviceLocation::Accelerator {
+                class: self.class.clone(),
+                ordinal: self.ordinal,
+            }
+        }
+    }
+}
+
+/// Kernel names implemented by one concrete device. An empty set means that
+/// the descriptor does not restrict kernels beyond the registered class
+/// capabilities.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KernelSet(BTreeSet<String>);
+
+impl KernelSet {
+    pub fn new<I, S>(names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self(names.into_iter().map(Into::into).collect())
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.0.contains(name)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().map(String::as_str)
+    }
+}
+
+impl FromIterator<String> for KernelSet {
+    fn from_iter<T: IntoIterator<Item = String>>(iter: T) -> Self {
+        Self::new(iter)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MachineProfile {
     pub cpu_threads: usize,
+    /// Available device classes. CPU is always considered as the fallback
+    /// implementation; this list primarily opts accelerator classes in.
     pub available_devices: Vec<DeviceClass>,
+    /// Optional concrete accelerator inventory. Accelerator classes and
+    /// ordinals are selected from this list; CPU remains available whenever it
+    /// appears in `available_devices`, even without a concrete descriptor.
+    pub devices: Vec<DeviceDescriptor>,
     pub host_to_device_bytes_per_sec: u64,
     pub device_to_host_bytes_per_sec: u64,
     pub kernel_launch_seconds: f64,
     pub synchronization_seconds: f64,
+    pub host_to_device_latency_seconds: f64,
+    pub device_to_host_latency_seconds: f64,
+    pub device_to_device_latency_seconds: f64,
+    pub allocation_latency_seconds: f64,
+    pub host_memory_bytes_per_sec: u64,
+    pub device_memory_bytes_per_sec: u64,
+    pub device_to_device_bytes_per_sec: u64,
+    pub cpu_compute_ops_per_sec: f64,
+    pub device_compute_ops_per_sec: f64,
     /// Conservative byte estimate used when shape or dtype is unknown.
     pub unknown_value_bytes: u64,
     pub preferred_sink_device: Option<DeviceClass>,
@@ -116,10 +251,20 @@ impl Default for MachineProfile {
         Self {
             cpu_threads: 1,
             available_devices: vec![DeviceClass::Cpu],
+            devices: Vec::new(),
             host_to_device_bytes_per_sec: 12_000_000_000,
             device_to_host_bytes_per_sec: 12_000_000_000,
             kernel_launch_seconds: 0.000_01,
             synchronization_seconds: 0.000_01,
+            host_to_device_latency_seconds: 0.000_02,
+            device_to_host_latency_seconds: 0.000_02,
+            device_to_device_latency_seconds: 0.000_01,
+            allocation_latency_seconds: 0.000_001,
+            host_memory_bytes_per_sec: 50_000_000_000,
+            device_memory_bytes_per_sec: 700_000_000_000,
+            device_to_device_bytes_per_sec: 100_000_000_000,
+            cpu_compute_ops_per_sec: 100_000_000_000.0,
+            device_compute_ops_per_sec: 10_000_000_000_000.0,
             unknown_value_bytes: 1_048_576,
             preferred_sink_device: None,
         }
@@ -131,6 +276,9 @@ pub struct PlacementCandidate {
     pub node: NodeId,
     pub kernel: String,
     pub device: DeviceClass,
+    /// Concrete device selected when the machine profile provides inventory.
+    /// `None` means only a device class was available to the planner.
+    pub location: Option<DeviceLocation>,
     pub class: KernelClass,
     pub parallelism: usize,
     pub cost: CostEstimate,
@@ -143,7 +291,26 @@ pub struct PlacementCandidate {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlacementPlan {
     pub candidates: Vec<PlacementCandidate>,
-    pub transfer_boundaries: Vec<(NodeId, DeviceClass, DeviceClass)>,
+    pub transfer_boundaries: Vec<TransferBoundary>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TransferKind {
+    HostToDevice,
+    DeviceToHost,
+    DeviceToDevice,
+}
+
+/// Explicit placement-time transfer requirement. Physical planning lowers
+/// this record into an executable transfer node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransferBoundary {
+    pub before: NodeId,
+    pub from: DeviceClass,
+    pub to: DeviceClass,
+    pub kind: TransferKind,
+    pub bytes: u64,
+    pub estimated_seconds: f64,
 }
 
 impl PlacementPlan {
@@ -157,10 +324,13 @@ impl PlacementPlan {
             let node = plan.node(selected.node)?;
             let props = annotations.get(selected.node);
             out.push_str(&format!(
-                "  %{} {:?} kernel={} device={:?} parallelism={} cost={:.6} host={}B device={}B transfer={}B temp={}B alloc={} launch={} sync={} compute={:.3} alignment={} contiguity={:?} fusion={:?} candidates={:?} shape={:?} dtype={:?} layout={:?}\n",
-                selected.node.index(), node.kind(), selected.kernel, selected.device,
+                "  %{} {:?} kernel={} device={:?} location={:?} parallelism={} cost={:.6}s host={}B(r{} w{}) device={}B(r{} w{}) transfer={}B({:.6}s) temp={}B alloc={} launch={} sync={} compute={:.6}s alignment={} contiguity={:?} fusion={:?} candidates={:?} shape={:?} dtype={:?} layout={:?}\n",
+                selected.node.index(), node.kind(), selected.kernel, selected.device, selected.location,
                 selected.parallelism, selected.cost.total_score, selected.cost.host_bytes,
-                selected.cost.device_bytes, selected.cost.transfer_bytes,
+                selected.cost.host_bytes_read, selected.cost.host_bytes_written,
+                selected.cost.device_bytes, selected.cost.device_bytes_read,
+                selected.cost.device_bytes_written, selected.cost.transfer_bytes,
+                selected.cost.transfer_score,
                 selected.cost.temporary_bytes,
                 selected.cost.allocation_count, selected.cost.launch_count,
                 selected.cost.synchronization_count, selected.cost.compute_score,
@@ -169,12 +339,15 @@ impl PlacementPlan {
                 props.and_then(|p| p.axis_order.as_ref()),
             ));
         }
-        for (node, from, to) in &self.transfer_boundaries {
+        for boundary in &self.transfer_boundaries {
             out.push_str(&format!(
-                "  transfer before %{}: {:?} -> {:?}\n",
-                node.index(),
-                from,
-                to
+                "  transfer before %{}: {:?} {:?} -> {:?} {}B estimated={:.6}s\n",
+                boundary.before.index(),
+                boundary.kind,
+                boundary.from,
+                boundary.to,
+                boundary.bytes,
+                boundary.estimated_seconds,
             ));
         }
         Ok(out)
@@ -187,15 +360,19 @@ pub enum PlacementError {
     Plan(#[from] crate::PlanError),
     #[error("no registered compatible kernel for node %{node}: {reason}")]
     NoKernel { node: usize, reason: String },
-    #[error("placement requires more than one CPU/device boundary")]
-    TooManyTransferBoundaries,
+    #[error("placement currently supports linear pipelines; node %{node} has {inputs} inputs")]
+    NonLinearInputs { node: usize, inputs: usize },
+    #[error(
+        "placement currently supports linear pipelines; reachable node %{node} has multiple consumers"
+    )]
+    NonLinearConsumers { node: usize },
     #[error("sink requires {device:?}, but no compatible registered kernel can produce it")]
     SinkDeviceUnavailable { device: DeviceClass },
 }
 
-/// Select only explicitly registered implementations. A small transition
-/// penalty favors same-device regions; an optional sink constraint selects
-/// the sink lane and records any required producer-to-sink transfer.
+/// Select registered implementations with a global dynamic program over a
+/// linear logical pipeline. Kernel traffic, memory bandwidth, launch costs and
+/// explicit edge transfers all contribute to the selected path.
 pub fn place(
     plan: &LogicalPlan,
     annotations: &PropertyAnnotations,
@@ -203,18 +380,25 @@ pub fn place(
     machine: &MachineProfile,
 ) -> Result<PlacementPlan, PlacementError> {
     plan.validate()?;
-    let ids = plan.preorder()?.into_iter().rev().collect::<Vec<_>>();
-    let mut output = PlacementPlan::default();
-    let mut previous: Option<DeviceClass> = None;
-    let mut boundary_count = 0;
+    let ids = linear_pipeline_order(plan)?;
+    let mut candidate_rows = Vec::with_capacity(ids.len());
+    let mut local_cost_rows = Vec::with_capacity(ids.len());
+
     for (position, id) in ids.iter().copied().enumerate() {
-        plan.node(id)?;
         let props = annotations.get(id);
+        let input = input_properties(plan, id, annotations);
+        let output = props;
         let available = capabilities.for_node(plan, id)?;
         let has_registered = !available.is_empty();
         let mut compatible = available
             .into_iter()
-            .filter(|kernel| machine.available_devices.contains(&kernel.device))
+            .filter(|kernel| {
+                device_supports_kernel(
+                    machine,
+                    kernel,
+                    required_device_bytes(kernel, input, output, machine),
+                )
+            })
             .filter(|kernel| properties_match(&kernel.requirements, plan, id, annotations))
             .filter(|kernel| {
                 kernel.contiguity == Contiguity::Unknown
@@ -238,9 +422,7 @@ pub fn place(
                 },
             });
         }
-        // A sink placement describes where its consumed value must reside.
-        // Let the producer stay on its compatible lane; the explicit transfer
-        // boundary below then accounts for a CPU -> device sink handoff.
+        // A sink candidate describes the device required by its consumed value.
         if plan.node(id)?.kind() == NodeKind::Sink {
             if let Some(sink_device) = &machine.preferred_sink_device {
                 compatible.retain(|candidate| &candidate.device == sink_device);
@@ -251,39 +433,120 @@ pub fn place(
                 }
             }
         }
-        let alternatives = compatible
+        let local_costs = compatible
             .iter()
-            .map(|candidate| {
-                format!(
-                    "{}@{:?}={:.6}",
-                    candidate.name,
-                    candidate.device,
-                    candidate_score(candidate, props, machine, previous.as_ref())
-                )
-            })
+            .map(|kernel| estimate_cost(kernel, input, output, machine))
             .collect::<Vec<_>>();
-        let selected =
-            compatible
-                .into_iter()
-                .min_by(|a, b| {
-                    candidate_score(a, props, machine, previous.as_ref())
-                        .total_cmp(&candidate_score(b, props, machine, previous.as_ref()))
-                })
-                .expect("nonempty compatible candidates");
+        candidate_rows.push(compatible);
+        local_cost_rows.push(local_costs);
+    }
+
+    // dp[position][candidate] stores the minimum cost ending at that kernel.
+    // Backpointers recover the globally optimal device/kernel path.
+    let mut dp: Vec<Vec<f64>> = Vec::with_capacity(ids.len());
+    let mut back: Vec<Vec<Option<usize>>> = Vec::with_capacity(ids.len());
+    for position in 0..ids.len() {
+        let mut scores = vec![f64::INFINITY; candidate_rows[position].len()];
+        let mut predecessors = vec![None; candidate_rows[position].len()];
+        for candidate_index in 0..candidate_rows[position].len() {
+            let kernel = candidate_rows[position][candidate_index];
+            let local_score = local_cost_rows[position][candidate_index].total_score;
+            if position == 0 {
+                scores[candidate_index] = local_score;
+                continue;
+            }
+            let edge_bytes = input_properties(plan, ids[position], annotations)
+                .and_then(byte_size)
+                .unwrap_or(machine.unknown_value_bytes);
+            for previous_index in 0..candidate_rows[position - 1].len() {
+                let previous = candidate_rows[position - 1][previous_index];
+                let transfer = transfer_cost(
+                    ids[position],
+                    &previous.device,
+                    &kernel.device,
+                    edge_bytes,
+                    machine,
+                );
+                let score =
+                    dp[position - 1][previous_index] + transfer.estimated_seconds + local_score;
+                if score.total_cmp(&scores[candidate_index]).is_lt() {
+                    scores[candidate_index] = score;
+                    predecessors[candidate_index] = Some(previous_index);
+                }
+            }
+        }
+        dp.push(scores);
+        back.push(predecessors);
+    }
+
+    let last = ids.len() - 1;
+    let mut selected_indices = vec![0; ids.len()];
+    selected_indices[last] = (0..dp[last].len())
+        .min_by(|lhs, rhs| dp[last][*lhs].total_cmp(&dp[last][*rhs]))
+        .expect("each pipeline node has a compatible candidate");
+    for position in (1..ids.len()).rev() {
+        selected_indices[position - 1] = back[position][selected_indices[position]]
+            .expect("every non-source candidate has a predecessor");
+    }
+
+    let mut output = PlacementPlan::default();
+    for position in 0..ids.len() {
+        let id = ids[position];
+        let selected = candidate_rows[position][selected_indices[position]];
         let parallelism = if selected.parallel {
             machine.cpu_threads.max(1)
         } else {
             1
         };
-        let cost = estimate_cost(selected, props, parallelism, machine, previous.as_ref());
-        if let Some(from) = previous.as_ref() {
-            if from != &selected.device {
-                boundary_count += 1;
-                output
-                    .transfer_boundaries
-                    .push((id, from.clone(), selected.device.clone()));
+        let mut cost = local_cost_rows[position][selected_indices[position]].clone();
+        if position > 0 {
+            let previous = candidate_rows[position - 1][selected_indices[position - 1]];
+            let edge_bytes = input_properties(plan, id, annotations)
+                .and_then(byte_size)
+                .unwrap_or(machine.unknown_value_bytes);
+            let transfer =
+                transfer_cost(id, &previous.device, &selected.device, edge_bytes, machine);
+            if previous.device != selected.device {
+                cost.transfer_bytes = cost.transfer_bytes.saturating_add(transfer.bytes);
+                cost.transfer_score += transfer.estimated_seconds;
+                cost.total_score += transfer.estimated_seconds;
+                output.transfer_boundaries.push(transfer);
             }
         }
+        let alternatives = candidate_rows[position]
+            .iter()
+            .enumerate()
+            .map(|(candidate_index, candidate)| {
+                let prefix = if position == 0 {
+                    0.0
+                } else {
+                    let edge_bytes = input_properties(plan, id, annotations)
+                        .and_then(byte_size)
+                        .unwrap_or(machine.unknown_value_bytes);
+                    candidate_rows[position - 1]
+                        .iter()
+                        .enumerate()
+                        .map(|(previous_index, previous)| {
+                            dp[position - 1][previous_index]
+                                + transfer_cost(
+                                    id,
+                                    &previous.device,
+                                    &candidate.device,
+                                    edge_bytes,
+                                    machine,
+                                )
+                                .estimated_seconds
+                        })
+                        .fold(f64::INFINITY, f64::min)
+                };
+                format!(
+                    "{}@{:?}={:.6}",
+                    candidate.name,
+                    candidate.device,
+                    prefix + local_cost_rows[position][candidate_index].total_score
+                )
+            })
+            .collect();
         output.candidates.push(PlacementCandidate {
             node: id,
             kernel: selected.name.clone(),
@@ -295,13 +558,139 @@ pub fn place(
             fusion_tags: selected.fusion_tags.clone(),
             alignment_bytes: selected.alignment_bytes,
             contiguity: selected.contiguity,
+            location: selected_device_location(
+                machine,
+                selected,
+                required_device_bytes(
+                    selected,
+                    input_properties(plan, id, annotations),
+                    annotations.get(id),
+                    machine,
+                ),
+            ),
         });
-        previous = Some(selected.device.clone());
-    }
-    if boundary_count > 1 {
-        return Err(PlacementError::TooManyTransferBoundaries);
     }
     Ok(output)
+}
+
+fn linear_pipeline_order(plan: &LogicalPlan) -> Result<Vec<NodeId>, PlacementError> {
+    let reachable = plan.preorder()?;
+    let reachable_set = reachable.iter().copied().collect::<HashSet<_>>();
+    for id in &reachable {
+        let node = plan.node(*id)?;
+        if node.inputs().len() > 1 {
+            return Err(PlacementError::NonLinearInputs {
+                node: id.index(),
+                inputs: node.inputs().len(),
+            });
+        }
+        let consumers = plan
+            .children(*id)?
+            .into_iter()
+            .filter(|consumer| reachable_set.contains(consumer))
+            .count();
+        if consumers > 1 {
+            return Err(PlacementError::NonLinearConsumers { node: id.index() });
+        }
+    }
+
+    let mut reverse = Vec::with_capacity(reachable.len());
+    let mut current = plan.root()?;
+    loop {
+        reverse.push(current);
+        let node = plan.node(current)?;
+        match node.inputs().get(0) {
+            Some(input) => current = input,
+            None => break,
+        }
+    }
+    reverse.reverse();
+    if reverse.len() != reachable.len() {
+        let node = reachable
+            .iter()
+            .find(|id| !reverse.contains(id))
+            .copied()
+            .unwrap_or(plan.root()?);
+        return Err(PlacementError::NonLinearConsumers { node: node.index() });
+    }
+    Ok(reverse)
+}
+
+fn input_properties<'a>(
+    plan: &LogicalPlan,
+    id: NodeId,
+    annotations: &'a PropertyAnnotations,
+) -> Option<&'a ValueProperties> {
+    let input = plan.node(id).ok()?.inputs().get(0)?;
+    annotations.get(input)
+}
+
+fn device_supports_kernel(
+    machine: &MachineProfile,
+    kernel: &KernelCapability,
+    required_memory_bytes: u64,
+) -> bool {
+    if kernel.device == DeviceClass::Cpu {
+        return true;
+    }
+    if machine.devices.is_empty() {
+        machine.available_devices.contains(&kernel.device)
+    } else {
+        machine.devices.iter().any(|device| {
+            device.class == kernel.device
+                && (device.supported_kernels.is_empty()
+                    || device.supported_kernels.contains(&kernel.name))
+                && device
+                    .memory_bytes
+                    .is_none_or(|memory| memory >= required_memory_bytes)
+        })
+    }
+}
+
+fn required_device_bytes(
+    kernel: &KernelCapability,
+    input: Option<&ValueProperties>,
+    output: Option<&ValueProperties>,
+    machine: &MachineProfile,
+) -> u64 {
+    if kernel.device == DeviceClass::Cpu {
+        return 0;
+    }
+    let input_bytes = input
+        .map(|properties| byte_size(properties).unwrap_or(machine.unknown_value_bytes))
+        .unwrap_or(0);
+    let output_bytes = output
+        .map(|properties| byte_size(properties).unwrap_or(machine.unknown_value_bytes))
+        .unwrap_or(0);
+    match kernel.class {
+        KernelClass::Source => output_bytes.saturating_add(kernel.temporary_bytes as u64),
+        KernelClass::Sink => input_bytes,
+        _ => input_bytes
+            .saturating_add(output_bytes)
+            .saturating_add(kernel.temporary_bytes as u64),
+    }
+}
+
+fn selected_device_location(
+    machine: &MachineProfile,
+    kernel: &KernelCapability,
+    required_memory_bytes: u64,
+) -> Option<DeviceLocation> {
+    if kernel.device == DeviceClass::Cpu {
+        return Some(DeviceLocation::Cpu);
+    }
+    machine
+        .devices
+        .iter()
+        .find(|device| {
+            device.class == kernel.device
+                && (device.supported_kernels.is_empty()
+                    || device.supported_kernels.contains(&kernel.name))
+                && device
+                    .memory_bytes
+                    .is_none_or(|memory| memory >= required_memory_bytes)
+        })
+        .map(DeviceDescriptor::location)
 }
 
 fn properties_match(
@@ -386,80 +775,125 @@ fn properties_match(
     (!has_input_requirements || matches_input(input)) && matches_output
 }
 
-fn candidate_score(
-    kernel: &KernelCapability,
-    props: Option<&ValueProperties>,
-    machine: &MachineProfile,
-    previous: Option<&DeviceClass>,
-) -> f64 {
-    estimate_cost(
-        kernel,
-        props,
-        if kernel.parallel {
-            machine.cpu_threads.max(1)
-        } else {
-            1
-        },
-        machine,
-        previous,
-    )
-    .total_score
-}
-
 fn estimate_cost(
     kernel: &KernelCapability,
-    props: Option<&ValueProperties>,
-    parallelism: usize,
+    input: Option<&ValueProperties>,
+    output: Option<&ValueProperties>,
     machine: &MachineProfile,
-    previous: Option<&DeviceClass>,
 ) -> CostEstimate {
     let temporary_bytes = kernel.temporary_bytes as u64;
-    let bytes = props
-        .and_then(byte_size)
-        .unwrap_or(machine.unknown_value_bytes)
-        .saturating_add(temporary_bytes);
+    let input_bytes = input
+        .map(|properties| byte_size(properties).unwrap_or(machine.unknown_value_bytes))
+        .unwrap_or(0);
+    let output_bytes = output
+        .map(|properties| byte_size(properties).unwrap_or(machine.unknown_value_bytes))
+        .unwrap_or(0);
     let device = !matches!(kernel.device, DeviceClass::Cpu);
-    let transfer_bytes = if previous.is_some_and(|d| d != &kernel.device) {
-        bytes
-    } else {
-        0
+    let (read_bytes, written_bytes) = match kernel.class {
+        KernelClass::Source => (output_bytes, 0),
+        KernelClass::Sink => (input_bytes, 0),
+        _ => (
+            input_bytes.saturating_mul(kernel.cost_hint.input_read_passes as u64),
+            output_bytes.saturating_mul(kernel.cost_hint.output_write_passes as u64),
+        ),
     };
+    let memory_traffic = read_bytes
+        .saturating_add(written_bytes)
+        .saturating_add(temporary_bytes.saturating_mul(2));
+    let memory_bandwidth = if device {
+        machine.device_memory_bytes_per_sec
+    } else {
+        machine.host_memory_bytes_per_sec
+    }
+    .max(1);
+    // This first model estimates the memory-bound portion from explicit input,
+    // output, and scratch traffic. Kernel-specific compute calibration can be
+    // added without changing the path optimizer.
+    let memory_score = memory_traffic as f64 / memory_bandwidth as f64;
+    let element_count = output
+        .and_then(element_count)
+        .or_else(|| input.and_then(element_count))
+        .unwrap_or(machine.unknown_value_bytes);
+    let compute_ops = if matches!(kernel.class, KernelClass::Source | KernelClass::Sink) {
+        0
+    } else {
+        element_count.saturating_mul(kernel.cost_hint.compute_ops_per_element as u64)
+    };
+    let compute_throughput = if device {
+        machine.device_compute_ops_per_sec
+    } else {
+        machine.cpu_compute_ops_per_sec
+    }
+    .max(1.0);
+    let compute_score = memory_score + compute_ops as f64 / compute_throughput;
     let allocation_count = u32::from(!kernel.in_place);
     let launch_count = u32::from(
         device && kernel.class != KernelClass::Source && kernel.class != KernelClass::Sink,
     );
     let synchronization_count = launch_count;
-    let compute_score = (bytes.max(1) as f64) / 1_000_000_000.0 / (parallelism.max(1) as f64);
-    let bandwidth = if previous.is_some_and(|d| !matches!(d, DeviceClass::Cpu)) {
-        machine.device_to_host_bytes_per_sec
-    } else {
-        machine.host_to_device_bytes_per_sec
-    };
-    let transfer_score = if transfer_bytes == 0 {
-        0.0
-    } else {
-        transfer_bytes as f64 / bandwidth.max(1) as f64
-    };
     let total_score = compute_score
-        + transfer_score
-        + allocation_count as f64 * 0.000_001
+        + allocation_count as f64 * machine.allocation_latency_seconds
         + launch_count as f64 * machine.kernel_launch_seconds
-        + synchronization_count as f64 * machine.synchronization_seconds
-        + if previous.is_some_and(|d| d != &kernel.device) {
-            1_000_000_000.0
-        } else {
-            0.0
-        };
+        + synchronization_count as f64 * machine.synchronization_seconds;
     CostEstimate {
-        host_bytes: if device { 0 } else { bytes },
-        device_bytes: if device { bytes } else { 0 },
-        transfer_bytes,
+        host_bytes: if device { 0 } else { memory_traffic },
+        device_bytes: if device { memory_traffic } else { 0 },
+        host_bytes_read: if device { 0 } else { read_bytes },
+        host_bytes_written: if device { 0 } else { written_bytes },
+        device_bytes_read: if device { read_bytes } else { 0 },
+        device_bytes_written: if device { written_bytes } else { 0 },
+        transfer_bytes: 0,
         temporary_bytes,
         allocation_count,
         launch_count,
         synchronization_count,
         compute_score,
+        transfer_score: 0.0,
         total_score,
+    }
+}
+
+fn transfer_cost(
+    before: NodeId,
+    from: &DeviceClass,
+    to: &DeviceClass,
+    bytes: u64,
+    machine: &MachineProfile,
+) -> TransferBoundary {
+    if from == to {
+        return TransferBoundary {
+            before,
+            from: from.clone(),
+            to: to.clone(),
+            kind: TransferKind::DeviceToDevice,
+            bytes: 0,
+            estimated_seconds: 0.0,
+        };
+    }
+    let (kind, latency, bandwidth) = match (from, to) {
+        (DeviceClass::Cpu, _) => (
+            TransferKind::HostToDevice,
+            machine.host_to_device_latency_seconds,
+            machine.host_to_device_bytes_per_sec,
+        ),
+        (_, DeviceClass::Cpu) => (
+            TransferKind::DeviceToHost,
+            machine.device_to_host_latency_seconds,
+            machine.device_to_host_bytes_per_sec,
+        ),
+        _ => (
+            TransferKind::DeviceToDevice,
+            machine.device_to_device_latency_seconds,
+            machine.device_to_device_bytes_per_sec,
+        ),
+    };
+    TransferBoundary {
+        before,
+        from: from.clone(),
+        to: to.clone(),
+        kind,
+        bytes,
+        estimated_seconds: latency + bytes as f64 / bandwidth.max(1) as f64,
     }
 }
 
@@ -482,6 +916,18 @@ fn byte_size(properties: &ValueProperties) -> Option<u64> {
         DataType::Other(_) => return None,
     };
     elements.checked_mul(width)
+}
+
+fn element_count(properties: &ValueProperties) -> Option<u64> {
+    properties
+        .shape
+        .as_ref()?
+        .dims()
+        .iter()
+        .try_fold(1u64, |size, dim| match dim {
+            ShapeDim::Known(value) => size.checked_mul(*value as u64),
+            ShapeDim::Dynamic => None,
+        })
 }
 
 #[cfg(test)]
@@ -536,6 +982,7 @@ mod tests {
             alignment_bytes: 1,
             contiguity: Contiguity::Unknown,
             temporary_bytes: 0,
+            cost_hint: KernelCostHint::default(),
             in_place: true,
             parallel: false,
         });

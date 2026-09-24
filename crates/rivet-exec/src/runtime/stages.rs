@@ -903,8 +903,8 @@ fn run_device_stage<P: PhysicalPipelineAdapter>(
                 let target = nodes
                     .transfer_nodes
                     .last()
-                    .map(|(_, _, target)| *target)
-                    .unwrap_or(nodes.device_target);
+                    .map(|(_, _, target)| target.clone())
+                    .unwrap_or_else(|| nodes.device_target.clone());
                 catch_unwind(AssertUnwindSafe(|| {
                     adapter.apply_device_batch_with_indices(batch, target, &indices)
                 }))
@@ -958,7 +958,7 @@ fn run_transfers<P: PhysicalPipelineAdapter>(
     nodes: &StageNodes,
     profiler: &PhysicalProfiler,
 ) -> StageResult<P::Batch, P::Error> {
-    for (node, kind, target) in nodes.transfer_nodes.iter().copied() {
+    for (node, kind, target) in nodes.transfer_nodes.iter().cloned() {
         let started = profiler.is_enabled().then(Instant::now);
         let input_bytes = if started.is_some() {
             adapter.batch_bytes(&batch)

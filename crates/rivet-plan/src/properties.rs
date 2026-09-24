@@ -4,7 +4,53 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::{LogicalNode, NodeId, PlanError};
+use crate::{DomainId, LogicalNode, NodeId, PlanError};
+
+/// Opaque domain-specific value properties carried alongside common planning
+/// facts. Implementations stay in their domain crate so adding a new domain
+/// never requires extending a central property enum.
+pub trait DomainProperties: std::any::Any + fmt::Debug + Send + Sync {
+    fn domain_id(&self) -> DomainId;
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn equals(&self, other: &dyn DomainProperties) -> bool;
+}
+
+/// Convenient type-erased wrapper for a domain's own comparable property type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DomainPropertiesValue<T> {
+    domain_id: DomainId,
+    value: T,
+}
+
+impl<T> DomainPropertiesValue<T> {
+    pub fn new(domain_id: DomainId, value: T) -> Self {
+        Self { domain_id, value }
+    }
+
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+}
+
+impl<T> DomainProperties for DomainPropertiesValue<T>
+where
+    T: std::any::Any + fmt::Debug + PartialEq + Eq + Send + Sync,
+{
+    fn domain_id(&self) -> DomainId {
+        self.domain_id
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn equals(&self, other: &dyn DomainProperties) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|other| self == other)
+    }
+}
 
 /// Semantic representation carried by a pipeline edge.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -122,7 +168,7 @@ pub struct OperatorProperties {
 }
 
 /// Properties inferred for a logical value. `None` means unknown.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct ValueProperties {
     pub representation: Option<Representation>,
     pub dtype: Option<DataType>,
@@ -133,7 +179,63 @@ pub struct ValueProperties {
     pub granularity: Option<ValueGranularity>,
     pub mutability: Option<Mutability>,
     pub operator: Option<OperatorProperties>,
+    pub domain: Option<Arc<dyn DomainProperties>>,
 }
+
+impl Default for ValueProperties {
+    fn default() -> Self {
+        Self {
+            representation: None,
+            dtype: None,
+            shape: None,
+            axis_order: None,
+            contiguity: None,
+            residency: None,
+            granularity: None,
+            mutability: None,
+            operator: None,
+            domain: None,
+        }
+    }
+}
+
+impl fmt::Debug for ValueProperties {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ValueProperties")
+            .field("representation", &self.representation)
+            .field("dtype", &self.dtype)
+            .field("shape", &self.shape)
+            .field("axis_order", &self.axis_order)
+            .field("contiguity", &self.contiguity)
+            .field("residency", &self.residency)
+            .field("granularity", &self.granularity)
+            .field("mutability", &self.mutability)
+            .field("operator", &self.operator)
+            .field("domain", &self.domain)
+            .finish()
+    }
+}
+
+impl PartialEq for ValueProperties {
+    fn eq(&self, other: &Self) -> bool {
+        self.representation == other.representation
+            && self.dtype == other.dtype
+            && self.shape == other.shape
+            && self.axis_order == other.axis_order
+            && self.contiguity == other.contiguity
+            && self.residency == other.residency
+            && self.granularity == other.granularity
+            && self.mutability == other.mutability
+            && self.operator == other.operator
+            && match (&self.domain, &other.domain) {
+                (None, None) => true,
+                (Some(lhs), Some(rhs)) => lhs.domain_id() == rhs.domain_id() && lhs.equals(&**rhs),
+                _ => false,
+            }
+    }
+}
+
+impl Eq for ValueProperties {}
 
 impl ValueProperties {
     pub fn unknown() -> Self {
@@ -144,11 +246,26 @@ impl ValueProperties {
         self.shape = Some(ValueShape(dims.into_iter().collect()));
         self
     }
+
+    pub fn with_domain(mut self, properties: impl DomainProperties + 'static) -> Self {
+        self.domain = Some(Arc::new(properties));
+        self
+    }
+
+    pub fn domain_as<T: std::any::Any>(&self) -> Option<&T> {
+        self.domain.as_ref()?.as_any().downcast_ref()
+    }
 }
 
 /// Domain supplied property inference hook. `inputs` follow the node's ordered
 /// input edges; source nodes receive an empty slice.
 pub trait PropertyInference: Send + Sync {
+    /// Domain served by this inference provider. `None` is reserved for a
+    /// registry-wide provider that intentionally handles every domain.
+    fn domain_id(&self) -> Option<DomainId> {
+        None
+    }
+
     fn infer_node(
         &self,
         node: &LogicalNode,

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::{LogicalNode, LogicalPlan, NodeId, PropertyAnnotations, PropertyInference};
+use crate::{DomainId, LogicalNode, LogicalPlan, NodeId, PropertyAnnotations, PropertyInference};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -79,6 +79,15 @@ impl OptimizerContext {
 
 pub trait OptimizerPass: Send + Sync {
     fn name(&self) -> &'static str;
+    /// Marks the point where registered semantic fusion rules are discovered.
+    fn is_fusion_discovery(&self) -> bool {
+        false
+    }
+    /// Marks the first placement or later physical-planning pass. Earlier
+    /// passes are iterated to a semantic fixed point before this boundary.
+    fn is_placement_boundary(&self) -> bool {
+        false
+    }
     fn run(
         &self,
         plan: &mut LogicalPlan,
@@ -90,6 +99,9 @@ pub trait OptimizerPass: Send + Sync {
 /// may contribute inference and ordered optimizer passes without global state.
 pub trait PlanPlugin: Send + Sync {
     fn name(&self) -> &'static str;
+    fn domain_id(&self) -> Option<DomainId> {
+        None
+    }
     fn property_inference(&self) -> Option<Arc<dyn PropertyInference>> {
         None
     }
@@ -146,7 +158,7 @@ pub trait PhysicalCandidateProvider: Send + Sync {
 
 #[derive(Default)]
 pub struct PlanRegistry {
-    inference: Option<Arc<dyn PropertyInference>>,
+    inference: Vec<(Option<DomainId>, Arc<dyn PropertyInference>)>,
     passes: Vec<Arc<dyn OptimizerPass>>,
     fusion_rules: Vec<Arc<dyn FusionRule>>,
     physical_candidates: Vec<Arc<dyn PhysicalCandidateProvider>>,
@@ -155,7 +167,8 @@ pub struct PlanRegistry {
 impl PlanRegistry {
     pub fn register_plugin(&mut self, plugin: &dyn PlanPlugin) {
         if let Some(inference) = plugin.property_inference() {
-            self.inference = Some(inference);
+            let domain = plugin.domain_id().or_else(|| inference.domain_id());
+            self.inference.push((domain, inference));
         }
         self.passes.extend(plugin.optimizer_passes());
         self.fusion_rules.extend(plugin.fusion_rules());
@@ -169,7 +182,19 @@ impl PlanRegistry {
         &self.passes
     }
     pub fn inference(&self) -> Option<&Arc<dyn PropertyInference>> {
-        self.inference.as_ref()
+        self.inference.first().map(|(_, inference)| inference)
+    }
+    pub fn inference_for_domain(&self, domain: DomainId) -> Option<&Arc<dyn PropertyInference>> {
+        self.inference
+            .iter()
+            .find_map(|(registered, inference)| (*registered == Some(domain)).then_some(inference))
+    }
+    pub fn inferences(
+        &self,
+    ) -> impl Iterator<Item = (Option<DomainId>, &Arc<dyn PropertyInference>)> {
+        self.inference
+            .iter()
+            .map(|(domain, inference)| (*domain, inference))
     }
     pub fn fusion_rules(&self) -> &[Arc<dyn FusionRule>] {
         &self.fusion_rules
@@ -209,102 +234,177 @@ pub fn optimize(
     let mut context = OptimizerContext::default();
     let mut report = OptimizationReport::default();
     const MAX_REPLANS: usize = 8;
+    const MAX_SEMANTIC_ITERATIONS: usize = 32;
+    let placement_boundary = registry
+        .passes()
+        .iter()
+        .position(|pass| pass.is_placement_boundary())
+        .unwrap_or(registry.passes().len());
+    let (semantic_passes, placement_passes) = registry.passes().split_at(placement_boundary);
+
     for iteration in 1..=MAX_REPLANS {
         context.clear_annotations();
         let mut requested_replan = false;
-        for pass in registry.passes() {
-            let mut result =
-                pass.run(plan, &mut context)
-                    .map_err(|message| OptimizerError::Pass {
-                        pass: pass.name().into(),
-                        message,
-                    })?;
-            let mut fusion_snapshot = String::new();
-            if pass.name() == "fusion-discovery" {
-                for rule in &registry.fusion_rules {
-                    let candidates =
-                        rule.discover(plan, context.annotations())
-                            .map_err(|message| OptimizerError::Pass {
-                                pass: rule.name().into(),
-                                message,
-                            })?;
-                    for candidate in &candidates {
-                        fusion_snapshot.push_str(&format!(
-                            "  FusionCandidate {} {:?} {}: {} ({})\n",
-                            candidate.rule,
-                            candidate.nodes,
-                            candidate.name,
-                            if candidate.legal { "legal" } else { "illegal" },
-                            candidate.reason,
-                        ));
-                        context.diagnostics.push(Diagnostic {
-                            code: if candidate.legal {
-                                "fusion.legal"
-                            } else {
-                                "fusion.illegal"
-                            },
-                            message: format!(
-                                "{}: {} ({})",
-                                candidate.rule, candidate.name, candidate.reason
-                            ),
-                        });
-                        report.fusion_candidates.push(candidate.clone());
-                        if candidate.legal {
-                            let applied =
-                                rule.apply(plan, candidate, &mut context)
-                                    .map_err(|message| OptimizerError::Pass {
-                                        pass: rule.name().into(),
-                                        message,
-                                    })?;
-                            result.changed |= applied.changed;
-                            result.replan |= applied.replan;
-                            context.diagnostics.extend(applied.diagnostics);
-                        }
-                    }
+        let mut converged = false;
+
+        for _ in 0..MAX_SEMANTIC_ITERATIONS {
+            let mut changed = false;
+            for pass in semantic_passes {
+                let result =
+                    run_optimizer_pass(plan, registry, pass.as_ref(), &mut context, &mut report)?;
+                changed |= result.changed;
+                if result.replan {
+                    request_full_replan(
+                        pass.name(),
+                        &mut context,
+                        &mut report,
+                        &mut requested_replan,
+                    );
+                    break;
                 }
             }
-            plan.validate().map_err(|error| OptimizerError::Pass {
-                pass: pass.name().into(),
-                message: error.to_string(),
-            })?;
-            report.passes_run.push(pass.name());
-            context.diagnostics.extend(result.diagnostics);
-            let mut snapshot = plan.explain().map_err(|error| OptimizerError::Pass {
-                pass: pass.name().into(),
-                message: error.to_string(),
-            })?;
-            snapshot.push_str(&fusion_snapshot);
-            for diagnostic in &context.diagnostics {
-                snapshot.push_str(&format!(
-                    "  Diagnostic {}: {}\n",
-                    diagnostic.code, diagnostic.message
-                ));
+            if requested_replan {
+                break;
             }
-            context.snapshots.push((pass.name().to_string(), snapshot));
-            if result.replan {
-                requested_replan = true;
-                context.clear_annotations();
-                // Diagnostics and fusion candidates describe the plan at the
-                // current iteration. Snapshots retain that history; returned
-                // diagnostics should describe the converged plan only.
-                context.diagnostics.clear();
-                report.fusion_candidates.clear();
-                context.diagnostics.push(Diagnostic {
-                    code: "optimizer.replan",
-                    message: format!("pass `{}` requested a full planning restart", pass.name()),
-                });
+            if !changed {
+                converged = true;
                 break;
             }
         }
-        report.iterations = iteration;
-        if !requested_replan {
-            report.diagnostics = context.diagnostics.clone();
-            return Ok((context, report));
+
+        if requested_replan {
+            report.iterations = iteration;
+            continue;
         }
+        if !converged {
+            return Err(OptimizerError::NonConvergent {
+                iterations: MAX_SEMANTIC_ITERATIONS,
+            });
+        }
+
+        for pass in placement_passes {
+            let result =
+                run_optimizer_pass(plan, registry, pass.as_ref(), &mut context, &mut report)?;
+            if result.replan {
+                request_full_replan(
+                    pass.name(),
+                    &mut context,
+                    &mut report,
+                    &mut requested_replan,
+                );
+                break;
+            }
+        }
+        if requested_replan {
+            report.iterations = iteration;
+            continue;
+        }
+
+        report.iterations = iteration;
+        report.diagnostics = context.diagnostics.clone();
+        return Ok((context, report));
     }
     Err(OptimizerError::NonConvergent {
         iterations: MAX_REPLANS,
     })
+}
+
+fn run_optimizer_pass(
+    plan: &mut LogicalPlan,
+    registry: &PlanRegistry,
+    pass: &dyn OptimizerPass,
+    context: &mut OptimizerContext,
+    report: &mut OptimizationReport,
+) -> Result<PassResult, OptimizerError> {
+    let mut result = pass
+        .run(plan, context)
+        .map_err(|message| OptimizerError::Pass {
+            pass: pass.name().into(),
+            message,
+        })?;
+    let mut fusion_snapshot = String::new();
+    if pass.is_fusion_discovery() {
+        for rule in registry.fusion_rules() {
+            let candidates = rule
+                .discover(plan, context.annotations())
+                .map_err(|message| OptimizerError::Pass {
+                    pass: rule.name().into(),
+                    message,
+                })?;
+            for candidate in &candidates {
+                fusion_snapshot.push_str(&format!(
+                    "  FusionCandidate {} {:?} {}: {} ({})\n",
+                    candidate.rule,
+                    candidate.nodes,
+                    candidate.name,
+                    if candidate.legal { "legal" } else { "illegal" },
+                    candidate.reason,
+                ));
+                context.diagnostics.push(Diagnostic {
+                    code: if candidate.legal {
+                        "fusion.legal"
+                    } else {
+                        "fusion.illegal"
+                    },
+                    message: format!(
+                        "{}: {} ({})",
+                        candidate.rule, candidate.name, candidate.reason
+                    ),
+                });
+                report.fusion_candidates.push(candidate.clone());
+                if candidate.legal {
+                    let applied = rule.apply(plan, candidate, context).map_err(|message| {
+                        OptimizerError::Pass {
+                            pass: rule.name().into(),
+                            message,
+                        }
+                    })?;
+                    result.changed |= applied.changed;
+                    result.replan |= applied.replan;
+                    context.diagnostics.extend(applied.diagnostics);
+                }
+            }
+        }
+    }
+    plan.validate().map_err(|error| OptimizerError::Pass {
+        pass: pass.name().into(),
+        message: error.to_string(),
+    })?;
+    report.passes_run.push(pass.name());
+    context
+        .diagnostics
+        .extend(result.diagnostics.iter().cloned());
+    let mut snapshot = plan.explain().map_err(|error| OptimizerError::Pass {
+        pass: pass.name().into(),
+        message: error.to_string(),
+    })?;
+    snapshot.push_str(&fusion_snapshot);
+    for diagnostic in &context.diagnostics {
+        snapshot.push_str(&format!(
+            "  Diagnostic {}: {}\n",
+            diagnostic.code, diagnostic.message
+        ));
+    }
+    context.snapshots.push((pass.name().to_string(), snapshot));
+    Ok(result)
+}
+
+fn request_full_replan(
+    pass_name: &str,
+    context: &mut OptimizerContext,
+    report: &mut OptimizationReport,
+    requested_replan: &mut bool,
+) {
+    *requested_replan = true;
+    context.clear_annotations();
+    // Snapshots retain intermediate history; diagnostics and fusion candidates
+    // returned to callers describe only the final planning attempt.
+    context.diagnostics.clear();
+    report.fusion_candidates.clear();
+    context.diagnostics.push(Diagnostic {
+        code: "optimizer.replan",
+        message: format!("pass `{pass_name}` requested a full planning restart"),
+    });
 }
 
 /// Iterate a rewrite pass to a fixed point, stopping on the first unchanged
