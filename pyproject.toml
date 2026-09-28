@@ -4,8 +4,14 @@ build-backend = "maturin"
 
 [project]
 name = "rivet"
+description = "Rust and Python image data pipelines for loading, transforming, and batching datasets"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+keywords = ["data-loading", "image-processing", "machine-learning", "rust"]
 requires-python = ">=3.13"
 classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
@@ -19,6 +25,10 @@ dependencies = [
     "pyarrow>=25.0.1",
     "pylance>=11.0.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/shaijing/rivet"
+Issues = "https://github.com/shaijing/rivet/issues"
 
 [tool.maturin]
 python-source = "src"
