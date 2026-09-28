@@ -94,9 +94,9 @@ def test_resize_stays_within_bounded_u8_error_of_torchvision(
         .decode_image()
         .resize(17, 15, rivet_mode),
     )
-    expected = transforms.Resize(
-        (15, 17), interpolation=torch_mode
-    )(Image.open(image_path).convert("RGB"))
+    expected = transforms.Resize((15, 17), interpolation=torch_mode)(
+        Image.open(image_path).convert("RGB")
+    )
 
     np.testing.assert_allclose(
         actual.astype(np.int16),
@@ -142,9 +142,7 @@ def test_grayscale_stays_within_known_luma_difference_of_torchvision(
 
     actual = _rivet_image(
         class_dir.parent,
-        rivet.scan_image_folder(class_dir.parent)
-        .decode_image()
-        .grayscale(channels),
+        rivet.scan_image_folder(class_dir.parent).decode_image().grayscale(channels),
     )
     expected = transforms.Grayscale(num_output_channels=channels)(
         Image.open(image_path).convert("RGB")
@@ -185,7 +183,9 @@ def test_u8_color_operations_match_torchvision(
     pipeline = rivet.scan_image_folder(class_dir.parent).decode_image()
     actual = _rivet_image(
         class_dir.parent,
-        getattr(pipeline, name)() if argument is None else getattr(pipeline, name)(argument),
+        getattr(pipeline, name)()
+        if argument is None
+        else getattr(pipeline, name)(argument),
     )
     image = Image.open(image_path).convert("RGB")
     expected = (
@@ -250,7 +250,9 @@ def test_dtype_layout_and_asymmetric_padding_match_torchvision(tmp_path: Path) -
         .hwc_to_chw(),
     )
     expected_converted = torch.from_numpy(pixels).permute(2, 0, 1).float() / 255.0
-    np.testing.assert_allclose(converted, expected_converted.numpy(), rtol=0.0, atol=1e-7)
+    np.testing.assert_allclose(
+        converted, expected_converted.numpy(), rtol=0.0, atol=1e-7
+    )
 
 
 def test_configurable_random_ops_have_torchvision_comparable_degenerate_cases(

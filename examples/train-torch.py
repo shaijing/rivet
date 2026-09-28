@@ -46,7 +46,6 @@ def main() -> None:
     from torch import nn
     from torch.utils.data import DataLoader
     from torchvision import datasets, transforms
-
     from train_support import resnet18_c, setup_logger
 
     config = Config()

@@ -15,7 +15,10 @@ pub mod sampler {
 }
 
 pub use batch::ImageBatchBuilder;
-pub use cache::{DecodedImageMemoryDataset, DenseImageMemoryDataset, VariableImageMemoryDataset};
+pub use cache::{
+    DecodedImageMemoryDataset, DenseImageMemoryDataset, PackedImageMemoryDataset,
+    VariableImageMemoryDataset,
+};
 pub use errors::{RivetError, RivetResult, VisionError, VisionResult};
 pub use pipeline::{Compose, ImagePipeline, ImageTransform, TransformSequence};
 pub use rivet_data::random::{

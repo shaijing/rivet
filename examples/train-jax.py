@@ -119,9 +119,8 @@ def build_loader(
     pipeline = dataset.pipeline()
 
     if augment:
-        pipeline = (
-            pipeline.random_crop(32, 32, padding=4)
-            .random_horizontal_flip(probability=0.5)
+        pipeline = pipeline.random_crop(32, 32, padding=4).random_horizontal_flip(
+            probability=0.5
         )
 
     pipeline = pipeline.normalize(
@@ -142,10 +141,7 @@ def build_loader(
     )
 
     # JAX-only tensors: strip rivet's metadata keys (dtype/layout/shape).
-    return (
-        {key: batch[key] for key in ("images", "labels")}
-        for batch in loader
-    )
+    return ({key: batch[key] for key in ("images", "labels")} for batch in loader)
 
 
 # ============================================================
@@ -157,11 +153,10 @@ def build_loader(
 
 
 def main():
+    import jax
     import jax.numpy as jnp
     import optax
     from flax import nnx
-
-    import jax
     from train_jax_support import flax_resnet18_c
     from train_support import setup_logger
 

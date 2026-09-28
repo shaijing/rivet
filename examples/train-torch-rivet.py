@@ -70,9 +70,8 @@ def build_loader(
 
     pipeline = dataset.pipeline()
     if augment:
-        pipeline = (
-            pipeline.random_crop(32, 32, padding=4)
-            .random_horizontal_flip(probability=0.5)
+        pipeline = pipeline.random_crop(32, 32, padding=4).random_horizontal_flip(
+            probability=0.5
         )
 
     pipeline = pipeline.normalize(
@@ -114,7 +113,6 @@ def to_torch_batch(batch, *, torch, device, pin_memory: bool):
 def main() -> None:
     import torch
     from torch import nn
-
     from train_support import resnet18_c, setup_logger
 
     config = Config()

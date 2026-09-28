@@ -21,6 +21,8 @@ def test_hf_indices_rejected() -> None:
 
 
 def test_rust_numpy_export_does_not_clone_image_batch() -> None:
-    loader_rs = Path(__file__).parents[1] / "crates" / "rivet-python" / "src" / "loader.rs"
+    loader_rs = (
+        Path(__file__).parents[1] / "crates" / "rivet-python" / "src" / "loader.rs"
+    )
 
     assert "values.clone()" not in loader_rs.read_text()

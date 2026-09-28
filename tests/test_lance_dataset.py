@@ -47,7 +47,8 @@ def _write_custom_split(path: Path, labels: list[int]) -> None:
     )
     lance.write_dataset(
         pa.RecordBatch.from_pylist(
-            [{"jpeg_bytes": PNG_1X1, "target": label} for label in labels], schema=schema
+            [{"jpeg_bytes": PNG_1X1, "target": label} for label in labels],
+            schema=schema,
         ),
         str(path),
         schema=schema,
@@ -132,7 +133,9 @@ def test_v2_manifest_binds_semantic_features_to_lance_columns(tmp_path: Path) ->
         )
     )
 
-    dataset = rivet.load_dataset(tmp_path, image_column="ignored", label_column="ignored")
+    dataset = rivet.load_dataset(
+        tmp_path, image_column="ignored", label_column="ignored"
+    )
     assert dataset.keys() == ["train"]
     assert dataset["train"].get_encoded(1)["label"] == 7
 
@@ -235,8 +238,7 @@ def test_decoded_cache_skips_decode_and_preserves_random_pipeline(
         if decode:
             pipeline = pipeline.decode_image()
         batch = next(
-            pipeline
-            .random_horizontal_flip(0.5)
+            pipeline.random_horizontal_flip(0.5)
             .normalize([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
             .shuffle(seed)
             .batch(1)

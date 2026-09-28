@@ -12,6 +12,7 @@ EOF
 pytest tests/test_multi_arrow.py -q
 ```
 """
+
 from __future__ import annotations
 
 import os

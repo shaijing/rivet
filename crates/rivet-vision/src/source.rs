@@ -1,7 +1,8 @@
 //! State-aware image sources used by the image pipeline.
 
 use crate::cache::{
-    CachePolicy, DecodedImageMemoryDataset, DenseImageMemoryDataset, materialize_decoded_to_memory,
+    CachePolicy, DecodedImageMemoryDataset, DenseImageMemoryDataset, PackedImageMemoryDataset,
+    materialize_decoded_to_memory,
 };
 use crate::errors::{RivetResult, VisionResult, invalid_argument};
 use crate::pipeline::op::PipelineImageState;
@@ -20,6 +21,7 @@ pub enum ImageSource {
     Encoded(Source<EncodedImageSample>),
     Decoded(Source<DecodedSample>),
     DenseDecoded(Source<DecodedSample>, Arc<DenseImageMemoryDataset>),
+    PackedDecoded(Source<DecodedSample>, Arc<PackedImageMemoryDataset>),
 }
 
 impl ImageSource {
@@ -53,20 +55,28 @@ impl ImageSource {
         Self::DenseDecoded(Source::new(Arc::clone(&dataset)), dataset)
     }
 
+    pub fn from_packed_decoded(dataset: Arc<PackedImageMemoryDataset>) -> Self {
+        Self::PackedDecoded(Source::new(Arc::clone(&dataset)), dataset)
+    }
+
     pub fn state(&self) -> PipelineImageState {
         match self {
             Self::Encoded(_) => PipelineImageState::Encoded,
-            Self::Decoded(_) | Self::DenseDecoded(..) => PipelineImageState::Decoded {
-                dtype: DType::U8,
-                axis_order: ImageAxisOrder::Hwc,
-            },
+            Self::Decoded(_) | Self::DenseDecoded(..) | Self::PackedDecoded(..) => {
+                PipelineImageState::Decoded {
+                    dtype: DType::U8,
+                    axis_order: ImageAxisOrder::Hwc,
+                }
+            }
         }
     }
 
     pub fn len(&self) -> usize {
         match self {
             Self::Encoded(source) => source.len(),
-            Self::Decoded(source) | Self::DenseDecoded(source, _) => source.len(),
+            Self::Decoded(source)
+            | Self::DenseDecoded(source, _)
+            | Self::PackedDecoded(source, _) => source.len(),
         }
     }
 
@@ -120,7 +130,7 @@ impl ImageSource {
                 .into_iter()
                 .map(ImageSample::Decoded)
                 .collect()),
-            Self::DenseDecoded(source, _) => Ok(source
+            Self::DenseDecoded(source, _) | Self::PackedDecoded(source, _) => Ok(source
                 .get_many(indices)?
                 .into_iter()
                 .map(ImageSample::Decoded)
@@ -129,15 +139,21 @@ impl ImageSource {
     }
 
     pub fn supports_batch_read(&self) -> bool {
-        matches!(self, Self::DenseDecoded(..))
+        match self {
+            Self::DenseDecoded(..) => true,
+            Self::PackedDecoded(_, dataset) => dataset.is_fixed_shape(),
+            Self::Encoded(_) | Self::Decoded(_) => false,
+        }
     }
 
     pub fn capabilities(&self) -> SourceCapabilities {
         let mut capabilities = match self {
             Self::Encoded(source) => source.capabilities(),
-            Self::Decoded(source) | Self::DenseDecoded(source, _) => source.capabilities(),
+            Self::Decoded(source)
+            | Self::DenseDecoded(source, _)
+            | Self::PackedDecoded(source, _) => source.capabilities(),
         };
-        if matches!(self, Self::DenseDecoded(..)) {
+        if self.supports_batch_read() {
             capabilities.batched_reads = true;
             capabilities.zero_copy = true;
             capabilities.parallel_reads = true;
@@ -149,6 +165,10 @@ impl ImageSource {
     pub fn get_batch(&self, indices: &[usize]) -> Option<RivetResult<ImageBatch>> {
         match self {
             Self::DenseDecoded(_, dataset) => Some(dataset.get_batch(indices)),
+            Self::PackedDecoded(_, dataset) if dataset.is_fixed_shape() => {
+                Some(dataset.get_batch(indices))
+            }
+            Self::PackedDecoded(..) => None,
             Self::Encoded(_) | Self::Decoded(_) => None,
         }
     }
@@ -164,9 +184,9 @@ impl ImageSource {
                 Self::Encoded(source) => Ok(Self::Encoded(Source::new(Arc::new(
                     materialize_to_memory(source.as_dataset(), chunk_size)?,
                 )))),
-                Self::Decoded(_) | Self::DenseDecoded(..) => Err(invalid_argument(
-                    "encoded cache requires an encoded image source",
-                )),
+                Self::Decoded(_) | Self::DenseDecoded(..) | Self::PackedDecoded(..) => Err(
+                    invalid_argument("encoded cache requires an encoded image source"),
+                ),
             },
             CachePolicy::Decoded {
                 chunk_size,
@@ -179,12 +199,17 @@ impl ImageSource {
                         DecodedImageMemoryDataset::Dense(dataset) => {
                             Ok(Self::from_dense_decoded(Arc::new(dataset)))
                         }
+                        DecodedImageMemoryDataset::Packed(dataset) => {
+                            Ok(Self::from_packed_decoded(Arc::new(dataset)))
+                        }
                         DecodedImageMemoryDataset::Variable(dataset) => Ok(Self::Decoded(
                             Source::new(Arc::new(DecodedImageMemoryDataset::Variable(dataset))),
                         )),
                     }
                 }
-                Self::Decoded(_) | Self::DenseDecoded(..) => Ok(self.clone()),
+                Self::Decoded(_) | Self::DenseDecoded(..) | Self::PackedDecoded(..) => {
+                    Ok(self.clone())
+                }
             },
         }
     }

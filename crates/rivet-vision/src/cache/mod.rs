@@ -5,10 +5,14 @@ use crate::sample::image::EncodedImageSample;
 use crate::transforms::representation::decode_rgb;
 use rivet_data::dataset::Dataset;
 
-pub use decoded::{DecodedImageMemoryDataset, DenseImageMemoryDataset, VariableImageMemoryDataset};
+pub use decoded::{
+    DecodedImageMemoryDataset, DenseImageMemoryDataset, PackedImageMemoryDataset,
+    VariableImageMemoryDataset,
+};
 
 pub const DEFAULT_ENCODED_CHUNK_SIZE: usize = 4096;
 pub const DEFAULT_DECODED_CHUNK_SIZE: usize = 4096;
+pub const DEFAULT_DECODED_SLAB_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CacheLevel {
@@ -74,7 +78,8 @@ impl Default for CachePolicy {
 }
 
 /// Decode an encoded image dataset in bounded source batches and materialize
-/// the result using dense storage when all decoded shapes match.
+/// the result into bounded packed slabs. Both fixed- and variable-resolution
+/// samples are returned as zero-copy views into those slabs.
 pub fn materialize_decoded_to_memory(
     dataset: &dyn Dataset<Item = EncodedImageSample>,
     chunk_size: usize,
@@ -84,7 +89,7 @@ pub fn materialize_decoded_to_memory(
         return Err(invalid_argument("cache chunk_size must be greater than 0"));
     }
 
-    let mut items = Vec::with_capacity(dataset.len());
+    let mut builder = decoded::PackedImageMemoryBuilder::with_capacity(dataset.len());
     let mut total_bytes = 0usize;
     for start in (0..dataset.len()).step_by(chunk_size) {
         let end = start.saturating_add(chunk_size).min(dataset.len());
@@ -97,12 +102,15 @@ pub fn materialize_decoded_to_memory(
                 indices.len()
             )));
         }
+        let mut decoded_chunk = Vec::with_capacity(indices.len());
+        let mut decoded_chunk_bytes = 0usize;
         for (index, sample) in indices.into_iter().zip(encoded) {
             let decoded = decode_rgb(sample.image.as_slice(), sample.label).map_err(|error| {
                 invalid_argument(format!("failed to decode image at index {index}: {error}"))
             })?;
+            let decoded_bytes = decoded.image.storage_bytes();
             total_bytes = total_bytes
-                .checked_add(decoded.image.logical_bytes())
+                .checked_add(decoded_bytes)
                 .ok_or_else(|| invalid_argument("decoded cache byte count overflow"))?;
             if let Some(max_bytes) = max_bytes {
                 if total_bytes > max_bytes {
@@ -111,8 +119,18 @@ pub fn materialize_decoded_to_memory(
                     )));
                 }
             }
-            items.push(decoded);
+            if !decoded_chunk.is_empty()
+                && decoded_chunk_bytes.saturating_add(decoded_bytes) > DEFAULT_DECODED_SLAB_BYTES
+            {
+                builder.push_chunk(std::mem::take(&mut decoded_chunk))?;
+                decoded_chunk_bytes = 0;
+            }
+            decoded_chunk_bytes = decoded_chunk_bytes
+                .checked_add(decoded_bytes)
+                .ok_or_else(|| invalid_argument("decoded cache chunk byte count overflow"))?;
+            decoded_chunk.push(decoded);
         }
+        builder.push_chunk(decoded_chunk)?;
     }
-    Ok(DecodedImageMemoryDataset::from_samples(items)?)
+    Ok(DecodedImageMemoryDataset::Packed(builder.finish()))
 }

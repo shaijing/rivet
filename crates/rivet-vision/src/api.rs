@@ -7,7 +7,8 @@
 
 pub use crate::batch::ImageBatchBuilder;
 pub use crate::cache::{
-    CacheConfig, CacheLevel, CachePolicy, DEFAULT_DECODED_CHUNK_SIZE, DEFAULT_ENCODED_CHUNK_SIZE,
+    CacheConfig, CacheLevel, CachePolicy, DEFAULT_DECODED_CHUNK_SIZE, DEFAULT_DECODED_SLAB_BYTES,
+    DEFAULT_ENCODED_CHUNK_SIZE,
 };
 pub use crate::datasets::{ArrowImageDataset, ImageFolderDatasetCore, ImageFolderSample};
 #[cfg(feature = "lance")]

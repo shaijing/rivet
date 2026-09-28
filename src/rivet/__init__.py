@@ -269,16 +269,12 @@ class LanceDataset:
         dataset is unchanged. ``max_bytes`` applies to decoded caching.
         """
         if level not in {"encoded", "decoded"}:
-            raise ValueError(
-                "cache level must be 'encoded' or 'decoded'"
-            )
+            raise ValueError("cache level must be 'encoded' or 'decoded'")
         if chunk_size <= 0:
             raise ValueError("cache chunk_size must be greater than 0")
         if max_bytes is not None and max_bytes < 0:
             raise ValueError("cache max_bytes must not be negative")
-        return LanceDataset._from_inner(
-            self._inner.cache(level, chunk_size, max_bytes)
-        )
+        return LanceDataset._from_inner(self._inner.cache(level, chunk_size, max_bytes))
 
     def pipeline(self) -> Pipeline:
         return Pipeline(self._inner.pipeline())
@@ -299,9 +295,7 @@ class Transform:
     def resize(
         self, width: int, height: int, interpolation: str = "bilinear"
     ) -> Transform:
-        return Transform(
-            self._inner.resize(width, height, interpolation)
-        )
+        return Transform(self._inner.resize(width, height, interpolation))
 
     def crop(self, x: int, y: int, width: int, height: int) -> Transform:
         return Transform(self._inner.crop(x, y, width, height))
@@ -323,9 +317,7 @@ class Transform:
     def vertical_flip(self) -> Transform:
         return Transform(self._inner.vertical_flip())
 
-    def random_crop(
-        self, width: int, height: int, padding: int = 0
-    ) -> Transform:
+    def random_crop(self, width: int, height: int, padding: int = 0) -> Transform:
         return Transform(self._inner.random_crop(width, height, padding))
 
     def random_resized_crop(self, width: int, height: int) -> Transform:
@@ -393,9 +385,7 @@ class Transform:
     def random_grayscale(
         self, probability: float = 0.1, num_output_channels: int = 1
     ) -> Transform:
-        return Transform(
-            self._inner.random_grayscale(probability, num_output_channels)
-        )
+        return Transform(self._inner.random_grayscale(probability, num_output_channels))
 
     def random_erasing(self, probability: float = 0.5) -> Transform:
         return Transform(self._inner.random_erasing(probability))
@@ -685,9 +675,7 @@ class Pipeline:
         )
 
     def random_erasing(self, probability: float = 0.5) -> Pipeline:
-        return Pipeline(
-            self._inner.random_erasing(probability), as_numpy=self.as_numpy
-        )
+        return Pipeline(self._inner.random_erasing(probability), as_numpy=self.as_numpy)
 
     def random_erasing_with_options(
         self,
@@ -707,9 +695,7 @@ class Pipeline:
         )
 
     def convert_image_dtype(self, dtype: str) -> Pipeline:
-        return Pipeline(
-            self._inner.convert_image_dtype(dtype), as_numpy=self.as_numpy
-        )
+        return Pipeline(self._inner.convert_image_dtype(dtype), as_numpy=self.as_numpy)
 
     def rotate(self, angle: int) -> Pipeline:
         return Pipeline(self._inner.rotate(angle), as_numpy=self.as_numpy)
@@ -1008,7 +994,9 @@ class DataLoader:
         else:
             if batch_size is None:
                 raise ValueError("batch_size is required when source is a dataset")
-            self._inner = source.pipeline().decode_image().batch(batch_size)._inner.execute()
+            self._inner = (
+                source.pipeline().decode_image().batch(batch_size)._inner.execute()
+            )
 
         self.as_numpy = as_numpy
 

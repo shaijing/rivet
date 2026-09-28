@@ -132,6 +132,18 @@ impl<T> ExactOutput<T> {
         self.builder.write_next(value)
     }
 
+    /// Copy a typed slice into the remaining final output allocation.
+    ///
+    /// This keeps bulk cache and tensor builders on the statically dispatched
+    /// writer path instead of paying one callback per element.
+    #[inline]
+    pub fn extend_from_slice(&mut self, values: &[T]) -> Result<()>
+    where
+        T: Copy,
+    {
+        self.builder.extend_from_slice(values)
+    }
+
     fn finish(self) -> Result<AlignedBuffer<T>> {
         self.builder.finish()
     }
@@ -275,3 +287,30 @@ impl_with_dtype!(bf16, BF16);
 impl_with_dtype!(f16, F16);
 impl_with_dtype!(f32, F32);
 impl_with_dtype!(f64, F64);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_output_bulk_write_uses_final_aligned_storage() {
+        let storage = <u8 as WithDType>::into_cpu_storage_writer(5, |output| {
+            output.extend_from_slice(&[1, 2])?;
+            output.extend_from_slice(&[3, 4, 5])
+        })
+        .unwrap();
+
+        assert_eq!(u8::cpu_storage_as_slice(&storage).unwrap(), [1, 2, 3, 4, 5]);
+        assert_eq!(storage.base_ptr() as usize % 256, 0);
+    }
+
+    #[test]
+    fn exact_output_bulk_write_rejects_overflow() {
+        let error = <u8 as WithDType>::into_cpu_storage_writer(2, |output| {
+            output.extend_from_slice(&[1, 2, 3])
+        })
+        .unwrap_err();
+
+        assert!(matches!(error, Error::StorageOutOfBounds));
+    }
+}

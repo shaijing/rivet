@@ -42,7 +42,10 @@ def test_image_folder_metadata_is_stable(tmp_path: Path) -> None:
     assert dataset.class_to_idx == {"ant": 0, "zebra": 1}
     assert len(dataset) == 2
     assert [sample["label"] for sample in dataset.samples] == [0, 1]
-    assert [Path(sample["path"]).name for sample in dataset.samples] == ["a.jpg", "b.PNG"]
+    assert [Path(sample["path"]).name for sample in dataset.samples] == [
+        "a.jpg",
+        "b.PNG",
+    ]
 
 
 def test_image_folder_pipeline(tmp_path: Path) -> None:

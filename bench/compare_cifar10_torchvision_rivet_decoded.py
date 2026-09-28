@@ -215,9 +215,7 @@ def bench_rivet_decoded(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=(
-            "Compare torchvision CIFAR-10 loading with Rivet decoded cache"
-        )
+        description=("Compare torchvision CIFAR-10 loading with Rivet decoded cache")
     )
     parser.add_argument(
         "--torch-root",
@@ -250,11 +248,17 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = _build_parser().parse_args()
     if args.batch <= 0 or args.workers < 0 or args.epochs <= 0:
-        raise SystemExit("batch and epochs must be positive; workers must be non-negative")
+        raise SystemExit(
+            "batch and epochs must be positive; workers must be non-negative"
+        )
     if args.batches < 0 or args.crop_size <= 0 or args.padding < 0:
-        raise SystemExit("batches/crop-size must be non-negative/positive and padding non-negative")
+        raise SystemExit(
+            "batches/crop-size must be non-negative/positive and padding non-negative"
+        )
     if args.cache_chunk <= 0 or (args.max_bytes is not None and args.max_bytes < 0):
-        raise SystemExit("cache-chunk must be positive and max-bytes must be non-negative")
+        raise SystemExit(
+            "cache-chunk must be positive and max-bytes must be non-negative"
+        )
 
     torch_result = bench_torchvision(
         args.torch_root,

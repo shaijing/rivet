@@ -60,16 +60,14 @@ def test_phase5_geometry_rejects_malformed_points(arrow_file: Path) -> None:
         scan(arrow_file).decode_image().perspective([(0.0, 0.0)], []).batch(1).execute()
 
 
-@pytest.mark.parametrize("interpolation", ["nearest", "bilinear", "bicubic", "lanczos3"])
+@pytest.mark.parametrize(
+    "interpolation", ["nearest", "bilinear", "bicubic", "lanczos3"]
+)
 def test_resize_accepts_rivet_interpolation_modes(
     arrow_file: Path, interpolation: str
 ) -> None:
     batch = next(
-        scan(arrow_file)
-        .decode_image()
-        .resize(24, 20, interpolation)
-        .batch(1)
-        .execute()
+        scan(arrow_file).decode_image().resize(24, 20, interpolation).batch(1).execute()
     )
 
     assert batch["images"].shape == (1, 20, 24, 3)
@@ -138,7 +136,9 @@ def test_drop_last(arrow_file: Path) -> None:
 
 def test_take_larger_than_dataset(arrow_file: Path) -> None:
     dataset = rivet.ArrowDataset([arrow_file])
-    batch = next(scan(arrow_file).take(len(dataset) + 10).decode_image().batch(4).execute())
+    batch = next(
+        scan(arrow_file).take(len(dataset) + 10).decode_image().batch(4).execute()
+    )
 
     assert batch["images"].shape == (4, 32, 32, 3)
 
@@ -180,7 +180,13 @@ def test_resize_after_normalize_rejected(arrow_file: Path) -> None:
 
 
 def test_normalize_channel_mismatch(arrow_file: Path) -> None:
-    loader = scan(arrow_file).decode_image().normalize([0.5, 0.5], [0.5, 0.5]).batch(1).execute()
+    loader = (
+        scan(arrow_file)
+        .decode_image()
+        .normalize([0.5, 0.5], [0.5, 0.5])
+        .batch(1)
+        .execute()
+    )
 
     with pytest.raises(ValueError, match="channel count"):
         next(loader)
@@ -196,12 +202,7 @@ def test_workers_match_inline(arrow_file: Path) -> None:
                 return out
 
     serial = collect(
-        scan(arrow_file)
-        .take(64)
-        .decode_image()
-        .resize(16, 16)
-        .batch(8)
-        .execute()
+        scan(arrow_file).take(64).decode_image().resize(16, 16).batch(8).execute()
     )
     pooled = collect(
         scan(arrow_file)
@@ -229,12 +230,7 @@ def test_prefetch_matches_inline(arrow_file: Path) -> None:
                 return out
 
     serial = collect(
-        scan(arrow_file)
-        .take(64)
-        .decode_image()
-        .resize(16, 16)
-        .batch(8)
-        .execute()
+        scan(arrow_file).take(64).decode_image().resize(16, 16).batch(8).execute()
     )
     prefetched = collect(
         scan(arrow_file)
@@ -291,13 +287,7 @@ def test_loader_for_loop_matches_manual_next(arrow_file: Path) -> None:
 
 
 def test_loader_iterator_protocol(arrow_file: Path) -> None:
-    loader = (
-        scan(arrow_file)
-        .take(8)
-        .decode_image()
-        .batch(8)
-        .execute()
-    )
+    loader = scan(arrow_file).take(8).decode_image().batch(8).execute()
 
     # Standard iterator protocol: iter() is idempotent, exhaustion is
     # sticky and surfaces as StopIteration.
@@ -336,9 +326,9 @@ def test_random_crop_varies_with_seed(arrow_file: Path) -> None:
         return batch["images"]
 
     outputs = [first_images(seed) for seed in range(8)]
-    assert any(
-        not np.array_equal(outputs[0], other) for other in outputs[1:]
-    ), "different seeds must produce different crops"
+    assert any(not np.array_equal(outputs[0], other) for other in outputs[1:]), (
+        "different seeds must produce different crops"
+    )
 
 
 def test_random_horizontal_flip_extremes(arrow_file: Path) -> None:
@@ -458,10 +448,4 @@ def test_composition_controls_deterministic_across_workers(arrow_file: Path) -> 
 def test_random_horizontal_flip_probability_range(arrow_file: Path) -> None:
     # Builders are infallible; validation surfaces at execute/compile.
     with pytest.raises(ValueError, match="probability"):
-        (
-            scan(arrow_file)
-            .decode_image()
-            .random_horizontal_flip(1.5)
-            .batch(1)
-            .execute()
-        )
+        (scan(arrow_file).decode_image().random_horizontal_flip(1.5).batch(1).execute())
