@@ -14,6 +14,7 @@ path = "src/lib.rs"
 [features]
 default = ["lance"]
 lance = ["rivet-vision/lance"]
+cuda = ["rivet-vision/cuda"]
 
 [dependencies]
 arrow-buffer.workspace = true
