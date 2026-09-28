@@ -15,7 +15,7 @@ Add ``--cache-compare`` to report Lance lazy versus an in-memory Rivet cache
 ``--cache-level encoded`` to benchmark the compressed representation instead.
 
 Use ``--lance-root`` to select another converted CIFAR-10 root. The default is
-``/data/datasets/rivet/cifar10``. Add ``--sweep`` for a Rivet worker scaling
+``~/.cache/rivet/datasets``. Add ``--sweep`` for a Rivet worker scaling
 table.
 """
 

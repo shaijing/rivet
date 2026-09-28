@@ -22,7 +22,7 @@ train_arrow = "/home/ling/.cache/huggingface/datasets/uoft-cs___cifar100/cifar10
 
 test_arrow = "/home/ling/.cache/huggingface/datasets/uoft-cs___cifar100/cifar100/0.0.0/aadb3af77e9048adbea6b47c21a81e47dd092ae5/cifar100-test.arrow"
 
-output_root = Path("/data/datasets/rivet/cifar100")
+output_root = Path.home() / ".cache" / "rivet" / "datasets" / "cifar100"
 output_root.mkdir(parents=True, exist_ok=True)
 
 

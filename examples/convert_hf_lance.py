@@ -12,12 +12,12 @@ The output schema is:
 Examples:
 
     python examples/convert_hf_lance.py \
-        /data/datasets/rivet/cifar10 \
-        /data/datasets/rivet/cifar10_rivet
+        ~/.cache/rivet/datasets/cifar10 \
+        ~/.cache/rivet/datasets/cifar10_rivet
 
     python examples/convert_hf_lance.py \
-        /data/datasets/rivet/cifar100 \
-        /data/datasets/rivet/cifar100_rivet \
+        ~/.cache/rivet/datasets/cifar100 \
+        ~/.cache/rivet/datasets/cifar100_rivet \
         --label-column fine_label \
         --keep-path
 """

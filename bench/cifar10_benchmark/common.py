@@ -12,7 +12,10 @@ except ImportError:  # pragma: no cover - resource is Unix-only
     resource = None
 
 DEFAULT_LANCE_ROOT = Path(
-    os.environ.get("RIVET_CIFAR10_ROOT", "/data/datasets/rivet/cifar10")
+    os.environ.get(
+        "RIVET_CIFAR10_ROOT",
+        Path.home() / ".cache" / "rivet" / "datasets",
+    )
 )
 
 

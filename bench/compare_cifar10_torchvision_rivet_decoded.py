@@ -15,7 +15,7 @@ Example:
 
     .venv/bin/python bench/compare_cifar10_torchvision_rivet_decoded.py \
         --torch-root /data/datasets/pytorch \
-        --rivet-root /data/datasets/rivet/cifar10 \
+        --rivet-root ~/.cache/rivet/datasets \
         --batch 128 --workers 4 --epochs 3
 """
 

@@ -8,7 +8,7 @@
 //! Defaults are: cifar10 train 2 64.
 //!
 //! The dataset root can be overridden with RIVET_LANCE_ROOT:
-//!   RIVET_LANCE_ROOT=/data/datasets/rivet cargo run -j 16 \
+//!   RIVET_LANCE_ROOT=$HOME/.cache/rivet/datasets cargo run -j 16 \
 //!     -p rivet-vision --features lance --example lance_cifar
 
 use rivet_data::dataset::DatasetLoadResult;
@@ -21,7 +21,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const DEFAULT_DATASET_ROOT: &str = "/data/datasets/rivet";
+const DEFAULT_DATASET_ROOT: &str = ".cache/rivet/datasets";
 
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
@@ -95,7 +95,12 @@ fn parse_args() -> ExampleResult<(CifarSpec, String, usize, usize)> {
 fn dataset_root() -> PathBuf {
     env::var_os("RIVET_LANCE_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_DATASET_ROOT))
+        .unwrap_or_else(|| {
+            env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(DEFAULT_DATASET_ROOT))
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_DATASET_ROOT))
+        })
 }
 
 fn open_split(root: &Path, spec: &CifarSpec, split: &str) -> ExampleResult<ImageSource> {
