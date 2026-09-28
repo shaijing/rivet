@@ -849,6 +849,14 @@ class Pipeline:
             as_numpy=self.as_numpy if as_numpy is None else as_numpy,
         )
 
+    def explain(self) -> str:
+        """Explain declared/optimized IR and placement without reading images.
+
+        This validates and optimizes a separate plan for inspection. Calling
+        execute() still compiles its own execution plan.
+        """
+        return self._inner.explain()
+
 
 def scan_arrow(
     files: Iterable[str | Path],

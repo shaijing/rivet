@@ -262,6 +262,39 @@ execution also skips formatting placement explanations; explain APIs retain
 their reports. The planar sample writer's setup is kept in a separate function
 to limit its effect on common sample dispatch code generation.
 
+## Standalone Python reordering checks
+
+`Pipeline.explain()` exposes the declared logical graph, optimized logical graph,
+placement and rewrite diagnostics through Python. It validates/optimizes a
+separate inspection plan without executing image reads and does not cache a
+compiled execution plan for subsequent `execute()` calls.
+
+After building the Python extension, run the self-contained test script:
+
+```sh
+.venv/bin/python tests/test_ir_reordering.py --show-plans
+# Optional worker/epoch configurations:
+.venv/bin/python tests/test_ir_reordering.py --workers 0 4 --epochs 0 1 7
+# The same tests are also discoverable by pytest:
+.venv/bin/pytest -q tests/test_ir_reordering.py
+```
+
+The script generates 24 distinct RGB PNG samples in temporary Arrow IPC files,
+including a dataset with a corrupt row. It requires no downloaded dataset and
+returns a nonzero exit code on failures. It follows input edges from the graph
+root rather than treating arena/display order as execution order. `IndexOp` is
+a generic graph label; labels and pixel comparisons separately verify Take,
+Skip and Shuffle ordering and parameters.
+
+Twelve tests cover actual selection pushdown, comparison against an explicit
+reordered pipeline and full-dataset random augmentation by source identity,
+worker/epoch reproducibility, slice/shuffle barriers, adjacent slice composition,
+inverse layout removal, padded Crop before Normalize, rejected Normalize before
+Crop and post-Batch selections, excluded corrupt samples, and repeatable
+inspection that leaves the declared pipeline intact. Pixel comparisons use exact
+equality except the independent NumPy normalization reference, which allows
+floating-point rounding tolerance while checking padding maps exactly to -1.
+
 ## Remaining work
 
 The current rules are deliberately local and conservative. Future work includes

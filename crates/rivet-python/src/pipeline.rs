@@ -863,4 +863,10 @@ impl PyImagePipeline {
             inner: self.inner.clone().compile().map_err(to_py_err)?,
         })
     }
+
+    fn explain(&self) -> PyResult<String> {
+        self.inner
+            .optimization_explain(Default::default())
+            .map_err(to_py_err)
+    }
 }
