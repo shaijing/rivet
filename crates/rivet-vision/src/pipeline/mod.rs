@@ -6,12 +6,16 @@ mod logical;
 pub mod op;
 mod optimizer;
 pub(crate) mod physical;
+pub(crate) mod semantics;
 pub use dag::ImageConcat;
 pub use physical::ImageGraphInfo;
 mod transform;
 
 pub use builder::ImagePipeline;
 pub use transform::{Compose, ImageTransform, TransformSequence};
+
+#[cfg(test)]
+mod semantic_rewrite_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1077,10 +1081,8 @@ mod tests {
         let mut plan = pipeline.to_logical_plan();
         let context = super::optimizer::optimize_vision_plan(&mut plan, 0).unwrap();
         assert!(context.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == "rewrite.index-source-pushdown"
-                && diagnostic
-                    .message
-                    .contains("before reads and image transforms")
+            diagnostic.code == "rewrite.index-source-prefix"
+                && diagnostic.message.contains("sampler lowering")
         }));
     }
 

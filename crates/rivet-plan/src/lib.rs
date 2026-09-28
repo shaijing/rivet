@@ -263,6 +263,7 @@ pub struct LogicalNode {
     kind: NodeKind,
     inputs: NodeInputs,
     payload: Option<Arc<dyn PlanPayload>>,
+    semantic_identity: Option<u64>,
 }
 
 impl LogicalNode {
@@ -275,7 +276,24 @@ impl LogicalNode {
             kind,
             inputs: NodeInputs::new(inputs),
             payload,
+            semantic_identity: None,
         }
+    }
+
+    /// Stable semantic operator identity, independent of arena position.
+    pub fn semantic_identity(&self) -> Option<u64> {
+        self.semantic_identity
+    }
+
+    pub fn with_semantic_identity(mut self, identity: u64) -> Self {
+        self.semantic_identity = Some(identity);
+        self
+    }
+
+    /// Rewire a node while preserving its payload and semantic metadata.
+    pub fn with_inputs(mut self, inputs: impl IntoIterator<Item = NodeId>) -> Self {
+        self.inputs = NodeInputs::new(inputs);
+        self
     }
 
     pub fn kind(&self) -> NodeKind {
@@ -428,7 +446,7 @@ impl LogicalPlan {
                     .inputs
                     .iter()
                     .map(|id| remap[id.index()].expect("reachable input"));
-                LogicalNode::new(node.kind, inputs, node.payload.clone())
+                node.clone().with_inputs(inputs)
             })
             .collect();
         self.root = self
@@ -698,6 +716,28 @@ mod tests {
             plan.explain().unwrap(),
             "LogicalPlan(root=%2)\n  %0 Source <- []\n  %1 Op test::op <- [%0]\n  %2 Sink <- [%1]\n"
         );
+    }
+
+    #[test]
+    fn semantic_identity_survives_rewiring_and_arena_compaction() {
+        let mut plan = LogicalPlan::new();
+        plan.add_node(LogicalNode::new(NodeKind::Source, [], None));
+        let source = plan.add_node(LogicalNode::new(NodeKind::Source, [], None));
+        let op = plan
+            .add_node(LogicalNode::new(NodeKind::Op, [source], None).with_semantic_identity(73));
+        let sink = plan.add_node(LogicalNode::new(NodeKind::Sink, [op], None));
+        plan.set_root(sink).unwrap();
+        let rewired = plan.node(op).unwrap().clone().with_inputs([source]);
+        assert_eq!(rewired.semantic_identity(), Some(73));
+        plan.replace_node(op, rewired).unwrap();
+        let remap = plan.prune_unreachable().unwrap();
+        assert_eq!(
+            plan.node(remap[op.index()].unwrap())
+                .unwrap()
+                .semantic_identity(),
+            Some(73)
+        );
+        assert_ne!(remap[op.index()].unwrap(), op);
     }
 
     #[test]

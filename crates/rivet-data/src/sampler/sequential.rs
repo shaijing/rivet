@@ -23,7 +23,10 @@ impl IndexSampler {
             return None;
         }
 
-        let end = (self.position + batch_size).min(self.plan.len());
+        let end = self
+            .position
+            .saturating_add(batch_size)
+            .min(self.plan.len());
         let indices = self.plan.slice(self.position, end);
         self.position = end;
         Some(indices)
@@ -74,6 +77,14 @@ mod tests {
         assert_eq!(sampler.next_indices(3), Some(vec![2, 3, 4]));
         assert_eq!(sampler.next_indices(3), Some(vec![5, 6]));
         assert_eq!(sampler.next_indices(3), None);
+    }
+
+    #[test]
+    fn oversized_request_after_a_partial_read_saturates() {
+        let mut sampler = IndexSampler::new(SamplerPlan::Sequential { start: 2, end: 7 }, 0);
+        assert_eq!(sampler.next_indices(2), Some(vec![2, 3]));
+        assert_eq!(sampler.next_indices(usize::MAX), Some(vec![4, 5, 6]));
+        assert_eq!(sampler.next_indices(1), None);
     }
 
     #[test]

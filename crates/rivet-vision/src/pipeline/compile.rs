@@ -61,6 +61,15 @@ impl PhysicalLowering for VisionPhysicalLowering {
         let mut spec = PhysicalNodeSpec::new(*kind, lane)
             .with_parallelism(parallelism)
             .with_operator(operator.clone());
+        // These typed kernels act independently on every image. Lifting
+        // their contiguous suffix across stacking preserves image order and
+        // padding semantics; stage classification alone grants no permission.
+        if matches!(operator.as_ref(), ImageKernel::BatchOp(node) if matches!(node.op,
+            BatchKernel::Normalize(_) | BatchKernel::NormalizeToChw(_) |
+            BatchKernel::ConvertImageDtype { .. } | BatchKernel::Layout { .. }))
+        {
+            spec = spec.with_batch_lift_equivalence();
+        }
         if let Some(candidate) = self.placement.as_ref().and_then(|placement| {
             placement
                 .candidates
@@ -86,6 +95,7 @@ fn compile_graph(
     start: usize,
     optimize: bool,
 ) -> RivetResult<ImageDataLoader> {
+    super::logical::assign_missing_random_identities(&mut logical)?;
     logical
         .canonicalize()
         .map_err(|error| invalid_pipeline(error.to_string()))?;
@@ -151,38 +161,46 @@ fn compile_graph(
             "DAG batch barriers must use matching size and drop_last",
         ));
     }
-    let index_ops = order
+    // Only a real, shared source prefix may execute in the source sampler.
+    // A residual branch-local or post-barrier selection must never be hoisted.
+    let source_id = *order
         .iter()
-        .filter_map(|id| logical.node(*id).ok()?.payload_as::<IndexOp>())
-        .cloned()
-        .collect::<Vec<_>>();
-    // Index operations form one prefix immediately after the source. Branches
-    // consume the same sampled indices; branch-local samplers are ambiguous.
-    for id in &order {
-        let node = logical
-            .node(*id)
+        .find(|id| {
+            logical
+                .node(**id)
+                .is_ok_and(|node| node.kind() == NodeKind::Source)
+        })
+        .expect("one source checked");
+    let mut index_ops = Vec::new();
+    let mut prefix_nodes = std::collections::HashSet::new();
+    let mut prefix = source_id;
+    loop {
+        let children = logical
+            .children(prefix)
             .map_err(|error| invalid_pipeline(error.to_string()))?;
-        if node.kind() == NodeKind::Index {
-            let input = node
-                .inputs()
-                .get(0)
-                .ok_or_else(|| invalid_pipeline("index requires one input"))?;
-            if !matches!(
-                logical
-                    .node(input)
-                    .map_err(|error| invalid_pipeline(error.to_string()))?
-                    .kind(),
-                NodeKind::Source | NodeKind::Index
-            ) || logical
-                .children(input)
-                .map_err(|error| invalid_pipeline(error.to_string()))?
-                .len()
-                != 1
-            {
-                return Err(invalid_pipeline(
-                    "index operations must form a shared prefix before image branches",
-                ));
-            }
+        let [next] = children.as_slice() else { break };
+        let node = logical
+            .node(*next)
+            .map_err(|error| invalid_pipeline(error.to_string()))?;
+        if node.kind() != NodeKind::Index || node.inputs().len() != 1 {
+            break;
+        }
+        let op = node
+            .payload_as::<IndexOp>()
+            .ok_or_else(|| invalid_pipeline("index node has incompatible payload"))?;
+        index_ops.push(op.clone());
+        prefix_nodes.insert(*next);
+        prefix = *next;
+    }
+    for &id in &order {
+        let node = logical
+            .node(id)
+            .map_err(|error| invalid_pipeline(error.to_string()))?;
+        if node.kind() == NodeKind::Index && !prefix_nodes.contains(&id) {
+            return Err(invalid_pipeline(format!(
+                "index operation at node %{} remains outside the shared source prefix: branch-local or post-barrier index execution is not implemented; the optimizer retained its declared position",
+                id.index()
+            )));
         }
     }
     let shuffle_seed = index_ops
@@ -320,7 +338,14 @@ fn compile_graph(
                                 input_state,
                             }
                         } else {
-                            compile_sample_op(op, input_state, None, &mut occurrences)?.0
+                            compile_sample_op(
+                                op,
+                                input_state,
+                                None,
+                                &mut occurrences,
+                                node.semantic_identity().map(OpKey::from_u64),
+                            )?
+                            .0
                         };
                         sample_ops.push(compiled.clone());
                         (
@@ -393,10 +418,30 @@ fn compile_graph(
             }
         }
     }
-    let linear = physical
+    let linear_topology = physical
         .nodes()
         .iter()
         .all(|node| node.inputs.len() <= 1 && node.last_use_count <= 1);
+    // The typed pull executor partitions sample and batch kernels. Use that
+    // traversal only if the physical graph has already proved this ordering;
+    // an unlifted batch kernel must execute in place through the graph executor.
+    let mut saw_batch = false;
+    let linear = linear_topology
+        && physical_order.iter().all(|id| {
+            let node = physical.node(*id).expect("validated execution order");
+            match node.kind {
+                PhysicalNodeKind::Batch => {
+                    if saw_batch {
+                        return false;
+                    }
+                    saw_batch = true;
+                    true
+                }
+                PhysicalNodeKind::Kernel(KernelStage::Decode | KernelStage::Sample) => !saw_batch,
+                PhysicalNodeKind::Kernel(KernelStage::Batch) => saw_batch,
+                _ => true,
+            }
+        });
     let root = logical
         .root()
         .map_err(|error| invalid_pipeline(error.to_string()))?;
@@ -478,7 +523,7 @@ fn compile_sample_program(
 
     for op in ops {
         let (compiled_op, output_state) =
-            compile_sample_op(op, state, Some(parent_key), &mut occurrences)?;
+            compile_sample_op(op, state, Some(parent_key), &mut occurrences, None)?;
         state = output_state;
         compiled_ops.push(compiled_op);
     }
@@ -491,6 +536,7 @@ fn compile_sample_op(
     input_state: PipelineImageState,
     parent_key: Option<OpKey>,
     occurrences: &mut HashMap<&'static str, u32>,
+    stable_key: Option<OpKey>,
 ) -> RivetResult<(CompiledSampleOp, PipelineImageState)> {
     op.validate()?;
     if op.execution_kind() != ExecutionKind::Sample {
@@ -500,7 +546,7 @@ fn compile_sample_op(
         )));
     }
 
-    let random_key = assign_random_key(&op, occurrences, parent_key);
+    let random_key = stable_key.or_else(|| assign_random_key(&op, occurrences, parent_key));
     let (kernel, output_state, stored_random_key) = match op {
         ImageOp::RandomApply { probability, ops } => {
             let key = random_key.expect("RandomApply must have a random key");
@@ -558,7 +604,7 @@ fn compile_sample_op(
             let mut compiled_ops = Vec::with_capacity(ops.len());
             for op in ops {
                 let (compiled_op, output_state) =
-                    compile_sample_op(op, input_state, Some(key), &mut child_occurrences)?;
+                    compile_sample_op(op, input_state, Some(key), &mut child_occurrences, None)?;
                 if output_state != input_state {
                     return Err(invalid_pipeline(
                         "RandomOrder nested transforms must preserve image state",

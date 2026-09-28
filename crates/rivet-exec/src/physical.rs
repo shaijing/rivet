@@ -181,6 +181,9 @@ pub struct PhysicalNodeSpec {
     pub parallelism: ParallelismClass,
     pub memory_requirements: KernelMemoryRequirements,
     pub estimated_output_bytes: Option<usize>,
+    /// Domain proof that applying this unary kernel per sample is equivalent
+    /// to applying it after stacking. Stage classification alone is insufficient.
+    pub batch_lift_equivalent: bool,
 }
 
 impl PhysicalNodeSpec {
@@ -194,7 +197,14 @@ impl PhysicalNodeSpec {
             parallelism: ParallelismClass::Serial,
             memory_requirements: KernelMemoryRequirements::default(),
             estimated_output_bytes: None,
+            batch_lift_equivalent: false,
         }
+    }
+
+    /// Authorize lifting across a stack barrier only; never across another kernel.
+    pub fn with_batch_lift_equivalence(mut self) -> Self {
+        self.batch_lift_equivalent = true;
+        self
     }
 
     pub fn with_operator(mut self, operator: Arc<dyn PhysicalOperator>) -> Self {
@@ -254,6 +264,9 @@ pub struct PhysicalNode {
     pub parallelism: ParallelismClass,
     pub memory_requirements: KernelMemoryRequirements,
     pub estimated_output_bytes: Option<usize>,
+    /// Domain proof that applying this unary kernel per sample is equivalent
+    /// to applying it after stacking. Stage classification alone is insufficient.
+    pub batch_lift_equivalent: bool,
 }
 
 impl fmt::Debug for PhysicalNode {
@@ -324,6 +337,7 @@ impl PhysicalGraph {
             parallelism: spec.parallelism,
             memory_requirements: spec.memory_requirements,
             estimated_output_bytes: spec.estimated_output_bytes,
+            batch_lift_equivalent: spec.batch_lift_equivalent,
         });
         id
     }
@@ -643,10 +657,8 @@ impl PhysicalGraph {
         Ok(out)
     }
 
-    /// Logical image pipelines currently keep semantic ops in their declared
-    /// order and annotate batch-stage ops before the explicit batch barrier.
-    /// Convert that compatibility form into the physical execution order for
-    /// a single linear pipeline.
+    /// Lift only an explicitly equivalent contiguous suffix across stacking.
+    /// Kernel stage describes execution granularity, not semantic commutativity.
     fn move_batch_kernels_after_batch(&mut self) -> Result<(), PhysicalGraphError> {
         let order = self.topological_order()?;
         if self.nodes.iter().any(|node| node.inputs.len() > 1) {
@@ -672,24 +684,26 @@ impl PhysicalGraph {
             return Ok(());
         }
         let batch_index = batches[0];
-        let moved = order[..batch_index]
+        let batch = &self.nodes[order[batch_index].0];
+        if batch.lane != ExecutionLane::Cpu || batch.inputs.len() != 1 {
+            return Ok(());
+        }
+        let suffix_start = order[..batch_index]
             .iter()
-            .copied()
-            .filter(|id| self.nodes[id.0].kind == PhysicalNodeKind::Kernel(KernelStage::Batch))
-            .collect::<Vec<_>>();
+            .rposition(|id| {
+                let node = &self.nodes[id.0];
+                node.kind != PhysicalNodeKind::Kernel(KernelStage::Batch)
+                    || !node.batch_lift_equivalent
+                    || node.inputs.len() != 1
+                    || node.lane != batch.lane
+            })
+            .map_or(0, |position| position + 1);
+        let moved = order[suffix_start..batch_index].to_vec();
         if moved.is_empty() {
             return Ok(());
         }
 
-        let moved_ids = moved
-            .iter()
-            .copied()
-            .collect::<std::collections::HashSet<_>>();
-        let mut reordered = order[..batch_index]
-            .iter()
-            .copied()
-            .filter(|id| !moved_ids.contains(id))
-            .collect::<Vec<_>>();
+        let mut reordered = order[..suffix_start].to_vec();
         reordered.push(order[batch_index]);
         reordered.extend(moved);
         reordered.extend(order[batch_index + 1..].iter().copied());
@@ -1244,7 +1258,8 @@ mod tests {
             PhysicalNodeSpec::new(
                 PhysicalNodeKind::Kernel(KernelStage::Batch),
                 ExecutionLane::Cpu,
-            ),
+            )
+            .with_batch_lift_equivalence(),
             [sample],
         );
         let batch = graph.add_node(
@@ -1265,6 +1280,119 @@ mod tests {
             graph.topological_order().unwrap(),
             vec![source, sample, batch, batch_kernel, sink]
         );
+    }
+
+    #[test]
+    fn batch_stage_alone_does_not_authorize_lifting() {
+        let mut graph = PhysicalGraph::new();
+        let source = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Source, ExecutionLane::Cpu),
+            [],
+        );
+        let kernel = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(
+                PhysicalNodeKind::Kernel(KernelStage::Batch),
+                ExecutionLane::Cpu,
+            ),
+            [source],
+        );
+        let batch = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Batch, ExecutionLane::Cpu),
+            [kernel],
+        );
+        graph.set_root(batch).unwrap();
+        graph.move_batch_kernels_after_batch().unwrap();
+        assert_eq!(graph.topological_order().unwrap(), [source, kernel, batch]);
+    }
+
+    #[test]
+    fn lifting_never_crosses_an_intervening_sample_transform() {
+        let mut graph = PhysicalGraph::new();
+        let source = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Source, ExecutionLane::Cpu),
+            [],
+        );
+        let before = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(
+                PhysicalNodeKind::Kernel(KernelStage::Batch),
+                ExecutionLane::Cpu,
+            )
+            .with_batch_lift_equivalence(),
+            [source],
+        );
+        let sample = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(
+                PhysicalNodeKind::Kernel(KernelStage::Sample),
+                ExecutionLane::Cpu,
+            ),
+            [before],
+        );
+        let after = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(
+                PhysicalNodeKind::Kernel(KernelStage::Batch),
+                ExecutionLane::Cpu,
+            )
+            .with_batch_lift_equivalence(),
+            [sample],
+        );
+        let batch = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Batch, ExecutionLane::Cpu),
+            [after],
+        );
+        let sink = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Sink, ExecutionLane::Cpu),
+            [batch],
+        );
+        graph.set_root(sink).unwrap();
+        graph.move_batch_kernels_after_batch().unwrap();
+        assert_eq!(
+            graph.topological_order().unwrap(),
+            [source, before, sample, batch, after, sink]
+        );
+    }
+
+    #[test]
+    fn lifting_preserves_shared_dependencies() {
+        let mut graph = PhysicalGraph::new();
+        let source = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Source, ExecutionLane::Cpu),
+            [],
+        );
+        let shared = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(
+                PhysicalNodeKind::Kernel(KernelStage::Batch),
+                ExecutionLane::Cpu,
+            )
+            .with_batch_lift_equivalence(),
+            [source],
+        );
+        let batch = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Batch, ExecutionLane::Cpu),
+            [shared],
+        );
+        let sink = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Sink, ExecutionLane::Cpu),
+            [batch, shared],
+        );
+        graph.set_root(sink).unwrap();
+        let original = graph.topological_order().unwrap();
+        graph.move_batch_kernels_after_batch().unwrap();
+        assert_eq!(graph.topological_order().unwrap(), original);
+        assert_eq!(graph.node(batch).unwrap().inputs, [shared]);
+        assert_eq!(graph.node(sink).unwrap().inputs, [batch, shared]);
     }
 
     #[test]

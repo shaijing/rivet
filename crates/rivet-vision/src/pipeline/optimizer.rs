@@ -139,7 +139,9 @@ impl PlanPlugin for VisionPlanPlugin {
             Arc::new(InferProperties(Arc::new(VisionPropertyInference::new(
                 self.workers,
             )))),
-            Arc::new(IndexSourcePushdown),
+            Arc::new(IndexSourcePushdown {
+                workers: self.workers,
+            }),
             Arc::new(FusionDiscovery),
             Arc::new(EliminateDeadNodes),
             Arc::new(InferProperties(Arc::new(VisionPropertyInference::new(
@@ -405,9 +407,12 @@ impl OptimizerPass for EliminateIdentityLayout {
     }
 }
 
-/// Index operators are represented before sample transforms and compiled into
-/// the sampler, so source reads already receive the selected indices only.
-struct IndexSourcePushdown;
+/// Push selection toward source reads using approved, adjacent IR rewrites.
+/// Index order and image order are each preserved. Unknown operators remain
+/// barriers, following the rule-local approach of Polars SlicePushDown.
+struct IndexSourcePushdown {
+    workers: usize,
+}
 impl OptimizerPass for IndexSourcePushdown {
     fn name(&self) -> &'static str {
         "source-index-pushdown"
@@ -415,40 +420,120 @@ impl OptimizerPass for IndexSourcePushdown {
     fn run(
         &self,
         plan: &mut LogicalPlan,
-        _context: &mut OptimizerContext,
+        context: &mut OptimizerContext,
     ) -> Result<PassResult, String> {
-        let mut saw_image_op = false;
-        let mut index_count = 0usize;
-        for id in plan
+        let order = plan
             .topological_order()
-            .map_err(|error| error.to_string())?
-        {
-            let node = plan.node(id).map_err(|error| error.to_string())?;
-            match node.kind() {
-                NodeKind::Op => saw_image_op = true,
-                NodeKind::Index => {
-                    if saw_image_op {
-                        return Err(format!(
-                            "index node %{} occurs after an image transform; source pushdown cannot preserve the declared plan order",
-                            id.index()
-                        ));
-                    }
-                    index_count += 1;
-                    if node.payload_as::<IndexOp>().is_none() {
-                        return Err(format!("index node %{} has no vision IndexOp", id.index()));
-                    }
+            .map_err(|error| error.to_string())?;
+        let mut changed = false;
+        let mut moved = 0usize;
+        let mut index_count = 0usize;
+        for id in order {
+            if plan.node(id).map_err(|error| error.to_string())?.kind() != NodeKind::Index {
+                continue;
+            }
+            index_count += 1;
+            loop {
+                let index = plan.node(id).map_err(|error| error.to_string())?.clone();
+                if index.payload_as::<IndexOp>().is_none() || index.inputs().len() != 1 {
+                    return Err(format!(
+                        "index node %{} must carry a unary vision IndexOp",
+                        id.index()
+                    ));
                 }
-                _ => {}
+                let input_id = index.inputs().get(0).expect("unary index");
+                let input = plan
+                    .node(input_id)
+                    .map_err(|error| error.to_string())?
+                    .clone();
+                if matches!(input.kind(), NodeKind::Source | NodeKind::Index) {
+                    // Adjacent indexes are intentionally never commuted: e.g.
+                    // Shuffle -> Take selects different samples from Take -> Shuffle.
+                    break;
+                }
+                let rejection = if input.inputs().len() != 1 {
+                    Some("multi-input operation is a selection pushdown barrier")
+                } else {
+                    let consumers = plan
+                        .topological_order()
+                        .map_err(|error| error.to_string())?
+                        .into_iter()
+                        .map(|consumer| {
+                            plan.node(consumer)
+                                .expect("validated node")
+                                .inputs()
+                                .iter()
+                                .filter(|dependency| *dependency == input_id)
+                                .count()
+                        })
+                        .sum::<usize>();
+                    if consumers != 1 || plan.root().ok() == Some(input_id) {
+                        Some("shared operation is a selection pushdown barrier")
+                    } else {
+                        super::semantics::allows_index_pushdown(
+                            &input,
+                            input
+                                .inputs()
+                                .get(0)
+                                .and_then(|upstream| context.annotations().get(upstream)),
+                        )
+                        .err()
+                    }
+                };
+                if let Some(reason) = rejection {
+                    let diagnostic = rivet_plan::Diagnostic {
+                        code: "rewrite.index-pushdown-blocked",
+                        message: format!(
+                            "retained index %{} after %{}: {reason}",
+                            id.index(),
+                            input_id.index()
+                        ),
+                    };
+                    if !context.diagnostics.contains(&diagnostic) {
+                        context.diagnostics.push(diagnostic);
+                    }
+                    break;
+                }
+                let upstream = input.inputs().get(0).expect("checked unary image");
+                // A -> Image -> Index -> consumers becomes A -> Index -> Image
+                // -> consumers. Redirect first while Image does not yet use Index,
+                // so global rewiring cannot create an Index self-reference.
+                plan.redirect_uses(id, input_id)
+                    .map_err(|error| error.to_string())?;
+                plan.replace_node(id, index.with_inputs([upstream]))
+                    .map_err(|error| error.to_string())?;
+                plan.replace_node(input_id, input.with_inputs([id]))
+                    .map_err(|error| error.to_string())?;
+                context.clear_annotations();
+                plan.validate().map_err(|error| error.to_string())?;
+                let annotations = plan
+                    .infer_properties(&VisionPropertyInference::new(self.workers))
+                    .map_err(|error| error.to_string())?;
+                context.set_annotations(annotations);
+                changed = true;
+                moved += 1;
             }
         }
-        let mut result = PassResult::unchanged();
-        if index_count > 0 {
+        let mut result = PassResult {
+            changed,
+            ..PassResult::default()
+        };
+        if moved > 0 {
             result = result.diagnostic(
                 "rewrite.index-source-pushdown",
-                format!(
-                    "{index_count} Skip/Take/Shuffle operation(s) are compiled into the source sampler before reads and image transforms"
-                ),
+                format!("moved selection across {moved} independent image operation(s); image order, index order, and stable source-sample random streams are preserved; unselected sample errors are not evaluated"),
             );
+        } else if index_count > 0 {
+            // Keep an explanation for plans already built with a source prefix.
+            let diagnostic = rivet_plan::Diagnostic {
+                code: "rewrite.index-source-prefix",
+                message: format!(
+                    "{index_count} index operation(s) retain declared order; only a contiguous source prefix is eligible for sampler lowering"
+                ),
+            };
+            if !context.diagnostics.contains(&diagnostic) {
+                context.diagnostics.push(diagnostic);
+            }
         }
         Ok(result)
     }
@@ -742,6 +827,44 @@ fn is_cuda_batch_augmentation(op: &ImageOp) -> bool {
     )
 }
 
+/// Selection currently executes only as a contiguous, unbranched source
+/// prefix. Keep residual selections in the IR and report the unsupported
+/// runtime capability before placement emits an unrelated kernel error.
+fn validate_source_index_prefix(plan: &LogicalPlan) -> Result<(), String> {
+    for id in plan
+        .topological_order()
+        .map_err(|error| error.to_string())?
+    {
+        if plan.node(id).map_err(|error| error.to_string())?.kind() != NodeKind::Index {
+            continue;
+        }
+        let mut current = id;
+        let legal = loop {
+            let node = plan.node(current).map_err(|error| error.to_string())?;
+            if node.kind() != NodeKind::Index || node.inputs().len() != 1 {
+                break false;
+            }
+            let input = node.inputs().get(0).expect("unary index");
+            let children = plan.children(input).map_err(|error| error.to_string())?;
+            if children.as_slice() != [current] {
+                break false;
+            }
+            match plan.node(input).map_err(|error| error.to_string())?.kind() {
+                NodeKind::Source => break true,
+                NodeKind::Index => current = input,
+                _ => break false,
+            }
+        };
+        if !legal {
+            return Err(format!(
+                "index operation at node %{} remains outside the shared source prefix: branch-local or post-barrier index execution is not implemented; the optimizer retained its declared position",
+                id.index()
+            ));
+        }
+    }
+    Ok(())
+}
+
 struct PlacementBoundary {
     capabilities: KernelCapabilities,
     machine: MachineProfile,
@@ -759,6 +882,7 @@ impl OptimizerPass for PlacementBoundary {
         plan: &mut LogicalPlan,
         context: &mut OptimizerContext,
     ) -> Result<PassResult, String> {
+        validate_source_index_prefix(plan)?;
         let placement = rivet_plan::place(
             plan,
             context.annotations(),
@@ -769,11 +893,9 @@ impl OptimizerPass for PlacementBoundary {
         let mut explanation = placement
             .explain(plan, context.annotations())
             .map_err(|error| error.to_string())?;
-        for diagnostic in context
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.code.starts_with("fusion."))
-        {
+        for diagnostic in context.diagnostics.iter().filter(|diagnostic| {
+            diagnostic.code.starts_with("fusion.") || diagnostic.code.starts_with("rewrite.")
+        }) {
             explanation.push_str(&format!("  {}: {}\n", diagnostic.code, diagnostic.message));
         }
         if let Some(source) = plan
@@ -1065,5 +1187,200 @@ mod device_cut_tests {
         .unwrap();
         assert!(candidates.is_empty());
         assert!(plan.validate().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod index_pushdown_tests {
+    use super::*;
+    use crate::sample::image::DecodedSample;
+    use crate::source::ImageSource;
+    use rivet_data::dataset::Dataset;
+
+    struct UnreadDataset;
+    impl Dataset for UnreadDataset {
+        type Item = DecodedSample;
+        fn len(&self) -> usize {
+            10
+        }
+        fn get_many(&self, _: &[usize]) -> rivet_data::DataResult<Vec<Self::Item>> {
+            panic!("IR optimization must not read source data")
+        }
+    }
+
+    fn source(plan: &mut LogicalPlan) -> rivet_plan::NodeId {
+        plan.add_node(LogicalNode::new(
+            NodeKind::Source,
+            [],
+            Some(Arc::new(SourceOp::new(ImageSource::from_decoded(
+                Arc::new(UnreadDataset),
+            )))),
+        ))
+    }
+    fn inferred_context(plan: &LogicalPlan) -> OptimizerContext {
+        let mut context = OptimizerContext::default();
+        context.set_annotations(
+            plan.infer_properties(&VisionPropertyInference::new(0))
+                .unwrap(),
+        );
+        context
+    }
+
+    #[test]
+    fn adjacent_rewrites_preserve_both_sequences_and_random_identity() {
+        let mut plan = LogicalPlan::new();
+        let source = source(&mut plan);
+        let crop = plan.add_node(
+            LogicalNode::new(
+                NodeKind::Op,
+                [source],
+                Some(Arc::new(ImageOp::random_crop(2, 2, 4))),
+            )
+            .with_semantic_identity(44),
+        );
+        let normalize = plan.add_node(LogicalNode::new(
+            NodeKind::Op,
+            [crop],
+            Some(Arc::new(ImageOp::normalize(vec![0.5; 3], vec![0.5; 3]))),
+        ));
+        let take = plan.add_node(LogicalNode::new(
+            NodeKind::Index,
+            [normalize],
+            Some(Arc::new(IndexOp::Take { count: 4 })),
+        ));
+        let shuffle = plan.add_node(LogicalNode::new(
+            NodeKind::Index,
+            [take],
+            Some(Arc::new(IndexOp::Shuffle { seed: 11 })),
+        ));
+        let batch = plan.add_node(LogicalNode::new(
+            NodeKind::Batch,
+            [shuffle],
+            Some(Arc::new(super::super::op::BatchConfig::new(4, false))),
+        ));
+        plan.set_root(batch).unwrap();
+        let mut context = inferred_context(&plan);
+        let pass = IndexSourcePushdown { workers: 0 };
+        assert!(pass.run(&mut plan, &mut context).unwrap().changed);
+        assert_eq!(
+            plan.topological_order().unwrap(),
+            [source, take, shuffle, crop, normalize, batch]
+        );
+        assert_eq!(plan.node(crop).unwrap().semantic_identity(), Some(44));
+        assert!(plan.validate().is_ok());
+        assert!(!pass.run(&mut plan, &mut context).unwrap().changed);
+        assert!(context.annotations().get(crop).is_some());
+    }
+
+    #[test]
+    fn random_operation_without_stable_identity_stops_selection() {
+        let mut plan = LogicalPlan::new();
+        let source = source(&mut plan);
+        let crop = plan.add_node(LogicalNode::new(
+            NodeKind::Op,
+            [source],
+            Some(Arc::new(ImageOp::random_crop(2, 2, 4))),
+        ));
+        let take = plan.add_node(LogicalNode::new(
+            NodeKind::Index,
+            [crop],
+            Some(Arc::new(IndexOp::Take { count: 4 })),
+        ));
+        plan.set_root(take).unwrap();
+        let mut context = inferred_context(&plan);
+        assert!(
+            !IndexSourcePushdown { workers: 0 }
+                .run(&mut plan, &mut context)
+                .unwrap()
+                .changed
+        );
+        assert_eq!(plan.node(take).unwrap().inputs().get(0), Some(crop));
+        assert!(
+            context
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("stable semantic identity"))
+        );
+    }
+
+    #[test]
+    fn shared_transform_and_batch_are_pushdown_barriers() {
+        let mut plan = LogicalPlan::new();
+        let source = source(&mut plan);
+        let image = plan.add_node(LogicalNode::new(
+            NodeKind::Op,
+            [source],
+            Some(Arc::new(ImageOp::invert())),
+        ));
+        let take = plan.add_node(LogicalNode::new(
+            NodeKind::Index,
+            [image],
+            Some(Arc::new(IndexOp::Take { count: 4 })),
+        ));
+        let join = plan.add_node(LogicalNode::new(
+            NodeKind::Op,
+            [take, image],
+            Some(Arc::new(super::super::ImageConcat { axis: 2 })),
+        ));
+        plan.set_root(join).unwrap();
+        let mut context = inferred_context(&plan);
+        assert!(
+            !IndexSourcePushdown { workers: 0 }
+                .run(&mut plan, &mut context)
+                .unwrap()
+                .changed
+        );
+        assert!(
+            context
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("shared operation"))
+        );
+        let batch = plan.add_node(LogicalNode::new(
+            NodeKind::Batch,
+            [image],
+            Some(Arc::new(super::super::op::BatchConfig::new(4, false))),
+        ));
+        let take_batch = plan.add_node(LogicalNode::new(
+            NodeKind::Index,
+            [batch],
+            Some(Arc::new(IndexOp::Take { count: 1 })),
+        ));
+        plan.set_root(take_batch).unwrap();
+        let mut context = inferred_context(&plan);
+        assert!(
+            !IndexSourcePushdown { workers: 0 }
+                .run(&mut plan, &mut context)
+                .unwrap()
+                .changed
+        );
+        assert_eq!(plan.node(take_batch).unwrap().inputs().get(0), Some(batch));
+    }
+
+    #[test]
+    fn unknown_unary_payload_is_not_inferred_to_be_pure() {
+        let mut plan = LogicalPlan::new();
+        let source = source(&mut plan);
+        let unknown = plan.add_node(LogicalNode::new(NodeKind::Op, [source], None));
+        let take = plan.add_node(LogicalNode::new(
+            NodeKind::Index,
+            [unknown],
+            Some(Arc::new(IndexOp::Take { count: 4 })),
+        ));
+        plan.set_root(take).unwrap();
+        let mut context = OptimizerContext::default();
+        assert!(
+            !IndexSourcePushdown { workers: 0 }
+                .run(&mut plan, &mut context)
+                .unwrap()
+                .changed
+        );
+        assert_eq!(plan.node(take).unwrap().inputs().get(0), Some(unknown));
+        assert!(
+            context
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("unknown or multi-input"))
+        );
     }
 }

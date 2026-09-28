@@ -162,6 +162,57 @@ def test_resize_before_decode_rejected(arrow_file: Path) -> None:
         scan(arrow_file).resize(16, 16).batch(1).execute()
 
 
+@pytest.mark.parametrize("workers", [0, 4])
+def test_take_after_random_crop_matches_explicit_source_selection(
+    arrow_file: Path, workers: int
+) -> None:
+    original = next(
+        scan(arrow_file)
+        .decode_image()
+        .random_crop(32, 32, padding=4)
+        .take(4)
+        .shuffle(11)
+        .workers(workers)
+        .batch(4)
+        .execute()
+    )
+    pushed = next(
+        scan(arrow_file)
+        .take(4)
+        .shuffle(11)
+        .decode_image()
+        .random_crop(32, 32, padding=4)
+        .workers(workers)
+        .batch(4)
+        .execute()
+    )
+    assert np.array_equal(original["images"], pushed["images"])
+    assert np.array_equal(original["labels"], pushed["labels"])
+
+
+def test_shuffle_before_take_matches_full_permutation(arrow_file: Path) -> None:
+    full = next(scan(arrow_file).decode_image().shuffle(11).batch(16).execute())
+    subset = next(
+        scan(arrow_file).decode_image().shuffle(11).take(4).batch(4).execute()
+    )
+    assert np.array_equal(subset["images"], full["images"][:4])
+    assert np.array_equal(subset["labels"], full["labels"][:4])
+
+
+def test_padded_crop_stays_before_normalize(arrow_file: Path) -> None:
+    batch = next(
+        scan(arrow_file)
+        .decode_image()
+        .random_crop(40, 40, padding=4)
+        .normalize([0.5], [0.5])
+        .take(4)
+        .batch(4)
+        .execute()
+    )
+    assert np.all(batch["images"][:, :4, :, :] == -1.0)
+    assert np.all(batch["images"][:, -4:, :, :] == -1.0)
+
+
 def test_decode_twice_rejected(arrow_file: Path) -> None:
     with pytest.raises(ValueError, match="encoded"):
         scan(arrow_file).decode_image().decode_image().batch(1).execute()

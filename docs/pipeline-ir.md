@@ -76,3 +76,55 @@ pipelines; graph editing and joins are currently Rust APIs.
 
 See the [validation and performance record](perf/pipeline-dag.md) for targeted
 tests and release CIFAR measurements.
+
+## Order-preserving semantic rewrites
+
+The builder records image, index, batch and device operations in declaration
+order. Its unoptimized IR therefore retains `Decode -> RandomCrop -> Take ->
+Shuffle -> Batch`. The selection rewrite changes graph edges to move eligible
+index operations toward the source, producing `Take -> Shuffle -> Decode ->
+RandomCrop -> Batch`. Image transforms retain their relative order, and index
+operations retain theirs. The optimizer does not execute source reads.
+
+An index may cross a known image operation only when that operation preserves
+independent one-to-one samples and their ordering, has no external side effects,
+and receives sample-granularity input. Random operations also require a stable
+semantic identity. Unknown operators, multiple inputs, shared producer edges,
+explicit Batch, Cache and device boundaries stop the rewrite. The current
+compiler supports one shared source sampler prefix: residual branch-local and
+post-barrier selections fail with a node-specific capability error. They remain
+in the IR at their declared positions rather than being silently hoisted.
+
+Operator semantic facts grant permission to specific selection rules; they do
+not imply that two image operations commute. Crop and Normalize are not swapped.
+For example, zero padding before Normalize with mean/std 0.5 becomes -1; padding
+with zero after Normalize would produce 0. Current Crop/RandomCrop dtype
+requirements also prevent moving them after Normalize. Physical batch lifting
+requires an explicit per-sample/stack equivalence declaration and only moves a
+contiguous eligible unary CPU suffix immediately before stacking. The linear
+typed executor is selected only when physical sample and batch ordering matches
+its cached traversal.
+
+Source sampling now composes operations in declaration order. `take(4).shuffle`
+permutes the first four source rows; `shuffle.take(4)` selects the first four
+rows of the full permutation. Multiple shuffles compose on the current sequence.
+The first shuffle preserves the existing global-seed/epoch namespace; subsequent
+shuffles derive namespaces from its base seed, shuffle ordinal and declared seed.
+An explicit pipeline `.seed()` continues to override the first shuffle's seed.
+Range arithmetic saturates instead of overflowing.
+
+Random streams depend on global seed, epoch, original source sample identity and
+the random operation's semantic identity. Identities are assigned before rewrites
+and survive edge rewiring, arena compaction and builder round trips. Newly added
+random nodes receive unused identities. Changing worker count or removing an
+earlier random node therefore does not renumber surviving streams.
+
+Selection uses **selected-sample error semantics**: image transforms are evaluated
+for selected samples, so a decode or transform error in an excluded sample need
+not be observed. Graph and configuration validation still happen at compilation.
+`placement_explain()` reports successful rewrites and blocked decisions. This
+preserves the existing selective source-read behavior while making the rewrite
+and error contract explicit.
+
+See [semantic rewrite validation](perf/semantic-ir-rewrite.md) for differential
+tests and release throughput measurements.
