@@ -36,10 +36,29 @@ pub(crate) struct CompiledNormalize {
     pub(crate) input_layout: ImageAxisOrder,
 }
 
+impl CompiledNormalize {
+    // Keep the planar writer's view setup out of the common per-sample
+    // dispatch body, which is also used by the RGB HWC fast path.
+    #[inline(never)]
+    fn apply_to_chw_sample(&self, sample: ImageSample) -> RivetResult<ImageSample> {
+        let decoded = sample.into_decoded()?;
+        // Rank changes are views; only the final CHW result is allocated.
+        let image = self
+            .config
+            .apply_batch_to_chw_trusted(decoded.image.unsqueeze(0)?)?
+            .squeeze(0)?;
+        Ok(ImageSample::Decoded(crate::sample::image::DecodedSample {
+            image,
+            label: decoded.label,
+        }))
+    }
+}
+
 #[derive(Clone)]
 pub(crate) enum SampleKernel {
     Semantic(ImageOp),
     SampleNormalize(CompiledNormalize),
+    SampleNormalizeToChw(CompiledNormalize),
     RandomApply {
         probability: f64,
         key: OpKey,
@@ -117,6 +136,7 @@ impl CompiledSampleOp {
             SampleKernel::SampleNormalize(kernel) => {
                 kernel.config.apply_trusted(sample, kernel.input_layout)
             }
+            SampleKernel::SampleNormalizeToChw(kernel) => kernel.apply_to_chw_sample(sample),
             SampleKernel::RandomApply {
                 probability,
                 key,
@@ -162,6 +182,7 @@ impl CompiledSampleOp {
         match &self.kernel {
             SampleKernel::Semantic(op) => op.name(),
             SampleKernel::SampleNormalize(_) => "NormalizeSample",
+            SampleKernel::SampleNormalizeToChw(_) => "NormalizeToChwSample",
             SampleKernel::RandomApply { .. } => "RandomApply",
             SampleKernel::RandomChoice { .. } => "RandomChoice",
             SampleKernel::RandomOrder { .. } => "RandomOrder",

@@ -120,6 +120,22 @@ fn write_normalize_contiguous_nhwc_to_nchw(
     let image_size = spatial_size * channels;
     for batch_index in 0..batch {
         let source = &values[batch_index * image_size..(batch_index + 1) * image_size];
+        if channels == 3 {
+            // Constant component offsets and hoisted affine parameters preserve
+            // the RGB fast path even when producing planar CHW output.
+            let [red_scale, green_scale, blue_scale] = [scale[0], scale[1], scale[2]];
+            let [red_bias, green_bias, blue_bias] = [bias[0], bias[1], bias[2]];
+            for pixel in source.chunks_exact(3) {
+                output.write_next(pixel[0] as f32 * red_scale + red_bias)?;
+            }
+            for pixel in source.chunks_exact(3) {
+                output.write_next(pixel[1] as f32 * green_scale + green_bias)?;
+            }
+            for pixel in source.chunks_exact(3) {
+                output.write_next(pixel[2] as f32 * blue_scale + blue_bias)?;
+            }
+            continue;
+        }
         for channel in 0..channels {
             for spatial_index in 0..spatial_size {
                 output.write_next(apply_affine(
@@ -638,7 +654,6 @@ fn normalize_u8_batch_to_nchw_f32_impl(
     let (scale, bias) = affine_params(mean, std, *channels);
     let dims = [*batch, *channels, *height, *width];
     let device = input.device().clone();
-    let elem_count = input.elem_count();
     Ok(input.with_cpu_storage(|storage, layout| {
         let CpuStorageRef::U8(values) = storage else {
             return Err(rivet_core::Error::UnexpectedDType {
@@ -658,26 +673,41 @@ fn normalize_u8_batch_to_nchw_f32_impl(
             .map_err(Into::into);
         }
 
+        // Crop and layout views are read directly into the final allocation.
+        // Keep explicit loops here: decoding an output index with division and
+        // modulo per pixel is costly for the common padded-crop pipeline.
         let stride = layout.stride();
-        let output = (0..elem_count).map(|output_index| {
-            let batch_index = output_index / (*channels * *height * *width);
-            let channel = (output_index / (*height * *width)) % *channels;
-            let height_index = (output_index / *width) % *height;
-            let width_index = output_index % *width;
-            let physical_offset = batch_index
-                .checked_mul(stride[0])
-                .and_then(|offset| offset.checked_add(height_index.checked_mul(stride[1])?))
-                .and_then(|offset| offset.checked_add(width_index.checked_mul(stride[2])?))
-                .and_then(|offset| offset.checked_add(channel.checked_mul(stride[3])?))
-                .and_then(|offset| layout.start_offset().checked_add(offset))
-                .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-            let value = *values
-                .get(physical_offset)
-                .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-            Ok(apply_affine(value, &scale, &bias, channel))
-        });
-
-        Tensor::from_exact_try_iter(output, dims, &device).map_err(Into::into)
+        Tensor::from_exact_writer::<f32, _, _>(dims, &device, |output| {
+            for batch_index in 0..*batch {
+                let batch_offset = batch_index
+                    .checked_mul(stride[0])
+                    .and_then(|offset| offset.checked_add(layout.start_offset()))
+                    .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+                for channel in 0..*channels {
+                    let channel_offset = channel
+                        .checked_mul(stride[3])
+                        .and_then(|offset| offset.checked_add(batch_offset))
+                        .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+                    for height_index in 0..*height {
+                        let row_offset = height_index
+                            .checked_mul(stride[1])
+                            .and_then(|offset| offset.checked_add(channel_offset))
+                            .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+                        for width_index in 0..*width {
+                            let offset = width_index
+                                .checked_mul(stride[2])
+                                .and_then(|offset| offset.checked_add(row_offset))
+                                .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+                            let value = *values
+                                .get(offset)
+                                .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+                            output.write_next(apply_affine(value, &scale, &bias, channel))?;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })
     })?)
 }
 

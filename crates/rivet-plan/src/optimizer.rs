@@ -58,6 +58,7 @@ pub enum OptimizerError {
 #[derive(Default)]
 pub struct OptimizerContext {
     annotations: PropertyAnnotations,
+    placement: Option<crate::PlacementPlan>,
     pub diagnostics: Vec<Diagnostic>,
     pub snapshots: Vec<(String, String)>,
 }
@@ -67,14 +68,32 @@ impl OptimizerContext {
         &self.annotations
     }
     pub fn annotations_mut(&mut self) -> &mut PropertyAnnotations {
+        self.placement = None;
         &mut self.annotations
     }
     pub fn set_annotations(&mut self, annotations: PropertyAnnotations) {
         self.annotations = annotations;
+        self.placement = None;
     }
     pub fn clear_annotations(&mut self) {
         self.annotations = PropertyAnnotations::default();
+        self.placement = None;
     }
+    pub fn set_placement(&mut self, placement: crate::PlacementPlan) {
+        self.placement = Some(placement);
+    }
+    pub fn placement(&self) -> Option<&crate::PlacementPlan> {
+        self.placement.as_ref()
+    }
+    pub fn take_placement(&mut self) -> Option<crate::PlacementPlan> {
+        self.placement.take()
+    }
+}
+
+/// Plan snapshots are optional; validation always runs after each pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OptimizerOptions {
+    pub record_snapshots: bool,
 }
 
 pub trait OptimizerPass: Send + Sync {
@@ -231,6 +250,22 @@ pub fn optimize(
     plan: &mut LogicalPlan,
     registry: &PlanRegistry,
 ) -> Result<(OptimizerContext, OptimizationReport), OptimizerError> {
+    // Retain snapshot behavior of the original API. Production callers may
+    // opt out without changing rewrite rules or structural validation.
+    optimize_with_options(
+        plan,
+        registry,
+        OptimizerOptions {
+            record_snapshots: true,
+        },
+    )
+}
+
+pub fn optimize_with_options(
+    plan: &mut LogicalPlan,
+    registry: &PlanRegistry,
+    options: OptimizerOptions,
+) -> Result<(OptimizerContext, OptimizationReport), OptimizerError> {
     let mut context = OptimizerContext::default();
     let mut report = OptimizationReport::default();
     const MAX_REPLANS: usize = 8;
@@ -250,8 +285,14 @@ pub fn optimize(
         for _ in 0..MAX_SEMANTIC_ITERATIONS {
             let mut changed = false;
             for pass in semantic_passes {
-                let result =
-                    run_optimizer_pass(plan, registry, pass.as_ref(), &mut context, &mut report)?;
+                let result = run_optimizer_pass(
+                    plan,
+                    registry,
+                    pass.as_ref(),
+                    &mut context,
+                    &mut report,
+                    options,
+                )?;
                 changed |= result.changed;
                 if result.replan {
                     request_full_replan(
@@ -283,8 +324,14 @@ pub fn optimize(
         }
 
         for pass in placement_passes {
-            let result =
-                run_optimizer_pass(plan, registry, pass.as_ref(), &mut context, &mut report)?;
+            let result = run_optimizer_pass(
+                plan,
+                registry,
+                pass.as_ref(),
+                &mut context,
+                &mut report,
+                options,
+            )?;
             if result.replan {
                 request_full_replan(
                     pass.name(),
@@ -315,6 +362,7 @@ fn run_optimizer_pass(
     pass: &dyn OptimizerPass,
     context: &mut OptimizerContext,
     report: &mut OptimizationReport,
+    options: OptimizerOptions,
 ) -> Result<PassResult, OptimizerError> {
     let mut result = pass
         .run(plan, context)
@@ -332,14 +380,16 @@ fn run_optimizer_pass(
                     message,
                 })?;
             for candidate in &candidates {
-                fusion_snapshot.push_str(&format!(
-                    "  FusionCandidate {} {:?} {}: {} ({})\n",
-                    candidate.rule,
-                    candidate.nodes,
-                    candidate.name,
-                    if candidate.legal { "legal" } else { "illegal" },
-                    candidate.reason,
-                ));
+                if options.record_snapshots {
+                    fusion_snapshot.push_str(&format!(
+                        "  FusionCandidate {} {:?} {}: {} ({})\n",
+                        candidate.rule,
+                        candidate.nodes,
+                        candidate.name,
+                        if candidate.legal { "legal" } else { "illegal" },
+                        candidate.reason,
+                    ));
+                }
                 context.diagnostics.push(Diagnostic {
                     code: if candidate.legal {
                         "fusion.legal"
@@ -374,18 +424,20 @@ fn run_optimizer_pass(
     context
         .diagnostics
         .extend(result.diagnostics.iter().cloned());
-    let mut snapshot = plan.explain().map_err(|error| OptimizerError::Pass {
-        pass: pass.name().into(),
-        message: error.to_string(),
-    })?;
-    snapshot.push_str(&fusion_snapshot);
-    for diagnostic in &context.diagnostics {
-        snapshot.push_str(&format!(
-            "  Diagnostic {}: {}\n",
-            diagnostic.code, diagnostic.message
-        ));
+    if options.record_snapshots {
+        let mut snapshot = plan.explain().map_err(|error| OptimizerError::Pass {
+            pass: pass.name().into(),
+            message: error.to_string(),
+        })?;
+        snapshot.push_str(&fusion_snapshot);
+        for diagnostic in &context.diagnostics {
+            snapshot.push_str(&format!(
+                "  Diagnostic {}: {}\n",
+                diagnostic.code, diagnostic.message
+            ));
+        }
+        context.snapshots.push((pass.name().to_string(), snapshot));
     }
-    context.snapshots.push((pass.name().to_string(), snapshot));
     Ok(result)
 }
 
@@ -535,6 +587,39 @@ mod tests {
         let (context, report) = optimize(&mut plan, &registry).unwrap();
         assert_eq!(report.passes_run, ["count-down"]);
         assert!(context.snapshots[0].1.contains("LogicalPlan(root="));
+    }
+
+    #[test]
+    fn optional_snapshots_do_not_change_passes_or_plan() {
+        let mut plan = LogicalPlan::new();
+        let root = plan.add_node(LogicalNode::new(NodeKind::Source, [], None));
+        plan.set_root(root).unwrap();
+        let mut registry = PlanRegistry::default();
+        registry.register_pass(Arc::new(CountDown(0)));
+        let mut recorded = plan.clone();
+        let (context, report) =
+            optimize_with_options(&mut plan, &registry, OptimizerOptions::default()).unwrap();
+        let (recorded_context, recorded_report) = optimize(&mut recorded, &registry).unwrap();
+        assert!(context.snapshots.is_empty());
+        assert_eq!(recorded_context.snapshots.len(), 1);
+        assert_eq!(report.passes_run, recorded_report.passes_run);
+        assert_eq!(report.diagnostics, recorded_report.diagnostics);
+        assert_eq!(plan.explain().unwrap(), recorded.explain().unwrap());
+    }
+
+    #[test]
+    fn annotation_invalidation_discards_cached_placement() {
+        let mut context = OptimizerContext::default();
+        context.set_placement(crate::PlacementPlan::default());
+        assert!(context.placement().is_some());
+        context.set_annotations(PropertyAnnotations::default());
+        assert!(context.placement().is_none());
+        context.set_placement(crate::PlacementPlan::default());
+        context.annotations_mut();
+        assert!(context.placement().is_none());
+        context.set_placement(crate::PlacementPlan::default());
+        context.clear_annotations();
+        assert!(context.placement().is_none());
     }
 
     #[test]

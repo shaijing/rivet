@@ -408,10 +408,7 @@ pub fn place(
                 )
             })
             .filter(|kernel| properties_match(&kernel.requirements, plan, id, annotations))
-            .filter(|kernel| {
-                kernel.contiguity == Contiguity::Unknown
-                    || props.is_some_and(|p| p.contiguity == Some(kernel.contiguity))
-            })
+            .filter(|kernel| output_contiguity_matches(kernel.contiguity, props))
             .collect::<Vec<_>>();
         if compatible.is_empty() {
             if position + 1 == ids.len() {
@@ -604,8 +601,7 @@ fn place_dag(
                 kernel,
                 required_graph_device_bytes(plan, id, kernel, annotations, machine),
             ) || !properties_match(&kernel.requirements, plan, id, annotations)
-                || (kernel.contiguity != Contiguity::Unknown
-                    && output.is_none_or(|p| p.contiguity != Some(kernel.contiguity)))
+                || !output_contiguity_matches(kernel.contiguity, output)
                 || (node.kind() == NodeKind::Sink
                     && machine
                         .preferred_sink_device
@@ -857,6 +853,16 @@ fn selected_device_location(
                     .is_none_or(|memory| memory >= required_memory_bytes)
         })
         .map(DeviceDescriptor::location)
+}
+
+fn output_contiguity_matches(guarantee: Contiguity, properties: Option<&ValueProperties>) -> bool {
+    // Unknown logical contiguity permits implementation choice; a concrete
+    // logical contract must still agree with the selected kernel's guarantee.
+    guarantee == Contiguity::Unknown
+        || properties.is_some_and(|properties| {
+            properties.contiguity == Some(Contiguity::Unknown)
+                || properties.contiguity == Some(guarantee)
+        })
 }
 
 fn properties_match(
@@ -1115,6 +1121,74 @@ mod tests {
         }
         fn as_any(&self) -> &dyn std::any::Any {
             self
+        }
+    }
+
+    #[test]
+    fn unknown_logical_contiguity_accepts_concrete_writers_in_linear_and_dag_plans() {
+        for dag in [false, true] {
+            let mut plan = LogicalPlan::new();
+            let source = plan.add_node(LogicalNode::new(
+                NodeKind::Source,
+                [],
+                Some(std::sync::Arc::new(Payload)),
+            ));
+            let root = if dag {
+                plan.add_node(LogicalNode::new(
+                    NodeKind::Op,
+                    [source, source],
+                    Some(std::sync::Arc::new(Payload)),
+                ))
+            } else {
+                source
+            };
+            plan.set_root(root).unwrap();
+            let mut props = PropertyAnnotations::default();
+            for (id, _) in plan.nodes() {
+                props.insert(
+                    id,
+                    ValueProperties {
+                        contiguity: Some(Contiguity::Unknown),
+                        ..ValueProperties::default()
+                    },
+                );
+            }
+            let mut caps = KernelCapabilities::default();
+            for kind in [NodeKind::Source, NodeKind::Op] {
+                caps.register(KernelCapability {
+                    name: format!("contiguous-{kind:?}"),
+                    operator: "demo::Op".into(),
+                    node_kind: kind,
+                    device: DeviceClass::Cpu,
+                    class: KernelClass::Sample,
+                    requirements: KernelRequirements::default(),
+                    fusion_tags: Vec::new(),
+                    alignment_bytes: 64,
+                    contiguity: Contiguity::Contiguous,
+                    temporary_bytes: 0,
+                    cost_hint: KernelCostHint::default(),
+                    in_place: false,
+                    parallel: false,
+                });
+            }
+            let placement = place(&plan, &props, &caps, &MachineProfile::default()).unwrap();
+            assert!(
+                placement
+                    .candidates
+                    .iter()
+                    .all(|node| node.contiguity == Contiguity::Contiguous)
+            );
+            props.insert(
+                root,
+                ValueProperties {
+                    contiguity: Some(Contiguity::Strided),
+                    ..ValueProperties::default()
+                },
+            );
+            assert!(matches!(
+                place(&plan, &props, &caps, &MachineProfile::default()),
+                Err(PlacementError::NoKernel { .. })
+            ));
         }
     }
 

@@ -1,10 +1,14 @@
 mod builder;
+mod cached_inference;
+mod canonicalize;
 mod compile;
+mod cse;
 mod dag;
 pub mod inference;
 mod logical;
 pub mod op;
 mod optimizer;
+mod options;
 pub(crate) mod physical;
 pub(crate) mod semantics;
 pub use dag::ImageConcat;
@@ -12,10 +16,17 @@ pub use physical::ImageGraphInfo;
 mod transform;
 
 pub use builder::ImagePipeline;
+pub use options::ImageOptimizationOptions;
 pub use transform::{Compose, ImageTransform, TransformSequence};
 
 #[cfg(test)]
 mod semantic_rewrite_tests;
+
+#[cfg(test)]
+mod cse_execution_tests;
+
+#[cfg(test)]
+mod optimization_tests;
 
 #[cfg(test)]
 mod tests {
@@ -704,7 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn sample_ops_cannot_follow_batch_stage() {
+    fn sample_ops_keep_dtype_preconditions() {
         let err = compile_err(
             stub(10)
                 .decode_image()
@@ -713,7 +724,7 @@ mod tests {
                 .batch(4, false),
         );
         assert!(
-            err.contains("Resize cannot follow the batch stage"),
+            err.contains("Resize requires uint8 HWC input"),
             "got: {err}"
         );
 
@@ -724,10 +735,7 @@ mod tests {
                 .brightness(1)
                 .batch(4, false),
         );
-        assert!(
-            err.contains("Brightness cannot follow the batch stage"),
-            "got: {err}"
-        );
+        assert!(err.contains("Brightness requires uint8"), "got: {err}");
     }
 
     #[test]
@@ -845,7 +853,16 @@ mod tests {
             .hwc_to_chw()
             .batch(2, false);
         let mut plan = pipeline.to_logical_plan();
-        let context = super::optimizer::optimize_vision_plan(&mut plan, 0).unwrap();
+        let context = super::optimizer::optimize_vision_plan_with_options(
+            &mut plan,
+            0,
+            super::ImageOptimizationOptions {
+                record_snapshots: true,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .0;
         assert!(context.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == "fusion.legal" && diagnostic.message.contains("normalize-layout")
         }));
@@ -880,7 +897,16 @@ mod tests {
             .normalize(vec![0.5; 3], vec![0.5; 3])
             .batch(1, false);
         let mut plan = original.to_logical_plan();
-        let context = super::optimizer::optimize_vision_plan(&mut plan, 0).unwrap();
+        let context = super::optimizer::optimize_vision_plan_with_options(
+            &mut plan,
+            0,
+            super::ImageOptimizationOptions {
+                allow_float_reassociation: true,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .0;
         assert!(
             context
                 .diagnostics
@@ -912,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn late_dtype_promotion_preserves_worker_batch_barrier() {
+    fn default_preserves_explicit_float_conversion_rounding() {
         let pipeline = stub(1)
             .decode_image()
             .horizontal_flip()
@@ -970,7 +996,16 @@ mod tests {
             .hwc_to_chw()
             .batch(1, false);
         let mut plan = original.to_logical_plan();
-        let context = super::optimizer::optimize_vision_plan(&mut plan, 0).unwrap();
+        let context = super::optimizer::optimize_vision_plan_with_options(
+            &mut plan,
+            0,
+            super::ImageOptimizationOptions {
+                allow_float_reassociation: true,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .0;
         assert!(
             context
                 .diagnostics
@@ -996,7 +1031,7 @@ mod tests {
         );
         assert_eq!(
             fused_properties.contiguity,
-            Some(rivet_plan::Contiguity::Contiguous)
+            Some(rivet_plan::Contiguity::Unknown)
         );
 
         let optimized = ImagePipeline::from_logical_plan(&plan).unwrap();
@@ -1087,7 +1122,7 @@ mod tests {
     }
 
     #[test]
-    fn optimizer_rejects_normalize_layout_fusion_after_worker_sample_ops() {
+    fn optimizer_supports_normalize_layout_fusion_after_worker_sample_ops() {
         let pipeline = stub(4)
             .decode_image()
             .normalize(vec![0.5; 3], vec![0.5; 3])
@@ -1097,7 +1132,7 @@ mod tests {
         let mut plan = pipeline.to_logical_plan();
         let context = super::optimizer::optimize_vision_plan(&mut plan, 2).unwrap();
         assert!(context.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == "fusion.illegal" && diagnostic.message.contains("normalize-layout")
+            diagnostic.code == "fusion.legal" && diagnostic.message.contains("normalize-layout")
         }));
     }
 
@@ -1687,38 +1722,48 @@ mod tests {
     #[test]
     fn vision_dag_shared_normalized_chw_value_preserves_sample_granularity() {
         use rivet_plan::LogicalNode;
-        let mut plan = decoded_stub()
-            .normalize(vec![0.; 3], vec![1.; 3])
-            .hwc_to_chw()
-            .batch(1, false)
-            .to_logical_plan();
-        let (batch, input) = plan
-            .nodes()
-            .find_map(|(id, node)| {
-                (node.kind() == NodeKind::Batch).then(|| (id, node.inputs().get(0).unwrap()))
-            })
+        for workers in [0, 3] {
+            let mut plan = decoded_stub()
+                .horizontal_flip()
+                .normalize(vec![0.; 3], vec![1.; 3])
+                .hwc_to_chw()
+                .workers(workers)
+                .batch(1, false)
+                .to_logical_plan();
+            let (batch, input) = plan
+                .nodes()
+                .find_map(|(id, node)| {
+                    (node.kind() == NodeKind::Batch).then(|| (id, node.inputs().get(0).unwrap()))
+                })
+                .unwrap();
+            let join = plan.add_node(LogicalNode::new(
+                NodeKind::Op,
+                [input, input],
+                Some(Arc::new(super::ImageConcat { axis: 1 })),
+            ));
+            plan.replace_node(
+                batch,
+                LogicalNode::new(
+                    NodeKind::Batch,
+                    [join],
+                    Some(Arc::new(super::op::BatchConfig::new(1, false))),
+                ),
+            )
             .unwrap();
-        let join = plan.add_node(LogicalNode::new(
-            NodeKind::Op,
-            [input, input],
-            Some(Arc::new(super::ImageConcat { axis: 1 })),
-        ));
-        plan.replace_node(
-            batch,
-            LogicalNode::new(
-                NodeKind::Batch,
-                [join],
-                Some(Arc::new(super::op::BatchConfig::new(1, false))),
-            ),
-        )
-        .unwrap();
-        let mut loader = ImagePipeline::compile_logical_plan(plan, 0).unwrap();
-        let output = loader.next_batch().unwrap().unwrap();
-        assert_eq!(output.images.dims(), [1, 3, 2, 1]);
-        assert_eq!(output.axis_order, ImageAxisOrder::Chw);
-        assert_eq!(
-            output.images.to_vec::<f32>().unwrap(),
-            [1., 1., 0., 0., 0., 0.]
-        );
+            let mut loader = ImagePipeline::compile_logical_plan(plan, 0).unwrap();
+            if workers > 0 {
+                assert_eq!(
+                    loader.info.sample_ops.last().unwrap().name(),
+                    "NormalizeToChwSample"
+                );
+            }
+            let output = loader.next_batch().unwrap().unwrap();
+            assert_eq!(output.images.dims(), [1, 3, 2, 1]);
+            assert_eq!(output.axis_order, ImageAxisOrder::Chw);
+            assert_eq!(
+                output.images.to_vec::<f32>().unwrap(),
+                [1., 1., 0., 0., 0., 0.]
+            );
+        }
     }
 }

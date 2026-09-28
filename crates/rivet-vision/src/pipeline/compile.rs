@@ -14,7 +14,7 @@ use rivet_exec::physical::{
     ExecutableGraph, ExecutionLane, KernelStage, ParallelismClass, PhysicalGraph, PhysicalLowering,
     PhysicalNodeKind, PhysicalNodeSpec,
 };
-use rivet_plan::{LogicalNode, LogicalPlan, NodeId, NodeKind, OperatorStage};
+use rivet_plan::{LogicalNode, LogicalPlan, NodeId, NodeKind, ValueGranularity};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -28,11 +28,34 @@ impl ImagePipeline {
     /// Compile an edited logical graph, including shared inputs and joins.
     /// The graph retains the runtime/seed context from `to_logical_plan()`.
     pub fn compile_logical_plan(plan: LogicalPlan, start: usize) -> RivetResult<ImageDataLoader> {
-        compile_graph(plan, start, true)
+        Self::compile_logical_plan_with_options(
+            plan,
+            start,
+            super::ImageOptimizationOptions::default(),
+        )
+    }
+    /// Compile with individually controlled logical optimization rules.
+    pub fn compile_with_options(
+        self,
+        options: super::ImageOptimizationOptions,
+    ) -> RivetResult<ImageDataLoader> {
+        Self::compile_logical_plan_with_options(self.to_logical_plan(), 0, options)
+    }
+    pub fn compile_logical_plan_with_options(
+        plan: LogicalPlan,
+        start: usize,
+        options: super::ImageOptimizationOptions,
+    ) -> RivetResult<ImageDataLoader> {
+        compile_graph(plan, start, true, options)
     }
     #[cfg(test)]
     pub(super) fn compile_unoptimized_for_test(self, start: usize) -> RivetResult<ImageDataLoader> {
-        compile_graph(self.to_logical_plan(), start, false)
+        compile_graph(
+            self.to_logical_plan(),
+            start,
+            false,
+            super::ImageOptimizationOptions::default(),
+        )
     }
 }
 
@@ -90,10 +113,118 @@ impl PhysicalLowering for VisionPhysicalLowering {
     }
 }
 
+/// Expand only an unshared terminal chain: fused sample -> Batch -> Sink.
+/// This is physical implementation selection, not an IR semantic rewrite.
+pub(super) fn expand_terminal_sample_fusion(
+    plan: &mut LogicalPlan,
+    annotations: &rivet_plan::PropertyAnnotations,
+    workers: usize,
+) -> RivetResult<bool> {
+    if workers == 0 {
+        return Ok(false);
+    }
+    let order = plan
+        .topological_order()
+        .map_err(|error| invalid_pipeline(error.to_string()))?;
+    // Every reachable node is unary in a single-root graph, so the whole
+    // reachable graph is one chain; no repeated consumer scans are needed.
+    for &id in &order {
+        if plan
+            .node(id)
+            .map_err(|error| invalid_pipeline(error.to_string()))?
+            .inputs()
+            .len()
+            > 1
+        {
+            return Ok(false);
+        }
+    }
+    let Some((&sink, prefix)) = order.split_last() else {
+        return Ok(false);
+    };
+    if plan
+        .node(sink)
+        .map_err(|error| invalid_pipeline(error.to_string()))?
+        .kind()
+        != NodeKind::Sink
+    {
+        return Ok(false);
+    }
+    let Some((&batch, prefix)) = prefix.split_last() else {
+        return Ok(false);
+    };
+    if plan
+        .node(batch)
+        .map_err(|error| invalid_pipeline(error.to_string()))?
+        .kind()
+        != NodeKind::Batch
+    {
+        return Ok(false);
+    }
+    let Some((&group_id, preceding)) = prefix.split_last() else {
+        return Ok(false);
+    };
+    let group_node = plan
+        .node(group_id)
+        .map_err(|error| invalid_pipeline(error.to_string()))?;
+    let Some(group) = group_node.payload_as::<FusionGroupPayload>() else {
+        return Ok(false);
+    };
+    let [ImageOp::Normalize(normalize), ImageOp::Layout(layout)] = group.ops.as_slice() else {
+        return Ok(false);
+    };
+    if group.name != "NormalizeToChw" {
+        return Ok(false);
+    }
+    let Some(input) = group_node.inputs().get(0) else {
+        return Ok(false);
+    };
+    if !annotations.get(input).is_some_and(|properties| {
+        properties.granularity == Some(ValueGranularity::Sample)
+            && properties
+                .operator
+                .is_some_and(|operator| operator.sample_stage_has_work)
+    }) {
+        return Ok(false);
+    }
+    // Do not split across previous batch implementations or actual barriers.
+    for &id in preceding {
+        let node = plan
+            .node(id)
+            .map_err(|error| invalid_pipeline(error.to_string()))?;
+        if matches!(node.kind(), NodeKind::Batch | NodeKind::DeviceCut)
+            || node
+                .payload_as::<ImageOp>()
+                .is_some_and(|op| op.execution_kind() == ExecutionKind::Batch)
+            || node.payload_as::<FusionGroupPayload>().is_some()
+        {
+            return Ok(false);
+        }
+    }
+    let normalize = normalize.clone();
+    let layout = *layout;
+    let normalized = plan.add_node(LogicalNode::new(
+        NodeKind::Op,
+        [input],
+        Some(Arc::new(ImageOp::Normalize(normalize))),
+    ));
+    plan.replace_node(
+        group_id,
+        LogicalNode::new(
+            NodeKind::Op,
+            [normalized],
+            Some(Arc::new(ImageOp::Layout(layout))),
+        ),
+    )
+    .map_err(|error| invalid_pipeline(error.to_string()))?;
+    Ok(true)
+}
+
 fn compile_graph(
     mut logical: LogicalPlan,
     start: usize,
     optimize: bool,
+    options: super::ImageOptimizationOptions,
 ) -> RivetResult<ImageDataLoader> {
     super::logical::assign_missing_random_identities(&mut logical)?;
     logical
@@ -110,22 +241,21 @@ fn compile_graph(
             "vision DeviceCut execution is not implemented yet",
         ));
     }
-    let placement = if optimize {
-        Some(
-            super::optimizer::optimize_vision_plan_with_placement(
-                &mut logical,
-                context.runtime.num_workers,
-            )?
-            .1,
-        )
-    } else {
-        None
-    };
-    let annotations = logical
-        .infer_properties(&super::inference::VisionPropertyInference::new(
+    let (annotations, placement) = if optimize {
+        let (optimizer_context, placement) = super::optimizer::optimize_vision_plan_for_execution(
+            &mut logical,
             context.runtime.num_workers,
-        ))
-        .map_err(super::logical::inference_error)?;
+            options,
+        )?;
+        (optimizer_context.annotations().clone(), Some(placement))
+    } else {
+        (
+            logical
+                .infer_properties(&super::inference::VisionPropertyInference)
+                .map_err(super::logical::inference_error)?,
+            None,
+        )
+    };
     let order = logical
         .topological_order()
         .map_err(|error| invalid_pipeline(error.to_string()))?;
@@ -217,15 +347,27 @@ fn compile_graph(
     let mut occurrences = HashMap::new();
     let mut sample_ops = Vec::new();
     let mut batch_ops = Vec::new();
+    // These are implementation facts, separate from logical image properties.
+    let mut physical_phases: HashMap<NodeId, (bool, bool)> = HashMap::new();
     for &id in &order {
         let node = logical
             .node(id)
             .map_err(|error| invalid_pipeline(error.to_string()))?;
-        let stage = annotations
-            .get(id)
-            .and_then(|properties| properties.operator)
-            .map(|op| op.stage)
-            .unwrap_or(OperatorStage::Sample);
+        let (mut has_sample_work, mut batch_phase) =
+            node.inputs()
+                .iter()
+                .fold((false, false), |(work, batch), input| {
+                    let (input_work, input_batch) =
+                        physical_phases.get(&input).copied().unwrap_or_default();
+                    (work || input_work, batch || input_batch)
+                });
+        let input_is_batch = node
+            .inputs()
+            .get(0)
+            .and_then(|input| annotations.get(input))
+            .is_some_and(|props| props.granularity == Some(ValueGranularity::Batch));
+        let prefer_sample_normalize =
+            context.runtime.num_workers > 0 && has_sample_work && !batch_phase && !input_is_batch;
         let input_state = node
             .inputs()
             .get(0)
@@ -248,7 +390,7 @@ fn compile_graph(
             ),
             NodeKind::Op => {
                 if let Some(concat) = node.payload_as::<super::ImageConcat>() {
-                    let stage = if stage == OperatorStage::Batch {
+                    let stage = if input_is_batch {
                         KernelStage::Batch
                     } else {
                         KernelStage::Sample
@@ -267,18 +409,35 @@ fn compile_graph(
                     let Some(ImageOp::Normalize(config)) = group.ops.first() else {
                         return Err(invalid_pipeline("invalid NormalizeToChw fusion"));
                     };
-                    let op = BatchKernel::NormalizeToChw(CompiledNormalize {
+                    let normalize = CompiledNormalize {
                         config: config.clone(),
                         input_layout: ImageAxisOrder::Hwc,
-                    });
-                    batch_ops.push(op.clone());
-                    (
-                        PhysicalNodeKind::Kernel(KernelStage::Batch),
-                        ImageKernel::BatchOp(Arc::new(BatchNode {
-                            op,
-                            output_layout: ImageAxisOrder::Chw,
-                        })),
-                    )
+                    };
+                    if prefer_sample_normalize {
+                        let compiled = CompiledSampleOp {
+                            kernel: SampleKernel::SampleNormalizeToChw(normalize),
+                            random_key: None,
+                            input_state,
+                        };
+                        sample_ops.push(compiled.clone());
+                        (
+                            PhysicalNodeKind::Kernel(KernelStage::Sample),
+                            ImageKernel::Sample(Arc::new(SampleNode {
+                                op: compiled,
+                                random,
+                            })),
+                        )
+                    } else {
+                        let op = BatchKernel::NormalizeToChw(normalize);
+                        batch_ops.push(op.clone());
+                        (
+                            PhysicalNodeKind::Kernel(KernelStage::Batch),
+                            ImageKernel::BatchOp(Arc::new(BatchNode {
+                                op,
+                                output_layout: ImageAxisOrder::Chw,
+                            })),
+                        )
+                    }
                 } else {
                     let op = node
                         .payload_as::<ImageOp>()
@@ -291,7 +450,9 @@ fn compile_graph(
                             PhysicalNodeKind::Kernel(KernelStage::Sample),
                             ImageKernel::Identity,
                         )
-                    } else if stage == OperatorStage::Batch {
+                    } else if op.execution_kind() == ExecutionKind::Batch
+                        && !(matches!(op, ImageOp::Normalize(_)) && prefer_sample_normalize)
+                    {
                         let input_layout = state_axis_order(input_state);
                         let kernel = match op {
                             ImageOp::Normalize(config) => {
@@ -364,6 +525,16 @@ fn compile_graph(
                 )));
             }
         };
+        match kind {
+            PhysicalNodeKind::Batch | PhysicalNodeKind::Kernel(KernelStage::Batch) => {
+                batch_phase = true
+            }
+            PhysicalNodeKind::Kernel(KernelStage::Decode | KernelStage::Sample) => {
+                has_sample_work |= matches!(kernel, ImageKernel::Sample(_));
+            }
+            _ => {}
+        }
+        physical_phases.insert(id, (has_sample_work, batch_phase));
         kernels.insert(id, (kind, Arc::new(kernel)));
     }
     let mut physical = PhysicalGraph::lower(
@@ -658,4 +829,111 @@ fn assign_random_key(
         Some(parent_key) => parent_key.derive(local_key),
         None => local_key,
     })
+}
+
+#[cfg(test)]
+mod implementation_tests {
+    use super::*;
+    use crate::cache::DenseImageMemoryDataset;
+    use crate::source::ImageSource;
+    use rivet_core::{DType, Device, Tensor};
+
+    fn pipeline(workers: usize) -> ImagePipeline {
+        let source = DenseImageMemoryDataset::new(
+            Tensor::from_vec(
+                (0..96).map(|i| i as u8).collect::<Vec<_>>(),
+                [2, 4, 4, 3],
+                &Device::Cpu,
+            )
+            .unwrap(),
+            Tensor::from_vec(vec![3i64, 7], [2], &Device::Cpu).unwrap(),
+        )
+        .unwrap();
+        ImagePipeline::from_source(ImageSource::from_dense_decoded(Arc::new(source)))
+            .convert_image_dtype(DType::U8)
+            .crop(1, 1, 2, 2)
+            .normalize(vec![0.5; 3], vec![0.5; 3])
+            .hwc_to_chw()
+            .workers(workers)
+            .batch(2, false)
+    }
+
+    #[test]
+    fn execution_preparation_places_once_and_keeps_semantic_explain_separate() {
+        let mut declared = pipeline(2).to_logical_plan();
+        let (context, placement) = super::super::optimizer::optimize_vision_plan_for_execution(
+            &mut declared,
+            2,
+            super::super::ImageOptimizationOptions::default(),
+        )
+        .unwrap();
+        assert!(
+            !context
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "placement.explain")
+        );
+        assert!(
+            !declared
+                .nodes()
+                .any(|(_, node)| node.payload_as::<FusionGroupPayload>().is_some())
+        );
+        assert_eq!(
+            placement.candidates.len(),
+            declared.topological_order().unwrap().len()
+        );
+        let mut semantic = pipeline(2).to_logical_plan();
+        let (context, _) = super::super::optimizer::optimize_vision_plan_with_options(
+            &mut semantic,
+            2,
+            super::super::ImageOptimizationOptions::default(),
+        )
+        .unwrap();
+        assert!(
+            context
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "placement.explain")
+        );
+        assert!(
+            semantic
+                .nodes()
+                .any(|(_, node)| node.payload_as::<FusionGroupPayload>().is_some())
+        );
+    }
+
+    #[test]
+    fn identity_conversion_crop_and_fused_normalize_preserve_values() {
+        for workers in [0, 2] {
+            let mut optimized = pipeline(workers).compile().unwrap();
+            if workers > 0 {
+                assert_eq!(
+                    optimized.info.sample_ops.last().unwrap().name(),
+                    "NormalizeSample"
+                );
+                assert_eq!(optimized.info.first_batch_op_name(), Some("Layout"));
+                assert_eq!(
+                    optimized.info.pre_batch_state,
+                    PipelineImageState::Decoded {
+                        dtype: DType::F32,
+                        axis_order: ImageAxisOrder::Hwc,
+                    }
+                );
+            } else {
+                assert_eq!(optimized.info.first_batch_op_name(), Some("NormalizeToChw"));
+            }
+            let mut original = pipeline(workers).compile_unoptimized_for_test(0).unwrap();
+            let optimized = optimized.next_batch().unwrap().unwrap();
+            let original = original.next_batch().unwrap().unwrap();
+            assert_eq!(optimized.images.dims(), [2, 3, 2, 2]);
+            assert_eq!(
+                optimized.images.to_vec::<f32>().unwrap(),
+                original.images.to_vec::<f32>().unwrap()
+            );
+            assert_eq!(
+                optimized.labels.to_vec::<i64>().unwrap(),
+                original.labels.to_vec::<i64>().unwrap()
+            );
+        }
+    }
 }

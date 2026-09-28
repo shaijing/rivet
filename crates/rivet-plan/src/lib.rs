@@ -16,8 +16,8 @@ mod properties;
 
 pub use optimizer::{
     Diagnostic, FusionCandidate, FusionRule, OptimizationReport, OptimizerContext, OptimizerError,
-    OptimizerPass, PassResult, PhysicalCandidate, PhysicalCandidateProvider, PlanPlugin,
-    PlanRegistry, optimize, run_fixed_point,
+    OptimizerOptions, OptimizerPass, PassResult, PhysicalCandidate, PhysicalCandidateProvider,
+    PlanPlugin, PlanRegistry, optimize, optimize_with_options, run_fixed_point,
 };
 pub use placement::{
     CostEstimate, DeviceDescriptor, DeviceLocation, KernelCapabilities, KernelCapability,

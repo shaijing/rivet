@@ -5,11 +5,13 @@ use std::sync::Arc;
 use rivet_plan::{
     AxisOrder, Contiguity, DeviceClass, FusionCandidate, FusionRule, KernelCapabilities,
     KernelCapability, KernelClass, KernelRequirements, LogicalNode, LogicalPlan, MachineProfile,
-    NodeKind, OperatorStage, OptimizerContext, OptimizerPass, PassResult, PhysicalCandidate,
-    PhysicalCandidateProvider, PlanPlugin, PlanRegistry, PropertyAnnotations, PropertyInference,
-    ValueProperties,
+    NodeId, NodeKind, OperatorStage, OptimizerContext, OptimizerPass, PassResult,
+    PhysicalCandidate, PhysicalCandidateProvider, PlanPlugin, PlanRegistry, PropertyAnnotations,
+    PropertyInference, ValueProperties,
 };
 
+use super::ImageOptimizationOptions;
+use super::cached_inference::CachedInferProperties as InferProperties;
 use super::inference::VisionPropertyInference;
 use super::logical::FusionGroupPayload;
 use super::op::{ImageOp, IndexOp, SourceOp};
@@ -24,9 +26,36 @@ pub(crate) fn optimize_vision_plan(
     optimize_vision_plan_with_placement(plan, workers).map(|(context, _)| context)
 }
 
+#[cfg(test)]
 pub(crate) fn optimize_vision_plan_with_placement(
     plan: &mut LogicalPlan,
     workers: usize,
+) -> Result<(OptimizerContext, rivet_plan::PlacementPlan), crate::errors::VisionError> {
+    optimize_vision_plan_with_options(plan, workers, ImageOptimizationOptions::default())
+}
+
+pub(crate) fn optimize_vision_plan_with_options(
+    plan: &mut LogicalPlan,
+    workers: usize,
+    options: ImageOptimizationOptions,
+) -> Result<(OptimizerContext, rivet_plan::PlacementPlan), crate::errors::VisionError> {
+    optimize_vision_plan_impl(plan, workers, options, false, true)
+}
+
+pub(crate) fn optimize_vision_plan_for_execution(
+    plan: &mut LogicalPlan,
+    workers: usize,
+    options: ImageOptimizationOptions,
+) -> Result<(OptimizerContext, rivet_plan::PlacementPlan), crate::errors::VisionError> {
+    optimize_vision_plan_impl(plan, workers, options, true, false)
+}
+
+fn optimize_vision_plan_impl(
+    plan: &mut LogicalPlan,
+    workers: usize,
+    options: ImageOptimizationOptions,
+    prepare_execution: bool,
+    collect_placement_explain: bool,
 ) -> Result<(OptimizerContext, rivet_plan::PlacementPlan), crate::errors::VisionError> {
     let machine = vision_machine_profile(workers);
     let mut registry = PlanRegistry::default();
@@ -34,16 +63,21 @@ pub(crate) fn optimize_vision_plan_with_placement(
         workers,
         enable_cuda_augmentation_fusion: false,
         machine: machine.clone(),
+        options,
+        prepare_execution,
+        collect_placement_explain,
     });
-    let (context, _) = rivet_plan::optimize(plan, &registry)
-        .map_err(|error| invalid_pipeline(format!("logical optimizer failed: {error}")))?;
-    let placement = rivet_plan::place(
+    let (mut context, _) = rivet_plan::optimize_with_options(
         plan,
-        context.annotations(),
-        &vision_kernel_capabilities(),
-        &machine,
+        &registry,
+        rivet_plan::OptimizerOptions {
+            record_snapshots: options.record_snapshots,
+        },
     )
-    .map_err(|error| invalid_pipeline(format!("physical placement failed: {error}")))?;
+    .map_err(|error| invalid_pipeline(format!("logical optimizer failed: {error}")))?;
+    let placement = context
+        .take_placement()
+        .ok_or_else(|| invalid_pipeline("optimizer did not produce placement"))?;
     Ok((context, placement))
 }
 fn vision_machine_profile(workers: usize) -> MachineProfile {
@@ -54,6 +88,38 @@ fn vision_machine_profile(workers: usize) -> MachineProfile {
 }
 
 impl super::builder::ImagePipeline {
+    /// Explain declared and optimized logical graphs using configurable rules.
+    pub fn optimization_explain(
+        &self,
+        options: ImageOptimizationOptions,
+    ) -> Result<String, crate::errors::VisionError> {
+        let mut plan = self.to_logical_plan();
+        super::logical::assign_missing_random_identities(&mut plan)?;
+        let original = plan
+            .explain()
+            .map_err(|error| invalid_pipeline(error.to_string()))?;
+        let (context, placement) =
+            optimize_vision_plan_with_options(&mut plan, self.runtime.num_workers, options)?;
+        let optimized = plan
+            .explain()
+            .map_err(|error| invalid_pipeline(error.to_string()))?;
+        let mut explanation =
+            format!("Declared logical graph:\n{original}\nOptimized logical graph:\n{optimized}\n");
+        explanation.push_str(
+            &placement
+                .explain(&plan, context.annotations())
+                .map_err(|error| invalid_pipeline(error.to_string()))?,
+        );
+        for diagnostic in &context.diagnostics {
+            if diagnostic.code != "placement.explain" {
+                explanation.push_str(&format!("  {}: {}\n", diagnostic.code, diagnostic.message));
+            }
+        }
+        for (pass, snapshot) in context.snapshots {
+            explanation.push_str(&format!("\nSnapshot {pass}:\n{snapshot}"));
+        }
+        Ok(explanation)
+    }
     /// Produce a deterministic placement explanation for this pipeline on the
     /// supplied machine profile. Only registered implementations are eligible.
     pub fn placement_explain(
@@ -77,6 +143,9 @@ impl super::builder::ImagePipeline {
             workers: self.runtime.num_workers,
             enable_cuda_augmentation_fusion,
             machine,
+            options: ImageOptimizationOptions::default(),
+            prepare_execution: false,
+            collect_placement_explain: true,
         });
         let (context, _) = rivet_plan::optimize(&mut plan, &registry)
             .map_err(|error| invalid_pipeline(format!("logical optimizer failed: {error}")))?;
@@ -111,6 +180,9 @@ struct VisionPlanPlugin {
     workers: usize,
     enable_cuda_augmentation_fusion: bool,
     machine: MachineProfile,
+    options: ImageOptimizationOptions,
+    prepare_execution: bool,
+    collect_placement_explain: bool,
 }
 impl PlanPlugin for VisionPlanPlugin {
     fn name(&self) -> &'static str {
@@ -125,7 +197,7 @@ impl PlanPlugin for VisionPlanPlugin {
     fn optimizer_passes(&self) -> Vec<Arc<dyn OptimizerPass>> {
         let inference: Arc<dyn PropertyInference> =
             Arc::new(VisionPropertyInference::new(self.workers));
-        vec![
+        let mut passes: Vec<Arc<dyn OptimizerPass>> = vec![
             Arc::new(Canonicalize),
             Arc::new(InferProperties(inference)),
             Arc::new(EliminateIdentityLayout),
@@ -133,7 +205,7 @@ impl PlanPlugin for VisionPlanPlugin {
                 self.workers,
             )))),
             Arc::new(SemanticRewrite {
-                workers: self.workers,
+                allow_float_reassociation: self.options.allow_float_reassociation,
             }),
             Arc::new(EliminateDeadNodes),
             Arc::new(InferProperties(Arc::new(VisionPropertyInference::new(
@@ -142,20 +214,46 @@ impl PlanPlugin for VisionPlanPlugin {
             Arc::new(IndexSourcePushdown {
                 workers: self.workers,
             }),
+            Arc::new(super::canonicalize::CanonicalizeSelectionsLayouts {
+                selections: self.options.canonicalize_selections,
+                layouts: self.options.canonicalize_layouts,
+            }),
+            Arc::new(EliminateDeadNodes),
+            Arc::new(InferProperties(Arc::new(VisionPropertyInference::new(
+                self.workers,
+            )))),
+        ];
+        if self.options.common_subplan_elimination {
+            passes.push(Arc::new(super::cse::Cse));
+            passes.push(Arc::new(InferProperties(Arc::new(
+                VisionPropertyInference::new(self.workers),
+            ))));
+        }
+        let mut physical_passes: Vec<Arc<dyn OptimizerPass>> = vec![
             Arc::new(FusionDiscovery),
             Arc::new(EliminateDeadNodes),
             Arc::new(InferProperties(Arc::new(VisionPropertyInference::new(
                 self.workers,
             )))),
-            Arc::new(PlacementBoundary {
-                capabilities: vision_kernel_capabilities(),
-                machine: self.machine.clone(),
-            }),
-        ]
+        ];
+        if self.prepare_execution {
+            physical_passes.push(Arc::new(PrepareExecution {
+                workers: self.workers,
+            }));
+            physical_passes.push(Arc::new(InferProperties(Arc::new(
+                VisionPropertyInference::new(self.workers),
+            ))));
+        }
+        physical_passes.push(Arc::new(PlacementBoundary {
+            capabilities: vision_kernel_capabilities(),
+            machine: self.machine.clone(),
+            collect_explain: self.collect_placement_explain,
+        }));
+        passes.extend(physical_passes);
+        passes
     }
     fn fusion_rules(&self) -> Vec<Arc<dyn FusionRule>> {
         vec![Arc::new(NormalizeLayoutFusion {
-            workers: self.workers,
             enable_cuda_augmentation_fusion: self.enable_cuda_augmentation_fusion,
         })]
     }
@@ -194,7 +292,7 @@ impl OptimizerPass for EliminateDeadNodes {
 }
 
 struct SemanticRewrite {
-    workers: usize,
+    allow_float_reassociation: bool,
 }
 impl OptimizerPass for SemanticRewrite {
     fn name(&self) -> &'static str {
@@ -244,17 +342,6 @@ impl OptimizerPass for SemanticRewrite {
                 _ => continue,
             };
             if input_properties.dtype == Some(target_dtype) {
-                // Keep this node as a batch-stage barrier when worker sample
-                // work precedes it; removing it could move following batch
-                // ops onto worker lanes.
-                if self.workers > 0
-                    && input_properties.operator.is_some_and(|operator| {
-                        operator.sample_stage_has_work
-                            && operator.stage != rivet_plan::OperatorStage::Batch
-                    })
-                {
-                    continue;
-                }
                 plan.redirect_uses(id, input_id)
                     .map_err(|error| error.to_string())?;
                 context.diagnostics.push(rivet_plan::Diagnostic {
@@ -265,8 +352,8 @@ impl OptimizerPass for SemanticRewrite {
                 continue;
             }
 
-            // U8 -> F32 conversion followed by Normalize computes the same
-            // `u8 / 255 -> (x - mean) / std` values as Normalize's U8 kernel.
+            // U8 -> F32 conversion followed by Normalize has the same real
+            // arithmetic as Normalize's U8 kernel, with different rounding.
             // Require the conversion to feed only this Normalize so bypassing
             // it cannot alter a sibling consumer that expects F32 values.
             if config.dtype != rivet_core::DType::F32
@@ -274,13 +361,9 @@ impl OptimizerPass for SemanticRewrite {
             {
                 continue;
             }
-            // Keep Normalize on the same side of the worker stage barrier.
-            if self.workers > 0
-                && input_properties.operator.is_some_and(|operator| {
-                    operator.sample_stage_has_work
-                        && operator.stage != rivet_plan::OperatorStage::Batch
-                })
-            {
+            // Reassociation can change floating-point rounding even when the
+            // mathematical expression agrees. Require an explicit opt-in.
+            if !self.allow_float_reassociation {
                 continue;
             }
             let children = plan.children(id).map_err(|error| error.to_string())?;
@@ -302,7 +385,7 @@ impl OptimizerPass for SemanticRewrite {
             context.diagnostics.push(rivet_plan::Diagnostic {
                 code: "rewrite.dtype-late-promotion",
                 message: format!(
-                    "bypassed U8->F32 conversion at node %{} before Normalize; preserves U8 HWC/CHW order and uses Normalize's equivalent U8 scaling path",
+                    "bypassed U8->F32 conversion at node %{} before Normalize with explicit float reassociation permission; preserves HWC/CHW order but may change low floating-point bits",
                     id.index()
                 ),
             });
@@ -343,24 +426,6 @@ impl OptimizerPass for Canonicalize {
             diagnostics: Vec::new(),
             ..PassResult::default()
         })
-    }
-}
-
-struct InferProperties(Arc<dyn PropertyInference>);
-impl OptimizerPass for InferProperties {
-    fn name(&self) -> &'static str {
-        "property-inference-validation"
-    }
-    fn run(
-        &self,
-        plan: &mut LogicalPlan,
-        context: &mut OptimizerContext,
-    ) -> Result<PassResult, String> {
-        let properties = plan
-            .infer_properties(self.0.as_ref())
-            .map_err(|error| error.to_string())?;
-        context.set_annotations(properties);
-        Ok(PassResult::unchanged())
     }
 }
 
@@ -425,6 +490,20 @@ impl OptimizerPass for IndexSourcePushdown {
         let order = plan
             .topological_order()
             .map_err(|error| error.to_string())?;
+        // Maintain consumer edges through adjacent swaps instead of traversing
+        // the entire graph again to decide whether each producer is shared.
+        let mut consumers =
+            std::collections::HashMap::<rivet_plan::NodeId, Vec<rivet_plan::NodeId>>::new();
+        for &consumer in &order {
+            for input in plan
+                .node(consumer)
+                .map_err(|error| error.to_string())?
+                .inputs()
+                .iter()
+            {
+                consumers.entry(input).or_default().push(consumer);
+            }
+        }
         let mut changed = false;
         let mut moved = 0usize;
         let mut index_count = 0usize;
@@ -454,20 +533,9 @@ impl OptimizerPass for IndexSourcePushdown {
                 let rejection = if input.inputs().len() != 1 {
                     Some("multi-input operation is a selection pushdown barrier")
                 } else {
-                    let consumers = plan
-                        .topological_order()
-                        .map_err(|error| error.to_string())?
-                        .into_iter()
-                        .map(|consumer| {
-                            plan.node(consumer)
-                                .expect("validated node")
-                                .inputs()
-                                .iter()
-                                .filter(|dependency| *dependency == input_id)
-                                .count()
-                        })
-                        .sum::<usize>();
-                    if consumers != 1 || plan.root().ok() == Some(input_id) {
+                    if consumers.get(&input_id).map_or(0, Vec::len) != 1
+                        || plan.root().ok() == Some(input_id)
+                    {
                         Some("shared operation is a selection pushdown barrier")
                     } else {
                         super::semantics::allows_index_pushdown(
@@ -495,21 +563,66 @@ impl OptimizerPass for IndexSourcePushdown {
                     break;
                 }
                 let upstream = input.inputs().get(0).expect("checked unary image");
-                // A -> Image -> Index -> consumers becomes A -> Index -> Image
-                // -> consumers. Redirect first while Image does not yet use Index,
-                // so global rewiring cannot create an Index self-reference.
-                plan.redirect_uses(id, input_id)
-                    .map_err(|error| error.to_string())?;
+                let old_output = context.annotations().get(id).cloned();
+                let downstream = consumers.get(&id).cloned().unwrap_or_default();
+                // Rewire only affected consumers, preserving repeated input
+                // ports and semantic IDs. The producer has a sole consumer.
+                for consumer in &downstream {
+                    let node = plan
+                        .node(*consumer)
+                        .map_err(|error| error.to_string())?
+                        .clone();
+                    let inputs = node
+                        .inputs()
+                        .iter()
+                        .map(|input| if input == id { input_id } else { input })
+                        .collect::<Vec<_>>();
+                    plan.replace_node(*consumer, node.with_inputs(inputs))
+                        .map_err(|error| error.to_string())?;
+                }
+                if plan.root().ok() == Some(id) {
+                    plan.set_root(input_id).map_err(|error| error.to_string())?;
+                }
                 plan.replace_node(id, index.with_inputs([upstream]))
                     .map_err(|error| error.to_string())?;
                 plan.replace_node(input_id, input.with_inputs([id]))
                     .map_err(|error| error.to_string())?;
-                context.clear_annotations();
+                if let Some(upstream_consumers) = consumers.get_mut(&upstream) {
+                    for consumer in upstream_consumers {
+                        if *consumer == input_id {
+                            *consumer = id;
+                        }
+                    }
+                }
+                consumers.insert(input_id, downstream);
+                consumers.insert(id, vec![input_id]);
+                context.take_placement();
                 plan.validate().map_err(|error| error.to_string())?;
-                let annotations = plan
-                    .infer_properties(&VisionPropertyInference::new(self.workers))
-                    .map_err(|error| error.to_string())?;
-                context.set_annotations(annotations);
+                let inference = VisionPropertyInference::new(self.workers);
+                let upstream_properties = context
+                    .annotations()
+                    .get(upstream)
+                    .cloned()
+                    .ok_or_else(|| "selection rewrite lost upstream properties".to_owned())?;
+                let selected = inference.infer_node(
+                    plan.node(id).map_err(|error| error.to_string())?,
+                    &[upstream_properties],
+                )?;
+                let image = inference.infer_node(
+                    plan.node(input_id).map_err(|error| error.to_string())?,
+                    std::slice::from_ref(&selected),
+                )?;
+                if old_output.as_ref() == Some(&image) {
+                    // Consumers see the same properties; only the two swapped
+                    // nodes need updating. Fall back if a domain fact changes.
+                    context.annotations_mut().insert(id, selected);
+                    context.annotations_mut().insert(input_id, image);
+                } else {
+                    let annotations = plan
+                        .infer_properties(&inference)
+                        .map_err(|error| error.to_string())?;
+                    context.set_annotations(annotations);
+                }
                 changed = true;
                 moved += 1;
             }
@@ -598,7 +711,6 @@ impl OptimizerPass for FusionDiscovery {
 }
 
 struct NormalizeLayoutFusion {
-    workers: usize,
     enable_cuda_augmentation_fusion: bool,
 }
 impl FusionRule for NormalizeLayoutFusion {
@@ -611,7 +723,22 @@ impl FusionRule for NormalizeLayoutFusion {
         annotations: &PropertyAnnotations,
     ) -> Result<Vec<FusionCandidate>, String> {
         let mut candidates = Vec::new();
-        for id in plan.preorder().map_err(|error| error.to_string())? {
+        let order = plan.preorder().map_err(|error| error.to_string())?;
+        let mut uses = std::collections::HashMap::<NodeId, usize>::new();
+        for &id in &order {
+            for input in plan
+                .node(id)
+                .map_err(|error| error.to_string())?
+                .inputs()
+                .iter()
+            {
+                *uses.entry(input).or_default() += 1;
+            }
+        }
+        *uses
+            .entry(plan.root().map_err(|error| error.to_string())?)
+            .or_default() += 1;
+        for id in order {
             let node = plan.node(id).map_err(|error| error.to_string())?;
             if let Some(ImageOp::Layout(layout_config)) = node.payload_as::<ImageOp>() {
                 let Some(normalize_id) = node.inputs().get(0) else {
@@ -661,23 +788,20 @@ impl FusionRule for NormalizeLayoutFusion {
                     input_id = normalize_input;
                 }
                 let props = annotations.get(input_id);
-                let allow_sample_work =
-                    self.enable_cuda_augmentation_fusion && !augmentation_ids.is_empty();
-                let legal = props.is_some_and(|p| {
-                    p.dtype == Some(rivet_plan::DataType::U8)
-                        && axis_order(p) == Some(ImageAxisOrder::Hwc)
-                        && layout_config.axis_order == ImageAxisOrder::Chw
-                        && (allow_sample_work
-                            || !(self.workers > 0
-                                && p.operator.is_some_and(|operator| {
-                                    operator.sample_stage_has_work
-                                        && operator.stage != rivet_plan::OperatorStage::Batch
-                                })))
-                });
-                let reason = if legal {
-                    "requires U8 HWC input, CHW output, and batch-stage Normalize; properties satisfy the rule".to_owned()
+                let shared_normalize = uses.get(&normalize_id).copied() != Some(1);
+                let legal = !shared_normalize
+                    && props.is_some_and(|p| {
+                        p.dtype == Some(rivet_plan::DataType::U8)
+                            && axis_order(p) == Some(ImageAxisOrder::Hwc)
+                            && layout_config.axis_order == ImageAxisOrder::Chw
+                    });
+                let reason = if shared_normalize {
+                    "retains shared Normalize output to avoid duplicating normalization work"
+                        .to_owned()
+                } else if legal {
+                    "requires U8 HWC input and CHW output; equivalent sample and batch fused kernels are available".to_owned()
                 } else {
-                    "requires U8 HWC input, CHW output, and batch-stage Normalize; inferred properties do not satisfy the rule"
+                    "requires U8 HWC input and CHW output; inferred properties do not satisfy the rule"
                         .to_owned()
                 };
                 candidates.push(FusionCandidate {
@@ -865,9 +989,38 @@ fn validate_source_index_prefix(plan: &LogicalPlan) -> Result<(), String> {
     Ok(())
 }
 
+/// Concrete implementation selection happens once after semantic convergence.
+/// A later logical fusion pass must not fold the prepared kernel chain again.
+struct PrepareExecution {
+    workers: usize,
+}
+impl OptimizerPass for PrepareExecution {
+    fn name(&self) -> &'static str {
+        "prepare-vision-execution"
+    }
+    fn is_placement_boundary(&self) -> bool {
+        true
+    }
+    fn run(
+        &self,
+        plan: &mut LogicalPlan,
+        context: &mut OptimizerContext,
+    ) -> Result<PassResult, String> {
+        if super::compile::expand_terminal_sample_fusion(plan, context.annotations(), self.workers)
+            .map_err(|error| error.to_string())?
+        {
+            context.clear_annotations();
+            Ok(PassResult::changed())
+        } else {
+            Ok(PassResult::unchanged())
+        }
+    }
+}
+
 struct PlacementBoundary {
     capabilities: KernelCapabilities,
     machine: MachineProfile,
+    collect_explain: bool,
 }
 
 impl OptimizerPass for PlacementBoundary {
@@ -890,6 +1043,10 @@ impl OptimizerPass for PlacementBoundary {
             &self.machine,
         )
         .map_err(|error| error.to_string())?;
+        if !self.collect_explain {
+            context.set_placement(placement);
+            return Ok(PassResult::unchanged());
+        }
         let mut explanation = placement
             .explain(plan, context.annotations())
             .map_err(|error| error.to_string())?;
@@ -913,6 +1070,7 @@ impl OptimizerPass for PlacementBoundary {
                 capability.read_device,
             ));
         }
+        context.set_placement(placement);
         Ok(PassResult::unchanged().diagnostic("placement.explain", explanation))
     }
 }
@@ -1114,8 +1272,9 @@ pub(super) fn vision_kernel_capabilities() -> KernelCapabilities {
             output_axis_order: Some(AxisOrder::Chw),
             output_granularity: Some(rivet_plan::ValueGranularity::Sample),
             output_residency: Some(rivet_plan::Residency::Host),
-            output_contiguity: Some(Contiguity::Contiguous),
-            output_stage: Some(OperatorStage::Batch),
+            // Logical fusion preserves values; the physical implementation
+            // chooses between a contiguous writer and a layout view.
+            output_stage: Some(OperatorStage::Sample),
             ..KernelRequirements::default()
         },
         fusion_tags: vec!["NormalizeToChw".to_owned()],
@@ -1136,6 +1295,7 @@ pub(super) fn vision_kernel_capabilities() -> KernelCapabilities {
     batch_fused.requirements.output_granularity = Some(rivet_plan::ValueGranularity::Batch);
     batch_fused.requirements.input_axis_order = Some(AxisOrder::Nhwc);
     batch_fused.requirements.output_axis_order = Some(AxisOrder::Nchw);
+    batch_fused.requirements.output_stage = Some(OperatorStage::Batch);
     caps.register(batch_fused);
     #[cfg(feature = "cuda")]
     {
@@ -1180,7 +1340,6 @@ mod device_cut_tests {
         plan.set_root(sink).unwrap();
 
         let candidates = NormalizeLayoutFusion {
-            workers: 0,
             enable_cuda_augmentation_fusion: true,
         }
         .discover(&plan, &PropertyAnnotations::default())

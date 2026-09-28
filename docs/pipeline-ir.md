@@ -128,3 +128,147 @@ and error contract explicit.
 
 See [semantic rewrite validation](perf/semantic-ir-rewrite.md) for differential
 tests and release throughput measurements.
+
+## Exact sharing and local canonicalization
+
+Common-subplan elimination (CSE) runs after source selection pushdown and local
+canonicalization, before fusion. It shares identical deterministic unary image
+nodes with the same ordered input node identities. Matching uses explicit
+operation and parameter encodings, not formatted debug strings or approximate
+numeric equality. Float parameters use their IEEE bit patterns, so signed zero
+and distinct NaN payloads remain distinct; mean/std vector lengths are part of
+the key too.
+
+The current whitelist is Decode, Resize, Crop, CenterCrop, Pad, Flip, Normalize,
+Layout and supported ConvertImageDtype operations. Every relevant parameter is
+included: interpolation mode, crop coordinates, padding sides/mode/fill, flip
+direction, normalization statistics, target layout and target dtype. CSE does
+not combine consecutive operations or exchange their order. In particular,
+Crop and Normalize remain in their declared order.
+
+Sources, random operators, unknown/custom payloads, Batch, Cache, device
+boundaries, joins and already fused groups are excluded. Separate source nodes
+remain separate even if they carry the same source object. Equal parameters do
+not make two RandomCrop operations equivalent: their stable semantic identities
+can intentionally produce different views. Deterministic successors of distinct
+random inputs also remain distinct.
+
+Shared outputs preserve labels and sample identities. Consumers receive their
+declared input ports, including repeated references to one shared result.
+Arena compaction preserves random identities and invalidates annotations, which
+are inferred again before fusion. Execution shares immutable backing storage
+until the final consumer releases it. Sharing may extend a tensor's lifetime;
+CSE currently has no cost model comparing recomputation with retained memory.
+Normalize/Layout fusion requires the Normalize output to have exactly one
+consumer edge. A shared Normalize remains shared rather than being fused into
+one consumer and recomputed for the others; explanations report this blocked
+fusion decision.
+
+Adjacent Take/Skip chains are composed into at most one Skip followed by one
+Take using saturating interval arithmetic. They are combined only through
+single-consumer selection edges. Shuffle, image operators, batching, shared
+branches and other intervening nodes stop composition; operations are never
+composed across Shuffle. Source sampler ordering remains mandatory even when
+this optional canonicalization is disabled.
+
+Identity dtype/layout operations and full-image crops can be removed when
+inferred properties prove they leave the value unchanged. Adjacent inverse
+Layout views can additionally be removed when the input representation, rank
+and axis order prove both permutations are valid. The inner layout must have
+one consumer. The inverse pair restores the original shape, strides and
+contiguity, including a strided input; this rule never crosses Normalize or a
+materializing fusion. Unknown properties retain the operations and their runtime
+checks.
+
+## Numerical equivalence and execution choices
+
+Logical image properties and rewrite legality are independent of worker count.
+An identity conversion is no longer kept merely to act as a scheduling barrier.
+The physical compiler separately chooses sample or batch kernels from actual
+input granularity, preceding work and runtime worker configuration. Per-node
+physical choices do not grant permission to reorder arbitrary image operations.
+
+For workers greater than zero, an unshared terminal Normalize/Layout fusion
+immediately before Batch/Sink can lower to sample HWC normalization followed by
+stacking and a batch Layout view. The compiler applies this only to a linear
+sample-work prefix without a prior batch implementation or device boundary.
+This uses the specialized RGB normalization path and avoids an expensive
+channel-major sample write. Generic and shared DAGs retain their fused writer;
+the logical fusion and values do not depend on worker count.
+
+Logical NormalizeToChw fusion reports contiguity as Unknown because equivalent
+physical implementations can either write a contiguous result or defer the
+layout as a strided view. Actual physical writers and tensors determine concrete
+contiguity. Consumers must not treat the logical fusion name as proof that its
+output is contiguous.
+
+The default numerical policy preserves the rounding introduced by declared
+operations. An explicit U8-to-F32 conversion followed by Normalize remains two
+operations: bypassing the conversion can use a reassociated affine expression
+and change low floating-point bits. That rewrite requires
+`allow_float_reassociation: true` and a single consumer. This policy concerns
+optimizer rewrites; it does not replace the established arithmetic of a directly
+declared U8 Normalize kernel or promise identical floating-point behavior across
+hardware platforms.
+
+Normalize/Layout fusion preserves their order and output values. Specialized
+three-channel HWC/NHWC normalization and NHWC-to-NCHW paths remain available.
+Crop and CenterCrop return strided tensor views; compilation does not insert an
+extra contiguous copy for those intermediate views. Consumers materialize when
+required, such as stacking a batch or writing Normalize's output. Strided views
+retain their source storage, so delaying a copy can also extend storage lifetime.
+Further direct-output fusion requires a separate equivalence and profitability
+rule; it is not implied by either CSE or view support.
+
+## Optimization controls and explanations
+
+`ImageOptimizationOptions` is available from `rivet_vision::api` and
+`rivet_vision::pipeline`. Defaults enable CSE and the new selection/layout
+canonicalizations, disable float reassociation, and omit per-pass snapshots.
+
+```rust
+use rivet_vision::api::ImageOptimizationOptions;
+
+let options = ImageOptimizationOptions {
+    common_subplan_elimination: false,
+    record_snapshots: true,
+    ..ImageOptimizationOptions::default()
+};
+// Explain without reading the dataset:
+let explanation = pipeline.optimization_explain(options)?;
+// Compile a builder with the same options:
+let loader = pipeline.compile_with_options(options)?;
+```
+
+Edited DAGs use
+`ImagePipeline::compile_logical_plan_with_options(plan, start, options)`.
+The flags independently control CSE, adjacent selection composition, inverse
+layout simplification and floating-point reassociation. Disabling them does not
+turn off graph/configuration validation, source-index order handling, fundamental
+identity elimination or existing fusion rules. Python's builder does not expose
+these Rust optimization options yet.
+
+`optimization_explain()` shows the declared graph, optimized graph, placement
+and rule diagnostics. With `record_snapshots`, it also includes per-pass graph
+snapshots. `LogicalPlan::explain()` shows an edited graph directly, and the
+compiled loader's `physical_explain()` reports the executable graph/runtime path.
+Snapshots are optional to avoid constructing repeated full graph strings during
+normal compilation. Validation still runs after passes. Domain rewrites clear
+invalid properties or update them after proving downstream facts unchanged;
+inference passes reuse complete validated annotations. Execution preparation
+expands eligible terminal fusion before final inference and placement, so the
+compiler places the implementation graph once and reuses that result. Normal
+execution also skips formatting placement explanations; explain APIs retain
+their reports. The planar sample writer's setup is kept in a separate function
+to limit its effect on common sample dispatch code generation.
+
+## Remaining work
+
+The current rules are deliberately local and conservative. Future work includes
+cost-aware sharing/fusion, automatic sharing of equivalent source scans,
+branch-local and post-batch selection execution, metadata filtering and field
+projection, incremental property inference/compilation caching, more direct-output
+kernels, parallel scheduling within a morsel and a global retained-memory budget.
+GPU/DeviceCut execution and a Python DAG-building API also remain separate work.
+No general commutativity rule permits Crop/Normalize, resize chains or dtype
+conversion chains to be exchanged or collapsed.

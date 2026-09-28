@@ -19,7 +19,8 @@ pub use crate::errors::{
 };
 pub use crate::pipeline::op::ImageOp;
 pub use crate::pipeline::{
-    Compose, ImageConcat, ImageGraphInfo, ImagePipeline, ImageTransform, TransformSequence,
+    Compose, ImageConcat, ImageGraphInfo, ImageOptimizationOptions, ImagePipeline, ImageTransform,
+    TransformSequence,
 };
 pub use crate::runtime::{ImageDataLoader, RuntimeConfig};
 pub use crate::sample::image::{

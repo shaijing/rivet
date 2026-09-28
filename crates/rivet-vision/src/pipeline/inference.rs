@@ -12,9 +12,8 @@ use super::op::{BatchConfig, ImageOp, IndexOp, PipelineImageState, SourceOp};
 use crate::errors::{RivetResult, invalid_pipeline};
 use crate::sample::image::ImageAxisOrder;
 
-pub struct VisionPropertyInference {
-    num_workers: usize,
-}
+/// Logical image semantics are independent of executor worker configuration.
+pub struct VisionPropertyInference;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum VisionRepresentation {
@@ -32,8 +31,8 @@ struct VisionProperties {
 }
 
 impl VisionPropertyInference {
-    pub fn new(num_workers: usize) -> Self {
-        Self { num_workers }
+    pub fn new(_num_workers: usize) -> Self {
+        Self
     }
 }
 
@@ -80,20 +79,19 @@ impl PropertyInference for VisionPropertyInference {
                 semantic_input.residency = Some(Residency::Host);
                 if let Some(op) = node.payload_as::<ImageOp>() {
                     let mut output =
-                        infer_image_op_with_workers(op, &semantic_input, self.num_workers)
-                            .map_err(|error| error.to_string())?;
+                        infer_image_op(op, &semantic_input).map_err(|error| error.to_string())?;
                     output.residency = input.residency.clone();
                     output
                 } else if let Some(group) = node.payload_as::<FusionGroupPayload>() {
                     let mut properties = semantic_input;
                     for op in &group.ops {
-                        properties = infer_image_op_with_workers(op, &properties, self.num_workers)
-                            .map_err(|error| error.to_string())?;
+                        properties =
+                            infer_image_op(op, &properties).map_err(|error| error.to_string())?;
                     }
-                    // Normalize + HWC-to-CHW has a dedicated contiguous output
-                    // kernel even though the unfused layout is a strided view.
+                    // Fusion expresses value semantics. The physical selector
+                    // can choose a contiguous writer or a deferred layout view.
                     if group.name == "NormalizeToChw" {
-                        properties.contiguity = Some(Contiguity::Contiguous);
+                        properties.contiguity = Some(Contiguity::Unknown);
                     }
                     properties.residency = input.residency.clone();
                     properties
@@ -193,14 +191,6 @@ pub(crate) fn infer_image_op(
     op: &ImageOp,
     input: &ValueProperties,
 ) -> RivetResult<ValueProperties> {
-    infer_image_op_with_workers(op, input, 0)
-}
-
-fn infer_image_op_with_workers(
-    op: &ImageOp,
-    input: &ValueProperties,
-    num_workers: usize,
-) -> RivetResult<ValueProperties> {
     if input.granularity == Some(ValueGranularity::Batch) {
         if op.execution_kind() != super::op::ExecutionKind::Batch {
             return Err(invalid_pipeline(format!(
@@ -222,7 +212,7 @@ fn infer_image_op_with_workers(
             _ => return Err(invalid_pipeline("batch image kernel requires NHWC or NCHW")),
         };
         sample_input.granularity = Some(ValueGranularity::Sample);
-        let mut output = infer_image_op_with_workers(op, &sample_input, num_workers)?;
+        let mut output = infer_image_op(op, &sample_input)?;
         if let Some(shape) = &mut output.shape {
             shape.0.insert(0, batch_dim);
         }
@@ -232,6 +222,9 @@ fn infer_image_op_with_workers(
             other => other,
         };
         output.granularity = Some(ValueGranularity::Batch);
+        if let Some(operator) = &mut output.operator {
+            operator.stage = OperatorStage::Batch;
+        }
         return Ok(output);
     }
     op.validate()?;
@@ -263,14 +256,6 @@ fn infer_image_op_with_workers(
         stage: OperatorStage::Source,
         sample_stage_has_work: false,
     });
-    if incoming_operator.stage == OperatorStage::Batch
-        && op.execution_kind() == super::op::ExecutionKind::Sample
-    {
-        return Err(invalid_pipeline(format!(
-            "{} cannot follow the batch stage; move sample operations before normalize/layout (sample ops require uint8 HWC input)",
-            op.name()
-        )));
-    }
     let input_state = state_from_properties(input)?;
     if matches!(input_state, PipelineImageState::Decoded { .. })
         && !matches!(op, ImageOp::Decode(_))
@@ -568,23 +553,13 @@ fn infer_image_op_with_workers(
     output.mutability = Some(rivet_plan::Mutability::Immutable);
     let noop_layout = matches!(op, ImageOp::Layout(config)
         if image_axis(input.axis_order.as_ref()) == Some(config.axis_order));
-    let sample_normalize = matches!(op, ImageOp::Normalize(_))
-        && num_workers > 0
-        && incoming_operator.sample_stage_has_work
-        && incoming_operator.stage != OperatorStage::Batch;
-    let is_batch = op.execution_kind() == super::op::ExecutionKind::Batch && !sample_normalize;
     output.operator = Some(if noop_layout {
         incoming_operator
     } else {
         OperatorProperties {
-            stage: if is_batch {
-                OperatorStage::Batch
-            } else {
-                OperatorStage::Sample
-            },
+            stage: OperatorStage::Sample,
             sample_stage_has_work: incoming_operator.sample_stage_has_work
-                || (op.execution_kind() == super::op::ExecutionKind::Sample && !noop_layout)
-                || sample_normalize,
+                || op.execution_kind() == super::op::ExecutionKind::Sample,
         }
     });
     Ok(attach_vision_properties(output))
@@ -1043,6 +1018,51 @@ mod tests {
         batch.granularity = Some(ValueGranularity::Batch);
         let error = infer_image_op(&ImageOp::horizontal_flip(), &batch).unwrap_err();
         assert!(error.to_string().contains("sample granularity"));
+    }
+
+    #[test]
+    fn logical_properties_do_not_depend_on_worker_count() {
+        let input = infer_image_op(
+            &ImageOp::crop(1, 1, 4, 4),
+            &decoded_properties(DataType::U8),
+        )
+        .unwrap();
+        let node = LogicalNode::new(
+            NodeKind::Op,
+            [],
+            Some(std::sync::Arc::new(ImageOp::normalize(
+                vec![0.5; 3],
+                vec![0.5; 3],
+            ))),
+        );
+        let inline = VisionPropertyInference::new(0)
+            .infer_node(&node, &[input.clone()])
+            .unwrap();
+        let threaded = VisionPropertyInference::new(4)
+            .infer_node(&node, &[input])
+            .unwrap();
+        assert_eq!(inline.dtype, threaded.dtype);
+        assert_eq!(inline.shape, threaded.shape);
+        assert_eq!(inline.axis_order, threaded.axis_order);
+        assert_eq!(inline.contiguity, threaded.contiguity);
+        assert_eq!(inline.operator, threaded.operator);
+        assert_eq!(inline.operator.unwrap().stage, OperatorStage::Sample);
+    }
+
+    #[test]
+    fn dtype_identity_is_not_a_logical_scheduling_barrier() {
+        let input = decoded_properties(DataType::U8);
+        let converted =
+            infer_image_op(&ImageOp::convert_image_dtype(CoreDType::U8), &input).unwrap();
+        let cropped = infer_image_op(&ImageOp::crop(1, 1, 4, 4), &converted).unwrap();
+        assert_eq!(cropped.dtype, Some(DataType::U8));
+        assert_eq!(
+            cropped.shape.unwrap().dims(),
+            [ShapeDim::Known(4), ShapeDim::Known(4), ShapeDim::Known(3)]
+        );
+        let normalized =
+            infer_image_op(&ImageOp::normalize(vec![0.5; 3], vec![0.5; 3]), &input).unwrap();
+        assert!(infer_image_op(&ImageOp::crop(1, 1, 4, 4), &normalized).is_err());
     }
 
     #[test]
