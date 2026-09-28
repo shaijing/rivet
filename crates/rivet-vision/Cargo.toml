@@ -52,6 +52,10 @@ name = "lance_cifar"
 required-features = ["lance"]
 
 [[example]]
+name = "lance_imagenet100"
+required-features = ["lance"]
+
+[[example]]
 name = "convert_hf_lance"
 required-features = ["lance"]
 
