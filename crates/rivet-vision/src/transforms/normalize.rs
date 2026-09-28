@@ -161,18 +161,23 @@ impl NormalizeConfig {
         Ok(())
     }
 
-    #[cfg(feature = "cuda")]
-    pub(crate) fn expanded_affine(
-        &self,
-        channel_count: usize,
-    ) -> RivetResult<(Vec<f32>, Vec<f32>)> {
-        self.validate()?;
+    fn validate_channel_count(&self, channel_count: usize) -> RivetResult<()> {
         if self.mean.len() != 1 && self.mean.len() != channel_count {
             return Err(invalid_argument(format!(
                 "normalize mean/std length must be 1 or channel count {channel_count}, got {}",
                 self.mean.len()
             )));
         }
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    pub(crate) fn expanded_affine(
+        &self,
+        channel_count: usize,
+    ) -> RivetResult<(Vec<f32>, Vec<f32>)> {
+        self.validate()?;
+        self.validate_channel_count(channel_count)?;
         Ok(affine_params(&self.mean, &self.std, channel_count))
     }
 
@@ -189,13 +194,7 @@ impl NormalizeConfig {
             ImageAxisOrder::Hwc => dims[2],
             ImageAxisOrder::Chw => dims[0],
         };
-        if self.mean.len() != 1 && self.mean.len() != channel_count {
-            return Err(invalid_argument(format!(
-                "normalize mean/std length must be 1 or channel count {}, got {}",
-                channel_count,
-                self.mean.len()
-            )));
-        }
+        self.validate_channel_count(channel_count)?;
 
         let values = if sample.image.dtype() == DType::U8 {
             let image = normalize_u8_to_f32(&sample.image, &self.mean, &self.std, layout)?;
@@ -239,7 +238,9 @@ impl NormalizeConfig {
             ImageAxisOrder::Hwc => sample.image.dims()[2],
             ImageAxisOrder::Chw => sample.image.dims()[0],
         };
-        debug_assert!(self.mean.len() == 1 || self.mean.len() == channel_count);
+        // Channel count is data-dependent and is not represented by the
+        // compiled pipeline state, so it must still be checked at runtime.
+        self.validate_channel_count(channel_count)?;
 
         let values = if sample.image.dtype() == DType::U8 {
             let image = normalize_u8_to_f32_trusted(&sample.image, &self.mean, &self.std, layout)?;
@@ -307,6 +308,11 @@ impl NormalizeConfig {
         debug_assert_eq!(self.mean.len(), self.std.len());
         debug_assert!(self.std.iter().all(|value| *value != 0.0));
         debug_assert_eq!(input.rank(), 4);
+        let channel_count = match layout {
+            ImageAxisOrder::Hwc => input.dims()[3],
+            ImageAxisOrder::Chw => input.dims()[1],
+        };
+        self.validate_channel_count(channel_count)?;
 
         let values = match input.dtype() {
             DType::U8 => {
@@ -354,6 +360,7 @@ impl NormalizeConfig {
         debug_assert!(self.std.iter().all(|value| *value != 0.0));
         debug_assert_eq!(input.rank(), 4);
         debug_assert_eq!(input.dtype(), DType::U8);
+        self.validate_channel_count(input.dims()[3])?;
         normalize_u8_batch_to_nchw_f32_trusted(&input, &self.mean, &self.std)
     }
 
@@ -380,13 +387,7 @@ impl NormalizeConfig {
             ImageAxisOrder::Hwc => input.dims()[3],
             ImageAxisOrder::Chw => input.dims()[1],
         };
-        if self.mean.len() != 1 && self.mean.len() != channel_count {
-            return Err(invalid_argument(format!(
-                "normalize mean/std length must be 1 or channel count {}, got {}",
-                channel_count,
-                self.mean.len()
-            )));
-        }
+        self.validate_channel_count(channel_count)?;
 
         Ok(())
     }
@@ -830,6 +831,26 @@ mod tests {
         let values = out.image.to_vec::<f32>().unwrap();
         assert_eq!(values[0], -1.0);
         assert_eq!(values[1], 1.0);
+    }
+
+    #[test]
+    fn trusted_normalize_rejects_runtime_channel_mismatch() {
+        let config = NormalizeConfig::new(vec![0.5; 2], vec![0.5; 2]);
+        let image = Tensor::from_vec(vec![0u8; 3], [1, 1, 3], &Device::Cpu).unwrap();
+        let sample = ImageSample::Decoded(DecodedSample { image, label: 0 });
+        let error = config
+            .apply_trusted(sample, ImageAxisOrder::Hwc)
+            .unwrap_err();
+        assert!(error.to_string().contains("channel count 3"), "{error}");
+
+        let batch = Tensor::from_vec(vec![0u8; 3], [1, 1, 1, 3], &Device::Cpu).unwrap();
+        let error = config
+            .apply_batch_trusted(batch.clone(), ImageAxisOrder::Hwc)
+            .unwrap_err();
+        assert!(error.to_string().contains("channel count 3"), "{error}");
+
+        let error = config.apply_batch_to_chw_trusted(batch).unwrap_err();
+        assert!(error.to_string().contains("channel count 3"), "{error}");
     }
 
     #[test]
