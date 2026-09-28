@@ -152,6 +152,18 @@ pub enum MorselResidency {
 pub trait PhysicalOperator: Send + Sync {
     fn name(&self) -> &str;
     fn execute(&self, morsel: Morsel) -> RuntimeResult<Morsel>;
+
+    /// Ordered inputs for a join. Unary operators reject unexpected arity.
+    fn execute_inputs(&self, mut inputs: Vec<Morsel>) -> RuntimeResult<Morsel> {
+        if inputs.len() != 1 {
+            return Err(RuntimeError::Message(format!(
+                "{} requires one input, got {}",
+                self.name(),
+                inputs.len()
+            )));
+        }
+        self.execute(inputs.pop().expect("checked unary input"))
+    }
 }
 
 /// Output for one logical node during lowering. A lowerer may fuse multiple
@@ -226,6 +238,7 @@ pub trait PhysicalLowering {
     ) -> RuntimeResult<PhysicalNodeSpec>;
 }
 
+#[derive(Clone)]
 pub struct PhysicalNode {
     pub id: PhysNodeId,
     pub logical_id: Option<NodeId>,
@@ -272,7 +285,7 @@ pub enum PhysicalGraphError {
     InvalidNode(usize),
     #[error("physical graph contains a cycle through node {0}")]
     Cycle(usize),
-    #[error("physical graph execution currently requires a single linear path: {0}")]
+    #[error("unsupported physical graph execution: {0}")]
     UnsupportedExecutionShape(String),
     #[error("physical operator failed: {0}")]
     Operator(#[from] RuntimeError),
@@ -280,7 +293,7 @@ pub enum PhysicalGraphError {
 
 /// Owned physical graph. `last_use_count` is computed when validating or
 /// lowering the graph and can drive buffer release decisions in later stages.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct PhysicalGraph {
     nodes: Vec<PhysicalNode>,
     root: Option<PhysNodeId>,
@@ -335,13 +348,24 @@ impl PhysicalGraph {
             .ok_or(PhysicalGraphError::InvalidNode(id.0))
     }
 
+    pub fn set_operator(
+        &mut self,
+        id: PhysNodeId,
+        operator: Arc<dyn PhysicalOperator>,
+    ) -> Result<(), PhysicalGraphError> {
+        self.nodes
+            .get_mut(id.index())
+            .ok_or(PhysicalGraphError::InvalidNode(id.index()))?
+            .operator = Some(operator);
+        Ok(())
+    }
+
     pub fn execution_order(&self) -> Result<Vec<PhysNodeId>, PhysicalGraphError> {
         self.topological_order()
     }
 
     /// Add explicit transfer nodes for host/device lane changes on the
-    /// initial linear physical path. Host I/O and CPU lanes share residency;
-    /// a future multi-input runtime can extend this edge-local lowering.
+    /// input edges, including DAG branches. Host I/O and CPU share residency.
     pub fn insert_transfers_for_lane_changes(
         &mut self,
     ) -> Result<Vec<PhysNodeId>, PhysicalGraphError> {
@@ -433,9 +457,7 @@ impl PhysicalGraph {
         logical.validate()?;
         let mut graph = Self::new();
         let mut ids = HashMap::<NodeId, PhysNodeId>::new();
-        // LogicalPlan::preorder is consumer-first from its root. Reversing it
-        // gives input-before-consumer order, including shared dependencies.
-        for logical_id in logical.preorder()?.into_iter().rev() {
+        for logical_id in logical.topological_order()? {
             let logical_node = logical.node(logical_id)?;
             let inputs = logical
                 .parents(logical_id)?
@@ -594,6 +616,9 @@ impl PhysicalGraph {
             state: &mut [u8],
             out: &mut Vec<PhysNodeId>,
         ) -> Result<(), PhysicalGraphError> {
+            if id.0 >= nodes.len() {
+                return Err(PhysicalGraphError::InvalidNode(id.0));
+            }
             match state[id.0] {
                 1 => return Err(PhysicalGraphError::Cycle(id.0)),
                 2 => return Ok(()),
@@ -680,53 +705,55 @@ impl PhysicalGraph {
     }
 
     fn move_samplers_before_source(&mut self) -> Result<(), PhysicalGraphError> {
-        let order = self.topological_order()?;
-        if self.nodes.iter().any(|node| node.inputs.len() > 1) {
-            return Ok(());
-        }
-        let mut consumers = vec![0usize; self.nodes.len()];
-        for node in &self.nodes {
-            for input in &node.inputs {
-                consumers[input.0] += 1;
-            }
-        }
-        if consumers.iter().any(|count| *count > 1) {
-            return Ok(());
-        }
-        let Some(source_position) = order
+        let sources = self
+            .nodes
             .iter()
-            .position(|id| self.nodes[id.0].kind == PhysicalNodeKind::Source)
-        else {
-            return Ok(());
-        };
-        let samplers = order
-            .iter()
-            .copied()
-            .filter(|id| self.nodes[id.0].kind == PhysicalNodeKind::Sampler)
+            .filter(|node| node.kind == PhysicalNodeKind::Source)
+            .map(|node| node.id)
             .collect::<Vec<_>>();
-        if samplers.is_empty()
-            || samplers.iter().all(|id| {
-                order
+        for source in sources {
+            let mut prefix = Vec::new();
+            let mut current = source;
+            loop {
+                let consumers = self
+                    .nodes
                     .iter()
-                    .position(|ordered| ordered == id)
-                    .is_some_and(|position| position < source_position)
-            })
-        {
-            return Ok(());
-        }
-
-        let sampler_ids = samplers
-            .iter()
-            .copied()
-            .collect::<std::collections::HashSet<_>>();
-        let mut reordered = samplers;
-        reordered.extend(order.iter().copied().filter(|id| !sampler_ids.contains(id)));
-        for (position, id) in reordered.iter().copied().enumerate() {
-            self.nodes[id.0].inputs = if position == 0 {
-                Vec::new()
-            } else {
-                vec![reordered[position - 1]]
-            };
+                    .filter(|node| node.inputs.contains(&current))
+                    .map(|node| node.id)
+                    .collect::<Vec<_>>();
+                let [consumer] = consumers.as_slice() else {
+                    break;
+                };
+                if self.nodes[consumer.0].kind != PhysicalNodeKind::Sampler
+                    || self.nodes[consumer.0].inputs.len() != 1
+                {
+                    break;
+                }
+                prefix.push(*consumer);
+                current = *consumer;
+            }
+            if prefix.is_empty() {
+                continue;
+            }
+            let first = prefix[0];
+            let last = *prefix.last().expect("nonempty prefix");
+            // Replace uses of the sampler prefix with the source. Preserve
+            // every branch edge and keep sampling before physical source I/O.
+            for node in &mut self.nodes {
+                if node.id == source || prefix.contains(&node.id) {
+                    continue;
+                }
+                for input in &mut node.inputs {
+                    if *input == last {
+                        *input = source;
+                    }
+                }
+            }
+            self.nodes[first.0].inputs = std::mem::take(&mut self.nodes[source.0].inputs);
+            self.nodes[source.0].inputs = vec![last];
+            if self.root == Some(last) {
+                self.root = Some(source);
+            }
         }
         Ok(())
     }
@@ -894,6 +921,42 @@ impl Default for PhysicalProfiler {
 /// Executes attached operators in topological order. Fan-out shares the
 /// morsel's cloneable values; domain operators that mutate backing storage
 /// must use copy-on-write or produce a fresh output.
+/// Validated graph with cached scheduling and edge liveness. Each invocation
+/// owns its outputs, so one prepared graph can execute concurrently.
+pub struct ExecutableGraph {
+    graph: PhysicalGraph,
+    order: Vec<PhysNodeId>,
+}
+
+impl ExecutableGraph {
+    pub fn new(mut graph: PhysicalGraph) -> Result<Self, PhysicalGraphError> {
+        graph.validate()?;
+        let order = graph.execution_order()?;
+        Ok(Self { graph, order })
+    }
+
+    pub fn execute_with_limit(
+        &self,
+        morsel: Morsel,
+        profiler: &PhysicalProfiler,
+        max_bytes: usize,
+    ) -> Result<Morsel, PhysicalGraphError> {
+        execute_graph(&self.graph, &self.order, morsel, profiler, max_bytes)
+    }
+
+    pub fn graph(&self) -> &PhysicalGraph {
+        &self.graph
+    }
+
+    pub fn execute(
+        &self,
+        morsel: Morsel,
+        profiler: &PhysicalProfiler,
+    ) -> Result<Morsel, PhysicalGraphError> {
+        execute_graph(&self.graph, &self.order, morsel, profiler, usize::MAX)
+    }
+}
+
 pub struct GraphExecutor;
 
 impl GraphExecutor {
@@ -903,59 +966,81 @@ impl GraphExecutor {
         profiler: &PhysicalProfiler,
     ) -> Result<Morsel, PhysicalGraphError> {
         graph.validate()?;
-        let order = graph.topological_order()?;
-        let mut remaining_uses = vec![0usize; graph.nodes.len()];
-        for node in &graph.nodes {
-            if node.inputs.len() > 1 {
-                return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
-                    "p{} has {} inputs",
-                    node.id.index(),
-                    node.inputs.len()
-                )));
-            }
-            for input in &node.inputs {
-                remaining_uses[input.index()] += 1;
-            }
-        }
-        let root = graph.root()?;
-        remaining_uses[root.index()] += 1;
-        let mut outputs = vec![None::<Morsel>; graph.nodes.len()];
-        for id in order {
-            let node = graph.node(id)?;
-            let input = node.inputs.first().copied();
-            let mut value = if let Some(input) = input {
-                outputs[input.index()].as_ref().cloned().ok_or_else(|| {
-                    PhysicalGraphError::UnsupportedExecutionShape(format!(
-                        "input p{} has no execution value",
-                        input.index()
-                    ))
-                })?
-            } else {
-                morsel.clone()
-            };
-            if let Some(input) = input {
-                remaining_uses[input.index()] -= 1;
-                if remaining_uses[input.index()] == 0 {
-                    outputs[input.index()] = None;
-                }
-            }
-            if let Some(operator) = &node.operator {
-                let profile = profiler.is_enabled();
-                let input_bytes = profile.then_some(value.bytes);
-                let started = profile.then(Instant::now);
-                value = operator
-                    .execute(value)
-                    .map_err(PhysicalGraphError::Operator)?;
-                if let (Some(started), Some(input_bytes)) = (started, input_bytes) {
-                    profiler.record(id, started.elapsed(), input_bytes, value.bytes);
-                }
-            }
-            outputs[id.index()] = Some(value);
-        }
-        outputs[root.index()]
-            .take()
-            .ok_or(PhysicalGraphError::MissingRoot)
+        execute_graph(
+            graph,
+            &graph.execution_order()?,
+            morsel,
+            profiler,
+            usize::MAX,
+        )
     }
+}
+
+fn execute_graph(
+    graph: &PhysicalGraph,
+    order: &[PhysNodeId],
+    morsel: Morsel,
+    profiler: &PhysicalProfiler,
+    max_bytes: usize,
+) -> Result<Morsel, PhysicalGraphError> {
+    let mut remaining_uses = graph
+        .nodes
+        .iter()
+        .map(|node| node.last_use_count)
+        .collect::<Vec<_>>();
+    let root = graph.root()?;
+    let mut outputs = vec![None::<Morsel>; graph.nodes.len()];
+    for &id in order {
+        let node = graph.node(id)?;
+        let mut inputs = Vec::with_capacity(node.inputs.len().max(1));
+        for &input in &node.inputs {
+            remaining_uses[input.index()] -= 1;
+            let slot = &mut outputs[input.index()];
+            let value = if remaining_uses[input.index()] == 0 {
+                slot.take()
+            } else {
+                slot.clone()
+            };
+            inputs.push(value.ok_or_else(|| {
+                PhysicalGraphError::UnsupportedExecutionShape(format!(
+                    "input p{} has no execution value",
+                    input.index()
+                ))
+            })?);
+        }
+        if inputs.is_empty() {
+            inputs.push(morsel.clone());
+        }
+        let input_bytes = inputs.iter().map(|input| input.bytes).sum();
+        let started = profiler.is_enabled().then(Instant::now);
+        let value = if let Some(operator) = &node.operator {
+            operator
+                .execute_inputs(inputs)
+                .map_err(PhysicalGraphError::Operator)?
+        } else if inputs.len() == 1 {
+            inputs.pop().expect("checked unary input")
+        } else {
+            return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
+                "multi-input node p{} requires an operator",
+                id.index()
+            )));
+        };
+        if let Some(started) = started {
+            profiler.record(id, started.elapsed(), input_bytes, value.bytes);
+        }
+        if value.bytes > max_bytes {
+            return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
+                "node p{} output exceeds DAG edge byte limit: {} > {}",
+                id.index(),
+                value.bytes,
+                max_bytes
+            )));
+        }
+        outputs[id.index()] = Some(value);
+    }
+    outputs[root.index()]
+        .take()
+        .ok_or(PhysicalGraphError::MissingRoot)
 }
 
 #[cfg(test)]
@@ -1000,6 +1085,92 @@ mod tests {
             morsel.bytes += 16;
             Ok(morsel)
         }
+    }
+
+    struct OrderedJoin;
+    impl PhysicalOperator for OrderedJoin {
+        fn name(&self) -> &str {
+            "OrderedJoin"
+        }
+        fn execute(&self, _input: Morsel) -> RuntimeResult<Morsel> {
+            panic!("join must use input ports")
+        }
+        fn execute_inputs(&self, inputs: Vec<Morsel>) -> RuntimeResult<Morsel> {
+            assert_eq!(inputs.len(), 3);
+            assert_eq!(inputs[0].bytes, 32);
+            assert_eq!(inputs[1].bytes, 16);
+            assert_eq!(inputs[2].bytes, 16);
+            let mut output = inputs[0].clone();
+            output.bytes = inputs.iter().map(|input| input.bytes).sum();
+            Ok(output)
+        }
+    }
+
+    #[test]
+    fn diamond_lowering_and_execution_preserve_shared_inputs_and_ordered_ports() {
+        let mut logical = LogicalPlan::new();
+        let source = logical.add_node(LogicalNode::new(NodeKind::Source, [], None));
+        let shared = logical.add_node(LogicalNode::new(NodeKind::Op, [source], None));
+        let left = logical.add_node(LogicalNode::new(NodeKind::Op, [shared], None));
+        let join = logical.add_node(LogicalNode::new(
+            NodeKind::Sink,
+            [left, shared, shared],
+            None,
+        ));
+        logical.set_root(join).unwrap();
+        let mut graph = PhysicalGraph::lower(&logical, &TestLowering).unwrap();
+        let ids = graph
+            .nodes()
+            .iter()
+            .map(|node| (node.logical_id.unwrap(), node.id))
+            .collect::<HashMap<_, _>>();
+        graph.nodes[ids[&shared].index()].operator = Some(Arc::new(AddBytes));
+        graph.nodes[ids[&left].index()].operator = Some(Arc::new(AddBytes));
+        graph.nodes[ids[&join].index()].operator = Some(Arc::new(OrderedJoin));
+        graph.validate().unwrap();
+        assert_eq!(graph.node(ids[&shared]).unwrap().last_use_count, 3);
+        let profiler = PhysicalProfiler::enabled(graph.nodes().len());
+        let graph = ExecutableGraph::new(graph).unwrap();
+        let result = graph
+            .execute(Morsel::new(9, vec![4, 8]), &profiler)
+            .unwrap();
+        assert_eq!(result.bytes, 64);
+        assert_eq!(result.source_indices, [4, 8]);
+        assert_eq!(profiler.snapshot()[&ids[&shared]].executions, 1);
+        assert_eq!(profiler.snapshot()[&ids[&left]].executions, 1);
+        assert_eq!(
+            graph
+                .execute(Morsel::new(10, vec![1]), &profiler)
+                .unwrap()
+                .bytes,
+            64
+        );
+    }
+
+    #[test]
+    fn multi_input_node_without_join_operator_fails_explicitly() {
+        let mut graph = PhysicalGraph::new();
+        let source = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Source, ExecutionLane::Cpu),
+            [],
+        );
+        let join = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Sink, ExecutionLane::Cpu),
+            [source, source],
+        );
+        graph.set_root(join).unwrap();
+        assert!(
+            GraphExecutor::execute(
+                &mut graph,
+                Morsel::new(0, vec![]),
+                &PhysicalProfiler::default()
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("requires an operator")
+        );
     }
 
     #[test]

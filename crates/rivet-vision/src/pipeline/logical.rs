@@ -15,10 +15,10 @@ use crate::errors::{RivetResult, invalid_pipeline};
 use crate::runtime::RuntimeConfig;
 
 #[derive(Clone, Copy)]
-struct ImagePipelineContext {
-    runtime: RuntimeConfig,
-    epoch: u64,
-    global_seed: Option<u64>,
+pub(crate) struct ImagePipelineContext {
+    pub(crate) runtime: RuntimeConfig,
+    pub(crate) epoch: u64,
+    pub(crate) global_seed: Option<u64>,
 }
 
 impl PlanPayload for ImagePipelineContext {

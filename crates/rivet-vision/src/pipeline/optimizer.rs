@@ -420,10 +420,8 @@ impl OptimizerPass for IndexSourcePushdown {
         let mut saw_image_op = false;
         let mut index_count = 0usize;
         for id in plan
-            .preorder()
+            .topological_order()
             .map_err(|error| error.to_string())?
-            .into_iter()
-            .rev()
         {
             let node = plan.node(id).map_err(|error| error.to_string())?;
             match node.kind() {
@@ -1006,6 +1004,17 @@ pub(super) fn vision_kernel_capabilities() -> KernelCapabilities {
         in_place: false,
         parallel: false,
     });
+    let mut batch_fused = caps
+        .iter()
+        .find(|capability| capability.name == "vision::NormalizeToChw-cpu-Fused")
+        .expect("registered CPU fusion")
+        .clone();
+    batch_fused.name = "vision::NormalizeToChw-cpu-BatchFused".to_owned();
+    batch_fused.requirements.input_granularity = Some(rivet_plan::ValueGranularity::Batch);
+    batch_fused.requirements.output_granularity = Some(rivet_plan::ValueGranularity::Batch);
+    batch_fused.requirements.input_axis_order = Some(AxisOrder::Nhwc);
+    batch_fused.requirements.output_axis_order = Some(AxisOrder::Nchw);
+    caps.register(batch_fused);
     #[cfg(feature = "cuda")]
     {
         let mut cuda_fused = caps

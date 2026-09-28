@@ -1,18 +1,20 @@
 use super::builder::ImagePipeline;
+use super::logical::{FusionGroupPayload, ImagePipelineContext};
 use super::op::{
-    BatchKernel, CompiledNormalize, CompiledProgram, CompiledSampleOp, ExecutionKind,
-    ExecutionPlan, ImageOp, IndexOp, PipelineImageState, SampleKernel, compile_sampler,
+    BatchKernel, CompiledNormalize, CompiledProgram, CompiledSampleOp, ExecutionKind, ImageOp,
+    IndexOp, PipelineImageState, SampleKernel, compile_sampler,
 };
+use super::physical::{BatchNode, ImageExecutionGraph, ImageGraphInfo, ImageKernel, SampleNode};
 use crate::errors::{RivetResult, invalid_pipeline};
 use crate::runtime::ImageDataLoader;
 use crate::sample::image::ImageAxisOrder;
 use crate::sampler::IndexSampler;
 use rivet_data::random::{OpKey, RandomContext};
 use rivet_exec::physical::{
-    ExecutionLane, KernelStage, ParallelismClass, PhysicalGraph, PhysicalLowering,
+    ExecutableGraph, ExecutionLane, KernelStage, ParallelismClass, PhysicalGraph, PhysicalLowering,
     PhysicalNodeKind, PhysicalNodeSpec,
 };
-use rivet_plan::{LogicalNode, LogicalPlan, NodeId, NodeKind, OperatorStage, PropertyAnnotations};
+use rivet_plan::{LogicalNode, LogicalPlan, NodeId, NodeKind, OperatorStage};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -20,416 +22,449 @@ impl ImagePipeline {
     pub fn compile(self) -> RivetResult<ImageDataLoader> {
         self.compile_from(0)
     }
-
     pub fn compile_from(self, start: usize) -> RivetResult<ImageDataLoader> {
-        let mut logical = self.to_logical_plan();
-        logical
-            .validate()
-            .map_err(|error| invalid_pipeline(format!("invalid logical plan: {error}")))?;
-        if logical
-            .nodes()
-            .any(|(_, node)| node.kind() == NodeKind::DeviceCut)
-        {
-            return Err(invalid_pipeline(
-                "vision DeviceCut execution is not implemented yet",
-            ));
-        }
-        let (_, placement) = super::optimizer::optimize_vision_plan_with_placement(
-            &mut logical,
-            self.runtime.num_workers,
-        )?;
-        let physical = lower_vision_physical(&logical, self.runtime.num_workers, &placement)?;
-        Self::from_logical_plan(&logical)?.compile_legacy_from_physical(start, physical)
+        Self::compile_logical_plan(self.to_logical_plan(), start)
     }
-
+    /// Compile an edited logical graph, including shared inputs and joins.
+    /// The graph retains the runtime/seed context from `to_logical_plan()`.
+    pub fn compile_logical_plan(plan: LogicalPlan, start: usize) -> RivetResult<ImageDataLoader> {
+        compile_graph(plan, start, true)
+    }
     #[cfg(test)]
-    fn compile_legacy_from(self, start: usize) -> RivetResult<ImageDataLoader> {
-        let mut logical = self.to_logical_plan();
-        let (_, placement) = super::optimizer::optimize_vision_plan_with_placement(
-            &mut logical,
-            self.runtime.num_workers,
-        )?;
-        let physical = lower_vision_physical(&logical, self.runtime.num_workers, &placement)?;
-        self.compile_legacy_from_physical(start, physical)
-    }
-
-    fn compile_legacy_from_physical(
-        self,
-        start: usize,
-        physical: PhysicalGraph,
-    ) -> RivetResult<ImageDataLoader> {
-        let input_state = self.source.state();
-        let compiled_ops =
-            compile_image_ops(self.ops, input_state, self.runtime.num_workers, false)?;
-
-        let batch = self
-            .batch
-            .ok_or_else(|| invalid_pipeline("pipeline requires .batch(size)"))?;
-        batch.validate()?;
-
-        let len = self.source.len();
-        let shuffle_seed = self
-            .index_ops
-            .iter()
-            .find_map(|op| match op {
-                IndexOp::Shuffle { seed } => Some(*seed),
-                _ => None,
-            })
-            .unwrap_or(0);
-        // Keep `.shuffle(seed)` as the legacy seed source when `.seed(...)`
-        // was not configured, while allowing the pipeline-owned seed to be
-        // independent from sampler ordering.
-        let global_seed = self.global_seed.unwrap_or(shuffle_seed);
-        let random = RandomContext::new(global_seed).with_epoch(self.epoch);
-        let sampler = compile_sampler(len, &self.index_ops, random)?;
-        let plan = ExecutionPlan {
-            source: self.source,
-            sampler,
-            sample_ops: compiled_ops.sample_ops,
-            batch_ops: compiled_ops.batch_ops,
-            batch,
-            random,
-            input_state,
-            pre_batch_state: compiled_ops.pre_batch_state,
-            output_state: compiled_ops.output_state,
-        };
-        let num_workers = self.runtime.num_workers;
-        let prefetch_batches = self.runtime.prefetch_batches;
-        let stage_queue_max_bytes = self.runtime.stage_queue_max_bytes;
-        let profiling_enabled = self.runtime.profiling_enabled;
-        let plan = Arc::new(plan);
-
-        ImageDataLoader::new(
-            Arc::clone(&plan),
-            IndexSampler::new(plan.sampler.clone(), start),
-            num_workers,
-            prefetch_batches,
-            stage_queue_max_bytes,
-            profiling_enabled,
-            physical,
-        )
-    }
-
-    #[cfg(test)]
-    pub(super) fn compile_legacy_for_test(self, start: usize) -> RivetResult<ImageDataLoader> {
-        self.compile_legacy_from(start)
+    pub(super) fn compile_unoptimized_for_test(self, start: usize) -> RivetResult<ImageDataLoader> {
+        compile_graph(self.to_logical_plan(), start, false)
     }
 }
 
 struct VisionPhysicalLowering {
-    annotations: PropertyAnnotations,
-    placement: rivet_plan::PlacementPlan,
+    kernels: HashMap<NodeId, (PhysicalNodeKind, Arc<ImageKernel>)>,
+    placement: Option<rivet_plan::PlacementPlan>,
 }
-
 impl PhysicalLowering for VisionPhysicalLowering {
     fn lower_node(
         &self,
-        logical_id: NodeId,
-        node: &LogicalNode,
-        _physical_inputs: &[rivet_exec::physical::PhysNodeId],
+        id: NodeId,
+        _node: &LogicalNode,
+        _inputs: &[rivet_exec::physical::PhysNodeId],
     ) -> rivet_exec::runtime::RuntimeResult<PhysicalNodeSpec> {
-        let (kind, default_lane) = match node.kind() {
-            NodeKind::Source => (PhysicalNodeKind::Source, ExecutionLane::Io),
-            NodeKind::Index => (PhysicalNodeKind::Sampler, ExecutionLane::Cpu),
-            NodeKind::Op => {
-                let stage = self
-                    .annotations
-                    .get(logical_id)
-                    .and_then(|properties| properties.operator)
-                    .map(|operator| operator.stage)
-                    .unwrap_or(OperatorStage::Sample);
-                let kernel = if matches!(node.payload_as::<ImageOp>(), Some(ImageOp::Decode(_))) {
-                    KernelStage::Decode
-                } else {
-                    match stage {
-                        OperatorStage::Batch => KernelStage::Batch,
-                        OperatorStage::Sample | OperatorStage::Source => KernelStage::Sample,
-                    }
-                };
-                (PhysicalNodeKind::Kernel(kernel), ExecutionLane::Cpu)
-            }
-            NodeKind::Batch => (PhysicalNodeKind::Batch, ExecutionLane::Cpu),
-            NodeKind::Cache => (PhysicalNodeKind::Cache, ExecutionLane::Io),
-            NodeKind::DeviceCut => {
-                return Err(rivet_exec::runtime::RuntimeError::Message(
-                    "DeviceCut requires device-aware physical lowering".to_owned(),
-                ));
-            }
-            NodeKind::Sink => (PhysicalNodeKind::Sink, ExecutionLane::Cpu),
+        let (kind, operator) = self.kernels.get(&id).expect("all reachable nodes compiled");
+        let lane = if *kind == PhysicalNodeKind::Source {
+            ExecutionLane::Io
+        } else {
+            ExecutionLane::Cpu
         };
-        let selected_device = self
-            .placement
-            .candidates
-            .iter()
-            .find(|candidate| candidate.node == logical_id)
-            .map(|candidate| &candidate.device);
-        let lane = match selected_device {
-            Some(device) if device != &rivet_plan::DeviceClass::Cpu => {
-                return Err(rivet_exec::runtime::RuntimeError::Message(format!(
-                    "device {device:?} execution for logical node %{} is not implemented in this phase",
-                    logical_id.index()
-                )));
-            }
-            _ => default_lane,
-        };
-        let parallelism = match (kind, &lane) {
-            (_, ExecutionLane::Device { .. }) => ParallelismClass::Device,
-            (PhysicalNodeKind::Kernel(KernelStage::Sample), _) => ParallelismClass::AcrossSamples,
-            (PhysicalNodeKind::Kernel(KernelStage::Batch), _) => ParallelismClass::WithinBatch,
+        let parallelism = match kind {
+            PhysicalNodeKind::Kernel(KernelStage::Sample) => ParallelismClass::AcrossSamples,
+            PhysicalNodeKind::Kernel(KernelStage::Batch) => ParallelismClass::WithinBatch,
             _ => ParallelismClass::Serial,
         };
-        Ok(PhysicalNodeSpec::new(kind, lane).with_parallelism(parallelism))
-    }
-}
-
-fn lower_vision_physical(
-    logical: &LogicalPlan,
-    workers: usize,
-    placement: &rivet_plan::PlacementPlan,
-) -> RivetResult<PhysicalGraph> {
-    let annotations = logical
-        .infer_properties(&super::inference::VisionPropertyInference::new(workers))
-        .map_err(super::logical::inference_error)?;
-    let mut physical = PhysicalGraph::lower(
-        logical,
-        &VisionPhysicalLowering {
-            annotations,
-            placement: placement.clone(),
-        },
-    )
-    .map_err(|error| invalid_pipeline(format!("physical lowering failed: {error}")))?;
-    physical
-        .ensure_sampler_before_source()
-        .map_err(|error| invalid_pipeline(format!("physical sampler planning failed: {error}")))?;
-    let transfers = physical
-        .insert_transfers_for_lane_changes()
-        .map_err(|error| invalid_pipeline(format!("physical transfer planning failed: {error}")))?;
-    for transfer in transfers {
-        let consumer_logical_id = physical
-            .nodes()
-            .iter()
-            .find(|node| node.inputs.contains(&transfer))
-            .and_then(|node| node.logical_id);
-        if let Some(estimate) = consumer_logical_id
-            .and_then(|logical_id| {
-                placement
-                    .candidates
-                    .iter()
-                    .find(|candidate| candidate.node == logical_id)
-            })
-            .map(|candidate| candidate.cost.transfer_bytes)
-        {
-            physical
-                .set_transfer_estimate(transfer, estimate)
-                .map_err(|error| {
-                    invalid_pipeline(format!("physical transfer costing failed: {error}"))
-                })?;
+        let mut spec = PhysicalNodeSpec::new(*kind, lane)
+            .with_parallelism(parallelism)
+            .with_operator(operator.clone());
+        if let Some(candidate) = self.placement.as_ref().and_then(|placement| {
+            placement
+                .candidates
+                .iter()
+                .find(|candidate| candidate.node == id)
+        }) {
+            if candidate.device != rivet_plan::DeviceClass::Cpu {
+                return Err(rivet_exec::runtime::RuntimeError::Message(
+                    "vision device execution requires device-aware lowering".to_owned(),
+                ));
+            }
+            spec.memory_requirements.output_alignment = candidate.alignment_bytes;
+            spec.memory_requirements.output_contiguous =
+                candidate.contiguity == rivet_plan::Contiguity::Contiguous;
+            spec.memory_requirements.temporary_bytes = candidate.cost.temporary_bytes as usize;
         }
+        Ok(spec)
     }
-    Ok(physical)
 }
 
-struct CompiledImageOps {
-    sample_ops: Vec<CompiledSampleOp>,
-    batch_ops: Vec<BatchKernel>,
-    pre_batch_state: PipelineImageState,
-    output_state: PipelineImageState,
-}
-
-fn compile_image_ops(
-    ops: Vec<ImageOp>,
-    initial_state: PipelineImageState,
-    num_workers: usize,
-    defer_cuda_augmentations: bool,
-) -> RivetResult<CompiledImageOps> {
-    let mut state = initial_state;
-    let mut sample_ops = Vec::new();
-    let mut random_occurrences = HashMap::<&'static str, u32>::new();
-    let mut batch_ops = Vec::new();
-    let mut cuda_augmentations = Vec::new();
-    let mut pre_batch_state = None;
-    let mut batch_stage_started = false;
-
-    let deferred_range = if defer_cuda_augmentations {
-        cuda_augmentation_prefix(&ops)
+fn compile_graph(
+    mut logical: LogicalPlan,
+    start: usize,
+    optimize: bool,
+) -> RivetResult<ImageDataLoader> {
+    logical
+        .canonicalize()
+        .map_err(|error| invalid_pipeline(error.to_string()))?;
+    let context = *logical
+        .context_as::<ImagePipelineContext>()
+        .ok_or_else(|| invalid_pipeline("logical plan has no vision context"))?;
+    if logical
+        .nodes()
+        .any(|(_, node)| node.kind() == NodeKind::DeviceCut)
+    {
+        return Err(invalid_pipeline(
+            "vision DeviceCut execution is not implemented yet",
+        ));
+    }
+    let placement = if optimize {
+        Some(
+            super::optimizer::optimize_vision_plan_with_placement(
+                &mut logical,
+                context.runtime.num_workers,
+            )?
+            .1,
+        )
     } else {
         None
     };
-
-    let mut ops = ops.into_iter().enumerate().peekable();
-    while let Some((op_index, op)) = ops.next() {
-        op.validate()?;
-
-        if deferred_range
-            .as_ref()
-            .is_some_and(|range| range.contains(&op_index))
-        {
-            let input_state = state;
-            let (compiled_op, output_state) =
-                compile_sample_op(op, input_state, None, &mut random_occurrences)?;
-            state = output_state;
-            cuda_augmentations.push(compiled_op);
-            continue;
-        }
-
-        if let ImageOp::Normalize(config) = &op {
-            // Normalization is expensive per pixel. When sample workers are
-            // already needed for preceding augmentations, keep this work on
-            // those workers and leave any following layout view for the
-            // batch stage. A batch kernel is still preferable for pipelines
-            // with no sample-stage work to parallelize.
-            if num_workers > 0 && !sample_ops.is_empty() && cuda_augmentations.is_empty() {
-                let sample_normalize = CompiledNormalize {
-                    config: config.clone(),
-                    input_layout: state_axis_order(state),
-                };
-                let input_state = state;
-                state = ImageOp::Normalize(config.clone()).transition(input_state)?;
-                sample_ops.push(CompiledSampleOp {
-                    kernel: SampleKernel::SampleNormalize(sample_normalize),
-                    random_key: None,
-                    input_state,
-                });
-                continue;
-            }
-            let can_fuse = matches!(
-                state,
-                PipelineImageState::Decoded {
-                    dtype: rivet_core::DType::U8,
-                    axis_order: crate::sample::image::ImageAxisOrder::Hwc,
-                }
-            ) && matches!(
-                ops.peek().map(|(_, op)| op),
-                Some(ImageOp::Layout(layout))
-                    if layout.axis_order == crate::sample::image::ImageAxisOrder::Chw
-            );
-            if can_fuse {
-                let (_, layout) = ops.next().expect("peeked fused layout operation");
-                layout.validate()?;
-                if !batch_stage_started {
-                    pre_batch_state = Some(state);
-                    batch_stage_started = true;
-                }
-                let normalize = CompiledNormalize {
-                    config: config.clone(),
-                    input_layout: ImageAxisOrder::Hwc,
-                };
-                let fused = if cuda_augmentations.is_empty() {
-                    BatchKernel::NormalizeToChw(normalize)
-                } else {
-                    BatchKernel::NormalizeToChwWithCudaAugmentations {
-                        normalize,
-                        augmentations: cuda_augmentations.clone(),
-                    }
-                };
-                state = fused.transition(state)?;
-                batch_ops.push(fused);
-                continue;
-            }
-        }
-
-        if let ImageOp::Layout(layout) = &op {
-            if matches!(
-                state,
-                PipelineImageState::Decoded {
-                    axis_order: current,
-                    ..
-                } if current == layout.axis_order
-            ) {
-                continue;
-            }
-        }
-
-        match op.execution_kind() {
-            ExecutionKind::Sample => {
-                if batch_stage_started {
-                    return Err(invalid_pipeline(format!(
-                        "{} cannot follow the batch stage; move sample operations before normalize/layout (sample ops require uint8 HWC input)",
-                        op.name()
-                    )));
-                }
-                let input_state = state;
-                let (compiled_op, output_state) =
-                    compile_sample_op(op, input_state, None, &mut random_occurrences)?;
-                state = output_state;
-                sample_ops.push(compiled_op);
-            }
-            ExecutionKind::Batch => {
-                if !batch_stage_started {
-                    pre_batch_state = Some(state);
-                    batch_stage_started = true;
-                }
-                let input_layout = state_axis_order(state);
-                let kernel = match op {
-                    ImageOp::Normalize(config) => BatchKernel::Normalize(CompiledNormalize {
-                        config,
-                        input_layout,
-                    }),
-                    ImageOp::ConvertImageDtype(config) => BatchKernel::ConvertImageDtype {
-                        config,
-                        input_layout,
-                    },
-                    ImageOp::Layout(config) => BatchKernel::Layout {
-                        config,
-                        input_layout,
-                    },
-                    op => unreachable!(
-                        "validated batch op has sample execution kind: {}",
-                        op.name()
-                    ),
-                };
-                state = kernel.transition(state)?;
-                batch_ops.push(kernel);
+    let annotations = logical
+        .infer_properties(&super::inference::VisionPropertyInference::new(
+            context.runtime.num_workers,
+        ))
+        .map_err(super::logical::inference_error)?;
+    let order = logical
+        .topological_order()
+        .map_err(|error| invalid_pipeline(error.to_string()))?;
+    let sources = order
+        .iter()
+        .filter_map(|id| logical.node(*id).ok()?.payload_as::<super::op::SourceOp>())
+        .collect::<Vec<_>>();
+    if sources.len() != 1 {
+        return Err(invalid_pipeline(
+            "vision graphs require one source; branches share its samples",
+        ));
+    }
+    let source = sources[0].clone();
+    let batches = order
+        .iter()
+        .filter_map(|id| {
+            logical
+                .node(*id)
+                .ok()?
+                .payload_as::<super::op::BatchConfig>()
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    let batch = *batches
+        .first()
+        .ok_or_else(|| invalid_pipeline("pipeline requires .batch(size)"))?;
+    batch.validate()?;
+    if batches
+        .iter()
+        .any(|other| other.size != batch.size || other.drop_last != batch.drop_last)
+    {
+        return Err(invalid_pipeline(
+            "DAG batch barriers must use matching size and drop_last",
+        ));
+    }
+    let index_ops = order
+        .iter()
+        .filter_map(|id| logical.node(*id).ok()?.payload_as::<IndexOp>())
+        .cloned()
+        .collect::<Vec<_>>();
+    // Index operations form one prefix immediately after the source. Branches
+    // consume the same sampled indices; branch-local samplers are ambiguous.
+    for id in &order {
+        let node = logical
+            .node(*id)
+            .map_err(|error| invalid_pipeline(error.to_string()))?;
+        if node.kind() == NodeKind::Index {
+            let input = node
+                .inputs()
+                .get(0)
+                .ok_or_else(|| invalid_pipeline("index requires one input"))?;
+            if !matches!(
+                logical
+                    .node(input)
+                    .map_err(|error| invalid_pipeline(error.to_string()))?
+                    .kind(),
+                NodeKind::Source | NodeKind::Index
+            ) || logical
+                .children(input)
+                .map_err(|error| invalid_pipeline(error.to_string()))?
+                .len()
+                != 1
+            {
+                return Err(invalid_pipeline(
+                    "index operations must form a shared prefix before image branches",
+                ));
             }
         }
     }
-
-    let pre_batch_state = pre_batch_state.unwrap_or(state);
-    let output_state = match state {
-        PipelineImageState::Encoded => Err(invalid_pipeline(
+    let shuffle_seed = index_ops
+        .iter()
+        .find_map(|op| match op {
+            IndexOp::Shuffle { seed } => Some(*seed),
+            _ => None,
+        })
+        .unwrap_or(0);
+    let random =
+        RandomContext::new(context.global_seed.unwrap_or(shuffle_seed)).with_epoch(context.epoch);
+    let sampler = compile_sampler(source.len(), &index_ops, random)?;
+    let mut kernels = HashMap::new();
+    let mut occurrences = HashMap::new();
+    let mut sample_ops = Vec::new();
+    let mut batch_ops = Vec::new();
+    for &id in &order {
+        let node = logical
+            .node(id)
+            .map_err(|error| invalid_pipeline(error.to_string()))?;
+        let stage = annotations
+            .get(id)
+            .and_then(|properties| properties.operator)
+            .map(|op| op.stage)
+            .unwrap_or(OperatorStage::Sample);
+        let input_state = node
+            .inputs()
+            .get(0)
+            .and_then(|input| annotations.get(input))
+            .map(super::inference::state_from_properties)
+            .transpose()?
+            .unwrap_or(source.state());
+        let (kind, kernel) = match node.kind() {
+            NodeKind::Source => (
+                PhysicalNodeKind::Source,
+                ImageKernel::Source(source.clone()),
+            ),
+            NodeKind::Index => (PhysicalNodeKind::Sampler, ImageKernel::Identity),
+            NodeKind::Sink => (PhysicalNodeKind::Sink, ImageKernel::Identity),
+            NodeKind::Batch => (
+                PhysicalNodeKind::Batch,
+                ImageKernel::Batch {
+                    axis_order: state_axis_order(input_state),
+                },
+            ),
+            NodeKind::Op => {
+                if let Some(concat) = node.payload_as::<super::ImageConcat>() {
+                    let stage = if stage == OperatorStage::Batch {
+                        KernelStage::Batch
+                    } else {
+                        KernelStage::Sample
+                    };
+                    (
+                        PhysicalNodeKind::Kernel(stage),
+                        ImageKernel::Concat { axis: concat.axis },
+                    )
+                } else if let Some(group) = node.payload_as::<FusionGroupPayload>() {
+                    if group.name != "NormalizeToChw" {
+                        return Err(invalid_pipeline(format!(
+                            "unsupported fusion {}",
+                            group.name
+                        )));
+                    }
+                    let Some(ImageOp::Normalize(config)) = group.ops.first() else {
+                        return Err(invalid_pipeline("invalid NormalizeToChw fusion"));
+                    };
+                    let op = BatchKernel::NormalizeToChw(CompiledNormalize {
+                        config: config.clone(),
+                        input_layout: ImageAxisOrder::Hwc,
+                    });
+                    batch_ops.push(op.clone());
+                    (
+                        PhysicalNodeKind::Kernel(KernelStage::Batch),
+                        ImageKernel::BatchOp(Arc::new(BatchNode {
+                            op,
+                            output_layout: ImageAxisOrder::Chw,
+                        })),
+                    )
+                } else {
+                    let op = node
+                        .payload_as::<ImageOp>()
+                        .ok_or_else(|| invalid_pipeline("unknown vision op payload"))?
+                        .clone();
+                    op.validate()?;
+                    if matches!(&op, ImageOp::Layout(config) if config.axis_order == state_axis_order(input_state))
+                    {
+                        (
+                            PhysicalNodeKind::Kernel(KernelStage::Sample),
+                            ImageKernel::Identity,
+                        )
+                    } else if stage == OperatorStage::Batch {
+                        let input_layout = state_axis_order(input_state);
+                        let kernel = match op {
+                            ImageOp::Normalize(config) => {
+                                BatchKernel::Normalize(CompiledNormalize {
+                                    config,
+                                    input_layout,
+                                })
+                            }
+                            ImageOp::ConvertImageDtype(config) => BatchKernel::ConvertImageDtype {
+                                config,
+                                input_layout,
+                            },
+                            ImageOp::Layout(config) => BatchKernel::Layout {
+                                config,
+                                input_layout,
+                            },
+                            _ => return Err(invalid_pipeline("unsupported batch kernel")),
+                        };
+                        let output_layout =
+                            state_axis_order(super::inference::state_from_properties(
+                                annotations.get(id).expect("inferred output"),
+                            )?);
+                        batch_ops.push(kernel.clone());
+                        (
+                            PhysicalNodeKind::Kernel(KernelStage::Batch),
+                            ImageKernel::BatchOp(Arc::new(BatchNode {
+                                op: kernel,
+                                output_layout,
+                            })),
+                        )
+                    } else {
+                        let kernel_stage = if matches!(op, ImageOp::Decode(_)) {
+                            KernelStage::Decode
+                        } else {
+                            KernelStage::Sample
+                        };
+                        let compiled = if let ImageOp::Normalize(config) = op {
+                            CompiledSampleOp {
+                                kernel: SampleKernel::SampleNormalize(CompiledNormalize {
+                                    config,
+                                    input_layout: state_axis_order(input_state),
+                                }),
+                                random_key: None,
+                                input_state,
+                            }
+                        } else {
+                            compile_sample_op(op, input_state, None, &mut occurrences)?.0
+                        };
+                        sample_ops.push(compiled.clone());
+                        (
+                            PhysicalNodeKind::Kernel(kernel_stage),
+                            ImageKernel::Sample(Arc::new(SampleNode {
+                                op: compiled,
+                                random,
+                            })),
+                        )
+                    }
+                }
+            }
+            kind => {
+                return Err(invalid_pipeline(format!(
+                    "unsupported vision node {kind:?}"
+                )));
+            }
+        };
+        kernels.insert(id, (kind, Arc::new(kernel)));
+    }
+    let mut physical = PhysicalGraph::lower(
+        &logical,
+        &VisionPhysicalLowering {
+            kernels: kernels.clone(),
+            placement,
+        },
+    )
+    .map_err(|error| invalid_pipeline(error.to_string()))?;
+    physical
+        .ensure_sampler_before_source()
+        .map_err(|error| invalid_pipeline(error.to_string()))?;
+    // Reordering a batch barrier changes its actual input layout. Attach the
+    // stack operator using that producer, rather than the logical old edge.
+    let physical_batches = physical
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == PhysicalNodeKind::Batch)
+        .map(|node| node.id)
+        .collect::<Vec<_>>();
+    for id in physical_batches {
+        let layout = physical
+            .node(id)
+            .ok()
+            .and_then(|node| node.inputs.first())
+            .and_then(|input| physical.node(*input).ok())
+            .and_then(|node| node.logical_id)
+            .and_then(|id| annotations.get(id))
+            .map(super::inference::state_from_properties)
+            .transpose()?
+            .map(state_axis_order)
+            .unwrap_or(state_axis_order(source.state()));
+        physical
+            .set_operator(id, Arc::new(ImageKernel::Batch { axis_order: layout }))
+            .map_err(|error| invalid_pipeline(error.to_string()))?;
+    }
+    let mut sample_nodes = Vec::new();
+    let mut batch_nodes = Vec::new();
+    let physical_order = physical
+        .execution_order()
+        .map_err(|error| invalid_pipeline(error.to_string()))?;
+    for id in &physical_order {
+        let node = physical
+            .node(*id)
+            .map_err(|error| invalid_pipeline(error.to_string()))?;
+        if let Some((_, kernel)) = node.logical_id.and_then(|id| kernels.get(&id)) {
+            match kernel.as_ref() {
+                ImageKernel::Sample(node) => sample_nodes.push(Arc::clone(node)),
+                ImageKernel::BatchOp(node) => batch_nodes.push(Arc::clone(node)),
+                _ => {}
+            }
+        }
+    }
+    let linear = physical
+        .nodes()
+        .iter()
+        .all(|node| node.inputs.len() <= 1 && node.last_use_count <= 1);
+    let root = logical
+        .root()
+        .map_err(|error| invalid_pipeline(error.to_string()))?;
+    let output_state =
+        super::inference::state_from_properties(annotations.get(root).expect("inferred root"))?;
+    if logical
+        .node(root)
+        .map_err(|error| invalid_pipeline(error.to_string()))?
+        .kind()
+        != NodeKind::Sink
+        || annotations
+            .get(root)
+            .and_then(|properties| properties.granularity)
+            != Some(rivet_plan::ValueGranularity::Batch)
+    {
+        return Err(invalid_pipeline(
+            "vision graph root must be a sink producing batches",
+        ));
+    }
+    if output_state == PipelineImageState::Encoded {
+        return Err(invalid_pipeline(
             "pipeline must decode images before batching",
-        )),
-        PipelineImageState::Decoded { .. } => Ok(state),
-    }?;
-
-    Ok(CompiledImageOps {
-        sample_ops,
-        batch_ops,
+        ));
+    }
+    let physical_batch = physical
+        .nodes()
+        .iter()
+        .find(|node| node.kind == PhysicalNodeKind::Batch)
+        .expect("batch barrier compiled");
+    let pre_batch_state = physical_batch
+        .inputs
+        .first()
+        .and_then(|input| physical.node(*input).ok())
+        .and_then(|node| node.logical_id)
+        .and_then(|id| annotations.get(id))
+        .map(super::inference::state_from_properties)
+        .transpose()?
+        .unwrap_or(source.state());
+    let info = ImageGraphInfo {
+        input_state: source.state(),
         pre_batch_state,
         output_state,
-    })
-}
-
-fn cuda_augmentation_prefix(ops: &[ImageOp]) -> Option<std::ops::Range<usize>> {
-    let normalize_index = ops.len().checked_sub(2)?;
-    if !matches!(ops.get(normalize_index), Some(ImageOp::Normalize(_)))
-        || !matches!(ops.get(normalize_index + 1), Some(ImageOp::Layout(layout)) if layout.axis_order == ImageAxisOrder::Chw)
-    {
-        return None;
-    }
-    let mut start = normalize_index;
-    while start > 0 && ops.get(start - 1).is_some_and(is_cuda_augmentation) {
-        start -= 1;
-    }
-    if start == normalize_index {
-        return None;
-    }
-    if ops[start..normalize_index]
-        .iter()
-        .filter(|op| matches!(op, ImageOp::RandomResizedCrop(_)))
-        .count()
-        > 1
-    {
-        return None;
-    }
-    Some(start..normalize_index)
-}
-
-fn is_cuda_augmentation(op: &ImageOp) -> bool {
-    matches!(
-        op,
-        ImageOp::Flip(_) | ImageOp::RandomHorizontalFlip(_) | ImageOp::RandomResizedCrop(_)
-    )
+        sample_count: sample_ops.len(),
+        batch_count: batch_ops.len(),
+        first_sample: sample_ops.first().map(CompiledSampleOp::name),
+        first_batch: batch_ops.first().map(BatchKernel::name),
+        batch_native: linear && sample_ops.is_empty() && source.supports_batch_read(),
+        #[cfg(test)]
+        sample_ops,
+        #[cfg(test)]
+        batch_ops,
+    };
+    let explanation = physical
+        .explain()
+        .map_err(|error| invalid_pipeline(error.to_string()))?;
+    let executable =
+        ExecutableGraph::new(physical).map_err(|error| invalid_pipeline(error.to_string()))?;
+    let graph = Arc::new(ImageExecutionGraph {
+        executable: Arc::new(executable),
+        info,
+        source,
+        batch,
+        sample_nodes,
+        batch_nodes,
+        linear,
+        explanation,
+    });
+    ImageDataLoader::new(graph, IndexSampler::new(sampler, start), context.runtime)
 }
 
 fn compile_sample_program(

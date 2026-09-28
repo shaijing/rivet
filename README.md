@@ -14,6 +14,9 @@ Rivet is a Rust and Python image data pipeline for loading, transforming, and
 batching datasets. It provides zero-copy tensor views where possible, bounded
 multi-worker loading, deterministic sampling, and Lance-backed dataset support.
 
+The Rust [pipeline IR](docs/pipeline-ir.md) supports executable DAGs with shared
+inputs and image branch joins, while retaining the CPU linear fast path.
+
 ## Workspace crates
 
 - `rivet-core` — tensor storage, layouts, and operations.

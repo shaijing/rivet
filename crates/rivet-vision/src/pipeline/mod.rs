@@ -1,9 +1,13 @@
 mod builder;
 mod compile;
+mod dag;
 pub mod inference;
 mod logical;
 pub mod op;
 mod optimizer;
+pub(crate) mod physical;
+pub use dag::ImageConcat;
+pub use physical::ImageGraphInfo;
 mod transform;
 
 pub use builder::ImagePipeline;
@@ -106,10 +110,10 @@ mod tests {
         }
     }
 
-    fn legacy_compile_err(pipeline: ImagePipeline) -> String {
-        match pipeline.compile_legacy_for_test(0) {
+    fn unoptimized_compile_err(pipeline: ImagePipeline) -> String {
+        match pipeline.compile_unoptimized_for_test(0) {
             Err(err) => err.to_string(),
-            Ok(_) => panic!("expected a legacy compile error"),
+            Ok(_) => panic!("expected an unoptimized compile error"),
         }
     }
 
@@ -234,10 +238,10 @@ mod tests {
             .compile()
             .unwrap();
 
-        assert_eq!(loader.plan.sample_ops.len(), 2);
-        assert_eq!(loader.plan.batch_ops.len(), 1);
+        assert_eq!(loader.info.sample_ops.len(), 2);
+        assert_eq!(loader.info.batch_ops.len(), 1);
         assert_eq!(
-            loader.plan.output_state,
+            loader.info.output_state,
             PipelineImageState::Decoded {
                 dtype: DType::F32,
                 axis_order: ImageAxisOrder::Hwc,
@@ -268,9 +272,9 @@ mod tests {
             .compile()
             .unwrap();
 
-        assert_eq!(loader.plan.sample_ops.len(), 7);
+        assert_eq!(loader.info.sample_ops.len(), 7);
         assert_eq!(
-            loader.plan.output_state,
+            loader.info.output_state,
             PipelineImageState::Decoded {
                 dtype: DType::U8,
                 axis_order: ImageAxisOrder::Hwc,
@@ -320,9 +324,9 @@ mod tests {
             .compile()
             .unwrap();
 
-        assert_eq!(loader.plan.sample_ops.len(), 7);
+        assert_eq!(loader.info.sample_ops.len(), 7);
         assert_eq!(
-            loader.plan.output_state,
+            loader.info.output_state,
             PipelineImageState::Decoded {
                 dtype: DType::U8,
                 axis_order: ImageAxisOrder::Hwc,
@@ -379,10 +383,10 @@ mod tests {
             .compile()
             .unwrap();
 
-        assert_eq!(loader.plan.sample_ops.len(), 6);
-        assert_eq!(loader.plan.batch_ops.len(), 0);
+        assert_eq!(loader.info.sample_ops.len(), 6);
+        assert_eq!(loader.info.batch_ops.len(), 0);
         assert_eq!(
-            loader.plan.output_state,
+            loader.info.output_state,
             PipelineImageState::Decoded {
                 dtype: DType::U8,
                 axis_order: ImageAxisOrder::Hwc,
@@ -406,7 +410,7 @@ mod tests {
             .compile()
             .unwrap();
 
-        let SampleKernel::RandomApply { body, .. } = &loader.plan.sample_ops[1].kernel else {
+        let SampleKernel::RandomApply { body, .. } = &loader.info.sample_ops[1].kernel else {
             panic!("expected RandomApply compiled kernel");
         };
         let SampleKernel::RandomChoice { branches, .. } = &body.ops[0].kernel else {
@@ -484,10 +488,10 @@ mod tests {
             .compile()
             .unwrap();
 
-        assert_eq!(loader.plan.sample_ops.len(), 6);
-        assert_eq!(loader.plan.batch_ops.len(), 0);
+        assert_eq!(loader.info.sample_ops.len(), 6);
+        assert_eq!(loader.info.batch_ops.len(), 0);
         assert_eq!(
-            loader.plan.output_state,
+            loader.info.output_state,
             PipelineImageState::Decoded {
                 dtype: DType::U8,
                 axis_order: ImageAxisOrder::Hwc,
@@ -544,18 +548,18 @@ mod tests {
             .compile()
             .unwrap();
 
-        assert_eq!(base.plan.sample_ops[0].random_key, None);
+        assert_eq!(base.info.sample_ops[0].random_key, None);
         assert_eq!(
-            base.plan.sample_ops[1].random_key,
-            with_deterministic.plan.sample_ops[2].random_key
+            base.info.sample_ops[1].random_key,
+            with_deterministic.info.sample_ops[2].random_key
         );
         assert_eq!(
-            base.plan.sample_ops[2].random_key,
-            with_deterministic.plan.sample_ops[4].random_key
+            base.info.sample_ops[2].random_key,
+            with_deterministic.info.sample_ops[4].random_key
         );
         assert_ne!(
-            base.plan.sample_ops[1].random_key,
-            base.plan.sample_ops[2].random_key
+            base.info.sample_ops[1].random_key,
+            base.info.sample_ops[2].random_key
         );
     }
 
@@ -580,7 +584,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            loader.plan.output_state,
+            loader.info.output_state,
             PipelineImageState::Decoded {
                 dtype: DType::F32,
                 axis_order: ImageAxisOrder::Chw,
@@ -599,32 +603,32 @@ mod tests {
             .compile()
             .unwrap();
 
-        assert_eq!(loader.plan.sample_ops.len(), 2);
-        assert_eq!(loader.plan.batch_ops.len(), 1);
-        assert_eq!(loader.plan.input_state, PipelineImageState::Encoded);
+        assert_eq!(loader.info.sample_ops.len(), 2);
+        assert_eq!(loader.info.batch_ops.len(), 1);
+        assert_eq!(loader.info.input_state, PipelineImageState::Encoded);
         assert_eq!(
-            loader.plan.pre_batch_state,
+            loader.info.pre_batch_state,
             PipelineImageState::Decoded {
                 dtype: DType::U8,
                 axis_order: ImageAxisOrder::Hwc,
             }
         );
         assert_eq!(
-            loader.plan.output_state,
+            loader.info.output_state,
             PipelineImageState::Decoded {
                 dtype: DType::F32,
                 axis_order: ImageAxisOrder::Chw,
             }
         );
         assert_eq!(
-            loader.plan.sample_ops[0].execution_kind(),
+            loader.info.sample_ops[0].execution_kind(),
             ExecutionKind::Sample
         );
         assert_eq!(
-            loader.plan.batch_ops[0].execution_kind(),
+            loader.info.batch_ops[0].execution_kind(),
             ExecutionKind::Batch
         );
-        assert_eq!(loader.plan.batch_ops[0].name(), "NormalizeToChw");
+        assert_eq!(loader.info.batch_ops[0].name(), "NormalizeToChw");
     }
 
     #[test]
@@ -639,12 +643,12 @@ mod tests {
             .compile()
             .unwrap();
 
-        assert_eq!(loader.plan.sample_ops.len(), 3);
-        assert_eq!(loader.plan.sample_ops[2].name(), "NormalizeSample");
-        assert_eq!(loader.plan.batch_ops.len(), 1);
-        assert_eq!(loader.plan.batch_ops[0].name(), "Layout");
+        assert_eq!(loader.info.sample_ops.len(), 3);
+        assert_eq!(loader.info.sample_ops[2].name(), "NormalizeSample");
+        assert_eq!(loader.info.batch_ops.len(), 1);
+        assert_eq!(loader.info.batch_ops[0].name(), "Layout");
         assert_eq!(
-            loader.plan.pre_batch_state,
+            loader.info.pre_batch_state,
             PipelineImageState::Decoded {
                 dtype: DType::F32,
                 axis_order: ImageAxisOrder::Hwc,
@@ -660,17 +664,17 @@ mod tests {
             .compile()
             .unwrap();
 
-        assert!(loader.plan.sample_ops.is_empty());
-        assert_eq!(loader.plan.batch_ops.len(), 1);
+        assert!(loader.info.sample_ops.is_empty());
+        assert_eq!(loader.info.batch_ops.len(), 1);
         assert_eq!(
-            loader.plan.pre_batch_state,
+            loader.info.pre_batch_state,
             PipelineImageState::Decoded {
                 dtype: DType::U8,
                 axis_order: ImageAxisOrder::Hwc,
             }
         );
         assert_eq!(
-            loader.plan.output_state,
+            loader.info.output_state,
             PipelineImageState::Decoded {
                 dtype: DType::F32,
                 axis_order: ImageAxisOrder::Hwc,
@@ -689,10 +693,10 @@ mod tests {
             .compile()
             .unwrap();
 
-        assert!(loader.plan.sample_ops.is_empty());
-        assert!(loader.plan.batch_ops.is_empty());
-        assert_eq!(loader.plan.pre_batch_state, loader.plan.input_state);
-        assert_eq!(loader.plan.output_state, loader.plan.input_state);
+        assert!(loader.info.sample_ops.is_empty());
+        assert!(loader.info.batch_ops.is_empty());
+        assert_eq!(loader.info.pre_batch_state, loader.info.input_state);
+        assert_eq!(loader.info.output_state, loader.info.input_state);
     }
 
     #[test]
@@ -755,8 +759,8 @@ mod tests {
             .compile()
             .unwrap();
 
-        assert!(direct.plan.can_use_batch_native());
-        assert!(!fallback.plan.can_use_batch_native());
+        assert!(direct.info.can_use_batch_native());
+        assert!(!fallback.info.can_use_batch_native());
 
         for _ in 0..2 {
             let direct_batch = direct.next_batch().unwrap().unwrap();
@@ -892,7 +896,7 @@ mod tests {
             optimized.ops.iter().map(|op| op.name()).collect::<Vec<_>>(),
             ["Normalize"]
         );
-        let mut baseline_loader = original.compile_legacy_for_test(0).unwrap();
+        let mut baseline_loader = original.compile_unoptimized_for_test(0).unwrap();
         let mut optimized_loader = optimized.compile().unwrap();
         let baseline = baseline_loader.next_batch().unwrap().unwrap();
         let rewritten = optimized_loader.next_batch().unwrap().unwrap();
@@ -943,7 +947,7 @@ mod tests {
         let optimized = ImagePipeline::from_logical_plan(&plan).unwrap();
         assert!(optimized.ops.is_empty());
 
-        let mut baseline_loader = original.compile_legacy_for_test(0).unwrap();
+        let mut baseline_loader = original.compile_unoptimized_for_test(0).unwrap();
         let mut optimized_loader = optimized.compile().unwrap();
         let baseline = baseline_loader.next_batch().unwrap().unwrap();
         let rewritten = optimized_loader.next_batch().unwrap().unwrap();
@@ -955,7 +959,7 @@ mod tests {
     }
 
     #[test]
-    fn convert_normalize_layout_rewrites_to_one_fusion_group_and_matches_legacy() {
+    fn convert_normalize_layout_rewrites_to_one_fusion_group_and_matches_unoptimized() {
         let original = decoded_stub()
             .convert_image_dtype(DType::F32)
             .normalize(vec![0.5; 3], vec![0.5; 3])
@@ -992,7 +996,7 @@ mod tests {
         );
 
         let optimized = ImagePipeline::from_logical_plan(&plan).unwrap();
-        let mut baseline_loader = original.compile_legacy_for_test(0).unwrap();
+        let mut baseline_loader = original.compile_unoptimized_for_test(0).unwrap();
         let mut optimized_loader = optimized.compile().unwrap();
         let baseline = baseline_loader.next_batch().unwrap().unwrap();
         let rewritten = optimized_loader.next_batch().unwrap().unwrap();
@@ -1051,7 +1055,7 @@ mod tests {
             optimized.ops.iter().map(|op| op.name()).collect::<Vec<_>>(),
             ["Resize", "Resize"]
         );
-        let mut baseline_loader = original.compile_legacy_for_test(0).unwrap();
+        let mut baseline_loader = original.compile_unoptimized_for_test(0).unwrap();
         let mut optimized_loader = optimized.compile().unwrap();
         let baseline = baseline_loader.next_batch().unwrap().unwrap();
         let rewritten = optimized_loader.next_batch().unwrap().unwrap();
@@ -1290,16 +1294,16 @@ mod tests {
     #[test]
     fn logical_round_trip_preserves_compile_errors() {
         let invalid = stub(10).resize(8, 8).batch(4, false);
-        let legacy_error = legacy_compile_err(invalid.clone());
+        let unoptimized_error = unoptimized_compile_err(invalid.clone());
         let logical_error = compile_err(invalid);
         assert!(logical_error.contains("node %1"), "got: {logical_error}");
         assert!(
             logical_error.contains(
-                legacy_error
+                unoptimized_error
                     .strip_prefix("invalid pipeline: ")
-                    .unwrap_or(&legacy_error)
+                    .unwrap_or(&unoptimized_error)
             ),
-            "legacy error: {legacy_error}; logical error: {logical_error}"
+            "unoptimized error: {unoptimized_error}; logical error: {logical_error}"
         );
     }
 
@@ -1343,7 +1347,7 @@ mod tests {
             .normalize(vec![0.5; 3], vec![0.5; 3])
             .batch(1, false);
         let lowered = ImagePipeline::from_logical_plan(&original.to_logical_plan()).unwrap();
-        let mut original_loader = original.compile_legacy_for_test(0).unwrap();
+        let mut original_loader = original.compile_unoptimized_for_test(0).unwrap();
         let mut lowered_loader = lowered.compile().unwrap();
         let original_batch = original_loader.next_batch().unwrap().unwrap();
         let lowered_batch = lowered_loader.next_batch().unwrap().unwrap();
@@ -1525,5 +1529,194 @@ mod tests {
         encoded_pipeline.ops.push(ImageOp::decode());
         encoded_pipeline.batch = Some(crate::pipeline::op::BatchConfig::new(1, false));
         encoded_pipeline.infer_properties().unwrap();
+    }
+    fn concat_graph(
+        pipeline: ImagePipeline,
+        after_batch: bool,
+        axis: usize,
+    ) -> rivet_plan::LogicalPlan {
+        use super::op::{BatchConfig, ImageOp};
+        use rivet_plan::LogicalNode;
+        let mut plan = pipeline.to_logical_plan();
+        let source = plan
+            .nodes()
+            .find(|(_, node)| node.kind() == NodeKind::Source)
+            .unwrap()
+            .0;
+        let normal = plan.add_node(LogicalNode::new(
+            NodeKind::Op,
+            [source],
+            Some(Arc::new(ImageOp::brightness(0))),
+        ));
+        let inverted = plan.add_node(LogicalNode::new(
+            NodeKind::Op,
+            [source],
+            Some(Arc::new(ImageOp::invert())),
+        ));
+        let inputs = if after_batch {
+            [normal, inverted].map(|input| {
+                plan.add_node(LogicalNode::new(
+                    NodeKind::Batch,
+                    [input],
+                    Some(Arc::new(BatchConfig::new(2, false))),
+                ))
+            })
+        } else {
+            [normal, inverted]
+        };
+        // Reversed branch declaration verifies that input port order is preserved.
+        let concat = plan.add_node(LogicalNode::new(
+            NodeKind::Op,
+            [inputs[1], inputs[0]],
+            Some(Arc::new(super::ImageConcat { axis })),
+        ));
+        let output = if after_batch {
+            concat
+        } else {
+            plan.add_node(LogicalNode::new(
+                NodeKind::Batch,
+                [concat],
+                Some(Arc::new(BatchConfig::new(2, false))),
+            ))
+        };
+        let sink = plan.add_node(LogicalNode::new(NodeKind::Sink, [output], None));
+        plan.set_root(sink).unwrap();
+        plan
+    }
+
+    #[test]
+    fn vision_dag_executes_sample_and_batch_joins_in_port_order() {
+        for workers in [0, 3] {
+            for after_batch in [false, true] {
+                let plan = concat_graph(decoded_stub().workers(workers), after_batch, 2);
+                let mut loader = ImagePipeline::compile_logical_plan(plan, 0).unwrap();
+                assert!(
+                    loader
+                        .physical_explain()
+                        .unwrap()
+                        .contains("DAG morsel executor")
+                );
+                let batch = loader.next_batch().unwrap().unwrap();
+                assert_eq!(batch.images.dims(), [1, 1, 1, 6]);
+                assert_eq!(
+                    batch.images.to_vec::<u8>().unwrap(),
+                    [0, 255, 255, 255, 0, 0]
+                );
+                assert_eq!(batch.labels.to_vec::<i64>().unwrap(), [7]);
+                assert!(loader.next_batch().unwrap().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn vision_dag_preserves_sampler_order_and_start_across_workers() {
+        for workers in [0, 3] {
+            let plan = concat_graph(
+                ImagePipeline::from_source(dense_source(false)).workers(workers),
+                false,
+                2,
+            );
+            let mut loader = ImagePipeline::compile_logical_plan(plan, 1).unwrap();
+            let batch = loader.next_batch().unwrap().unwrap();
+            assert_eq!(batch.labels.to_vec::<i64>().unwrap(), [20, 30]);
+            assert_eq!(batch.images.dims(), [2, 1, 1, 6]);
+            assert!(loader.next_batch().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn vision_dag_rejects_invalid_concat_axis_at_compile_time() {
+        let plan = concat_graph(decoded_stub(), false, 3);
+        assert!(
+            ImagePipeline::compile_logical_plan(plan, 0)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("axis")
+        );
+    }
+
+    #[test]
+    fn vision_dag_supports_original_and_transformed_views_then_batch_normalize() {
+        use super::op::ImageOp;
+        use rivet_plan::LogicalNode;
+        let mut plan = decoded_stub().batch(1, false).to_logical_plan();
+        let source = plan
+            .nodes()
+            .find(|(_, node)| node.kind() == NodeKind::Source)
+            .unwrap()
+            .0;
+        let flipped = plan.add_node(LogicalNode::new(
+            NodeKind::Op,
+            [source],
+            Some(Arc::new(ImageOp::invert())),
+        ));
+        let concat = plan.add_node(LogicalNode::new(
+            NodeKind::Op,
+            [source, flipped],
+            Some(Arc::new(super::ImageConcat { axis: 0 })),
+        ));
+        let batch = plan.add_node(LogicalNode::new(
+            NodeKind::Batch,
+            [concat],
+            Some(Arc::new(super::op::BatchConfig::new(1, false))),
+        ));
+        let normalize = plan.add_node(LogicalNode::new(
+            NodeKind::Op,
+            [batch],
+            Some(Arc::new(ImageOp::normalize(vec![0.; 3], vec![1.; 3]))),
+        ));
+        let layout = plan.add_node(LogicalNode::new(
+            NodeKind::Op,
+            [normalize],
+            Some(Arc::new(ImageOp::hwc_to_chw())),
+        ));
+        let sink = plan.add_node(LogicalNode::new(NodeKind::Sink, [layout], None));
+        plan.set_root(sink).unwrap();
+        let mut loader = ImagePipeline::compile_logical_plan(plan, 0).unwrap();
+        let batch = loader.next_batch().unwrap().unwrap();
+        assert_eq!(batch.axis_order, ImageAxisOrder::Chw);
+        assert_eq!(batch.images.dims(), [1, 3, 2, 1]);
+        assert_eq!(
+            batch.images.to_vec::<f32>().unwrap(),
+            [1., 0., 0., 1., 0., 1.]
+        );
+    }
+    #[test]
+    fn vision_dag_shared_normalized_chw_value_preserves_sample_granularity() {
+        use rivet_plan::LogicalNode;
+        let mut plan = decoded_stub()
+            .normalize(vec![0.; 3], vec![1.; 3])
+            .hwc_to_chw()
+            .batch(1, false)
+            .to_logical_plan();
+        let (batch, input) = plan
+            .nodes()
+            .find_map(|(id, node)| {
+                (node.kind() == NodeKind::Batch).then(|| (id, node.inputs().get(0).unwrap()))
+            })
+            .unwrap();
+        let join = plan.add_node(LogicalNode::new(
+            NodeKind::Op,
+            [input, input],
+            Some(Arc::new(super::ImageConcat { axis: 1 })),
+        ));
+        plan.replace_node(
+            batch,
+            LogicalNode::new(
+                NodeKind::Batch,
+                [join],
+                Some(Arc::new(super::op::BatchConfig::new(1, false))),
+            ),
+        )
+        .unwrap();
+        let mut loader = ImagePipeline::compile_logical_plan(plan, 0).unwrap();
+        let output = loader.next_batch().unwrap().unwrap();
+        assert_eq!(output.images.dims(), [1, 3, 2, 1]);
+        assert_eq!(output.axis_order, ImageAxisOrder::Chw);
+        assert_eq!(
+            output.images.to_vec::<f32>().unwrap(),
+            [1., 1., 0., 0., 0., 0.]
+        );
     }
 }

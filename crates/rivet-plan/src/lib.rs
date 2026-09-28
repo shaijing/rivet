@@ -507,6 +507,36 @@ impl LogicalPlan {
         Ok(out)
     }
 
+    /// Root-reachable nodes in dependency order. Shared inputs appear once.
+    /// Reversing preorder is insufficient for graphs with shared dependencies.
+    pub fn topological_order(&self) -> Result<Vec<NodeId>, PlanError> {
+        self.validate()?;
+        fn visit(
+            plan: &LogicalPlan,
+            id: NodeId,
+            seen: &mut [bool],
+            out: &mut Vec<NodeId>,
+        ) -> Result<(), PlanError> {
+            if seen[id.index()] {
+                return Ok(());
+            }
+            seen[id.index()] = true;
+            for input in plan.node(id)?.inputs().iter() {
+                visit(plan, input, seen, out)?;
+            }
+            out.push(id);
+            Ok(())
+        }
+        let mut out = Vec::new();
+        visit(
+            self,
+            self.root()?,
+            &mut vec![false; self.arena.len()],
+            &mut out,
+        )?;
+        Ok(out)
+    }
+
     pub fn validate(&self) -> Result<(), PlanError> {
         let root = self.root()?;
         self.arena.get(root)?;

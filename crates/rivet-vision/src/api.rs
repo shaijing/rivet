@@ -18,7 +18,9 @@ pub use crate::errors::{
     invalid_shape,
 };
 pub use crate::pipeline::op::ImageOp;
-pub use crate::pipeline::{Compose, ImagePipeline, ImageTransform, TransformSequence};
+pub use crate::pipeline::{
+    Compose, ImageConcat, ImageGraphInfo, ImagePipeline, ImageTransform, TransformSequence,
+};
 pub use crate::runtime::{ImageDataLoader, RuntimeConfig};
 pub use crate::sample::image::{
     DecodedSample, EncodedImageSample, ImageAxisOrder, ImageBatch, ImageSample,

@@ -1,20 +1,17 @@
 use crate::batch::ImageBatchBuilder;
 use crate::errors::{RivetError, RivetResult};
-use crate::pipeline::op::ExecutionPlan;
+use crate::pipeline::ImageGraphInfo;
+use crate::pipeline::physical::ImageExecutionGraph;
 use crate::sample::image::{DecodedSample, ImageBatch, ImageSample};
 use crate::sampler::IndexSampler;
-#[cfg(feature = "cuda")]
-use rivet_core::DeviceLocation;
-use rivet_exec::physical::{
-    ExecutionLane, KernelStage, PhysicalGraph, PhysicalNodeKind, PhysicalProfiler,
+use rivet_exec::physical::{KernelStage, PhysicalNodeKind, PhysicalProfiler};
+use rivet_exec::runtime::{
+    DagPipelineExecutor, PhysicalPipelineAdapter, PhysicalPipelineExecutor, PipelineError,
 };
-use rivet_exec::runtime::{PhysicalPipelineAdapter, PhysicalPipelineExecutor, PipelineError};
-use rivet_plan::DeviceClass;
 use std::sync::Arc;
 
 struct ImagePipelineAdapter {
-    plan: Arc<ExecutionPlan>,
-    cuda_batch_kernel: bool,
+    graph: Arc<ImageExecutionGraph>,
     decode_stage: bool,
 }
 
@@ -26,23 +23,23 @@ impl PhysicalPipelineAdapter for ImagePipelineAdapter {
     type Error = RivetError;
 
     fn batch_size(&self) -> usize {
-        self.plan.batch.size
+        self.graph.batch.size
     }
 
     fn drop_last(&self) -> bool {
-        self.plan.batch.drop_last
+        self.graph.batch.drop_last
     }
 
     fn is_batch_native(&self) -> bool {
-        self.plan.can_use_batch_native()
+        self.graph.info.can_use_batch_native()
     }
 
     fn worker_chunk_size_hint(&self) -> Option<usize> {
-        let lightweight_dense_path = self.plan.source.supports_batch_read()
-            && !self.plan.sample_ops.is_empty()
-            && self.plan.sample_ops.iter().all(|op| {
+        let lightweight_dense_path = self.graph.source.supports_batch_read()
+            && !self.graph.sample_nodes.is_empty()
+            && self.graph.sample_nodes.iter().all(|node| {
                 matches!(
-                    op.name(),
+                    node.op.name(),
                     "RandomCrop" | "RandomHorizontalFlip" | "NormalizeSample"
                 )
             });
@@ -50,7 +47,7 @@ impl PhysicalPipelineAdapter for ImagePipelineAdapter {
     }
 
     fn fetch_samples(&self, indices: &[usize]) -> Result<Vec<ImageSample>, RivetError> {
-        self.plan.source.get_many(indices)
+        self.graph.source.get_many(indices)
     }
 
     fn decode_sample(
@@ -58,7 +55,7 @@ impl PhysicalPipelineAdapter for ImagePipelineAdapter {
         sample: ImageSample,
         sample_index: usize,
     ) -> Result<ImageSample, RivetError> {
-        self.plan.decode_sample(sample, sample_index)
+        self.graph.decode_sample(sample, sample_index)
     }
 
     fn process_sample(
@@ -67,9 +64,9 @@ impl PhysicalPipelineAdapter for ImagePipelineAdapter {
         sample_index: usize,
     ) -> Result<DecodedSample, RivetError> {
         if self.decode_stage {
-            self.plan.apply_sample_transforms(sample, sample_index)
+            self.graph.apply_sample_transforms(sample, sample_index)
         } else {
-            self.plan.apply_sample_ops(sample, sample_index)
+            self.graph.apply_sample_ops(sample, sample_index)
         }
     }
 
@@ -98,7 +95,7 @@ impl PhysicalPipelineAdapter for ImagePipelineAdapter {
     }
 
     fn fetch_batch(&self, indices: &[usize]) -> Result<Option<ImageBatch>, RivetError> {
-        self.plan.source.get_batch(indices).transpose()
+        self.graph.source.get_batch(indices).transpose()
     }
 
     fn batch_builder(&self, capacity: usize) -> ImageBatchBuilder {
@@ -118,136 +115,106 @@ impl PhysicalPipelineAdapter for ImagePipelineAdapter {
     }
 
     fn apply_batch(&self, batch: ImageBatch) -> Result<ImageBatch, RivetError> {
-        if self.cuda_batch_kernel {
-            Ok(batch)
-        } else {
-            self.plan.apply_batch_ops(batch)
-        }
-    }
-
-    fn apply_device_batch_with_indices(
-        &self,
-        batch: ImageBatch,
-        target: ExecutionLane,
-        indices: &[usize],
-    ) -> Result<ImageBatch, PipelineError<RivetError>> {
-        let ExecutionLane::Device { class, ordinal } = target else {
-            return Err(PipelineError::Runtime(
-                rivet_exec::runtime::RuntimeError::Message(
-                    "vision device batch kernel requires a CUDA execution lane".to_owned(),
-                ),
-            ));
-        };
-        if class != DeviceClass::Cuda {
-            return Err(PipelineError::Runtime(
-                rivet_exec::runtime::RuntimeError::Message(format!(
-                    "vision device batch kernel does not support {class:?}"
-                )),
-            ));
-        }
-        #[cfg(feature = "cuda")]
-        {
-            let expected = DeviceLocation::Cuda { ordinal };
-            if batch.images.device().location() != expected
-                || batch.labels.device().location() != expected
-            {
-                return Err(PipelineError::Runtime(
-                    rivet_exec::runtime::RuntimeError::Message(
-                        "CUDA batch kernel input does not reside on its planned device".to_owned(),
-                    ),
-                ));
-            }
-            if !self.cuda_batch_kernel {
-                return Err(PipelineError::Runtime(
-                    rivet_exec::runtime::RuntimeError::Message(
-                        "physical graph scheduled an unplanned CUDA batch kernel".to_owned(),
-                    ),
-                ));
-            }
-            let output = self
-                .plan
-                .apply_cuda_batch_ops(batch, indices)
-                .map_err(RivetError::from)
-                .map_err(PipelineError::Domain)?;
-            Ok(output)
-        }
-        #[cfg(not(feature = "cuda"))]
-        {
-            let _ = (batch, ordinal, indices);
-            Err(PipelineError::Runtime(
-                rivet_exec::runtime::RuntimeError::Message(
-                    "vision CUDA batch kernels require the cuda feature".to_owned(),
-                ),
-            ))
-        }
+        self.graph.apply_batch_ops(batch)
     }
 }
 
+enum ImageExecutor {
+    Linear(Box<PhysicalPipelineExecutor<ImagePipelineAdapter>>),
+    Dag(DagPipelineExecutor),
+}
+
 pub struct ImageDataLoader {
-    pub plan: Arc<ExecutionPlan>,
+    pub info: ImageGraphInfo,
     pub sampler: IndexSampler,
-    executor: PhysicalPipelineExecutor<ImagePipelineAdapter>,
+    graph: Arc<ImageExecutionGraph>,
+    executor: ImageExecutor,
 }
 
 impl ImageDataLoader {
     pub(crate) fn new(
-        plan: Arc<ExecutionPlan>,
+        graph: Arc<ImageExecutionGraph>,
         sampler: IndexSampler,
-        num_workers: usize,
-        prefetch_batches: usize,
-        stage_queue_max_bytes: usize,
-        profiling_enabled: bool,
-        physical: PhysicalGraph,
+        config: super::RuntimeConfig,
     ) -> RivetResult<Self> {
-        let cuda_batch_kernel = physical.nodes().iter().any(|node| {
-            node.kind == PhysicalNodeKind::Kernel(KernelStage::Batch)
-                && matches!(node.lane, ExecutionLane::Device { .. })
-        });
-        let decode_stage = physical
-            .nodes()
-            .iter()
-            .any(|node| node.kind == PhysicalNodeKind::Kernel(KernelStage::Decode));
-        let adapter = Arc::new(ImagePipelineAdapter {
-            plan: Arc::clone(&plan),
-            cuda_batch_kernel,
-            decode_stage,
-        });
-        let executor = PhysicalPipelineExecutor::with_graph_limits_and_profiling(
-            adapter,
-            num_workers,
-            prefetch_batches,
-            stage_queue_max_bytes,
-            physical,
-            profiling_enabled,
-        )
-        .map_err(|error| RivetError::Worker(error.to_string()))?;
-
+        let executor = if graph.linear {
+            let physical = graph.executable.graph().clone();
+            let decode_stage = physical
+                .nodes()
+                .iter()
+                .any(|node| node.kind == PhysicalNodeKind::Kernel(KernelStage::Decode));
+            let adapter = Arc::new(ImagePipelineAdapter {
+                graph: Arc::clone(&graph),
+                decode_stage,
+            });
+            ImageExecutor::Linear(Box::new(
+                PhysicalPipelineExecutor::with_graph_limits_and_profiling(
+                    adapter,
+                    config.num_workers,
+                    config.prefetch_batches,
+                    config.stage_queue_max_bytes,
+                    physical,
+                    config.profiling_enabled,
+                )
+                .map_err(|error| RivetError::Worker(error.to_string()))?,
+            ))
+        } else {
+            ImageExecutor::Dag(
+                DagPipelineExecutor::new(
+                    Arc::clone(&graph.executable),
+                    graph.batch.size,
+                    graph.batch.drop_last,
+                    config.num_workers,
+                    config.prefetch_batches,
+                    config.stage_queue_max_bytes,
+                    config.profiling_enabled,
+                )
+                .map_err(|error| RivetError::Worker(error.to_string()))?,
+            )
+        };
         Ok(Self {
-            plan,
+            info: graph.info.clone(),
             sampler,
+            graph,
             executor,
         })
     }
 
     pub fn next_batch(&mut self) -> RivetResult<Option<ImageBatch>> {
-        self.executor
-            .next_batch(&mut self.sampler)
-            .map_err(|error| match error {
-                PipelineError::Runtime(error) => RivetError::Worker(error.to_string()),
-                PipelineError::Domain(error) => error,
-            })
+        match &mut self.executor {
+            ImageExecutor::Linear(executor) => {
+                executor
+                    .next_batch(&mut self.sampler)
+                    .map_err(|error| match error {
+                        PipelineError::Runtime(error) => RivetError::Worker(error.to_string()),
+                        PipelineError::Domain(error) => error,
+                    })
+            }
+            ImageExecutor::Dag(executor) => executor
+                .next_morsel(&mut self.sampler)
+                .map_err(|error| RivetError::Worker(error.to_string()))?
+                .map(ImageExecutionGraph::output_batch)
+                .transpose(),
+        }
     }
 
-    /// Deterministic physical stage graph selected by this loader.
     pub fn physical_explain(&mut self) -> RivetResult<String> {
-        self.executor
-            .physical_explain()
-            .map_err(|error| RivetError::Worker(error.to_string()))
+        match &mut self.executor {
+            ImageExecutor::Linear(executor) => executor
+                .physical_explain()
+                .map_err(|error| RivetError::Worker(error.to_string())),
+            ImageExecutor::Dag(_) => Ok(format!(
+                "{}Runtime path: DAG morsel executor\n",
+                self.graph.explanation
+            )),
+        }
     }
 
-    /// Snapshot per-stage action and queue-wait timings accumulated so far.
     pub fn profiler(&self) -> PhysicalProfiler {
-        self.executor.profiler()
+        match &self.executor {
+            ImageExecutor::Linear(executor) => executor.profiler(),
+            ImageExecutor::Dag(executor) => executor.profiler(),
+        }
     }
 
     /// Convenience wrapper for `(&mut self).into_iter()`.
@@ -452,13 +419,13 @@ mod tests {
     }
 
     #[test]
-    fn physical_runtime_matches_direct_execution_plan_batches() {
+    fn physical_runtime_matches_direct_node_execution() {
         let mut loader = pipeline(9, 3)
             .resize(1, 1)
             .batch(4, false)
             .compile()
             .unwrap();
-        let plan = Arc::clone(&loader.plan);
+        let plan = Arc::clone(&loader.graph);
         let physical = drain(&mut loader);
 
         let mut direct = Vec::new();
@@ -733,7 +700,7 @@ mod tests {
             .compile()
             .unwrap();
         let keys = loader
-            .plan
+            .info
             .sample_ops
             .iter()
             .map(|op| op.random_key.expect("random crop key"))
@@ -1175,5 +1142,73 @@ mod tests {
         let first = collect_labels(0);
         assert_eq!(first, collect_labels(0));
         assert_ne!(first, collect_labels(1));
+    }
+    #[test]
+    fn dag_reads_shared_source_once_per_batch_and_preserves_index_prefix() {
+        use crate::pipeline::{
+            ImageConcat,
+            op::{BatchConfig, ImageOp},
+        };
+        use rivet_plan::{LogicalNode, NodeKind};
+        for workers in [0, 3] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let builder = ImagePipeline::new(Arc::new(CountingDataset {
+                len: 11,
+                calls: Arc::clone(&calls),
+            }))
+            .skip(1)
+            .take(8)
+            .shuffle(19)
+            .decode_image()
+            .workers(workers)
+            .profiling(true);
+            let mut logical = builder.to_logical_plan();
+            let decoded = logical
+                .nodes()
+                .find(|(_, node)| matches!(node.payload_as::<ImageOp>(), Some(ImageOp::Decode(_))))
+                .unwrap()
+                .0;
+            let inverted = logical.add_node(LogicalNode::new(
+                NodeKind::Op,
+                [decoded],
+                Some(Arc::new(ImageOp::invert())),
+            ));
+            let joined = logical.add_node(LogicalNode::new(
+                NodeKind::Op,
+                [decoded, inverted],
+                Some(Arc::new(ImageConcat { axis: 2 })),
+            ));
+            let batch = logical.add_node(LogicalNode::new(
+                NodeKind::Batch,
+                [joined],
+                Some(Arc::new(BatchConfig::new(3, false))),
+            ));
+            let sink = logical.add_node(LogicalNode::new(NodeKind::Sink, [batch], None));
+            logical.set_root(sink).unwrap();
+            let mut loader = ImagePipeline::compile_logical_plan(logical, 0).unwrap();
+            let explanation = loader.physical_explain().unwrap();
+            assert!(
+                explanation.find("Sampler lane=Cpu").unwrap()
+                    < explanation.find("Source lane=Io").unwrap()
+            );
+            let batches = drain(&mut loader);
+            let output_labels = batches.iter().flat_map(labels).collect::<Vec<_>>();
+            let mut expected = pipeline(11, 0)
+                .skip(1)
+                .take(8)
+                .shuffle(19)
+                .batch(3, false)
+                .compile()
+                .unwrap();
+            assert_eq!(
+                output_labels,
+                drain(&mut expected)
+                    .iter()
+                    .flat_map(labels)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(calls.load(Ordering::Relaxed), 3);
+            assert!(batches.iter().all(|batch| batch.images.dims()[3] == 6));
+        }
     }
 }

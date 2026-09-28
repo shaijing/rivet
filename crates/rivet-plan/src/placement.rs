@@ -1,6 +1,6 @@
 //! Static kernel capability matching, cost estimates, and device placement.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use thiserror::Error;
 
 use crate::{
@@ -306,6 +306,8 @@ pub enum TransferKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TransferBoundary {
     pub before: NodeId,
+    /// Producer of this edge; present in graph placement.
+    pub input: Option<NodeId>,
     pub from: DeviceClass,
     pub to: DeviceClass,
     pub kind: TransferKind,
@@ -370,9 +372,9 @@ pub enum PlacementError {
     SinkDeviceUnavailable { device: DeviceClass },
 }
 
-/// Select registered implementations with a global dynamic program over a
-/// linear logical pipeline. Kernel traffic, memory bandwidth, launch costs and
-/// explicit edge transfers all contribute to the selected path.
+/// Select registered implementations. Linear graphs use exact dynamic
+/// programming; DAGs use a deterministic topological heuristic that costs all
+/// incoming edges. Kernel traffic, launch and transfer costs guide selection.
 pub fn place(
     plan: &LogicalPlan,
     annotations: &PropertyAnnotations,
@@ -380,7 +382,13 @@ pub fn place(
     machine: &MachineProfile,
 ) -> Result<PlacementPlan, PlacementError> {
     plan.validate()?;
-    let ids = linear_pipeline_order(plan)?;
+    let ids = match linear_pipeline_order(plan) {
+        Ok(ids) => ids,
+        Err(PlacementError::NonLinearInputs { .. } | PlacementError::NonLinearConsumers { .. }) => {
+            return place_dag(plan, annotations, capabilities, machine);
+        }
+        Err(error) => return Err(error),
+    };
     let mut candidate_rows = Vec::with_capacity(ids.len());
     let mut local_cost_rows = Vec::with_capacity(ids.len());
 
@@ -504,8 +512,9 @@ pub fn place(
             let edge_bytes = input_properties(plan, id, annotations)
                 .and_then(byte_size)
                 .unwrap_or(machine.unknown_value_bytes);
-            let transfer =
+            let mut transfer =
                 transfer_cost(id, &previous.device, &selected.device, edge_bytes, machine);
+            transfer.input = Some(ids[position - 1]);
             if previous.device != selected.device {
                 cost.transfer_bytes = cost.transfer_bytes.saturating_add(transfer.bytes);
                 cost.transfer_score += transfer.estimated_seconds;
@@ -571,6 +580,163 @@ pub fn place(
         });
     }
     Ok(output)
+}
+
+/// Deterministic graph placement. Choose a compatible kernel in topological
+/// order, accounting for every incoming transfer. The linear path retains its
+/// exact global dynamic program; this graph heuristic is not globally optimal.
+fn place_dag(
+    plan: &LogicalPlan,
+    annotations: &PropertyAnnotations,
+    capabilities: &KernelCapabilities,
+    machine: &MachineProfile,
+) -> Result<PlacementPlan, PlacementError> {
+    let mut result = PlacementPlan::default();
+    let mut selected_devices = HashMap::<NodeId, DeviceClass>::new();
+    for id in plan.topological_order()? {
+        let node = plan.node(id)?;
+        let output = annotations.get(id);
+        let input = input_properties(plan, id, annotations);
+        let mut choices = Vec::new();
+        for kernel in capabilities.for_node(plan, id)? {
+            if !device_supports_kernel(
+                machine,
+                kernel,
+                required_graph_device_bytes(plan, id, kernel, annotations, machine),
+            ) || !properties_match(&kernel.requirements, plan, id, annotations)
+                || (kernel.contiguity != Contiguity::Unknown
+                    && output.is_none_or(|p| p.contiguity != Some(kernel.contiguity)))
+                || (node.kind() == NodeKind::Sink
+                    && machine
+                        .preferred_sink_device
+                        .as_ref()
+                        .is_some_and(|device| device != &kernel.device))
+            {
+                continue;
+            }
+            let mut cost = estimate_cost(kernel, input, output, machine);
+            // Cost hints apply to total incoming traffic rather than just port 0.
+            for extra in node.inputs().iter().skip(1) {
+                let extra_cost = estimate_cost(kernel, annotations.get(extra), output, machine);
+                cost.host_bytes_read = cost
+                    .host_bytes_read
+                    .saturating_add(extra_cost.host_bytes_read);
+                cost.device_bytes_read = cost
+                    .device_bytes_read
+                    .saturating_add(extra_cost.device_bytes_read);
+                cost.host_bytes = cost.host_bytes.saturating_add(extra_cost.host_bytes_read);
+                cost.device_bytes = cost
+                    .device_bytes
+                    .saturating_add(extra_cost.device_bytes_read);
+                let extra_score = extra_cost.host_bytes_read as f64
+                    / machine.host_memory_bytes_per_sec.max(1) as f64
+                    + extra_cost.device_bytes_read as f64
+                        / machine.device_memory_bytes_per_sec.max(1) as f64;
+                cost.compute_score += extra_score;
+                cost.total_score += extra_score;
+            }
+            let mut transfers = Vec::new();
+            for producer in node.inputs().iter() {
+                let from = &selected_devices[&producer];
+                if from != &kernel.device {
+                    let bytes = annotations
+                        .get(producer)
+                        .and_then(byte_size)
+                        .unwrap_or(machine.unknown_value_bytes);
+                    let mut transfer = transfer_cost(id, from, &kernel.device, bytes, machine);
+                    transfer.input = Some(producer);
+                    cost.transfer_bytes = cost.transfer_bytes.saturating_add(bytes);
+                    cost.transfer_score += transfer.estimated_seconds;
+                    cost.total_score += transfer.estimated_seconds;
+                    transfers.push(transfer);
+                }
+            }
+            choices.push((kernel, cost, transfers));
+        }
+        let Some(selected_index) = (0..choices.len()).min_by(|a, b| {
+            choices[*a]
+                .1
+                .total_score
+                .total_cmp(&choices[*b].1.total_score)
+        }) else {
+            if node.kind() == NodeKind::Sink
+                && let Some(device) = &machine.preferred_sink_device
+            {
+                return Err(PlacementError::SinkDeviceUnavailable {
+                    device: device.clone(),
+                });
+            }
+            return Err(PlacementError::NoKernel {
+                node: id.index(),
+                reason: "no compatible registered kernel for graph node".to_owned(),
+            });
+        };
+        let alternatives = choices
+            .iter()
+            .map(|(k, c, _)| format!("{}@{:?}={:.6}", k.name, k.device, c.total_score))
+            .collect();
+        let (kernel, cost, transfers) = choices.swap_remove(selected_index);
+        selected_devices.insert(id, kernel.device.clone());
+        result.transfer_boundaries.extend(transfers);
+        result.candidates.push(PlacementCandidate {
+            node: id,
+            kernel: kernel.name.clone(),
+            device: kernel.device.clone(),
+            class: kernel.class,
+            parallelism: if kernel.parallel {
+                machine.cpu_threads.max(1)
+            } else {
+                1
+            },
+            cost,
+            alternatives,
+            fusion_tags: kernel.fusion_tags.clone(),
+            alignment_bytes: kernel.alignment_bytes,
+            contiguity: kernel.contiguity,
+            location: selected_device_location(
+                machine,
+                kernel,
+                required_graph_device_bytes(plan, id, kernel, annotations, machine),
+            ),
+        });
+    }
+    Ok(result)
+}
+
+fn required_graph_device_bytes(
+    plan: &LogicalPlan,
+    id: NodeId,
+    kernel: &KernelCapability,
+    annotations: &PropertyAnnotations,
+    machine: &MachineProfile,
+) -> u64 {
+    if kernel.device == DeviceClass::Cpu {
+        return 0;
+    }
+    let input_bytes =
+        plan.node(id)
+            .expect("validated node")
+            .inputs()
+            .iter()
+            .fold(0u64, |bytes, input| {
+                bytes.saturating_add(
+                    annotations
+                        .get(input)
+                        .and_then(byte_size)
+                        .unwrap_or(machine.unknown_value_bytes),
+                )
+            });
+    let output_bytes = annotations
+        .get(id)
+        .and_then(byte_size)
+        .unwrap_or(machine.unknown_value_bytes);
+    match kernel.class {
+        KernelClass::Source => output_bytes.saturating_add(kernel.temporary_bytes as u64),
+        KernelClass::Sink => input_bytes,
+        _ => input_bytes
+            .saturating_add(output_bytes)
+            .saturating_add(kernel.temporary_bytes as u64),
+    }
 }
 
 fn linear_pipeline_order(plan: &LogicalPlan) -> Result<Vec<NodeId>, PlacementError> {
@@ -703,10 +869,6 @@ fn properties_match(
         Ok(node) => node,
         Err(_) => return false,
     };
-    let input = node
-        .inputs()
-        .get(0)
-        .and_then(|input| annotations.get(input));
     let output = annotations.get(id);
     let matches_input = |actual: Option<&ValueProperties>| {
         actual.is_some_and(|p| {
@@ -772,7 +934,13 @@ fn properties_match(
         || req.input_residency.is_some()
         || req.input_mutability.is_some()
         || req.input_stage.is_some();
-    (!has_input_requirements || matches_input(input)) && matches_output
+    (!has_input_requirements
+        || (!node.inputs().is_empty()
+            && node
+                .inputs()
+                .iter()
+                .all(|id| matches_input(annotations.get(id)))))
+        && matches_output
 }
 
 fn estimate_cost(
@@ -863,6 +1031,7 @@ fn transfer_cost(
     if from == to {
         return TransferBoundary {
             before,
+            input: None,
             from: from.clone(),
             to: to.clone(),
             kind: TransferKind::DeviceToDevice,
@@ -889,6 +1058,7 @@ fn transfer_cost(
     };
     TransferBoundary {
         before,
+        input: None,
         from: from.clone(),
         to: to.clone(),
         kind,
@@ -992,6 +1162,97 @@ mod tests {
                 .explain(&plan, &props)
                 .unwrap()
                 .contains("compute=")
+        );
+    }
+    #[test]
+    fn dag_placement_costs_each_incoming_edge_and_checks_all_ports() {
+        let mut plan = LogicalPlan::new();
+        let source = plan.add_node(LogicalNode::new(
+            NodeKind::Source,
+            [],
+            Some(std::sync::Arc::new(Payload)),
+        ));
+        let join = plan.add_node(LogicalNode::new(
+            NodeKind::Op,
+            [source, source],
+            Some(std::sync::Arc::new(Payload)),
+        ));
+        plan.set_root(join).unwrap();
+        let mut props = PropertyAnnotations::default();
+        let properties = ValueProperties {
+            dtype: Some(DataType::U8),
+            shape: Some(crate::ValueShape(vec![ShapeDim::Known(8)])),
+            ..ValueProperties::default()
+        };
+        props.insert(source, properties.clone());
+        props.insert(join, properties);
+        let mut caps = KernelCapabilities::default();
+        for (kind, class, device) in [
+            (NodeKind::Source, KernelClass::Source, DeviceClass::Cpu),
+            (NodeKind::Op, KernelClass::Batch, DeviceClass::Cuda),
+        ] {
+            caps.register(KernelCapability {
+                name: format!("demo-{class:?}"),
+                operator: "demo::Op".into(),
+                node_kind: kind,
+                device,
+                class,
+                requirements: if kind == NodeKind::Op {
+                    KernelRequirements {
+                        input_dtype: Some(DataType::U8),
+                        ..KernelRequirements::default()
+                    }
+                } else {
+                    KernelRequirements::default()
+                },
+                fusion_tags: Vec::new(),
+                alignment_bytes: 1,
+                contiguity: Contiguity::Unknown,
+                temporary_bytes: 0,
+                cost_hint: KernelCostHint::default(),
+                in_place: false,
+                parallel: false,
+            });
+        }
+        let machine = MachineProfile {
+            available_devices: vec![DeviceClass::Cpu, DeviceClass::Cuda],
+            ..MachineProfile::default()
+        };
+        let selected = place(&plan, &props, &caps, &machine).unwrap();
+        assert_eq!(selected.candidates.len(), 2);
+        assert_eq!(selected.transfer_boundaries.len(), 2);
+        assert!(
+            selected
+                .transfer_boundaries
+                .iter()
+                .all(|edge| edge.input == Some(source) && edge.before == join && edge.bytes == 8)
+        );
+        assert_eq!(selected.candidates[1].cost.device_bytes_read, 16);
+        assert_eq!(selected.candidates[1].cost.device_bytes, 24);
+        assert_eq!(selected.candidates[1].cost.transfer_bytes, 16);
+        let other = plan.add_node(LogicalNode::new(
+            NodeKind::Source,
+            [],
+            Some(std::sync::Arc::new(Payload)),
+        ));
+        props.insert(
+            other,
+            ValueProperties {
+                dtype: Some(DataType::F32),
+                ..ValueProperties::default()
+            },
+        );
+        plan.replace_node(
+            join,
+            LogicalNode::new(
+                NodeKind::Op,
+                [source, other],
+                Some(std::sync::Arc::new(Payload)),
+            ),
+        )
+        .unwrap();
+        assert!(
+            matches!(place(&plan, &props, &caps, &machine), Err(PlacementError::NoKernel { node, .. }) if node == join.index())
         );
     }
 }

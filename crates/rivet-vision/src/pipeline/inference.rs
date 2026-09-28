@@ -53,6 +53,9 @@ impl PropertyInference for VisionPropertyInference {
         node: &LogicalNode,
         inputs: &[ValueProperties],
     ) -> Result<ValueProperties, String> {
+        if node.kind() == NodeKind::Source && !inputs.is_empty() {
+            return Err("vision source must not have inputs".to_owned());
+        }
         let result = match node.kind() {
             NodeKind::Source => node
                 .payload_as::<SourceOp>()
@@ -65,6 +68,9 @@ impl PropertyInference for VisionPropertyInference {
                 single_input(inputs, node.kind())?.clone()
             }
             NodeKind::Op => {
+                if let Some(concat) = node.payload_as::<super::ImageConcat>() {
+                    return rivet_plan::DomainOp::infer_properties(concat, inputs);
+                }
                 let input = single_input(inputs, node.kind())?;
                 // Property inference describes operator semantics independently
                 // of the backend that will execute them. Capability validation
@@ -195,6 +201,39 @@ fn infer_image_op_with_workers(
     input: &ValueProperties,
     num_workers: usize,
 ) -> RivetResult<ValueProperties> {
+    if input.granularity == Some(ValueGranularity::Batch) {
+        if op.execution_kind() != super::op::ExecutionKind::Batch {
+            return Err(invalid_pipeline(format!(
+                "{} requires sample granularity",
+                op.name()
+            )));
+        }
+        let mut sample_input = input.clone();
+        let batch_dim = sample_input
+            .shape
+            .as_mut()
+            .filter(|shape| shape.rank() == 4)
+            .ok_or_else(|| invalid_pipeline("batch image kernel requires rank four"))?
+            .0
+            .remove(0);
+        sample_input.axis_order = match input.axis_order {
+            Some(AxisOrder::Nhwc) => Some(AxisOrder::Hwc),
+            Some(AxisOrder::Nchw) => Some(AxisOrder::Chw),
+            _ => return Err(invalid_pipeline("batch image kernel requires NHWC or NCHW")),
+        };
+        sample_input.granularity = Some(ValueGranularity::Sample);
+        let mut output = infer_image_op_with_workers(op, &sample_input, num_workers)?;
+        if let Some(shape) = &mut output.shape {
+            shape.0.insert(0, batch_dim);
+        }
+        output.axis_order = match output.axis_order {
+            Some(AxisOrder::Hwc) => Some(AxisOrder::Nhwc),
+            Some(AxisOrder::Chw) => Some(AxisOrder::Nchw),
+            other => other,
+        };
+        output.granularity = Some(ValueGranularity::Batch);
+        return Ok(output);
+    }
     op.validate()?;
     match input.residency.as_ref() {
         Some(Residency::Host | Residency::Unknown) | None => {}

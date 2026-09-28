@@ -30,13 +30,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "input_state={:?} pre_batch_state={:?} output_state={:?} sample_ops={} batch_ops={} first_sample={} first_batch={}",
-        loader.plan.input_state,
-        loader.plan.pre_batch_state,
-        loader.plan.output_state,
-        loader.plan.sample_op_count(),
-        loader.plan.batch_op_count(),
-        loader.plan.first_sample_op_name().unwrap_or("-"),
-        loader.plan.first_batch_op_name().unwrap_or("-"),
+        loader.info.input_state,
+        loader.info.pre_batch_state,
+        loader.info.output_state,
+        loader.info.sample_op_count(),
+        loader.info.batch_op_count(),
+        loader.info.first_sample_op_name().unwrap_or("-"),
+        loader.info.first_batch_op_name().unwrap_or("-"),
     );
     let first_start = Instant::now();
     black_box(loader.next_batch()?.ok_or("warmup ended")?);
