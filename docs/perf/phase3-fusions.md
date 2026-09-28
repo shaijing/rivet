@@ -52,7 +52,7 @@ Reproduction:
 
 ```bash
 maturin develop --release -j 12
-for index in 1 2 3 4 5; do .venv/bin/python bench/compare_cifar10_torchvision_rivet_decoded.py --torch-root /data/datasets/pytorch --rivet-root /data/datasets/rivet/cifar10 --batch 128 --workers 4 --epochs 3; done
+for index in 1 2 3 4 5; do .venv/bin/python bench/compare_cifar10_torchvision_rivet_decoded.py --torch-root ~/.data/pytorch --rivet-root /data/datasets/rivet/cifar10 --batch 128 --workers 4 --epochs 3; done
 ```
 
 ## Verification

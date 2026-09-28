@@ -14,8 +14,8 @@ the random transforms and normalization without a decode operation.
 Example:
 
     .venv/bin/python bench/compare_cifar10_torchvision_rivet_decoded.py \
-        --torch-root /data/datasets/pytorch \
-        --rivet-root ~/.cache/rivet/datasets \
+        --torch-root ~/.data/pytorch \
+        --rivet-root ~/.cache/rivet/datasets/cifar10 \
         --batch 128 --workers 4 --epochs 3
 """
 
@@ -32,7 +32,10 @@ from cifar10_benchmark.common import DEFAULT_LANCE_ROOT, _train_path, detect_enc
 import rivet
 
 DEFAULT_TORCHVISION_ROOT = Path(
-    os.environ.get("TORCHVISION_CIFAR10_ROOT", "/data/datasets/pytorch")
+    os.environ.get(
+        "TORCHVISION_CIFAR10_ROOT",
+        Path.home() / ".data" / "pytorch",
+    )
 )
 CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
 CIFAR10_STD = (0.2470, 0.2435, 0.2616)

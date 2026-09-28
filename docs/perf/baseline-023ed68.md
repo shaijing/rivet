@@ -14,7 +14,7 @@
 | Rust | rustc 1.98.1 / cargo 1.98.0 |
 | Python | CPython 3.13.12 (.venv) |
 | PyTorch / torchvision | 2.14.0+cu130 / 0.29.0+cu130 |
-| CIFAR data | `/data/datasets/rivet/cifar10/train.lance` (50,000 rows, PNG); PyTorch CIFAR-10 cache at `/data/datasets/pytorch` |
+| CIFAR data | `/data/datasets/rivet/cifar10/train.lance` (50,000 rows, PNG); PyTorch CIFAR-10 cache at `~/.data/pytorch` |
 | Criterion | 0.8.2；Rust microbench sample size 20，warmup 0.5s，measurement 1.5s |
 
 CIFAR pipeline matrix 使用 release build、256 synthetic encoded samples、batch 32、8 batches、workers 0/1/4/24、prefetch 0/1/2；完整矩阵连续测量 4 次。CIFAR decoded comparison 使用 AGENTS.md 的命令，完整训练 split、batch 128、workers 4、3 epochs，独立运行 5 次。operator/dtype/normalize/fusion 各运行 3 次。pipeline matrix 重复 4 次；latency probe 重复 5 次。
@@ -171,7 +171,7 @@ RIVET_OPERATOR_BENCH_ARROW=<cifar10-train.arrow> RIVET_OPERATOR_BENCH_ITERS=30 c
 maturin develop --release -j 12
 .venv/bin/python bench/compare_cifar10_torch_rivet.py --modes A,B,C --batch 128 --batches 0 --resize 64 --rivet-workers 4 --torch-workers 4 --epochs 3
 .venv/bin/python bench/compare_cifar10_torch_rivet.py --modes A,B,C --batch 128 --batches 0 --resize 64 --rivet-workers 4 --torch-workers 4 --epochs 2 --sweep --cache-compare --cache-level decoded
-.venv/bin/python bench/compare_cifar10_torchvision_rivet_decoded.py --torch-root /data/datasets/pytorch --rivet-root /data/datasets/rivet/cifar10 --batch 128 --workers 4 --epochs 3
+.venv/bin/python bench/compare_cifar10_torchvision_rivet_decoded.py --torch-root ~/.data/pytorch --rivet-root /data/datasets/rivet/cifar10 --batch 128 --workers 4 --epochs 3
 cargo test -j 12 -p rivet-core --lib
 cargo test -j 12 -p rivet-data --lib
 cargo test -j 12 -p rivet-vision --lib

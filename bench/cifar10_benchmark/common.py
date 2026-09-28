@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover - resource is Unix-only
 DEFAULT_LANCE_ROOT = Path(
     os.environ.get(
         "RIVET_CIFAR10_ROOT",
-        Path.home() / ".cache" / "rivet" / "datasets",
+        Path.home() / ".cache" / "rivet" / "datasets" / "cifar10",
     )
 )
 

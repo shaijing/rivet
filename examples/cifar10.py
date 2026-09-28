@@ -7,7 +7,7 @@ agree with the inline path.
 
 The input directory should contain Rivet-native Lance splits:
 
-    ~/.cache/rivet/datasets/
+    ~/.cache/rivet/datasets/cifar10/
     ├── train.lance/
     └── test.lance/
 
@@ -28,7 +28,7 @@ import rivet
 
 BATCH_SIZE = 64
 N_BATCHES = 4  # keep the demo quick; set to None to drain everything
-DEFAULT_LANCE_ROOT = Path.home() / ".cache" / "rivet" / "datasets"
+DEFAULT_LANCE_ROOT = Path.home() / ".cache" / "rivet" / "datasets" / "cifar10"
 
 
 def run(loader: object, max_batches: int | None) -> list[dict[str, object]]:

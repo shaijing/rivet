@@ -4971,6 +4971,7 @@ dependencies = [
  "rivet-data",
  "rivet-exec",
  "rivet-plan",
+ "serde_json",
  "thiserror 2.0.20",
  "tokio",
  "walkdir",

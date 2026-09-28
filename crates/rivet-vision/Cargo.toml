@@ -15,18 +15,19 @@ cuda = ["rivet-core/cuda"]
 arrow.workspace = true
 arrow-array.workspace = true
 arrow-buffer.workspace = true
+arrow-ipc.workspace = true
 image = "0.25.10"
 lance = { workspace = true, optional = true }
 rivet-core.workspace = true
 rivet-data.workspace = true
 rivet-exec.workspace = true
 rivet-plan.workspace = true
+serde_json = "1.0.149"
 thiserror.workspace = true
 tokio.workspace = true
 walkdir = "2.5.0"
 
 [dev-dependencies]
-arrow-ipc.workspace = true
 bytes.workspace = true
 criterion.workspace = true
 futures = "0.3.34"
@@ -48,6 +49,10 @@ required-features = ["lance"]
 
 [[example]]
 name = "lance_cifar"
+required-features = ["lance"]
+
+[[example]]
+name = "convert_hf_lance"
 required-features = ["lance"]
 
 [[example]]

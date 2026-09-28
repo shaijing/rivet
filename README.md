@@ -71,6 +71,24 @@ while let Some(batch) = loader.next_batch()? {
 
 More complete examples are available in `crates/rivet-vision/examples`.
 
+To convert a local Hugging Face Arrow cache into Rivet-native Lance splits:
+
+```bash
+cargo run -j 12 -p rivet-vision --features lance \
+  --example convert_hf_lance -- \
+  /path/to/huggingface/datasets
+```
+
+The converter discovers common `train`, `validation`, and `test` shard names,
+normalizes the image bytes and integer labels, writes one `.lance` directory
+per split under `~/.cache/rivet/datasets/<dataset-name>`, and creates the Rivet
+`dataset.json` manifest. Each physical Lance data file targets a maximum of 2
+GiB and 1,048,576 rows by default; Lance checks the byte limit at row-group
+boundaries, so the final file can be slightly larger. Override these settings
+with `--max-bytes-per-file <bytes>` and `--max-rows-per-file <rows>`. Pass an
+output path to override the default. Use `--image-column`, `--label-column`,
+`--keep-path`, or `--overwrite` when needed.
+
 The fixed operator decomposition benchmark uses the local CIFAR-10 Arrow
 cache with `batch=128` and `workers=4`:
 

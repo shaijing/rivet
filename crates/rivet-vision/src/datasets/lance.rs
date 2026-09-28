@@ -1,8 +1,14 @@
+mod convert;
 mod dataset;
 mod loader;
 mod row;
 mod schema;
 
+pub use convert::{
+    DEFAULT_MAX_BYTES_PER_FILE, DEFAULT_MAX_ROWS_PER_FILE, HuggingFaceLanceOptions,
+    HuggingFaceSplit, LanceConversionReport, convert_huggingface_dataset,
+    discover_huggingface_splits,
+};
 pub use dataset::LanceImageDataset;
 pub use loader::load_lance_image_dataset;
 #[cfg(test)]
