@@ -5,6 +5,8 @@ use crate::storage::validate_layout_for_storage;
 use crate::{Error, Layout, Result};
 use std::ops::{Add, Div, Mul, Sub};
 
+pub(crate) mod extensions;
+
 #[cfg(feature = "blas")]
 use rivet_blas_sys::cblas::prelude::*;
 
@@ -42,7 +44,12 @@ pub(crate) trait LinearFloat:
         unit: bool,
     ) -> bool;
     #[cfg(feature = "blas")]
-    fn native_product(product: &Product<'_, Self>, output: &mut [Self], alpha: Self) -> bool;
+    fn native_product(
+        product: &Product<'_, Self>,
+        output: &mut [Self],
+        alpha: Self,
+        beta: Self,
+    ) -> bool;
     #[cfg(feature = "blas")]
     fn native_outer(
         x: Input<'_, Self>,
@@ -51,7 +58,7 @@ pub(crate) trait LinearFloat:
         alpha: Self,
     ) -> bool;
     #[cfg(feature = "blas")]
-    fn native_axpy(output: &mut [Self], x: &[Self], alpha: Self) -> bool;
+    fn native_axpy(output: &mut [Self], x: Input<'_, Self>, alpha: Self) -> bool;
     #[cfg(feature = "blas")]
     fn native_scale(output: &mut [Self], alpha: Self) -> bool;
 }
@@ -95,6 +102,9 @@ fn seed<T: LinearFloat>(
     beta: f64,
 ) -> Result<AlignedBuffer<T>> {
     let mut builder = AlignedBufferBuilder::new(len)?;
+    if len == 0 {
+        return builder.finish();
+    }
     let beta = T::from_f64(beta);
     if let Some(input) = input.filter(|_| beta != T::from_f64(0.0)) {
         if let Some((start, end)) = input.layout.contiguous_offsets() {
@@ -196,16 +206,26 @@ pub(crate) fn addmv<T: LinearFloat>(
 }
 
 fn multiply<T: LinearFloat>(product: &Product<'_, T>, output: &mut [T], alpha: T) -> Result<()> {
+    multiply_scaled(product, output, alpha, T::from_f64(1.0))
+}
+
+fn multiply_scaled<T: LinearFloat>(
+    product: &Product<'_, T>,
+    output: &mut [T],
+    alpha: T,
+    beta: T,
+) -> Result<()> {
     let Product { lhs, rhs, m, n, k } = *product;
     if m == 0 || n == 0 || k == 0 || alpha == T::from_f64(0.0) {
+        scale(output, beta.to_f64());
         return Ok(());
     }
     #[cfg(feature = "blas")]
-    if T::native_product(product, output, alpha) {
+    if T::native_product(product, output, alpha, beta) {
         return Ok(());
     }
     #[cfg(not(feature = "blas"))]
-    if gemm_product(product, output, alpha)? {
+    if gemm_product(product, output, alpha, beta)? {
         return Ok(());
     }
     for row in 0..m {
@@ -215,7 +235,11 @@ fn multiply<T: LinearFloat>(product: &Product<'_, T>, output: &mut [T], alpha: T
                 sum = sum + lhs.read(row, inner) * rhs.read(inner, col);
             }
             let offset = row * n + col;
-            output[offset] = output[offset] + alpha * sum;
+            output[offset] = if beta == T::from_f64(0.0) {
+                alpha * sum
+            } else {
+                beta * output[offset] + alpha * sum
+            };
         }
     }
     Ok(())
@@ -226,6 +250,7 @@ fn gemm_product<T: LinearFloat>(
     product: &Product<'_, T>,
     output: &mut [T],
     alpha: T,
+    beta: T,
 ) -> Result<bool> {
     let Product { lhs, rhs, m, n, k } = *product;
     let lhs_ptr = unsafe { lhs.values.as_ptr().add(lhs.layout.start_offset()) };
@@ -254,14 +279,14 @@ fn gemm_product<T: LinearFloat>(
             output.as_mut_ptr(),
             1,
             output_rs,
-            true,
+            beta != T::from_f64(0.0),
             lhs_ptr,
             lhs_cs,
             lhs_rs,
             rhs_ptr,
             rhs_cs,
             rhs_rs,
-            T::from_f64(1.0),
+            beta,
             alpha,
             false,
             false,
@@ -335,11 +360,8 @@ pub(crate) fn axpy<T: LinearFloat>(output: &mut [T], x: Input<'_, T>, alpha: f64
         return;
     }
     #[cfg(feature = "blas")]
-    if x.layout.is_contiguous() {
-        let start = x.layout.start_offset();
-        if T::native_axpy(output, &x.values[start..start + output.len()], alpha) {
-            return;
-        }
+    if T::native_axpy(output, x, alpha) {
+        return;
     }
     for (dst, offset) in output.iter_mut().zip(x.layout.strided_index()) {
         *dst = *dst + alpha * x.values[offset];
@@ -351,6 +373,9 @@ pub(crate) fn scale<T: LinearFloat>(output: &mut [T], alpha: f64) {
         return;
     }
     let alpha = T::from_f64(alpha);
+    if alpha == T::from_f64(1.0) {
+        return;
+    }
     if alpha == T::from_f64(0.0) {
         output.fill(T::from_f64(0.0));
         return;
@@ -534,6 +559,17 @@ pub(crate) fn batched<T: LinearFloat>(
     lhs: Input<'_, T>,
     rhs: Input<'_, T>,
 ) -> Result<AlignedBuffer<T>> {
+    batched_fused(lhs, rhs, None, 1.0, 0.0, false)
+}
+
+pub(crate) fn batched_fused<T: LinearFloat>(
+    lhs: Input<'_, T>,
+    rhs: Input<'_, T>,
+    add: Option<Input<'_, T>>,
+    alpha: f64,
+    beta: f64,
+    reduce: bool,
+) -> Result<AlignedBuffer<T>> {
     let rank = lhs.layout.dims().len();
     if rank < 2 || rhs.layout.dims().len() != rank {
         return Err(Error::MatmulShapeMismatch {
@@ -555,14 +591,30 @@ pub(crate) fn batched<T: LinearFloat>(
     }
     let count = crate::Shape::from(batch_dims.to_vec()).checked_elem_count()?;
     let matrix_len = m.checked_mul(n).ok_or(Error::StorageOutOfBounds)?;
-    let mut output = seed(
-        None,
+    let mut expected = if reduce {
+        Vec::new()
+    } else {
+        batch_dims.to_vec()
+    };
+    expected.extend_from_slice(&[m, n]);
+    if let Some(add) = add
+        && add.layout.dims() != expected
+    {
+        return Err(Error::ShapeMismatchBinary {
+            lhs: add.layout.dims().to_vec(),
+            rhs: expected,
+        });
+    }
+    let len = if reduce {
+        matrix_len
+    } else {
         count
             .checked_mul(matrix_len)
-            .ok_or(Error::StorageOutOfBounds)?,
-        0.0,
-    )?;
-    if count == 0 || m == 0 || n == 0 || k == 0 {
+            .ok_or(Error::StorageOutOfBounds)?
+    };
+    let mut output = seed(add, len, beta)?;
+    let alpha = T::from_f64(alpha);
+    if count == 0 || m == 0 || n == 0 || k == 0 || alpha == T::from_f64(0.0) {
         return Ok(output);
     }
     let lhs_batch = Layout::new(
@@ -592,10 +644,11 @@ pub(crate) fn batched<T: LinearFloat>(
         )?;
         let lhs = Input::new(lhs.values, &lhs_layout)?;
         let rhs = Input::new(rhs.values, &rhs_layout)?;
+        let start = if reduce { 0 } else { batch * matrix_len };
         multiply(
             &Product { lhs, rhs, m, n, k },
-            &mut output.as_mut_slice()[batch * matrix_len..(batch + 1) * matrix_len],
-            T::from_f64(1.0),
+            &mut output.as_mut_slice()[start..start + matrix_len],
+            alpha,
         )?;
     }
     Ok(output)
@@ -625,7 +678,7 @@ fn matrix(layout: &Layout) -> Option<(CBlasTranspose, CBlasInt)> {
 }
 
 macro_rules! impl_float {
-    ($ty:ty, $gemm:ident, $gemv:ident, $ger:ident, $axpy:ident, $scal:ident, $asum:ident, $syrk:ident, $symm:ident, $symv:ident, $trsm:ident) => {
+    ($ty:ty, $gemm:ident, $gemv:ident, $ger:ident, $axpy:ident, $scal:ident, $asum:ident, $syrk:ident, $symm:ident, $symv:ident, $trsm:ident, $trsv:ident) => {
         impl LinearFloat for $ty {
             fn from_f64(value: f64) -> Self {
                 value as Self
@@ -799,6 +852,24 @@ macro_rules! impl_float {
                 } else {
                     CBlasDiag::CblasNonUnit
                 };
+                if cols == 1 {
+                    // SAFETY: validated matrix and owned contiguous vector;
+                    // transpose/triangle flags describe the physical matrix.
+                    unsafe {
+                        $trsv(
+                            CBlasLayout::CBlasRowMajor,
+                            uplo,
+                            ta,
+                            diagonal,
+                            n,
+                            a.ptr(),
+                            lda,
+                            output.as_mut_ptr(),
+                            1,
+                        )
+                    }
+                    return true;
+                }
                 // SAFETY: square triangular A, checked non-zero diagonal
                 // unless unit, validated spans, and exclusive fresh output.
                 unsafe {
@@ -825,6 +896,7 @@ macro_rules! impl_float {
                 product: &Product<'_, Self>,
                 output: &mut [Self],
                 alpha: Self,
+                beta: Self,
             ) -> bool {
                 let Product { lhs, rhs, m, n, k } = *product;
                 let (Some((ta, lda)), Some((tb, ldb)), Ok(m), Ok(n), Ok(k)) = (
@@ -862,7 +934,7 @@ macro_rules! impl_float {
                             lda,
                             rhs.ptr(),
                             step,
-                            1.0,
+                            beta,
                             output.as_mut_ptr(),
                             1,
                         )
@@ -884,7 +956,7 @@ macro_rules! impl_float {
                         lda,
                         rhs.ptr(),
                         ldb,
-                        1.0,
+                        beta,
                         output.as_mut_ptr(),
                         n,
                     );
@@ -934,13 +1006,14 @@ macro_rules! impl_float {
             }
 
             #[cfg(feature = "blas")]
-            fn native_axpy(output: &mut [Self], x: &[Self], alpha: Self) -> bool {
-                let Ok(n) = CBlasInt::try_from(output.len()) else {
+            fn native_axpy(output: &mut [Self], x: Input<'_, Self>, alpha: Self) -> bool {
+                let Some((n, inc)) = extensions::vector(x) else {
                     return false;
                 };
-                // SAFETY: the caller provides equal-length contiguous slices;
-                // exclusive destination ownership rules out input aliasing.
-                unsafe { $axpy(n, alpha, x.as_ptr(), 1, output.as_mut_ptr(), 1) }
+                // SAFETY: caller provides matching logical lengths and a
+                // validated positive-stride input. Exclusive output ownership
+                // rules out input aliasing.
+                unsafe { $axpy(n, alpha, x.ptr(), inc, output.as_mut_ptr(), 1) }
                 true
             }
 
@@ -968,7 +1041,8 @@ impl_float!(
     cblas_ssyrk,
     cblas_ssymm,
     cblas_ssymv,
-    cblas_strsm
+    cblas_strsm,
+    cblas_strsv
 );
 impl_float!(
     f64,
@@ -981,5 +1055,6 @@ impl_float!(
     cblas_dsyrk,
     cblas_dsymm,
     cblas_dsymv,
-    cblas_dtrsm
+    cblas_dtrsm,
+    cblas_dtrsv
 );

@@ -143,6 +143,72 @@ RAYON_NUM_THREADS=1 FLEXIBLAS=OPENBLAS-SERIAL OPENBLAS_NUM_THREADS=1 OMP_NUM_THR
   cargo bench -j 12 -p rivet-core --bench linalg_ops --features blas -- --baseline default
 ```
 
+### Additional CPU BLAS operations
+
+The following APIs support CPU F32/F64. The default path uses Rust kernels
+and `gemm`; `blas` enables native kernels for supported layouts.
+
+| API | Formula or purpose | Native path |
+| --- | --- | --- |
+| `c.baddbmm(&a, &b, alpha, beta)` | `beta*C + alpha*A_i*B_i` per broadcast batch | GEMM/GEMV |
+| `c.addbmm(&a, &b, alpha, beta)` | `beta*C + alpha*sum(A_i*B_i)` across batch axes | Accumulate GEMM/GEMV into one matrix |
+| `c.symmetric_rank1_update(&x, alpha, beta, upper)` | `beta*C + alpha*x*x^T` | SYR |
+| `c.symmetric_rank2_update(&x, &y, alpha, beta, upper)` | `beta*C + alpha*(x*y^T + y*x^T)` | SYR2 |
+| `c.gram_update(&a, transpose, alpha, beta, upper)` | Update Gram with a matrix addend | SYRK |
+| `c.symmetric_rank2k_update(&a, &b, transpose, alpha, beta, upper)` | Symmetric cross-product update | SYR2K |
+| `a.symmetric_matmul_with_side(&b, upper, side)` | `A*B` or `B*A` | SYMM |
+| `a.triangular_matmul(&b, upper, unit_diagonal)` | Triangular `A*B` | TRMM |
+| `a.triangular_mv(&x, upper, unit_diagonal)` | Triangular `A*x` | TRMV |
+| `a.matrix_copy(transpose, alpha)` | Independent contiguous scaled copy | COPY / OMATCOPY |
+| `x.argmax_abs()` | Flattened logical index of the largest absolute element | IAMAX |
+
+Symmetric updates read only the chosen triangle of the addend and return a
+full symmetric tensor. `transpose=true` selects `A^T*A` for Gram and
+`A^T*B+B^T*A` for rank-2k; otherwise these compute `A*A^T` and `A*B^T+B*A^T`.
+Batch operands broadcast their leading dimensions; addends require the exact
+output shape. `addbmm` reduces all leading batch axes, including empty batches,
+without allocating intermediate batch products.
+
+`TriangularOptions` adds side and transpose controls to
+`triangular_matmul_with_options` and `triangular_solve_with_options`:
+
+```rust
+use rivet_core::{MatrixSide, TriangularOptions};
+let options = TriangularOptions {
+    upper: true,
+    unit_diagonal: false,
+    transpose: true,
+    side: MatrixSide::Right,
+};
+let product = a.triangular_matmul_with_options(&b, options)?; // B*A^T
+let solution = a.triangular_solve_with_options(&b, options)?; // X*A^T=B
+```
+
+Triangle selection refers to `A` before transposition. Unit diagonal ignores
+stored diagonal values. Non-unit solves reject exactly zero diagonals.
+Left-side vector solves use TRSV; matrix solves use TRSM. Tensor views remain
+borrowed on supported native paths, and general layouts use typed fallbacks.
+
+`ExclusiveTensor` additionally supports `addmm`, `addmv`, `addr`, `axpby`,
+`copy_from`, `rotate`, and `swap`, with contiguous CPU destinations and exact
+peer shapes. Matrix update shape/dtype/device validation finishes before any
+write. GEMM/GEMV apply `alpha/beta` directly to the existing destination.
+`axpy`, `axpby` and `copy_from` also accept positive-stride vector sources.
+`rotate` and `swap` require two separate exclusive storages; values outside an
+offset view are preserved. Zero coefficients ignore their operands for
+updates and scaled copies; zero rotation coefficients likewise skip terms.
+
+`argmax_abs` returns a `usize`, chooses the first tie or first NaN, and rejects
+empty tensors. `givens_rotation(a, b)` returns `Some((c, s, r))` for finite F64
+inputs, with `c*a+s*b=r` and `c*b-s*a=0`; nonfinite inputs return `None`.
+Scaling avoids intermediate overflow, although an unrepresentable `r` may
+still be infinite. AXPBY and OMATCOPY use the existing OpenBLAS/FlexiBLAS
+extension bindings; general layouts and non-BLAS builds retain Rust paths.
+
+The `linalg_extensions` group in the `linalg_ops` benchmark compares fused
+batch operations with compositions, and allocated `addmm` with exclusive
+updates. The exclusive benchmark excludes destination setup from timing.
+
 Run the focused test suites with:
 
 ```bash

@@ -26,4 +26,6 @@ pub use ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 pub use shape::Shape;
 pub use storage::Storage;
 pub use strided_index::StridedIndex;
-pub use tensor::{ExclusiveTensor, RangeElement, Tensor, TensorId};
+pub use tensor::{
+    ExclusiveTensor, MatrixSide, RangeElement, Tensor, TensorId, TriangularOptions, givens_rotation,
+};

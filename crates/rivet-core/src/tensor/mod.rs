@@ -12,6 +12,7 @@ mod ops;
 mod view;
 
 pub use construction::RangeElement;
+pub use linalg::{MatrixSide, TriangularOptions, givens_rotation};
 
 /// Unique identifier for a logical tensor node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

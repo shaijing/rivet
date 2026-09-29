@@ -97,12 +97,76 @@ fn batches(criterion: &mut Criterion) {
     group.finish();
 }
 
+fn extensions(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("linalg_extensions");
+    let (count, size) = (32, 64);
+    let a = Tensor::ones((count, size, size), DType::F32, &Device::Cpu).unwrap();
+    let b = Tensor::ones((1, size, size), DType::F32, &Device::Cpu).unwrap();
+    let c = Tensor::ones((count, size, size), DType::F32, &Device::Cpu).unwrap();
+    check(
+        &c.baddbmm(&a, &b, 1.0, 1.0).unwrap(),
+        &a.broadcast_matmul(&b).unwrap().add(&c).unwrap(),
+    );
+    group.bench_function("batch_matmul_add", |bench| {
+        bench.iter(|| black_box(a.broadcast_matmul(&b).unwrap().add(&c).unwrap()))
+    });
+    group.bench_function("baddbmm", |bench| {
+        bench.iter(|| black_box(c.baddbmm(&a, &b, 1.0, 1.0).unwrap()))
+    });
+    let c = Tensor::ones((size, size), DType::F32, &Device::Cpu).unwrap();
+    check(
+        &c.addbmm(&a, &b, 1.0, 1.0).unwrap(),
+        &a.broadcast_matmul(&b)
+            .unwrap()
+            .sum(0)
+            .unwrap()
+            .add(&c)
+            .unwrap(),
+    );
+    group.bench_function("batch_matmul_sum_add", |bench| {
+        bench.iter(|| {
+            black_box(
+                a.broadcast_matmul(&b)
+                    .unwrap()
+                    .sum(0)
+                    .unwrap()
+                    .add(&c)
+                    .unwrap(),
+            )
+        })
+    });
+    group.bench_function("addbmm", |bench| {
+        bench.iter(|| black_box(c.addbmm(&a, &b, 1.0, 1.0).unwrap()))
+    });
+    let a = Tensor::ones((size, size), DType::F32, &Device::Cpu).unwrap();
+    let b = Tensor::ones((size, size), DType::F32, &Device::Cpu).unwrap();
+    group.bench_function("addmm_allocated", |bench| {
+        bench.iter(|| black_box(c.addmm(&a, &b, 1.0, 0.0).unwrap()))
+    });
+    group.bench_function("addmm_exclusive", |bench| {
+        bench.iter_batched(
+            || {
+                Tensor::ones((size, size), DType::F32, &Device::Cpu)
+                    .unwrap()
+                    .try_into_exclusive()
+                    .unwrap()
+            },
+            |mut dst| {
+                dst.addmm(&a, &b, 1.0, 0.0).unwrap();
+                black_box(dst)
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default()
         .warm_up_time(Duration::from_millis(200))
         .measurement_time(Duration::from_millis(500))
         .sample_size(20);
-    targets = fused, batches
+    targets = fused, batches, extensions
 }
 criterion_main!(benches);

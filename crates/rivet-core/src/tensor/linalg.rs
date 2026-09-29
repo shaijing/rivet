@@ -5,6 +5,36 @@ use crate::storage::{Storage, validate_layout_for_storage};
 use crate::{CpuStorage, DType, Error, Result, Shape, WithDType};
 use std::sync::Arc;
 
+/// Select which side of a matrix product contains the structured matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MatrixSide {
+    #[default]
+    Left,
+    Right,
+}
+
+/// Triangle is selected before applying the optional transpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TriangularOptions {
+    pub upper: bool,
+    pub unit_diagonal: bool,
+    pub transpose: bool,
+    pub side: MatrixSide,
+}
+
+impl Default for TriangularOptions {
+    fn default() -> Self {
+        Self {
+            upper: false,
+            unit_diagonal: false,
+            transpose: false,
+            side: MatrixSide::Left,
+        }
+    }
+}
+
+pub use extensions::givens_rotation;
+
 macro_rules! dispatch {
     ($tensor:expr, $op:literal, $fun:ident $(, $arg:expr)*) => {
         match $tensor.dtype() {
@@ -14,6 +44,8 @@ macro_rules! dispatch {
         }
     };
 }
+
+mod extensions;
 
 fn values<'a, T: WithDType>(tensor: &'a Tensor, _op: &'static str) -> Result<&'a [T]> {
     match tensor.storage() {
