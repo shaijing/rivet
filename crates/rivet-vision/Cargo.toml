@@ -60,6 +60,10 @@ name = "convert_hf_lance"
 required-features = ["lance"]
 
 [[example]]
+name = "convert_imagefolder_lance"
+required-features = ["lance"]
+
+[[example]]
 name = "lancecopy"
 required-features = ["lance"]
 
