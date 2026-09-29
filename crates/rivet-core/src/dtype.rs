@@ -253,7 +253,7 @@ macro_rules! impl_with_dtype {
             fn cuda_storage_to_vec(
                 storage: &crate::cuda_backend::CudaStorage,
             ) -> Result<Vec<Self>> {
-                match &storage.data {
+                match storage.data.as_ref() {
                     crate::cuda_backend::CudaStorageSlice::$variant(data) => {
                         let values = data.stream().clone_dtoh(data).map_err(|error| {
                             crate::cuda_backend::cuda_error("device to host copy", error)

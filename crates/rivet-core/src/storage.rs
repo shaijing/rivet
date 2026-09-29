@@ -623,6 +623,23 @@ mod tests {
     use crate::cpu_backend::CpuDevice;
 
     #[test]
+    fn storage_keeps_the_cpu_payload_size_with_optional_backends() {
+        assert_eq!(
+            std::mem::size_of::<Storage>(),
+            std::mem::size_of::<CpuStorage>(),
+            "optional backends must not enlarge CPU storage allocations",
+        );
+
+        #[cfg(feature = "cuda")]
+        {
+            // Preserve the public variant constructor without boxing at
+            // callers. This test needs no CUDA runtime or physical GPU.
+            let _constructor: fn(CudaStorage) -> Storage = Storage::Cuda;
+            assert!(std::mem::size_of::<CudaStorage>() <= std::mem::size_of::<CpuStorage>());
+        }
+    }
+
+    #[test]
     fn cpu_storage_metadata_matches_the_logical_device() {
         let backend = CpuDevice;
         let shape = Shape::from(3);

@@ -247,23 +247,30 @@ impl CudaStorageSlice {
 /// A CUDA allocation together with the device that owns it.
 #[derive(Debug)]
 pub struct CudaStorage {
-    pub(crate) data: CudaStorageSlice,
+    // Keep the large CUDA allocation state out of the inline Storage enum.
+    // Otherwise enabling CUDA enlarges every CPU storage allocation too.
+    // Only CUDA allocations pay for this box; typed kernels still borrow
+    // CudaStorageSlice directly and views share the existing allocation.
+    pub(crate) data: Box<CudaStorageSlice>,
     device: Arc<CudaDevice>,
 }
 
 impl CudaStorage {
     pub(crate) fn from_data(device: Arc<CudaDevice>, data: CudaStorageSlice) -> Self {
-        Self { data, device }
+        Self {
+            data: Box::new(data),
+            device,
+        }
     }
 
     pub(crate) fn zeros(device: Arc<CudaDevice>, dtype: DType, len: usize) -> Result<Self> {
         let data = CudaStorageSlice::zeros(&device.cuda_stream(), dtype, len)?;
-        Ok(Self { data, device })
+        Ok(Self::from_data(device, data))
     }
 
     pub(crate) fn ones(device: Arc<CudaDevice>, dtype: DType, len: usize) -> Result<Self> {
         let data = CudaStorageSlice::ones(device.as_ref(), dtype, len)?;
-        Ok(Self { data, device })
+        Ok(Self::from_data(device, data))
     }
 
     pub(crate) fn from_host_vec<T: DeviceRepr>(
@@ -354,10 +361,8 @@ impl CudaStorage {
     }
 
     pub(crate) fn try_clone(&self) -> Result<Self> {
-        Ok(Self {
-            data: self.data.try_clone(self.device.as_ref())?,
-            device: Arc::clone(&self.device),
-        })
+        let data = self.data.try_clone(self.device.as_ref())?;
+        Ok(Self::from_data(Arc::clone(&self.device), data))
     }
 
     pub(crate) fn to_cpu_storage(&self, layout: &Layout) -> Result<CpuStorage> {
@@ -370,7 +375,7 @@ impl CudaStorage {
             }};
         }
 
-        match &self.data {
+        match self.data.as_ref() {
             CudaStorageSlice::U8(data) => copy_device!(U8, u8, data),
             CudaStorageSlice::U32(data) => copy_device!(U32, u32, data),
             CudaStorageSlice::I16(data) => copy_device!(I16, i16, data),
