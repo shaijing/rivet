@@ -26,6 +26,119 @@ inputs and image branch joins, while retaining the CPU linear fast path.
 
 ## Rust
 
+CPU F32/F64 matrix multiplication uses the Rust `gemm` crate by default. Enable
+the `rivet-core` feature `blas` to use native CBLAS instead:
+
+```toml
+rivet-core = { version = "0.1.0", features = ["blas"] }
+```
+
+The optional `rivet-blas-sys` binding defaults to dynamic LP64 FlexiBLAS.
+Install the FlexiBLAS development package so `pkg-config --libs flexiblas`
+works (for example, `flexiblas-devel` on Fedora). The resulting binary also
+requires the FlexiBLAS runtime. Both paths support CPU F32/F64 matrices,
+including offset, transposed, and padded views. Regular layouts use native
+kernels directly; other layouts use typed fallback loops without input copies.
+With `blas`, a single output column (including `mv`) uses `sgemv`/`dgemv`. F32/F64
+`dot` and `norm` use native vector reductions for supported layouts: `dot`
+accepts positive-stride vectors, while `norm` also accepts contiguous tensors
+of any rank. F32 `dot` uses `dsdot` to retain double-precision accumulation.
+Other dtypes, zero-stride broadcasts, and general strided norms use the
+existing kernels. BLAS reductions can differ in rounding; `nrm2` also avoids
+some overflow/underflow cases of a direct sum of squares.
+
+```bash
+cargo build -j 12 -p rivet-core --lib --features blas
+```
+
+`rivet-vision` and the Python extension forward their `blas` feature to
+`rivet-core`. Enable it for a Rust vision build or a Python extension build:
+
+```bash
+cargo build -j 12 -p rivet-vision --lib --features blas
+maturin develop --release -j 12 --features blas
+maturin build --release -j 12 --features blas
+```
+
+Lance remains enabled by default; add `--no-default-features` to build without
+Lance. BLAS is a Cargo build feature selected when compiling the extension.
+
+Compare vector reductions and matrix-vector multiplication in release mode:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 cargo bench -j 12 -p rivet-core \
+  --bench blas_ops -- --save-baseline default
+FLEXIBLAS=OPENBLAS-SERIAL OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 cargo bench -j 12 -p rivet-core \
+  --bench blas_ops --features blas -- --baseline default
+```
+
+The BLAS comparison selects FlexiBLAS's `OPENBLAS-SERIAL` backend explicitly;
+use an installed backend name from `flexiblas list` on other systems.
+
+Compare the original GEMM kernel and the BLAS kernel side by side in one
+process, including identical checks and aligned output allocation:
+
+```bash
+RAYON_NUM_THREADS=1 FLEXIBLAS=OPENBLAS-SERIAL OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  cargo bench -j 12 -p rivet-core --bench matmul_backends --features blas,bench-internals
+```
+
+The benchmark checks matching results before timing square, rectangular, and
+matrix-vector shapes. `gemm` uses the original Rayon policy; the command fixes
+Rayon and BLAS to one thread. For a parallel comparison, select a threaded
+FlexiBLAS backend and set both thread counts to the same value. Inputs are
+allocated once; every measured call allocates a fresh output. Criterion's
+elements/s here represents FLOP/s using the conventional `2*m*k*n` count.
+
+### CPU linear algebra
+
+These methods support F32/F64 with matching dtypes and devices. New fused and
+structured operations are CPU-only. Shapes are strict; `addmm`, `addmv`, and
+`addr` do not broadcast their addend. Coefficients are converted to the tensor
+dtype, and zero coefficients ignore the corresponding operand values.
+
+| Method | Operation | BLAS path |
+| --- | --- | --- |
+| `c.addmm(&a, &b, alpha, beta)` | `beta*C + alpha*A*B` | GEMM |
+| `y.addmv(&a, &x, alpha, beta)` | `beta*y + alpha*A*x` | GEMV |
+| `x.outer(&y)` | `x*y^T` | GER |
+| `a.addr(&x, &y, alpha, beta)` | `beta*A + alpha*x*y^T` | GER |
+| `x.norm_l1()` | Sum of absolute values | ASUM |
+| `a.gram(true)` / `a.gram(false)` | `A^T*A` / `A*A^T` | SYRK, then mirror triangle |
+| `a.symmetric_matmul(&b, upper)` | Symmetric `A*B` using one triangle | SYMM |
+| `a.symmetric_mv(&x, upper)` | Symmetric `A*x` using one triangle | SYMV |
+| `a.triangular_solve(&b, upper, unit_diagonal)` | Solve `A*X=B`, vector or matrix RHS | TRSM |
+
+`upper=true` selects the upper triangle; the other triangle is ignored. A unit
+diagonal ignores stored diagonal values. Otherwise triangular solve reports an
+exactly zero diagonal as `SingularMatrix`. Gram returns a full symmetric matrix.
+BLAS reductions may have different rounding from the default kernels.
+
+Immutable tensors retain their shared-storage semantics. In-place vector
+updates require exclusive contiguous CPU storage and support offset views:
+
+```rust
+let mut owned = tensor.try_into_exclusive().unwrap();
+owned.axpy(0.5, &x)?; // owned += 0.5 * x; AXPY when available
+owned.scale(2.0)?;   // owned *= 2; SCAL when available
+let tensor = owned.into_tensor(); // no allocation or storage copy
+```
+
+`axpy` requires exact shape/dtype/device matching. Non-contiguous sources use
+a typed fallback. A zero `scale` clears the view, including NaNs; values outside
+the view are preserved. Shared tensors must release aliases before exclusive
+transfer succeeds. CPU `broadcast_matmul` retains broadcast views and writes
+every batch directly into one final allocation.
+
+Compare fused vs. composed operations and direct vs. legacy batch output:
+
+```bash
+RAYON_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  cargo bench -j 12 -p rivet-core --bench linalg_ops -- --save-baseline default
+RAYON_NUM_THREADS=1 FLEXIBLAS=OPENBLAS-SERIAL OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  cargo bench -j 12 -p rivet-core --bench linalg_ops --features blas -- --baseline default
+```
+
 Run the focused test suites with:
 
 ```bash

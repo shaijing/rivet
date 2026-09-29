@@ -802,19 +802,23 @@ fn phase_gemm_reports_phase1_shape_dtype_layout_and_empty_contracts() {
         Err(Error::MatmulShapeMismatch { .. })
     ));
 
-    let f64_lhs = Tensor::ones((2, 2), DType::F64, &Device::Cpu).unwrap();
-    let f64_rhs = Tensor::ones((2, 2), DType::F64, &Device::Cpu).unwrap();
+    let f16_lhs = Tensor::ones((2, 2), DType::F16, &Device::Cpu).unwrap();
+    let f16_rhs = Tensor::ones((2, 2), DType::F16, &Device::Cpu).unwrap();
     assert!(matches!(
-        f64_lhs.matmul(&f64_rhs),
-        Err(Error::UnsupportedMatmulDType { dtype: DType::F64 })
+        f16_lhs.matmul(&f16_rhs),
+        Err(Error::UnsupportedMatmulDType { dtype: DType::F16 })
     ));
 
     let transposed = lhs.transpose(0, 1).unwrap();
     let compatible_rhs = Tensor::ones((2, 2), DType::F32, &Device::Cpu).unwrap();
-    assert!(matches!(
-        transposed.matmul(&compatible_rhs),
-        Err(Error::UnsupportedMatmulLayout)
-    ));
+    assert_eq!(
+        transposed
+            .matmul(&compatible_rhs)
+            .unwrap()
+            .to_vec::<f32>()
+            .unwrap(),
+        [2.0; 6]
+    );
 
     let empty_lhs = Tensor::zeros((0, 3), DType::F32, &Device::Cpu).unwrap();
     let empty_rhs = Tensor::ones((3, 2), DType::F32, &Device::Cpu).unwrap();
@@ -942,6 +946,164 @@ fn phase4_broadcast_matmul_mv_cumsum_and_log_sum_exp_work() {
             - (0.0f32.exp() + 1.0f32.exp() + 2.0f32.exp() + 3.0f32.exp()).ln())
         .abs()
             < 1e-6
+    );
+}
+
+#[test]
+fn vector_reductions_support_offsets_strides_and_fallback_layouts() {
+    let matrix =
+        Tensor::from_vec((1..=9).map(|v| v as f32).collect(), (3, 3), &Device::Cpu).unwrap();
+    let column = matrix.get_on_dim(1, 1).unwrap();
+    let rhs = Tensor::from_vec(vec![0.0f32, 1.0, 2.0, 3.0], 4, &Device::Cpu)
+        .unwrap()
+        .narrow(0, 1, 3)
+        .unwrap();
+    assert_eq!(column.dot(&rhs).unwrap().to_scalar::<f32>().unwrap(), 36.0);
+    assert!((column.norm().unwrap().to_scalar::<f32>().unwrap() - 93.0f32.sqrt()).abs() < 1e-6);
+    let transposed = matrix.transpose(0, 1).unwrap();
+    assert!(
+        (transposed.norm().unwrap().to_scalar::<f32>().unwrap() - 285.0f32.sqrt()).abs() < 2e-6
+    );
+    assert!((matrix.norm().unwrap().to_scalar::<f32>().unwrap() - 285.0f32.sqrt()).abs() < 2e-6);
+
+    let broadcast = Tensor::from_vec(vec![2.0f32], 1, &Device::Cpu)
+        .unwrap()
+        .broadcast_as(3)
+        .unwrap();
+    assert_eq!(
+        broadcast.dot(&rhs).unwrap().to_scalar::<f32>().unwrap(),
+        12.0
+    );
+    assert!((broadcast.norm().unwrap().to_scalar::<f32>().unwrap() - 12.0f32.sqrt()).abs() < 1e-6);
+
+    let double = Tensor::from_vec(vec![0.0f64, 3.0, 4.0], 3, &Device::Cpu)
+        .unwrap()
+        .narrow(0, 1, 2)
+        .unwrap();
+    assert_eq!(double.norm().unwrap().to_scalar::<f64>().unwrap(), 5.0);
+    assert_eq!(
+        double.dot(&double).unwrap().to_scalar::<f64>().unwrap(),
+        25.0
+    );
+    let double_column = matrix
+        .to_dtype(DType::F64)
+        .unwrap()
+        .get_on_dim(1, 1)
+        .unwrap();
+    assert_eq!(
+        double_column
+            .dot(&double_column)
+            .unwrap()
+            .to_scalar::<f64>()
+            .unwrap(),
+        93.0
+    );
+    assert!(
+        (double_column.norm().unwrap().to_scalar::<f64>().unwrap() - 93.0f64.sqrt()).abs() < 1e-12
+    );
+
+    for dtype in [DType::F16, DType::BF16] {
+        let vector = Tensor::from_vec(vec![3.0f32, 4.0], 2, &Device::Cpu)
+            .unwrap()
+            .to_dtype(dtype)
+            .unwrap();
+        assert_eq!(
+            vector
+                .dot(&vector)
+                .unwrap()
+                .to_dtype(DType::F32)
+                .unwrap()
+                .to_scalar::<f32>()
+                .unwrap(),
+            25.0
+        );
+        assert_eq!(
+            vector
+                .norm()
+                .unwrap()
+                .to_dtype(DType::F32)
+                .unwrap()
+                .to_scalar::<f32>()
+                .unwrap(),
+            5.0
+        );
+    }
+}
+
+#[cfg(feature = "blas")]
+#[test]
+fn blas_norm_handles_large_and_tiny_f64_values_without_square_overflow() {
+    for magnitude in [1e200f64, 1e-200] {
+        let values = Tensor::from_vec(vec![magnitude, magnitude], 2, &Device::Cpu).unwrap();
+        let norm = values.norm().unwrap().to_scalar::<f64>().unwrap();
+        assert!(norm.is_finite() && norm > 0.0);
+        assert!((norm / magnitude - 2.0f64.sqrt()).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn vector_reductions_preserve_empty_scalar_and_f32_accumulation_contracts() {
+    let empty = Tensor::zeros(0, DType::F32, &Device::Cpu).unwrap();
+    assert_eq!(empty.dot(&empty).unwrap().to_scalar::<f32>().unwrap(), 0.0);
+    assert_eq!(empty.norm().unwrap().to_scalar::<f32>().unwrap(), 0.0);
+    let scalar = Tensor::from_vec(vec![-3.0f64], (), &Device::Cpu).unwrap();
+    assert_eq!(scalar.norm().unwrap().to_scalar::<f64>().unwrap(), 3.0);
+
+    let cancellation = Tensor::from_vec(vec![1e8f32, 1.0, -1e8], 3, &Device::Cpu).unwrap();
+    let ones = Tensor::ones(3, DType::F32, &Device::Cpu).unwrap();
+    assert_eq!(
+        cancellation.dot(&ones).unwrap().to_scalar::<f32>().unwrap(),
+        1.0
+    );
+    let huge = Tensor::from_vec(vec![1e20f32, -1e20], 2, &Device::Cpu).unwrap();
+    let rhs = Tensor::from_vec(vec![1e20f32, 1e20], 2, &Device::Cpu).unwrap();
+    assert_eq!(huge.dot(&rhs).unwrap().to_scalar::<f32>().unwrap(), 0.0);
+    let norm = huge.norm().unwrap().to_scalar::<f32>().unwrap();
+    assert!(norm.is_finite());
+    assert!((norm / 1e20 - 2.0f32.sqrt()).abs() < 1e-6);
+}
+
+#[test]
+fn matrix_vector_path_supports_offset_singleton_and_zero_inner_dimensions() {
+    let matrix = Tensor::from_vec(
+        vec![0.0f32, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        (3, 3),
+        &Device::Cpu,
+    )
+    .unwrap()
+    .narrow(0, 1, 2)
+    .unwrap();
+    let vector = Tensor::from_vec(vec![0.0f32, 1.0, 2.0, 3.0], 4, &Device::Cpu)
+        .unwrap()
+        .narrow(0, 1, 3)
+        .unwrap();
+    assert_eq!(
+        matrix.mv(&vector).unwrap().to_vec::<f32>().unwrap(),
+        [14.0, 32.0]
+    );
+    assert_eq!(
+        matrix
+            .matmul(&vector.unsqueeze(1).unwrap())
+            .unwrap()
+            .to_vec::<f32>()
+            .unwrap(),
+        [14.0, 32.0]
+    );
+    let zero_inner = Tensor::zeros((2, 0), DType::F32, &Device::Cpu).unwrap();
+    let empty = Tensor::zeros(0, DType::F32, &Device::Cpu).unwrap();
+    assert_eq!(
+        zero_inner.mv(&empty).unwrap().to_vec::<f32>().unwrap(),
+        [0.0, 0.0]
+    );
+    let singleton = Tensor::from_vec(vec![3.0f32], (1, 1), &Device::Cpu).unwrap();
+    let singleton_vector = Tensor::from_vec(vec![2.0f32], 1, &Device::Cpu).unwrap();
+    assert_eq!(
+        singleton
+            .mv(&singleton_vector)
+            .unwrap()
+            .to_vec::<f32>()
+            .unwrap(),
+        [6.0]
     );
 }
 

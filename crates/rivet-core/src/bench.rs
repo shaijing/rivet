@@ -3,7 +3,8 @@
 //! This module is feature-gated so the low-level paths being compared do not
 //! become part of Rivet's supported public API.
 
-use crate::cpu_backend::buffer::AlignedBufferBuilder;
+use crate::cpu_backend::buffer::{AlignedBuffer, AlignedBufferBuilder};
+use crate::cpu_backend::matmul;
 use crate::cpu_backend::utils::ValidatedValues;
 use crate::storage::validate_layout_for_storage;
 use crate::{Error, Layout, Result};
@@ -55,4 +56,45 @@ pub fn sum_validated_strided(values: &[u8], layout: &Layout) -> Result<u64> {
 /// Sums a contiguous slice without strided indexing.
 pub fn sum_contiguous(values: &[u8]) -> u64 {
     values.iter().map(|&value| u64::from(value)).sum()
+}
+
+/// Identical aligned inputs for both CPU matmul implementations. Construction
+/// is outside the timed loop; each multiply allocates its own aligned output.
+pub struct MatmulCase {
+    lhs: AlignedBuffer<f32>,
+    rhs: AlignedBuffer<f32>,
+    lhs_layout: Layout,
+    rhs_layout: Layout,
+}
+
+impl MatmulCase {
+    pub fn new(m: usize, k: usize, n: usize) -> Result<Self> {
+        let lhs_len = m.checked_mul(k).ok_or(Error::StorageOutOfBounds)?;
+        let rhs_len = k.checked_mul(n).ok_or(Error::StorageOutOfBounds)?;
+        let mut lhs = AlignedBufferBuilder::new(lhs_len)?;
+        let mut rhs = AlignedBufferBuilder::new(rhs_len)?;
+        for index in 0..lhs_len {
+            lhs.write_next((index % 17) as f32 * 0.125 - 1.0)?;
+        }
+        for index in 0..rhs_len {
+            rhs.write_next((index % 13) as f32 * 0.25 - 1.5)?;
+        }
+        Ok(Self {
+            lhs: lhs.finish()?,
+            rhs: rhs.finish()?,
+            lhs_layout: Layout::contiguous((m, k)),
+            rhs_layout: Layout::contiguous((k, n)),
+        })
+    }
+
+    /// Original Rivet GEMM path, including its Rayon parallelism policy.
+    pub fn gemm(&self) -> Result<impl AsRef<[f32]>> {
+        matmul::f32_gemm(&self.lhs, &self.lhs_layout, &self.rhs, &self.rhs_layout)
+    }
+
+    /// Production BLAS path, including GEMV for a single output column.
+    #[cfg(feature = "blas")]
+    pub fn blas(&self) -> Result<impl AsRef<[f32]>> {
+        matmul::f32(&self.lhs, &self.lhs_layout, &self.rhs, &self.rhs_layout)
+    }
 }

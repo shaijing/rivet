@@ -7,6 +7,7 @@ mod access;
 mod construction;
 mod convert;
 mod index;
+mod linalg;
 mod ops;
 mod view;
 

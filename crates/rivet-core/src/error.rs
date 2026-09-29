@@ -125,6 +125,12 @@ pub enum Error {
     #[error("unsupported matmul layout")]
     UnsupportedMatmulLayout,
 
+    #[error("unsupported layout for {op}: expected contiguous storage")]
+    UnsupportedLayoutForOp { op: &'static str },
+
+    #[error("triangular matrix has a zero diagonal at index {index}")]
+    SingularMatrix { index: usize },
+
     #[error("{op} received negative index {value}")]
     NegativeIndex { op: &'static str, value: i64 },
 

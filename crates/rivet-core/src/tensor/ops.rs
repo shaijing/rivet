@@ -228,7 +228,8 @@ impl Tensor {
     /// Computes a rank-2 matrix product using the CPU GEMM backend or CUDA
     /// cuBLAS for supported device dtypes.
     ///
-    /// CPU execution currently requires contiguous rank-2 inputs; CUDA
+    /// CPU execution supports F32/F64 inputs including transposed and strided
+    /// views, with native kernels for supported layouts; CUDA
     /// supports regular row/column-major views and materializes general
     /// strided inputs. The output is always a fresh row-major contiguous
     /// tensor.
@@ -306,16 +307,20 @@ impl Tensor {
         let mut rhs_broadcast_dims = batch.dims().to_vec();
         rhs_broadcast_dims.extend_from_slice(&rhs_matrix);
 
-        let lhs = self
-            .broadcast_as(lhs_broadcast_dims.clone())?
-            .contiguous()?;
-        let rhs = rhs.broadcast_as(rhs_broadcast_dims.clone())?.contiguous()?;
+        let lhs = self.broadcast_as(lhs_broadcast_dims.clone())?;
+        let rhs = rhs.broadcast_as(rhs_broadcast_dims.clone())?;
         let batch_count = batch.elem_count();
         let mut output_dims = batch.dims().to_vec();
         output_dims.extend_from_slice(&[lhs_matrix[0], rhs_matrix[1]]);
         if batch_count == 0 {
             return Self::zeros(output_dims, self.dtype(), self.device());
         }
+
+        if let Some(output) = lhs.cpu_broadcast_matmul(&rhs, Shape::from(output_dims.clone()))? {
+            return Ok(output);
+        }
+        let lhs = lhs.contiguous()?;
+        let rhs = rhs.contiguous()?;
 
         let lhs = lhs.reshape((batch_count, lhs_matrix[0], lhs_matrix[1]))?;
         let rhs = rhs.reshape((batch_count, rhs_matrix[0], rhs_matrix[1]))?;

@@ -14,6 +14,7 @@ path = "src/lib.rs"
 [features]
 default = ["lance"]
 lance = ["rivet-vision/lance"]
+blas = ["rivet-vision/blas"]
 cuda = ["rivet-vision/cuda"]
 
 [dependencies]

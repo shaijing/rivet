@@ -1,7 +1,10 @@
+#[cfg(feature = "blas")]
+mod blas;
 pub(crate) mod buffer;
 pub(crate) mod device;
 pub(crate) mod dispatch;
 pub(crate) mod index;
+pub(crate) mod linalg;
 pub(crate) mod math;
 pub(crate) mod matmul;
 pub(crate) mod storage;

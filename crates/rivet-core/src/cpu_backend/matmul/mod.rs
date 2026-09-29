@@ -1,5 +1,8 @@
+#[cfg(feature = "blas")]
+mod blas;
+
 use crate::cpu_backend::buffer::{AlignedBuffer, AlignedBufferBuilder};
-use crate::cpu_backend::storage::{aligned, CpuStorage};
+use crate::cpu_backend::storage::{CpuStorage, aligned};
 use crate::{Error, Layout, Result};
 
 impl CpuStorage {
@@ -16,9 +19,27 @@ impl CpuStorage {
             });
         }
         match (self, rhs) {
+            (Self::F32(lhs), Self::F32(rhs))
+                if !lhs_layout.is_contiguous() || !rhs_layout.is_contiguous() =>
+            {
+                Ok(Self::F32(super::linalg::addmm(
+                    super::linalg::Input::new(lhs, lhs_layout)?,
+                    super::linalg::Input::new(rhs, rhs_layout)?,
+                    None,
+                    1.0,
+                    0.0,
+                )?))
+            }
             (Self::F32(lhs), Self::F32(rhs)) => {
                 Ok(Self::F32(aligned(f32(lhs, lhs_layout, rhs, rhs_layout)?)?))
             }
+            (Self::F64(lhs), Self::F64(rhs)) => Ok(Self::F64(super::linalg::addmm(
+                super::linalg::Input::new(lhs, lhs_layout)?,
+                super::linalg::Input::new(rhs, rhs_layout)?,
+                None,
+                1.0,
+                0.0,
+            )?)),
             _ => Err(Error::UnsupportedMatmulDType {
                 dtype: self.dtype(),
             }),
@@ -29,9 +50,34 @@ impl CpuStorage {
 const GEMM_POINTER_ALIGNMENT: usize = 16;
 
 /// Executes a rank-2 row-major F32 matrix multiplication without copying the
-/// input allocations. The `gemm` crate accepts explicit strides, so the
-/// contiguous layouts may still point into a non-zero storage offset.
+/// input allocations. Contiguous views may have a non-zero storage offset.
+/// The `blas` feature selects native CBLAS; otherwise the `gemm` crate is used.
 pub(crate) fn f32(
+    lhs: &[f32],
+    lhs_layout: &Layout,
+    rhs: &[f32],
+    rhs_layout: &Layout,
+) -> Result<AlignedBuffer<f32>> {
+    #[cfg(feature = "blas")]
+    return f32_impl::<true>(lhs, lhs_layout, rhs, rhs_layout);
+    #[cfg(not(feature = "blas"))]
+    f32_impl::<false>(lhs, lhs_layout, rhs, rhs_layout)
+}
+
+/// Keep the original GEMM path available for comparisons in a BLAS build.
+#[cfg(feature = "bench-internals")]
+pub(crate) fn f32_gemm(
+    lhs: &[f32],
+    lhs_layout: &Layout,
+    rhs: &[f32],
+    rhs_layout: &Layout,
+) -> Result<AlignedBuffer<f32>> {
+    f32_impl::<false>(lhs, lhs_layout, rhs, rhs_layout)
+}
+
+// A const parameter keeps backend selection static, while both benchmark
+// paths share shape/bounds checks and the exact same output allocation.
+fn f32_impl<const USE_BLAS: bool>(
     lhs: &[f32],
     lhs_layout: &Layout,
     rhs: &[f32],
@@ -78,6 +124,19 @@ pub(crate) fn f32(
         .ok_or(Error::StorageOutOfBounds)?;
     if lhs.get(lhs_start..lhs_end).is_none() || rhs.get(rhs_start..rhs_end).is_none() {
         return Err(Error::StorageOutOfBounds);
+    }
+
+    #[cfg(feature = "blas")]
+    if USE_BLAS {
+        blas::f32(
+            &lhs[lhs_start..lhs_end],
+            &rhs[rhs_start..rhs_end],
+            output.as_mut_slice(),
+            m,
+            n,
+            k,
+        )?;
+        return Ok(output);
     }
 
     let lhs_cs =

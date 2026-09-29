@@ -2,7 +2,7 @@ use super::buffer::{AlignedBuffer, AlignedBufferBuilder};
 use super::utils::{ReduceElement, ValidatedValues};
 use crate::{Error, Layout, Result, Shape};
 
-use super::storage::{aligned, CpuStorage};
+use super::storage::{CpuStorage, aligned};
 use half::{bf16, f16};
 
 fn aligned_try_iter<T, I>(iter: I) -> Result<AlignedBuffer<T>>
@@ -237,6 +237,20 @@ impl CpuStorage {
                 rhs: rhs.dtype(),
             });
         }
+        #[cfg(feature = "blas")]
+        if lhs_layout.dims().len() != 1
+            || rhs_layout.dims().len() != 1
+            || lhs_layout.shape() != rhs_layout.shape()
+        {
+            return Err(Error::ShapeMismatchBinary {
+                lhs: lhs_layout.dims().to_vec(),
+                rhs: rhs_layout.dims().to_vec(),
+            });
+        }
+        #[cfg(feature = "blas")]
+        if let Some(output) = self.blas_dot(lhs_layout, rhs, rhs_layout)? {
+            return Ok(output);
+        }
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 match (self, rhs) {
@@ -261,6 +275,10 @@ impl CpuStorage {
     }
 
     pub(crate) fn norm(&self, layout: &Layout) -> Result<Self> {
+        #[cfg(feature = "blas")]
+        if let Some(output) = self.blas_norm(layout)? {
+            return Ok(output);
+        }
         macro_rules! dispatch {
             ($variant:ident, $ty:ty) => {
                 if let Self::$variant(values) = self {
