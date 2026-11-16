@@ -15,4 +15,4 @@ default = []
 cutile = []
 
 [build-dependencies]
-cudaforge = "0.1.2"
+cudaforge = "0.1.6"
