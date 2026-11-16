@@ -28,15 +28,18 @@ pub use crate::sample::image::{
 };
 pub use crate::source::ImageSource;
 pub use crate::transforms::{
-    ArbitraryRotateConfig, AutocontrastConfig, BrightnessConfig, CenterCropConfig,
+    AffineConfig, ArbitraryRotateConfig, AugMixConfig, AugMixPlan, AugmentOp, AugmentStep,
+    AutoAugmentConfig, AutoAugmentPolicy, AutocontrastConfig, BrightnessConfig, CenterCropConfig,
     ColorJitterConfig, ContrastConfig, ConvertImageDtypeConfig, CropConfig, CropRegion,
-    DecodeImageConfig, ElasticTransformConfig, EqualizeConfig, EraseRegion, FiveCropConfig,
-    FlipConfig, FlipDirection, GaussianBlurConfig, GrayscaleConfig, HueConfig, InterpolationMode,
-    InvertConfig, LayoutConfig, NormalizeConfig, PadConfig, PaddingMode, PerspectiveConfig, Point2,
-    PosterizeConfig, RandomAffineConfig, RandomCropConfig, RandomErasingConfig,
-    RandomGrayscaleConfig, RandomHorizontalFlipConfig, RandomPerspectiveConfig,
-    RandomResizedCropConfig, ResizeConfig, RotateConfig, RotationAngle, SharpnessConfig,
-    SolarizeConfig, TenCropConfig,
+    DecodeImageConfig, ElasticTransformConfig, EqualizeConfig, EraseConfig, EraseRegion,
+    FiveCropConfig, FlipConfig, FlipDirection, GammaConfig, GaussianBlurConfig, GrayscaleConfig,
+    HueConfig, InterpolationMode, InvertConfig, LayoutConfig, LinearTransformationConfig,
+    NormalizeConfig, PadConfig, PaddingMode, PerspectiveConfig, Point2, PosterizeConfig,
+    RandAugmentConfig, RandomAffineConfig, RandomCropConfig, RandomErasingConfig,
+    RandomGaussianBlurConfig, RandomGrayscaleConfig, RandomHorizontalFlipConfig,
+    RandomPerspectiveConfig, RandomResizedCropConfig, RandomRotationConfig, ResizeConfig,
+    RotateConfig, RotationAngle, SaturationConfig, SharpnessConfig, SolarizeConfig, TenCropConfig,
+    TrivialAugmentWideConfig,
 };
 pub use rivet_core::DType;
 pub use rivet_data::random::{

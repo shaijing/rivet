@@ -25,7 +25,7 @@ results across all future torchvision releases or devices.
 
 | Operation | Rust behavior and reference |
 | --- | --- |
-| Resize / resized crop | Pillow's normalized separable filters, signed 22-bit weights, horizontal then vertical u8 rounding. Nearest, bilinear, bicubic and Lanczos3 are checked byte for byte, including upsampling, downsampling and single-pixel axes. |
+| Resize / resized crop | Pillow's normalized separable filters, signed 22-bit weights, horizontal then vertical u8 rounding. Nearest, bilinear, bicubic, Lanczos3, BOX and HAMMING are checked byte for byte, including upsampling, downsampling and single-pixel axes. |
 | Brightness | Nonnegative multiplicative factor, Pillow float32 blend and truncation. |
 | Contrast | Blend against the rounded mean of the Pillow L image, rather than a fixed mid-gray value. |
 | Hue | Pillow RGB → HSV → RGB conversion, wrapping an integer hue offset derived from a factor in `[-0.5, 0.5]`. |
@@ -49,7 +49,8 @@ Alignment applies to the sampling policy and to execution for equal parameters:
 
 - ColorJitter samples brightness/contrast factors around 1 and hue around 0,
   shuffles operation order, and skips disabled adjustments. This API covers
-  brightness, contrast and hue; it does not expose saturation jitter.
+  brightness, contrast, saturation and hue. Saturation is an appended optional
+  argument, so the earlier three positional arguments retain their order.
 - RandomAffine uses rounded integer translation drawn from fractions of full
   image width/height and torchvision's rotation/scale/shear matrix composition.
 - RandomPerspective draws integer corner points inward within torchvision's
@@ -103,7 +104,7 @@ across every quadrilateral. Gaussian blur and elastic sampling may have small
 floating-point differences from PyTorch's CPU/GPU kernels. Reflection blur
 padding must be smaller than image dimensions, as in PyTorch. Geometry supports
 nearest/bilinear/bicubic; elastic sampling supports nearest/bilinear. Lanczos is
-available for resize, not warp sampling. Zero-sized image configurations and
+available for resize, not warp sampling. BOX and HAMMING are resize-only too. Zero-sized image configurations and
 per-channel/random-valued erasure are not covered.
 
 ## Validation
@@ -130,3 +131,8 @@ mean `731604 img/s`, versus the same-environment reference mean `731303 img/s`
 Subsequent semantics-preserving fast paths and their current validation and
 throughput measurements are documented in
 [compatible transform performance](perf/torchvision-compatible-transforms.md).
+
+
+See the [torchvision API coverage inventory](torchvision-coverage.md) for the
+subsequent migration of missing operators, policy algorithms, native Tensor
+conversion equivalents, and remaining v2/data-model gaps.

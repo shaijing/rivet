@@ -356,6 +356,43 @@ pub(crate) fn infer_image_op(
             require_u8_decoded(input_state, "RandomHorizontalFlip")?;
             output.contiguity = Some(Contiguity::Unknown);
         }
+        ImageOp::Saturation(_) | ImageOp::Gamma(_) | ImageOp::RandomGaussianBlur(_) => {
+            require_u8_hwc(input_state, op.name())?;
+            output.contiguity = Some(Contiguity::Contiguous);
+        }
+        ImageOp::Affine(_) => {
+            require_u8_decoded(input_state, op.name())?;
+            output.contiguity = Some(Contiguity::Contiguous);
+        }
+        ImageOp::RandomRotation(config) => {
+            require_u8_decoded(input_state, op.name())?;
+            if config.expand {
+                make_spatial_dynamic(&mut output);
+            }
+            output.contiguity = Some(Contiguity::Contiguous);
+        }
+        ImageOp::Erase(_) => {
+            require_u8_or_f32_decoded(input_state, op.name())?;
+            validate_rank(input, "erase")?;
+            output.contiguity = Some(Contiguity::Contiguous);
+        }
+        ImageOp::AutoAugment(_)
+        | ImageOp::RandAugment(_)
+        | ImageOp::TrivialAugmentWide(_)
+        | ImageOp::AugMix(_) => {
+            require_u8_hwc(input_state, op.name())?;
+            output.contiguity = Some(Contiguity::Unknown);
+        }
+        ImageOp::LinearTransformation(_) => {
+            require_u8_or_f32_decoded(input_state, op.name())?;
+            if input.dtype != Some(rivet_plan::DataType::F32) {
+                return Err(crate::errors::invalid_argument(
+                    "LinearTransformation requires float32 input",
+                ));
+            }
+            validate_rank(input, "linear transformation")?;
+            output.contiguity = Some(Contiguity::Contiguous);
+        }
         ImageOp::Brightness(_) => {
             require_u8_hwc(input_state, "Brightness")?;
             output.contiguity = Some(Contiguity::Contiguous);
@@ -516,7 +553,7 @@ pub(crate) fn infer_image_op(
                 ));
             }
             Decoded { axis_order, .. } => {
-                output.dtype = Some(DataType::F32);
+                output.dtype = Some(rivet_plan::DataType::F32);
                 output.axis_order = Some(axis_property(axis_order));
                 output.contiguity = Some(Contiguity::Contiguous);
             }

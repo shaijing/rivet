@@ -126,6 +126,8 @@ fn exact_parameters(op: &ImageOp) -> Option<Vec<u64>> {
                 InterpolationMode::Bilinear => 1,
                 InterpolationMode::Bicubic => 2,
                 InterpolationMode::Lanczos3 => 3,
+                InterpolationMode::Box => 4,
+                InterpolationMode::Hamming => 5,
             },
         ]),
         ImageOp::Crop(config) => key.extend([

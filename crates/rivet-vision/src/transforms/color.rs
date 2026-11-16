@@ -91,6 +91,56 @@ impl HueConfig {
     }
 }
 
+/// Pillow ImageEnhance.Color: blend RGB against its rounded BT.601 luma.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SaturationConfig {
+    pub factor: f32,
+}
+impl SaturationConfig {
+    pub const fn new(factor: f32) -> Self {
+        Self { factor }
+    }
+    pub fn validate(&self) -> RivetResult<()> {
+        validate_factor(self.factor, "saturation")
+    }
+    pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
+        self.validate()?;
+        map_rgb(sample, "saturation", |rgb| {
+            let gray = luma(&rgb);
+            rgb.map(|v| blend(gray, v, self.factor))
+        })
+    }
+}
+
+/// torchvision's PIL gamma lookup table; exponentiation is done in f64.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GammaConfig {
+    pub gamma: f64,
+    pub gain: f64,
+}
+impl GammaConfig {
+    pub const fn new(gamma: f64, gain: f64) -> Self {
+        Self { gamma, gain }
+    }
+    pub fn validate(&self) -> RivetResult<()> {
+        if !self.gamma.is_finite() || self.gamma < 0.0 || !self.gain.is_finite()
+        {
+            return Err(invalid_argument(
+                "gamma must be finite and non-negative; gain must be finite",
+            ));
+        }
+        Ok(())
+    }
+    pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
+        self.validate()?;
+        let lut: [u8; 256] = std::array::from_fn(|v| {
+            ((256.0 - 1e-3) * self.gain * (v as f64 / 255.0).powf(self.gamma)).clamp(0.0, 255.0)
+                as u8
+        });
+        map_rgb_bytes(sample, "gamma", |v| lut[v as usize])
+    }
+}
+
 fn validate_factor(value: f32, name: &str) -> RivetResult<()> {
     if value.is_finite() && value >= 0.0 {
         Ok(())
@@ -297,6 +347,7 @@ pub struct ColorJitterConfig {
     pub brightness: f32,
     pub contrast: f32,
     pub hue: f32,
+    pub saturation: f32,
 }
 
 impl ColorJitterConfig {
@@ -306,9 +357,15 @@ impl ColorJitterConfig {
             brightness,
             contrast,
             hue,
+            saturation: 0.0,
         }
     }
+    pub const fn with_saturation(mut self, saturation: f32) -> Self {
+        self.saturation = saturation;
+        self
+    }
     pub fn validate(&self) -> RivetResult<()> {
+        validate_factor(self.saturation, "color_jitter saturation")?;
         validate_factor(self.brightness, "color_jitter brightness")?;
         validate_factor(self.contrast, "color_jitter contrast")?;
         if !self.hue.is_finite() || !(0.0..=0.5).contains(&self.hue) {
@@ -317,8 +374,9 @@ impl ColorJitterConfig {
         Ok(())
     }
     pub fn resolve(&self, rng: &mut RandomStream) -> RivetResult<ColorJitterParams> {
-        let mut order = [0, 1, 2];
-        for i in (1..3).rev() {
+        let mut order = [0, 1, 2, 3];
+        let count = if self.saturation == 0.0 { 3 } else { 4 };
+        for i in (1..count).rev() {
             let j = rng.gen_range_usize(0..i + 1)?;
             order.swap(i, j);
         }
@@ -330,12 +388,18 @@ impl ColorJitterConfig {
             brightness: factor(self.brightness, rng),
             contrast: factor(self.contrast, rng),
             hue: -self.hue + 2.0 * self.hue * rng.next_f32(),
+            saturation: if self.saturation == 0.0 {
+                1.0
+            } else {
+                factor(self.saturation, rng)
+            },
             order,
             // torchvision skips disabled ops, especially HSV conversion at hue=0.
             enabled: [
                 self.brightness != 0.0,
                 self.contrast != 0.0,
                 self.hue != 0.0,
+                self.saturation != 0.0,
             ],
         })
     }
@@ -350,8 +414,9 @@ pub struct ColorJitterParams {
     pub brightness: f32,
     pub contrast: f32,
     pub hue: f32,
-    pub order: [usize; 3],
-    pub enabled: [bool; 3],
+    pub saturation: f32,
+    pub order: [usize; 4],
+    pub enabled: [bool; 4],
 }
 
 impl ColorJitterParams {
@@ -359,9 +424,10 @@ impl ColorJitterParams {
         BrightnessConfig::new(self.brightness).validate()?;
         ContrastConfig::new(self.contrast).validate()?;
         HueConfig::new(self.hue).validate()?;
+        SaturationConfig::new(self.saturation).validate()?;
         let mut order = self.order;
         order.sort_unstable();
-        if order != [0, 1, 2] {
+        if order != [0, 1, 2, 3] {
             return Err(invalid_argument("color_jitter order must be a permutation"));
         }
         Ok(())
@@ -375,7 +441,8 @@ impl ColorJitterParams {
             sample = match index {
                 0 => BrightnessConfig::new(self.brightness).apply(sample)?,
                 1 => ContrastConfig::new(self.contrast).apply(sample)?,
-                _ => HueConfig::new(self.hue).apply(sample)?,
+                2 => HueConfig::new(self.hue).apply(sample)?,
+                _ => SaturationConfig::new(self.saturation).apply(sample)?,
             };
         }
         Ok(sample)

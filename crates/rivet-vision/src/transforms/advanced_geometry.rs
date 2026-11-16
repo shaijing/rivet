@@ -74,12 +74,114 @@ impl ArbitraryRotateConfig {
             self.interpolation,
             self.fill,
             "arbitrary rotation",
+            pillow_affine_map(matrix, output_width, output_height, self.interpolation),
+        )
+        .map(ImageSample::Decoded)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AffineConfig {
+    pub angle: f64,
+    pub translate: [f64; 2],
+    pub scale: f64,
+    pub shear: [f64; 2],
+    pub center: Option<[f64; 2]>,
+    pub interpolation: InterpolationMode,
+    pub fill: u8,
+}
+impl AffineConfig {
+    pub const fn new(angle: f64, translate: [f64; 2], scale: f64, shear: [f64; 2]) -> Self {
+        Self {
+            angle,
+            translate,
+            scale,
+            shear,
+            center: None,
+            interpolation: InterpolationMode::Nearest,
+            fill: 0,
+        }
+    }
+    pub const fn with_options(mut self, interpolation: InterpolationMode, fill: u8) -> Self {
+        self.interpolation = interpolation;
+        self.fill = fill;
+        self
+    }
+    pub const fn with_center(mut self, center: [f64; 2]) -> Self {
+        self.center = Some(center);
+        self
+    }
+    pub fn validate(&self) -> RivetResult<()> {
+        if !self.angle.is_finite()
+            || !self.scale.is_finite()
+            || self.scale <= 0.0
+            || self
+                .translate
+                .iter()
+                .chain(self.shear.iter())
+                .any(|v| !v.is_finite())
+            || self
+                .center
+                .is_some_and(|c| c.iter().any(|v| !v.is_finite()))
+        {
+            return Err(invalid_argument(
+                "affine requires finite parameters and positive scale",
+            ));
+        }
+        validate_interpolation(self.interpolation, "affine")
+    }
+    pub fn apply(&self, sample: ImageSample, axis: ImageAxisOrder) -> RivetResult<ImageSample> {
+        self.validate()?;
+        self.apply_backend::<false>(sample, axis)
+    }
+    pub(crate) fn apply_backend<const TENSOR: bool>(
+        &self,
+        sample: ImageSample,
+        axis: ImageAxisOrder,
+    ) -> RivetResult<ImageSample> {
+        let sample = require_u8_image(sample, "affine")?;
+        let (height, width, _) = image_dims(sample.image.dims(), axis)?;
+        let angle = f64::from(self.angle).to_radians();
+        let (sx, sy) = (
+            f64::from(self.shear[0]).to_radians(),
+            f64::from(self.shear[1]).to_radians(),
+        );
+        let scale = f64::from(self.scale);
+        let (tx, ty) = (f64::from(self.translate[0]), f64::from(self.translate[1]));
+        let a = (angle - sy).cos() / sy.cos();
+        let b = -(angle - sy).cos() * sx.tan() / sy.cos() - angle.sin();
+        let c = (angle - sy).sin() / sy.cos();
+        let d = -(angle - sy).sin() * sx.tan() / sy.cos() + angle.cos();
+        let center = self
+            .center
+            .map(|c| c.map(f64::from))
+            .unwrap_or([width as f64 * 0.5, height as f64 * 0.5]);
+        let (cx, cy) = (center[0], center[1]);
+        let m = [d / scale, -b / scale, -c / scale, a / scale];
+        let ox = m[0] * (-cx - tx) + m[1] * (-cy - ty) + cx;
+        let oy = m[2] * (-cx - tx) + m[3] * (-cy - ty) + cy;
+        let pil_map = pillow_affine_map(
+            [m[0], m[1], ox, m[2], m[3], oy],
+            width,
+            height,
+            self.interpolation,
+        );
+        warp_decoded::<TENSOR, _>(
+            sample,
+            axis,
+            width,
+            height,
+            self.interpolation,
+            self.fill,
+            "affine",
             move |x, y| {
-                let x = x as f64 + 0.5;
-                let y = y as f64 + 0.5;
+                if !TENSOR {
+                    return pil_map(x, y);
+                }
+                let (x, y) = (x as f64 + 0.5, y as f64 + 0.5);
                 [
-                    matrix[0] * x + matrix[1] * y + matrix[2] - 0.5,
-                    matrix[3] * x + matrix[4] * y + matrix[5] - 0.5,
+                    m[0] * x + m[1] * y + ox - 0.5,
+                    m[2] * x + m[3] * y + oy - 0.5,
                 ]
             },
         )
@@ -205,13 +307,12 @@ impl RandomAffineConfig {
             self.interpolation,
             self.fill,
             "random affine",
-            move |x, y| {
-                let (x, y) = (x as f64 + 0.5, y as f64 + 0.5);
-                [
-                    m[0] * x + m[1] * y + ox - 0.5,
-                    m[2] * x + m[3] * y + oy - 0.5,
-                ]
-            },
+            pillow_affine_map(
+                [m[0], m[1], ox, m[2], m[3], oy],
+                width,
+                height,
+                self.interpolation,
+            ),
         )
         .map(ImageSample::Decoded)
     }
@@ -468,14 +569,165 @@ impl ElasticTransformConfig {
     }
 }
 
+/// Geometry used by torchvision's learned augmentation policies. PIL uses
+/// edge coordinates; AugMix uses the Tensor grid and fill-mask convention.
+pub(crate) fn policy_warp<const TENSOR: bool>(
+    sample: ImageSample,
+    kind: usize,
+    magnitude: f64,
+    interpolation: InterpolationMode,
+    fill: u8,
+) -> RivetResult<ImageSample> {
+    let sample = require_u8_image(sample, "policy geometry")?;
+    let (h, w, _) = image_dims(sample.image.dims(), ImageAxisOrder::Hwc)?;
+    let mut m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+    match kind {
+        0 => {
+            m[1] = magnitude;
+            if TENSOR {
+                m[2] = magnitude * h as f64 * 0.5;
+            }
+        }
+        1 => {
+            m[3] = magnitude;
+            if TENSOR {
+                m[5] = magnitude * w as f64 * 0.5;
+            }
+        }
+        2 => m[2] = -magnitude.trunc(),
+        3 => m[5] = -magnitude.trunc(),
+        4 => {
+            if !TENSOR {
+                return ArbitraryRotateConfig::new(magnitude as f32)
+                    .with_options(false, interpolation, fill)
+                    .apply(ImageSample::Decoded(sample), ImageAxisOrder::Hwc);
+            }
+            let angle = magnitude.to_radians();
+            m = [
+                angle.cos(),
+                -angle.sin(),
+                0.0,
+                angle.sin(),
+                angle.cos(),
+                0.0,
+            ];
+        }
+        _ => return Err(invalid_argument("unknown policy geometry")),
+    }
+    let pil_map = pillow_affine_map(m, w, h, interpolation);
+    warp_decoded::<TENSOR, _>(
+        sample,
+        ImageAxisOrder::Hwc,
+        w,
+        h,
+        interpolation,
+        fill,
+        "policy geometry",
+        move |x, y| {
+            if TENSOR {
+                let (cx, cy) = (
+                    x as f32 - (w as f32 - 1.0) * 0.5,
+                    y as f32 - (h as f32 - 1.0) * 0.5,
+                );
+                let gx = cx * (m[0] as f32 / (w as f32 * 0.5))
+                    + cy * (m[1] as f32 / (w as f32 * 0.5))
+                    + m[2] as f32 / (w as f32 * 0.5);
+                let gy = cx * (m[3] as f32 / (h as f32 * 0.5))
+                    + cy * (m[4] as f32 / (h as f32 * 0.5))
+                    + m[5] as f32 / (h as f32 * 0.5);
+                [
+                    f64::from(((gx + 1.0) * w as f32 - 1.0) * 0.5),
+                    f64::from(((gy + 1.0) * h as f32 - 1.0) * 0.5),
+                ]
+            } else {
+                pil_map(x, y)
+            }
+        },
+    )
+    .map(ImageSample::Decoded)
+}
+
+fn pillow_affine_map(
+    matrix: [f64; 6],
+    width: usize,
+    height: usize,
+    mode: InterpolationMode,
+) -> impl Fn(usize, usize) -> [f64; 2] {
+    let nearest = mode == InterpolationMode::Nearest;
+    let diagonal = nearest && matrix[1] == 0.0 && matrix[3] == 0.0;
+    let axis_positions = |scale: f64, offset: f64, count: usize| {
+        let mut position = offset + scale * 0.5;
+        (0..count)
+            .map(|_| {
+                let v = position.floor();
+                position += scale;
+                v
+            })
+            .collect::<Vec<_>>()
+    };
+    let axes = if diagonal {
+        Some((
+            axis_positions(matrix[0], matrix[2], width),
+            axis_positions(matrix[4], matrix[5], height),
+        ))
+    } else {
+        None
+    };
+    let fits = |x: f64, y: f64| {
+        (x * matrix[0] + y * matrix[1] + matrix[2]).abs() < 32768.0
+            && (x * matrix[3] + y * matrix[4] + matrix[5]).abs() < 32768.0
+    };
+    let fixed = if nearest
+        && !diagonal
+        && [
+            [0.0, 0.0],
+            [width as f64, 0.0],
+            [0.0, height as f64],
+            [width as f64, height as f64],
+        ]
+        .into_iter()
+        .all(|[x, y]| fits(x, y))
+    {
+        let fix = |v: f64| (v * 65536.0 + 0.5).floor() as i64;
+        Some([
+            fix(matrix[0]),
+            fix(matrix[1]),
+            fix(matrix[2] + matrix[0] * 0.5 + matrix[1] * 0.5),
+            fix(matrix[3]),
+            fix(matrix[4]),
+            fix(matrix[5] + matrix[3] * 0.5 + matrix[4] * 0.5),
+        ])
+    } else {
+        None
+    };
+    move |x, y| {
+        if let Some((xs, ys)) = &axes {
+            return [xs[x], ys[y]];
+        }
+        if let Some(a) = fixed {
+            return [
+                ((a[0] * x as i64 + a[1] * y as i64 + a[2]) >> 16) as f64,
+                ((a[3] * x as i64 + a[4] * y as i64 + a[5]) >> 16) as f64,
+            ];
+        }
+        let (x, y) = (x as f64 + 0.5, y as f64 + 0.5);
+        [
+            matrix[0] * x + matrix[1] * y + matrix[2] - 0.5,
+            matrix[3] * x + matrix[4] * y + matrix[5] - 0.5,
+        ]
+    }
+}
+
 fn validate_interpolation(mode: InterpolationMode, op_name: &str) -> RivetResult<()> {
     match mode {
         InterpolationMode::Nearest | InterpolationMode::Bilinear | InterpolationMode::Bicubic => {
             Ok(())
         }
-        InterpolationMode::Lanczos3 => Err(invalid_argument(format!(
-            "{op_name} supports nearest, bilinear or bicubic interpolation"
-        ))),
+        InterpolationMode::Lanczos3 | InterpolationMode::Box | InterpolationMode::Hamming => {
+            Err(invalid_argument(format!(
+                "{op_name} supports nearest, bilinear or bicubic interpolation"
+            )))
+        }
     }
 }
 

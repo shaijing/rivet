@@ -2,6 +2,7 @@ use super::context::SampleContext;
 use crate::errors::{RivetResult, invalid_argument, invalid_pipeline};
 use crate::sample::image::ImageAxisOrder;
 use crate::sample::image::ImageSample;
+use crate::transforms::LinearTransformationConfig;
 use crate::transforms::color::{
     AutocontrastConfig, BrightnessConfig, ColorJitterConfig, ContrastConfig, EqualizeConfig,
     GrayscaleConfig, HueConfig, InvertConfig, PosterizeConfig, RandomGrayscaleConfig,
@@ -16,8 +17,15 @@ use crate::transforms::representation::{
     ConvertImageDtypeConfig, DecodeImageConfig, NormalizeConfig,
 };
 use crate::transforms::{
+    AffineConfig, EraseConfig, GammaConfig, RandomGaussianBlurConfig, RandomRotationConfig,
+    SaturationConfig,
+};
+use crate::transforms::{
     ArbitraryRotateConfig, ElasticTransformConfig, PerspectiveConfig, RandomAffineConfig,
     RandomPerspectiveConfig,
+};
+use crate::transforms::{
+    AugMixConfig, AutoAugmentConfig, RandAugmentConfig, TrivialAugmentWideConfig,
 };
 use crate::transforms::{GaussianBlurConfig, RandomErasingConfig};
 use rivet_core::DType;
@@ -32,6 +40,19 @@ pub enum ExecutionKind {
 #[derive(Clone)]
 pub enum ImageOp {
     Decode(DecodeImageConfig),
+    LinearTransformation(LinearTransformationConfig),
+    AutoAugment(AutoAugmentConfig),
+    RandAugment(RandAugmentConfig),
+    TrivialAugmentWide(TrivialAugmentWideConfig),
+    AugMix(AugMixConfig),
+
+    Saturation(SaturationConfig),
+    Gamma(GammaConfig),
+    Affine(AffineConfig),
+    Erase(EraseConfig),
+    RandomRotation(RandomRotationConfig),
+    RandomGaussianBlur(RandomGaussianBlurConfig),
+
     Resize(ResizeConfig),
     Crop(CropConfig),
     CenterCrop(CenterCropConfig),
@@ -81,6 +102,12 @@ impl ImageOp {
     /// Stable semantic name used to assign per-operator random namespaces.
     pub fn random_key_kind(&self) -> Option<&'static str> {
         match self {
+            Self::RandomRotation(_) => Some("RandomRotation"),
+            Self::RandomGaussianBlur(_) => Some("RandomGaussianBlur"),
+            Self::AutoAugment(_) => Some("AutoAugment"),
+            Self::RandAugment(_) => Some("RandAugment"),
+            Self::TrivialAugmentWide(_) => Some("TrivialAugmentWide"),
+            Self::AugMix(_) => Some("AugMix"),
             Self::RandomCrop(_) => Some("RandomCrop"),
             Self::RandomResizedCrop(_) => Some("RandomResizedCrop"),
             Self::RandomHorizontalFlip(_) => Some("RandomHorizontalFlip"),
@@ -103,6 +130,17 @@ impl ImageOp {
                 ExecutionKind::Batch
             }
             Self::Decode(_)
+            | Self::LinearTransformation(_)
+            | Self::AutoAugment(_)
+            | Self::RandAugment(_)
+            | Self::TrivialAugmentWide(_)
+            | Self::AugMix(_)
+            | Self::Saturation(_)
+            | Self::Gamma(_)
+            | Self::Affine(_)
+            | Self::Erase(_)
+            | Self::RandomRotation(_)
+            | Self::RandomGaussianBlur(_)
             | Self::Resize(_)
             | Self::Crop(_)
             | Self::CenterCrop(_)
@@ -139,6 +177,17 @@ impl ImageOp {
 
     pub fn name(&self) -> &'static str {
         match self {
+            Self::Saturation(_) => "Saturation",
+            Self::Gamma(_) => "Gamma",
+            Self::Affine(_) => "Affine",
+            Self::Erase(_) => "Erase",
+            Self::RandomRotation(_) => "RandomRotation",
+            Self::RandomGaussianBlur(_) => "RandomGaussianBlur",
+            Self::AutoAugment(_) => "AutoAugment",
+            Self::RandAugment(_) => "RandAugment",
+            Self::TrivialAugmentWide(_) => "TrivialAugmentWide",
+            Self::AugMix(_) => "AugMix",
+            Self::LinearTransformation(_) => "LinearTransformation",
             Self::Decode(_) => "Decode",
             Self::Resize(_) => "Resize",
             Self::Crop(_) => "Crop",
@@ -181,6 +230,17 @@ impl ImageOp {
     /// protocol. Keep these values stable when variants are reordered.
     pub const fn planning_op_id(&self) -> u32 {
         match self {
+            Self::Saturation(_) => 36,
+            Self::Gamma(_) => 37,
+            Self::Affine(_) => 38,
+            Self::Erase(_) => 39,
+            Self::RandomRotation(_) => 40,
+            Self::RandomGaussianBlur(_) => 41,
+            Self::AutoAugment(_) => 42,
+            Self::RandAugment(_) => 43,
+            Self::TrivialAugmentWide(_) => 44,
+            Self::AugMix(_) => 45,
+            Self::LinearTransformation(_) => 46,
             Self::Decode(_) => 1,
             Self::Resize(_) => 2,
             Self::Crop(_) => 3,
@@ -257,6 +317,29 @@ impl ImageOp {
             PipelineImageState::Decoded { axis_order, .. } => axis_order,
         };
         match self {
+            Self::Saturation(op) => op.apply(sample),
+            Self::Gamma(op) => op.apply(sample),
+            Self::Affine(op) => op.apply(sample, input_layout),
+            Self::Erase(op) => op.apply(sample, input_layout),
+            Self::RandomRotation(op) => op.apply(
+                sample,
+                &mut required_rng(ctx, random_key, self.name())?,
+                input_layout,
+            ),
+            Self::RandomGaussianBlur(op) => {
+                op.apply(sample, &mut required_rng(ctx, random_key, self.name())?)
+            }
+            Self::AutoAugment(op) => {
+                op.apply(sample, &mut required_rng(ctx, random_key, self.name())?)
+            }
+            Self::RandAugment(op) => {
+                op.apply(sample, &mut required_rng(ctx, random_key, self.name())?)
+            }
+            Self::TrivialAugmentWide(op) => {
+                op.apply(sample, &mut required_rng(ctx, random_key, self.name())?)
+            }
+            Self::AugMix(op) => op.apply(sample, &mut required_rng(ctx, random_key, self.name())?),
+            Self::LinearTransformation(op) => op.apply(sample, input_layout),
             Self::Decode(op) => op.apply(sample),
             Self::Resize(op) => op.apply(sample),
             Self::Crop(op) => op.apply(sample, input_layout),
@@ -640,6 +723,19 @@ impl ImageOp {
     /// pipeline; that is `transition`'s job).
     pub fn validate(&self) -> RivetResult<()> {
         match self {
+            Self::LinearTransformation(op) => op.validate(),
+            Self::AutoAugment(op) => op.validate(),
+            Self::RandAugment(op) => op.validate(),
+            Self::TrivialAugmentWide(op) => op.validate(),
+            Self::AugMix(op) => op.validate(),
+
+            Self::Saturation(op) => op.validate(),
+            Self::Gamma(op) => op.validate(),
+            Self::Affine(op) => op.validate(),
+            Self::Erase(op) => op.validate(),
+            Self::RandomRotation(op) => op.validate(),
+            Self::RandomGaussianBlur(op) => op.validate(),
+
             Self::Decode(_) | Self::Flip(_) | Self::Layout(_) => Ok(()),
             Self::Resize(op) => {
                 if op.width == 0 || op.height == 0 {

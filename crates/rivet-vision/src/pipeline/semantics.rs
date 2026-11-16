@@ -47,6 +47,17 @@ pub(crate) fn image_semantics(op: &ImageOp) -> OperatorSemantics {
     // effects rather than silently treating every image payload as pure.
     match op {
         ImageOp::Decode(_)
+        | ImageOp::LinearTransformation(_)
+        | ImageOp::AutoAugment(_)
+        | ImageOp::RandAugment(_)
+        | ImageOp::TrivialAugmentWide(_)
+        | ImageOp::AugMix(_)
+        | ImageOp::Saturation(_)
+        | ImageOp::Gamma(_)
+        | ImageOp::Affine(_)
+        | ImageOp::Erase(_)
+        | ImageOp::RandomRotation(_)
+        | ImageOp::RandomGaussianBlur(_)
         | ImageOp::Resize(_)
         | ImageOp::Crop(_)
         | ImageOp::CenterCrop(_)

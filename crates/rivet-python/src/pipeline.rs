@@ -7,9 +7,13 @@ use rivet_vision::api::{
     RandomAffineConfig, RandomPerspectiveConfig, RotationAngle, TransformSequence,
 };
 
-fn parse_pair(values: Option<Vec<f32>>, name: &str, default: [f32; 2]) -> PyResult<[f32; 2]> {
+fn parse_pair<T: Clone + std::fmt::Debug>(
+    values: Option<Vec<T>>,
+    name: &str,
+    default: [T; 2],
+) -> PyResult<[T; 2]> {
     let values = values.unwrap_or_else(|| default.to_vec());
-    values.try_into().map_err(|values: Vec<f32>| {
+    values.try_into().map_err(|values: Vec<T>| {
         PyValueError::new_err(format!(
             "{name} must contain exactly two values, got {values:?}"
         ))
@@ -126,6 +130,265 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature=(policy="imagenet",interpolation="nearest",fill=0))]
+    fn auto_augment(&self, policy: &str, interpolation: &str, fill: u8) -> PyResult<Self> {
+        let mut config =
+            rivet_vision::api::AutoAugmentConfig::new(policy.parse().map_err(to_py_err)?);
+        config.interpolation = parse_interpolation(interpolation)?;
+        config.fill = fill;
+        Ok(Self {
+            inner: self.inner.clone().auto_augment(config),
+        })
+    }
+    #[pyo3(signature=(num_ops=2,magnitude=9,num_magnitude_bins=31,interpolation="nearest",fill=0))]
+    fn rand_augment(
+        &self,
+        num_ops: usize,
+        magnitude: usize,
+        num_magnitude_bins: usize,
+        interpolation: &str,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let config = rivet_vision::api::RandAugmentConfig {
+            num_ops,
+            magnitude,
+            num_magnitude_bins,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+        };
+        Ok(Self {
+            inner: self.inner.clone().rand_augment(config),
+        })
+    }
+    #[pyo3(signature=(num_magnitude_bins=31,interpolation="nearest",fill=0))]
+    fn trivial_augment_wide(
+        &self,
+        num_magnitude_bins: usize,
+        interpolation: &str,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let config = rivet_vision::api::TrivialAugmentWideConfig {
+            num_magnitude_bins,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+        };
+        Ok(Self {
+            inner: self.inner.clone().trivial_augment_wide(config),
+        })
+    }
+    #[pyo3(signature=(severity=3,mixture_width=3,chain_depth=-1,alpha=1.0,all_ops=true,interpolation="bilinear",fill=0))]
+    fn augmix(
+        &self,
+        severity: usize,
+        mixture_width: usize,
+        chain_depth: i32,
+        alpha: f32,
+        all_ops: bool,
+        interpolation: &str,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let config = rivet_vision::api::AugMixConfig {
+            severity,
+            mixture_width,
+            chain_depth,
+            alpha,
+            all_ops,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+        };
+        Ok(Self {
+            inner: self.inner.clone().augmix(config),
+        })
+    }
+
+    fn to_tensor(&self) -> Self {
+        Self {
+            inner: self.inner.clone().to_tensor(),
+        }
+    }
+    fn pil_to_tensor(&self) -> Self {
+        Self {
+            inner: self.inner.clone().pil_to_tensor(),
+        }
+    }
+    fn linear_transform(&self, matrix: Vec<Vec<f32>>, mean: Vec<f32>) -> PyResult<Self> {
+        let n = matrix.len();
+        if matrix.iter().any(|row| row.len() != n) {
+            return Err(PyValueError::new_err(
+                "linear transformation matrix must be square",
+            ));
+        }
+        let matrix = rivet_core::Tensor::from_vec(
+            matrix.into_iter().flatten().collect::<Vec<_>>(),
+            [n, n],
+            &rivet_core::Device::Cpu,
+        )
+        .map_err(to_py_err)?;
+        let n_mean = mean.len();
+        let mean = rivet_core::Tensor::from_vec(mean, [n_mean], &rivet_core::Device::Cpu)
+            .map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().linear_transform(
+                rivet_vision::api::LinearTransformationConfig::new(matrix, mean),
+            ),
+        })
+    }
+
+    fn saturation(&self, factor: f32) -> Self {
+        Self {
+            inner: self.inner.clone().saturation(factor),
+        }
+    }
+    #[pyo3(signature=(gamma,gain=1.0))]
+    fn gamma(&self, gamma: f64, gain: f64) -> Self {
+        Self {
+            inner: self.inner.clone().gamma(gamma, gain),
+        }
+    }
+    #[pyo3(signature=(angle,translate=None,scale=1.0,shear=None,interpolation="nearest",fill=0,center=None))]
+    fn affine(
+        &self,
+        angle: f64,
+        translate: Option<Vec<f64>>,
+        scale: f64,
+        shear: Option<Vec<f64>>,
+        interpolation: &str,
+        fill: u8,
+        center: Option<Vec<f64>>,
+    ) -> PyResult<Self> {
+        let mut config = rivet_vision::api::AffineConfig::new(
+            angle,
+            parse_pair(translate, "translate", [0.0, 0.0])?,
+            scale,
+            parse_pair(shear, "shear", [0.0, 0.0])?,
+        )
+        .with_options(parse_interpolation(interpolation)?, fill);
+        if let Some(center) = center {
+            config = config.with_center(parse_pair(Some(center), "center", [0.0, 0.0])?);
+        }
+        Ok(Self {
+            inner: self.inner.clone().affine(config),
+        })
+    }
+    #[pyo3(signature=(x,y,width,height,value=None))]
+    fn erase(
+        &self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        value: Option<Vec<f32>>,
+    ) -> Self {
+        Self {
+            inner: self
+                .inner
+                .clone()
+                .erase(rivet_vision::api::EraseConfig::new(
+                    x,
+                    y,
+                    width,
+                    height,
+                    value.unwrap_or_else(|| vec![0.0]),
+                )),
+        }
+    }
+    #[pyo3(signature=(degrees,interpolation="nearest",expand=false,fill=0))]
+    fn random_rotation(
+        &self,
+        degrees: Vec<f32>,
+        interpolation: &str,
+        expand: bool,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let config = rivet_vision::api::RandomRotationConfig::new(parse_pair(
+            Some(degrees),
+            "degrees",
+            [0.0, 0.0],
+        )?)
+        .with_options(parse_interpolation(interpolation)?, expand, fill);
+        Ok(Self {
+            inner: self.inner.clone().random_rotation(config),
+        })
+    }
+    #[pyo3(signature=(kernel_size,sigma=None))]
+    fn random_gaussian_blur(&self, kernel_size: u32, sigma: Option<Vec<f32>>) -> PyResult<Self> {
+        let config = rivet_vision::api::RandomGaussianBlurConfig::new(
+            kernel_size,
+            parse_pair(sigma, "sigma", [0.1, 2.0])?,
+        );
+        Ok(Self {
+            inner: self.inner.clone().random_gaussian_blur(config),
+        })
+    }
+    #[pyo3(signature=(x,y,width,height,out_width,out_height,interpolation="bilinear"))]
+    fn resized_crop(
+        &self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        out_width: u32,
+        out_height: u32,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().resized_crop(
+                x,
+                y,
+                width,
+                height,
+                out_width,
+                out_height,
+                parse_interpolation(interpolation)?,
+            ),
+        })
+    }
+    #[pyo3(signature=(probability=0.5))]
+    fn random_vertical_flip(&self, probability: f64) -> Self {
+        Self {
+            inner: self.inner.clone().random_vertical_flip(probability),
+        }
+    }
+    #[pyo3(signature=(probability=0.5))]
+    fn random_invert(&self, probability: f64) -> Self {
+        Self {
+            inner: self.inner.clone().random_invert(probability),
+        }
+    }
+    #[pyo3(signature=(bits,probability=0.5))]
+    fn random_posterize(&self, bits: u8, probability: f64) -> Self {
+        Self {
+            inner: self.inner.clone().random_posterize(bits, probability),
+        }
+    }
+    #[pyo3(signature=(threshold,probability=0.5))]
+    fn random_solarize(&self, threshold: u8, probability: f64) -> Self {
+        Self {
+            inner: self.inner.clone().random_solarize(threshold, probability),
+        }
+    }
+    #[pyo3(signature=(factor,probability=0.5))]
+    fn random_adjust_sharpness(&self, factor: f32, probability: f64) -> Self {
+        Self {
+            inner: self
+                .inner
+                .clone()
+                .random_adjust_sharpness(factor, probability),
+        }
+    }
+    #[pyo3(signature=(probability=0.5))]
+    fn random_autocontrast(&self, probability: f64) -> Self {
+        Self {
+            inner: self.inner.clone().random_autocontrast(probability),
+        }
+    }
+    #[pyo3(signature=(probability=0.5))]
+    fn random_equalize(&self, probability: f64) -> Self {
+        Self {
+            inner: self.inner.clone().random_equalize(probability),
+        }
+    }
+
     fn horizontal_flip(&self) -> Self {
         Self {
             inner: self.inner.clone().horizontal_flip(),
@@ -190,10 +453,13 @@ impl PyTransform {
         }
     }
 
-    #[pyo3(signature = (brightness=0.0, contrast=0.0, hue=0.0))]
-    fn color_jitter(&self, brightness: f32, contrast: f32, hue: f32) -> Self {
+    #[pyo3(signature = (brightness=0.0, contrast=0.0, hue=0.0, saturation=0.0))]
+    fn color_jitter(&self, brightness: f32, contrast: f32, hue: f32, saturation: f32) -> Self {
         Self {
-            inner: self.inner.clone().color_jitter(brightness, contrast, hue),
+            inner: self.inner.clone().color_jitter_with_config(
+                rivet_vision::api::ColorJitterConfig::new(brightness, contrast, hue)
+                    .with_saturation(saturation),
+            ),
         }
     }
 
@@ -517,6 +783,265 @@ impl PyImagePipeline {
         })
     }
 
+    #[pyo3(signature=(policy="imagenet",interpolation="nearest",fill=0))]
+    fn auto_augment(&self, policy: &str, interpolation: &str, fill: u8) -> PyResult<Self> {
+        let mut config =
+            rivet_vision::api::AutoAugmentConfig::new(policy.parse().map_err(to_py_err)?);
+        config.interpolation = parse_interpolation(interpolation)?;
+        config.fill = fill;
+        Ok(Self {
+            inner: self.inner.clone().auto_augment(config),
+        })
+    }
+    #[pyo3(signature=(num_ops=2,magnitude=9,num_magnitude_bins=31,interpolation="nearest",fill=0))]
+    fn rand_augment(
+        &self,
+        num_ops: usize,
+        magnitude: usize,
+        num_magnitude_bins: usize,
+        interpolation: &str,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let config = rivet_vision::api::RandAugmentConfig {
+            num_ops,
+            magnitude,
+            num_magnitude_bins,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+        };
+        Ok(Self {
+            inner: self.inner.clone().rand_augment(config),
+        })
+    }
+    #[pyo3(signature=(num_magnitude_bins=31,interpolation="nearest",fill=0))]
+    fn trivial_augment_wide(
+        &self,
+        num_magnitude_bins: usize,
+        interpolation: &str,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let config = rivet_vision::api::TrivialAugmentWideConfig {
+            num_magnitude_bins,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+        };
+        Ok(Self {
+            inner: self.inner.clone().trivial_augment_wide(config),
+        })
+    }
+    #[pyo3(signature=(severity=3,mixture_width=3,chain_depth=-1,alpha=1.0,all_ops=true,interpolation="bilinear",fill=0))]
+    fn augmix(
+        &self,
+        severity: usize,
+        mixture_width: usize,
+        chain_depth: i32,
+        alpha: f32,
+        all_ops: bool,
+        interpolation: &str,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let config = rivet_vision::api::AugMixConfig {
+            severity,
+            mixture_width,
+            chain_depth,
+            alpha,
+            all_ops,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+        };
+        Ok(Self {
+            inner: self.inner.clone().augmix(config),
+        })
+    }
+
+    fn to_tensor(&self) -> Self {
+        Self {
+            inner: self.inner.clone().to_tensor(),
+        }
+    }
+    fn pil_to_tensor(&self) -> Self {
+        Self {
+            inner: self.inner.clone().pil_to_tensor(),
+        }
+    }
+    fn linear_transform(&self, matrix: Vec<Vec<f32>>, mean: Vec<f32>) -> PyResult<Self> {
+        let n = matrix.len();
+        if matrix.iter().any(|row| row.len() != n) {
+            return Err(PyValueError::new_err(
+                "linear transformation matrix must be square",
+            ));
+        }
+        let matrix = rivet_core::Tensor::from_vec(
+            matrix.into_iter().flatten().collect::<Vec<_>>(),
+            [n, n],
+            &rivet_core::Device::Cpu,
+        )
+        .map_err(to_py_err)?;
+        let n_mean = mean.len();
+        let mean = rivet_core::Tensor::from_vec(mean, [n_mean], &rivet_core::Device::Cpu)
+            .map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().linear_transform(
+                rivet_vision::api::LinearTransformationConfig::new(matrix, mean),
+            ),
+        })
+    }
+
+    fn saturation(&self, factor: f32) -> Self {
+        Self {
+            inner: self.inner.clone().saturation(factor),
+        }
+    }
+    #[pyo3(signature=(gamma,gain=1.0))]
+    fn gamma(&self, gamma: f64, gain: f64) -> Self {
+        Self {
+            inner: self.inner.clone().gamma(gamma, gain),
+        }
+    }
+    #[pyo3(signature=(angle,translate=None,scale=1.0,shear=None,interpolation="nearest",fill=0,center=None))]
+    fn affine(
+        &self,
+        angle: f64,
+        translate: Option<Vec<f64>>,
+        scale: f64,
+        shear: Option<Vec<f64>>,
+        interpolation: &str,
+        fill: u8,
+        center: Option<Vec<f64>>,
+    ) -> PyResult<Self> {
+        let mut config = rivet_vision::api::AffineConfig::new(
+            angle,
+            parse_pair(translate, "translate", [0.0, 0.0])?,
+            scale,
+            parse_pair(shear, "shear", [0.0, 0.0])?,
+        )
+        .with_options(parse_interpolation(interpolation)?, fill);
+        if let Some(center) = center {
+            config = config.with_center(parse_pair(Some(center), "center", [0.0, 0.0])?);
+        }
+        Ok(Self {
+            inner: self.inner.clone().affine(config),
+        })
+    }
+    #[pyo3(signature=(x,y,width,height,value=None))]
+    fn erase(
+        &self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        value: Option<Vec<f32>>,
+    ) -> Self {
+        Self {
+            inner: self
+                .inner
+                .clone()
+                .erase(rivet_vision::api::EraseConfig::new(
+                    x,
+                    y,
+                    width,
+                    height,
+                    value.unwrap_or_else(|| vec![0.0]),
+                )),
+        }
+    }
+    #[pyo3(signature=(degrees,interpolation="nearest",expand=false,fill=0))]
+    fn random_rotation(
+        &self,
+        degrees: Vec<f32>,
+        interpolation: &str,
+        expand: bool,
+        fill: u8,
+    ) -> PyResult<Self> {
+        let config = rivet_vision::api::RandomRotationConfig::new(parse_pair(
+            Some(degrees),
+            "degrees",
+            [0.0, 0.0],
+        )?)
+        .with_options(parse_interpolation(interpolation)?, expand, fill);
+        Ok(Self {
+            inner: self.inner.clone().random_rotation(config),
+        })
+    }
+    #[pyo3(signature=(kernel_size,sigma=None))]
+    fn random_gaussian_blur(&self, kernel_size: u32, sigma: Option<Vec<f32>>) -> PyResult<Self> {
+        let config = rivet_vision::api::RandomGaussianBlurConfig::new(
+            kernel_size,
+            parse_pair(sigma, "sigma", [0.1, 2.0])?,
+        );
+        Ok(Self {
+            inner: self.inner.clone().random_gaussian_blur(config),
+        })
+    }
+    #[pyo3(signature=(x,y,width,height,out_width,out_height,interpolation="bilinear"))]
+    fn resized_crop(
+        &self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        out_width: u32,
+        out_height: u32,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().resized_crop(
+                x,
+                y,
+                width,
+                height,
+                out_width,
+                out_height,
+                parse_interpolation(interpolation)?,
+            ),
+        })
+    }
+    #[pyo3(signature=(probability=0.5))]
+    fn random_vertical_flip(&self, probability: f64) -> Self {
+        Self {
+            inner: self.inner.clone().random_vertical_flip(probability),
+        }
+    }
+    #[pyo3(signature=(probability=0.5))]
+    fn random_invert(&self, probability: f64) -> Self {
+        Self {
+            inner: self.inner.clone().random_invert(probability),
+        }
+    }
+    #[pyo3(signature=(bits,probability=0.5))]
+    fn random_posterize(&self, bits: u8, probability: f64) -> Self {
+        Self {
+            inner: self.inner.clone().random_posterize(bits, probability),
+        }
+    }
+    #[pyo3(signature=(threshold,probability=0.5))]
+    fn random_solarize(&self, threshold: u8, probability: f64) -> Self {
+        Self {
+            inner: self.inner.clone().random_solarize(threshold, probability),
+        }
+    }
+    #[pyo3(signature=(factor,probability=0.5))]
+    fn random_adjust_sharpness(&self, factor: f32, probability: f64) -> Self {
+        Self {
+            inner: self
+                .inner
+                .clone()
+                .random_adjust_sharpness(factor, probability),
+        }
+    }
+    #[pyo3(signature=(probability=0.5))]
+    fn random_autocontrast(&self, probability: f64) -> Self {
+        Self {
+            inner: self.inner.clone().random_autocontrast(probability),
+        }
+    }
+    #[pyo3(signature=(probability=0.5))]
+    fn random_equalize(&self, probability: f64) -> Self {
+        Self {
+            inner: self.inner.clone().random_equalize(probability),
+        }
+    }
+
     fn horizontal_flip(&self) -> Self {
         Self {
             inner: self.inner.clone().horizontal_flip(),
@@ -581,10 +1106,13 @@ impl PyImagePipeline {
         }
     }
 
-    #[pyo3(signature = (brightness=0.0, contrast=0.0, hue=0.0))]
-    fn color_jitter(&self, brightness: f32, contrast: f32, hue: f32) -> Self {
+    #[pyo3(signature = (brightness=0.0, contrast=0.0, hue=0.0, saturation=0.0))]
+    fn color_jitter(&self, brightness: f32, contrast: f32, hue: f32, saturation: f32) -> Self {
         Self {
-            inner: self.inner.clone().color_jitter(brightness, contrast, hue),
+            inner: self.inner.clone().color_jitter_with_config(
+                rivet_vision::api::ColorJitterConfig::new(brightness, contrast, hue)
+                    .with_saturation(saturation),
+            ),
         }
     }
 

@@ -1482,6 +1482,26 @@ mod tests {
             Point2::new(0.0, 1.0),
         ];
         let operations = vec![
+            ImageOp::Saturation(crate::transforms::SaturationConfig::new(0.5)),
+            ImageOp::Gamma(crate::transforms::GammaConfig::new(0.7, 1.0)),
+            ImageOp::Affine(crate::transforms::AffineConfig::new(
+                0.0,
+                [0.0, 0.0],
+                1.0,
+                [0.0, 0.0],
+            )),
+            ImageOp::Erase(crate::transforms::EraseConfig::new(0, 0, 1, 1, vec![0.0])),
+            ImageOp::RandomRotation(crate::transforms::RandomRotationConfig::new([-10.0, 10.0])),
+            ImageOp::RandomGaussianBlur(crate::transforms::RandomGaussianBlurConfig::new(
+                1,
+                [0.1, 1.0],
+            )),
+            ImageOp::AutoAugment(crate::transforms::AutoAugmentConfig::new(
+                crate::transforms::AutoAugmentPolicy::ImageNet,
+            )),
+            ImageOp::RandAugment(Default::default()),
+            ImageOp::TrivialAugmentWide(Default::default()),
+            ImageOp::AugMix(Default::default()),
             ImageOp::resize(4, 4),
             ImageOp::crop(0, 0, 1, 1),
             ImageOp::center_crop(1, 1),
@@ -1519,7 +1539,12 @@ mod tests {
             ImageOp::hwc_to_chw(),
         ];
 
+        let mut ids = std::collections::HashMap::new();
         for op in operations {
+            // Some APIs share an operator, e.g. horizontal/vertical flip.
+            if let Some(previous) = ids.insert(op.planning_op_id(), op.name()) {
+                assert_eq!(previous, op.name(), "planning ID collision");
+            }
             let mut pipeline = decoded_stub();
             pipeline.ops.push(op.clone());
             pipeline.batch = Some(crate::pipeline::op::BatchConfig::new(1, false));

@@ -3,6 +3,15 @@ pub mod filter;
 pub mod geometry;
 pub mod representation;
 
+mod linear;
+pub use linear::LinearTransformationConfig;
+pub mod autoaugment;
+pub use autoaugment::{
+    AugMixConfig, AugMixPlan, AugmentOp, AugmentStep, AutoAugmentConfig, AutoAugmentPolicy,
+    RandAugmentConfig, TrivialAugmentWideConfig,
+};
+mod random_extra;
+pub use random_extra::{RandomGaussianBlurConfig, RandomRotationConfig};
 mod advanced_geometry;
 mod blur;
 mod crop;
@@ -29,16 +38,16 @@ pub enum PaddingMode {
 }
 
 pub use advanced_geometry::{
-    ArbitraryRotateConfig, ElasticTransformConfig, PerspectiveConfig, Point2, RandomAffineConfig,
-    RandomPerspectiveConfig,
+    AffineConfig, ArbitraryRotateConfig, ElasticTransformConfig, PerspectiveConfig, Point2,
+    RandomAffineConfig, RandomPerspectiveConfig,
 };
 pub use blur::GaussianBlurConfig;
 pub use color::{
     AutocontrastConfig, BrightnessConfig, ColorJitterConfig, ColorJitterParams, ContrastConfig,
-    EqualizeConfig, GrayscaleConfig, HueConfig, InvertConfig, PosterizeConfig,
-    RandomGrayscaleConfig, SharpnessConfig, SolarizeConfig,
+    EqualizeConfig, GammaConfig, GrayscaleConfig, HueConfig, InvertConfig, PosterizeConfig,
+    RandomGrayscaleConfig, SaturationConfig, SharpnessConfig, SolarizeConfig,
 };
-pub use erase::{EraseRegion, RandomErasingConfig};
+pub use erase::{EraseConfig, EraseRegion, RandomErasingConfig};
 pub use geometry::{
     CenterCropConfig, CropConfig, CropRegion, FiveCropConfig, FlipConfig, FlipDirection,
     InterpolationMode, LayoutConfig, PadConfig, RandomCropConfig, RandomHorizontalFlipConfig,

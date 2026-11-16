@@ -12,6 +12,8 @@ pub enum InterpolationMode {
     Bilinear,
     Bicubic,
     Lanczos3,
+    Box,
+    Hamming,
 }
 
 impl FromStr for InterpolationMode {
@@ -19,12 +21,14 @@ impl FromStr for InterpolationMode {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
+            "box" => Ok(Self::Box),
+            "hamming" => Ok(Self::Hamming),
             "nearest" => Ok(Self::Nearest),
             "bilinear" | "linear" => Ok(Self::Bilinear),
             "bicubic" | "cubic" => Ok(Self::Bicubic),
             "lanczos3" | "lanczos" => Ok(Self::Lanczos3),
             _ => Err(invalid_argument(format!(
-                "unknown interpolation mode {value:?}; expected nearest, bilinear, bicubic, or lanczos3"
+                "unknown interpolation mode {value:?}; expected nearest, bilinear, bicubic, lanczos3, box, or hamming"
             ))),
         }
     }
@@ -82,8 +86,16 @@ impl ResizeConfig {
 const PRECISION: i64 = 1 << 22;
 
 fn filter(mode: InterpolationMode, x: f64) -> f64 {
+    if mode == InterpolationMode::Box {
+        return if x > -0.5 && x <= 0.5 { 1.0 } else { 0.0 };
+    }
     let x = x.abs();
     match mode {
+        InterpolationMode::Hamming if x == 0.0 => 1.0,
+        InterpolationMode::Hamming if x < 1.0 => {
+            let x = x * std::f64::consts::PI;
+            x.sin() / x * (f64::from(0.54f32) + f64::from(0.46f32) * x.cos())
+        }
         InterpolationMode::Bilinear => (1.0 - x).max(0.0),
         InterpolationMode::Bicubic if x < 1.0 => (1.5 * x - 2.5) * x * x + 1.0,
         InterpolationMode::Bicubic if x < 2.0 => (((x - 5.0) * x + 8.0) * x - 4.0) * -0.5,
@@ -112,7 +124,8 @@ fn coefficients(input: usize, output: usize, mode: InterpolationMode) -> Vec<Coe
     let filter_scale = scale.max(1.0);
     let support = filter_scale
         * match mode {
-            InterpolationMode::Bilinear => 1.0,
+            InterpolationMode::Box => 0.5,
+            InterpolationMode::Hamming | InterpolationMode::Bilinear => 1.0,
             InterpolationMode::Bicubic => 2.0,
             InterpolationMode::Lanczos3 => 3.0,
             InterpolationMode::Nearest => unreachable!(),
@@ -295,7 +308,7 @@ mod tests {
             "lanczos".parse::<InterpolationMode>().unwrap(),
             InterpolationMode::Lanczos3
         );
-        assert!("box".parse::<InterpolationMode>().is_err());
+        assert!("unknown".parse::<InterpolationMode>().is_err());
     }
 
     #[test]

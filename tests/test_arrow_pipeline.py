@@ -75,7 +75,7 @@ def test_resize_accepts_rivet_interpolation_modes(
 
 def test_resize_rejects_unknown_interpolation_mode(arrow_file: Path) -> None:
     with pytest.raises(ValueError, match="unknown interpolation mode"):
-        scan(arrow_file).decode_image().resize(24, 20, "box")
+        scan(arrow_file).decode_image().resize(24, 20, "unknown-filter")
 
 
 def test_center_crop(arrow_file: Path) -> None:

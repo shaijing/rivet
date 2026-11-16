@@ -41,6 +41,141 @@ impl TransformSequence {
         self.ops
     }
 
+    pub fn auto_augment(mut self, config: crate::transforms::AutoAugmentConfig) -> Self {
+        self.ops.push(ImageOp::AutoAugment(config));
+        self
+    }
+    pub fn rand_augment(mut self, config: crate::transforms::RandAugmentConfig) -> Self {
+        self.ops.push(ImageOp::RandAugment(config));
+        self
+    }
+    pub fn trivial_augment_wide(
+        mut self,
+        config: crate::transforms::TrivialAugmentWideConfig,
+    ) -> Self {
+        self.ops.push(ImageOp::TrivialAugmentWide(config));
+        self
+    }
+    pub fn augmix(mut self, config: crate::transforms::AugMixConfig) -> Self {
+        self.ops.push(ImageOp::AugMix(config));
+        self
+    }
+    pub fn linear_transform(
+        mut self,
+        config: crate::transforms::LinearTransformationConfig,
+    ) -> Self {
+        self.ops.push(ImageOp::LinearTransformation(config));
+        self
+    }
+    pub fn to_tensor(self) -> Self {
+        self.convert_image_dtype(DType::F32).hwc_to_chw()
+    }
+    pub fn pil_to_tensor(self) -> Self {
+        self.hwc_to_chw()
+    }
+    pub fn saturation(mut self, factor: f32) -> Self {
+        self.ops.push(ImageOp::Saturation(
+            crate::transforms::SaturationConfig::new(factor),
+        ));
+        self
+    }
+    pub fn gamma(mut self, gamma: f64, gain: f64) -> Self {
+        self.ops
+            .push(ImageOp::Gamma(crate::transforms::GammaConfig::new(
+                gamma, gain,
+            )));
+        self
+    }
+    pub fn affine(mut self, config: crate::transforms::AffineConfig) -> Self {
+        self.ops.push(ImageOp::Affine(config));
+        self
+    }
+    pub fn erase(mut self, config: crate::transforms::EraseConfig) -> Self {
+        self.ops.push(ImageOp::Erase(config));
+        self
+    }
+    pub fn random_rotation(mut self, config: crate::transforms::RandomRotationConfig) -> Self {
+        self.ops.push(ImageOp::RandomRotation(config));
+        self
+    }
+    pub fn random_gaussian_blur(
+        mut self,
+        config: crate::transforms::RandomGaussianBlurConfig,
+    ) -> Self {
+        self.ops.push(ImageOp::RandomGaussianBlur(config));
+        self
+    }
+    pub fn color_jitter_with_config(
+        mut self,
+        config: crate::transforms::ColorJitterConfig,
+    ) -> Self {
+        self.ops.push(ImageOp::ColorJitter(config));
+        self
+    }
+    pub fn resized_crop(
+        self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        out_width: u32,
+        out_height: u32,
+        interpolation: InterpolationMode,
+    ) -> Self {
+        self.crop(x, y, width, height).resize_with_interpolation(
+            out_width,
+            out_height,
+            interpolation,
+        )
+    }
+    pub fn random_vertical_flip(mut self, probability: f64) -> Self {
+        self.ops.push(ImageOp::random_apply(
+            probability,
+            vec![ImageOp::vertical_flip()],
+        ));
+        self
+    }
+    pub fn random_invert(mut self, probability: f64) -> Self {
+        self.ops
+            .push(ImageOp::random_apply(probability, vec![ImageOp::invert()]));
+        self
+    }
+    pub fn random_posterize(mut self, bits: u8, probability: f64) -> Self {
+        self.ops.push(ImageOp::random_apply(
+            probability,
+            vec![ImageOp::posterize(bits)],
+        ));
+        self
+    }
+    pub fn random_solarize(mut self, threshold: u8, probability: f64) -> Self {
+        self.ops.push(ImageOp::random_apply(
+            probability,
+            vec![ImageOp::solarize(threshold)],
+        ));
+        self
+    }
+    pub fn random_adjust_sharpness(mut self, factor: f32, probability: f64) -> Self {
+        self.ops.push(ImageOp::random_apply(
+            probability,
+            vec![ImageOp::sharpness(factor)],
+        ));
+        self
+    }
+    pub fn random_autocontrast(mut self, probability: f64) -> Self {
+        self.ops.push(ImageOp::random_apply(
+            probability,
+            vec![ImageOp::autocontrast()],
+        ));
+        self
+    }
+    pub fn random_equalize(mut self, probability: f64) -> Self {
+        self.ops.push(ImageOp::random_apply(
+            probability,
+            vec![ImageOp::equalize()],
+        ));
+        self
+    }
+
     pub fn decode_image(mut self) -> Self {
         self.ops.push(ImageOp::decode());
         self

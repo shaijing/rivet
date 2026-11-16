@@ -12,6 +12,144 @@ pub struct EraseRegion {
     pub height: usize,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct EraseConfig {
+    pub region: EraseRegion,
+    pub value: Vec<f32>,
+}
+impl EraseConfig {
+    pub fn new(x: usize, y: usize, width: usize, height: usize, value: Vec<f32>) -> Self {
+        Self {
+            region: EraseRegion {
+                x,
+                y,
+                width,
+                height,
+            },
+            value,
+        }
+    }
+    pub fn validate(&self) -> RivetResult<()> {
+        if self.value.is_empty() || self.value.iter().any(|v| !v.is_finite()) {
+            return Err(invalid_argument(
+                "erase fill must be a nonempty finite scalar or channel list",
+            ));
+        }
+        if self.region.x.checked_add(self.region.width).is_none()
+            || self.region.y.checked_add(self.region.height).is_none()
+        {
+            return Err(invalid_argument("erase rectangle overflows usize"));
+        }
+        Ok(())
+    }
+    pub fn apply(&self, sample: ImageSample, axis: ImageAxisOrder) -> RivetResult<ImageSample> {
+        self.validate()?;
+        let sample = sample.into_decoded()?;
+        let d = sample.image.dims();
+        if d.len() != 3 {
+            return Err(invalid_shape("erase requires a rank-3 image"));
+        }
+        let (h, w, c) = match axis {
+            ImageAxisOrder::Hwc => (d[0], d[1], d[2]),
+            ImageAxisOrder::Chw => (d[1], d[2], d[0]),
+        };
+        if self.value.len() != 1 && self.value.len() != c {
+            return Err(invalid_argument(
+                "erase fill count must be one or match the channel count",
+            ));
+        }
+        let image = sample.image.with_cpu_storage(|storage, layout| {
+            let run_u8 = |values: &[u8]| {
+                erase_values(
+                    values,
+                    layout,
+                    sample.image.device(),
+                    axis,
+                    (h, w, c),
+                    self.region,
+                    &self
+                        .value
+                        .iter()
+                        .map(|v| v.trunc().rem_euclid(256.0) as u8)
+                        .collect::<Vec<_>>(),
+                )
+            };
+            match storage {
+                CpuStorageRef::U8(v) => run_u8(v),
+                CpuStorageRef::F32(v) => erase_values(
+                    v,
+                    layout,
+                    sample.image.device(),
+                    axis,
+                    (h, w, c),
+                    self.region,
+                    &self.value,
+                ),
+                _ => Err(rivet_core::Error::UnexpectedDType {
+                    expected: DType::U8,
+                    actual: sample.image.dtype(),
+                }),
+            }
+        })?;
+        Ok(ImageSample::Decoded(crate::sample::image::DecodedSample {
+            image,
+            label: sample.label,
+        }))
+    }
+}
+fn erase_values<T: rivet_core::WithDType>(
+    values: &[T],
+    layout: &rivet_core::Layout,
+    device: &rivet_core::Device,
+    axis: ImageAxisOrder,
+    (h, w, c): (usize, usize, usize),
+    region: EraseRegion,
+    fill: &[T],
+) -> rivet_core::Result<Tensor> {
+    let read = |channel, y, x| {
+        if in_region(x, y, region) {
+            return Ok(fill[if fill.len() == 1 { 0 } else { channel }]);
+        }
+        let coords = match axis {
+            ImageAxisOrder::Hwc => [y, x, channel],
+            ImageAxisOrder::Chw => [channel, y, x],
+        };
+        values
+            .get(logical_offset(layout, &coords)?)
+            .copied()
+            .ok_or(rivet_core::Error::StorageOutOfBounds)
+    };
+    Tensor::from_exact_writer::<T, _, _>(layout.dims(), device, |out| {
+        match axis {
+            ImageAxisOrder::Hwc => {
+                for y in 0..h {
+                    for x in 0..w {
+                        if c == 3 {
+                            out.write_next(read(0, y, x)?)?;
+                            out.write_next(read(1, y, x)?)?;
+                            out.write_next(read(2, y, x)?)?;
+                        } else {
+                            for channel in 0..c {
+                                out.write_next(read(channel, y, x)?)?;
+                            }
+                        }
+                    }
+                }
+            }
+            ImageAxisOrder::Chw => {
+                for channel in 0..c {
+                    for y in 0..h {
+                        for x in 0..w {
+                            out.write_next(read(channel, y, x)?)?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RandomErasingConfig {
     pub probability: f64,
@@ -147,7 +285,7 @@ impl RandomErasingConfig {
 
         let output = match sample.image.dtype() {
             DType::U8 => {
-                let fill = self.value.clamp(0.0, 255.0) as u8;
+                let fill = self.value.trunc().rem_euclid(256.0) as u8;
                 sample.image.with_cpu_storage(|storage, layout| {
                     let CpuStorageRef::U8(values) = storage else {
                         return Err(rivet_core::Error::UnexpectedDType {

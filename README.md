@@ -27,6 +27,8 @@ or a PyTorch runtime dependency.
 
 See [compatibility and migration notes](docs/torchvision-compatibility.md) for
 source references, tested tolerances, parameter changes and remaining limits.
+The [torchvision coverage inventory](docs/torchvision-coverage.md) lists native
+operators, migrated augmentation policies and remaining interface gaps.
 
 ## Workspace crates
 
