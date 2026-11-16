@@ -105,8 +105,8 @@ impl RandomResizedCropConfig {
             let scale = uniform(rng, f64::from(self.scale_min), f64::from(self.scale_max));
             let ratio = uniform(rng, log_ratio_min, log_ratio_max).exp();
             let target_area = area * scale;
-            let crop_width = (target_area * ratio).sqrt().round() as u32;
-            let crop_height = (target_area / ratio).sqrt().round() as u32;
+            let crop_width = (target_area * ratio).sqrt().round_ties_even() as u32;
+            let crop_height = (target_area / ratio).sqrt().round_ties_even() as u32;
             if crop_width > 0
                 && crop_height > 0
                 && crop_width <= image_width
@@ -139,11 +139,11 @@ impl RandomResizedCropConfig {
         let (crop_width, crop_height) = if image_ratio < f64::from(self.ratio_min) {
             (
                 image_width,
-                (f64::from(image_width) / f64::from(self.ratio_min)).round() as u32,
+                (f64::from(image_width) / f64::from(self.ratio_min)).round_ties_even() as u32,
             )
         } else if image_ratio > f64::from(self.ratio_max) {
             (
-                (f64::from(image_height) * f64::from(self.ratio_max)).round() as u32,
+                (f64::from(image_height) * f64::from(self.ratio_max)).round_ties_even() as u32,
                 image_height,
             )
         } else {

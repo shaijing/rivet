@@ -490,7 +490,7 @@ impl ImageOp {
         Self::RandomHorizontalFlip(RandomHorizontalFlipConfig::new(probability))
     }
 
-    pub fn brightness(value: i32) -> Self {
+    pub fn brightness(value: f32) -> Self {
         Self::Brightness(BrightnessConfig::new(value))
     }
 
@@ -498,11 +498,11 @@ impl ImageOp {
         Self::Contrast(ContrastConfig::new(value))
     }
 
-    pub fn hue(degrees: i32) -> Self {
-        Self::Hue(HueConfig::new(degrees))
+    pub fn hue(factor: f32) -> Self {
+        Self::Hue(HueConfig::new(factor))
     }
 
-    pub fn color_jitter(brightness: i32, contrast: f32, hue: i32) -> Self {
+    pub fn color_jitter(brightness: f32, contrast: f32, hue: f32) -> Self {
         Self::ColorJitter(ColorJitterConfig::new(brightness, contrast, hue))
     }
 
@@ -640,7 +640,7 @@ impl ImageOp {
     /// pipeline; that is `transition`'s job).
     pub fn validate(&self) -> RivetResult<()> {
         match self {
-            Self::Decode(_) | Self::Flip(_) | Self::Brightness(_) | Self::Layout(_) => Ok(()),
+            Self::Decode(_) | Self::Flip(_) | Self::Layout(_) => Ok(()),
             Self::Resize(op) => {
                 if op.width == 0 || op.height == 0 {
                     return Err(invalid_argument(
@@ -684,7 +684,8 @@ impl ImageOp {
                 Ok(())
             }
             Self::Contrast(op) => op.validate(),
-            Self::Hue(_) => Ok(()),
+            Self::Hue(op) => op.validate(),
+            Self::Brightness(op) => op.validate(),
             Self::ColorJitter(op) => op.validate(),
             Self::Invert(_) => Ok(()),
             Self::Posterize(op) => op.validate(),

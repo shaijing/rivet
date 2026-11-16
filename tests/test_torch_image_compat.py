@@ -70,20 +70,18 @@ def test_geometry_and_normalize_match_torchvision(tmp_path: Path) -> None:
     ("rivet_mode", "torch_mode", "max_error"),
     [
         ("nearest", InterpolationMode.NEAREST, 0),
-        ("bilinear", InterpolationMode.BILINEAR, 1),
-        # image::CatmullRom and Pillow's bicubic kernel have small edge drift.
-        ("bicubic", InterpolationMode.BICUBIC, 8),
-        # The two Lanczos implementations have wider ringing differences.
-        ("lanczos3", InterpolationMode.LANCZOS, 16),
+        ("bilinear", InterpolationMode.BILINEAR, 0),
+        ("bicubic", InterpolationMode.BICUBIC, 0),
+        ("lanczos3", InterpolationMode.LANCZOS, 0),
     ],
 )
-def test_resize_stays_within_bounded_u8_error_of_torchvision(
+def test_resize_matches_torchvision(
     tmp_path: Path,
     rivet_mode: str,
     torch_mode: InterpolationMode,
     max_error: int,
 ) -> None:
-    """The resize backend may round differently, but drift must stay bounded."""
+    """Rust separable uint8 resize matches Pillow at each rounding boundary."""
     class_dir = tmp_path / "class"
     class_dir.mkdir()
     image_path, _ = _write_test_image(class_dir)
@@ -132,9 +130,7 @@ def test_crop_flip_and_pad_match_torchvision_exactly(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("channels", [1, 3])
-def test_grayscale_matches_torchvision(
-    tmp_path: Path, channels: int
-) -> None:
+def test_grayscale_matches_torchvision(tmp_path: Path, channels: int) -> None:
     """Rust grayscale matches the torchvision PIL uint8 backend exactly."""
     class_dir = tmp_path / "class"
     class_dir.mkdir()
@@ -164,6 +160,7 @@ def test_grayscale_matches_torchvision(
     [
         ("invert", None, functional.invert),
         ("posterize", 4, functional.posterize),
+        ("posterize", 0, functional.posterize),
         ("solarize", 122, functional.solarize),
         ("solarize", 0, functional.solarize),
         ("solarize", 128, functional.solarize),
@@ -213,9 +210,7 @@ def test_fixed_rotate_matches_torchvision(tmp_path: Path, angle: int) -> None:
     )
     expected = functional.rotate(
         Image.open(image_path).convert("RGB"),
-        # image::rotate90 is clockwise, whereas torchvision's positive
-        # angles are counter-clockwise.
-        -angle,
+        angle,
         interpolation=InterpolationMode.NEAREST,
         expand=True,
     )
@@ -293,7 +288,7 @@ def test_configurable_random_ops_have_torchvision_comparable_degenerate_cases(
             value=23,
         ),
     )
-    expected_erased = np.full_like(pixels, 23)
+    expected_erased = pixels  # torchvision preserves input when no rectangle fits
     np.testing.assert_array_equal(erased, expected_erased)
 
 
@@ -304,7 +299,7 @@ def test_configurable_random_ops_have_torchvision_comparable_degenerate_cases(
         lambda pipeline: pipeline.random_horizontal_flip(probability=0.0),
         lambda pipeline: pipeline.random_grayscale(probability=0.0),
         lambda pipeline: pipeline.random_erasing(probability=0.0),
-        lambda pipeline: pipeline.sharpness(0.0),
+        lambda pipeline: pipeline.sharpness(1.0),
         lambda pipeline: pipeline.arbitrary_rotate(0.0, expand=False),
         lambda pipeline: pipeline.random_affine(0.0),
         lambda pipeline: pipeline.perspective(
@@ -354,5 +349,265 @@ def test_equalize_histograms_match_torchvision(tmp_path, shape, kind):
     class_dir.mkdir()
     image = Image.fromarray(pixels)
     image.save(class_dir / "sample.png")
-    actual = _rivet_image(tmp_path, rivet.scan_image_folder(tmp_path).decode_image().equalize())
+    actual = _rivet_image(
+        tmp_path, rivet.scan_image_folder(tmp_path).decode_image().equalize()
+    )
     np.testing.assert_array_equal(actual, np.asarray(functional.equalize(image)))
+
+
+@pytest.mark.parametrize("shape", [(3, 5), (23, 19), (11, 13)])
+@pytest.mark.parametrize("mode", ["nearest", "bilinear", "bicubic", "lanczos3"])
+def test_resize_exact_over_scales(tmp_path, shape, mode):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    path, _ = _write_test_image(class_dir)
+    height, width = shape
+    expected_mode = {
+        "nearest": InterpolationMode.NEAREST,
+        "bilinear": InterpolationMode.BILINEAR,
+        "bicubic": InterpolationMode.BICUBIC,
+        "lanczos3": InterpolationMode.LANCZOS,
+    }[mode]
+    actual = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path).decode_image().resize(width, height, mode),
+    )
+    expected = functional.resize(
+        Image.open(path).convert("RGB"), [height, width], expected_mode
+    )
+    np.testing.assert_array_equal(actual, np.asarray(expected))
+
+
+@pytest.mark.parametrize(
+    "name,factor",
+    [
+        ("brightness", 0.0),
+        ("brightness", 0.3),
+        ("brightness", 1.0),
+        ("brightness", 1.7),
+        ("contrast", 0.0),
+        ("contrast", 0.3),
+        ("contrast", 1.0),
+        ("contrast", 1.7),
+        ("hue", -0.5),
+        ("hue", -0.17),
+        ("hue", 0.0),
+        ("hue", 0.23),
+        ("hue", 0.5),
+        ("sharpness", 0.0),
+        ("sharpness", 0.3),
+        ("sharpness", 1.0),
+        ("sharpness", 2.0),
+    ],
+)
+def test_color_factors_match_pillow(tmp_path, name, factor):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    path, _ = _write_test_image(class_dir)
+    pipeline = rivet.scan_image_folder(tmp_path).decode_image()
+    actual = _rivet_image(tmp_path, getattr(pipeline, name)(factor))
+    expected = getattr(functional, "adjust_" + name)(
+        Image.open(path).convert("RGB"), factor
+    )
+    np.testing.assert_array_equal(actual, np.asarray(expected))
+
+
+@pytest.mark.parametrize("width,height", [(16, 18), (8, 18), (16, 8)])
+def test_center_crop_zero_padding_matches_pillow(tmp_path, width, height):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    path, _ = _write_test_image(class_dir)
+    actual = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path).decode_image().center_crop(width, height),
+    )
+    expected = functional.center_crop(Image.open(path).convert("RGB"), [height, width])
+    np.testing.assert_array_equal(actual, np.asarray(expected))
+
+
+@pytest.mark.parametrize("angle", [-37.0, 17.0, 90.0, 180.0, 270.0])
+@pytest.mark.parametrize("expand", [False, True])
+@pytest.mark.parametrize("mode", ["nearest", "bilinear", "bicubic"])
+def test_arbitrary_rotate_matches_pillow(tmp_path, angle, expand, mode):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    path, _ = _write_test_image(class_dir)
+    actual = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path)
+        .decode_image()
+        .arbitrary_rotate(angle, expand=expand, interpolation=mode, fill=37),
+    )
+    expected = functional.rotate(
+        Image.open(path).convert("RGB"),
+        angle,
+        interpolation=getattr(InterpolationMode, mode.upper()),
+        expand=expand,
+        fill=37,
+    )
+    np.testing.assert_array_equal(actual, np.asarray(expected))
+
+
+@pytest.mark.parametrize("mode", ["nearest", "bilinear", "bicubic"])
+def test_perspective_nonidentity_matches_pillow(tmp_path, mode):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    path, _ = _write_test_image(class_dir)
+    start = [(0, 0), (12, 0), (12, 10), (0, 10)]
+    end = [(1, 1), (10, 2), (11, 9), (2, 8)]
+    actual = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path)
+        .decode_image()
+        .perspective(start, end, interpolation=mode, fill=37),
+    )
+    expected = functional.perspective(
+        Image.open(path).convert("RGB"),
+        start,
+        end,
+        interpolation=getattr(InterpolationMode, mode.upper()),
+        fill=37,
+    )
+    np.testing.assert_array_equal(actual, np.asarray(expected))
+
+
+@pytest.mark.parametrize("sigma,kernel", [(0.5, 3), (1.0, 5), (2.0, 7)])
+def test_gaussian_blur_matches_torchvision(tmp_path, sigma, kernel):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    path, _ = _write_test_image(class_dir)
+    actual = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path)
+        .decode_image()
+        .gaussian_blur(sigma, kernel_size=kernel),
+    )
+    expected = functional.gaussian_blur(Image.open(path).convert("RGB"), kernel, sigma)
+    np.testing.assert_allclose(
+        actual.astype(np.int16), np.asarray(expected).astype(np.int16), atol=1, rtol=0
+    )
+
+
+@pytest.mark.parametrize("mode", ["constant", "edge", "reflect", "symmetric"])
+@pytest.mark.parametrize("padding", [(1, 2, 3, 4), (19, 14, 17, 13)])
+def test_padding_modes_match_torchvision(tmp_path, mode, padding):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    path, _ = _write_test_image(class_dir)
+    actual = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path)
+        .decode_image()
+        .pad_with_sides(*padding, fill=37, padding_mode=mode),
+    )
+    expected = functional.pad(
+        Image.open(path).convert("RGB"), list(padding), fill=37, padding_mode=mode
+    )
+    np.testing.assert_array_equal(actual, np.asarray(expected))
+
+
+def test_crop_beyond_image_zero_pads(tmp_path):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    path, _ = _write_test_image(class_dir)
+    actual = _rivet_image(
+        tmp_path, rivet.scan_image_folder(tmp_path).decode_image().crop(10, 9, 8, 7)
+    )
+    expected = functional.crop(Image.open(path).convert("RGB"), 9, 10, 7, 8)
+    np.testing.assert_array_equal(actual, np.asarray(expected))
+
+
+@pytest.mark.parametrize("mode", ["nearest", "bilinear", "bicubic"])
+def test_fixed_scale_affine_matches_torchvision(tmp_path, mode):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    path, _ = _write_test_image(class_dir)
+    actual = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path)
+        .decode_image()
+        .random_affine(0.0, scale=[0.75, 0.75], interpolation=mode, fill=37),
+    )
+    expected = functional.affine(
+        Image.open(path).convert("RGB"),
+        0.0,
+        [0, 0],
+        0.75,
+        [0.0, 0.0],
+        interpolation=getattr(InterpolationMode, mode.upper()),
+        fill=37,
+    )
+    np.testing.assert_array_equal(actual, np.asarray(expected))
+
+
+def test_float_to_u8_conversion_matches_torchvision(tmp_path):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    _, pixels = _write_test_image(class_dir)
+    actual = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path)
+        .decode_image()
+        .normalize([0.0] * 3, [2.0] * 3)
+        .convert_image_dtype("uint8"),
+    )
+    normalized = torch.from_numpy(pixels).float() / 255.0 / 2.0
+    np.testing.assert_array_equal(
+        actual, functional.convert_image_dtype(normalized, torch.uint8).numpy()
+    )
+
+
+def test_random_grayscale_default_preserves_rgb_channels(tmp_path):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    path, _ = _write_test_image(class_dir)
+    actual = _rivet_image(
+        tmp_path, rivet.scan_image_folder(tmp_path).decode_image().random_grayscale(1.0)
+    )
+    expected = transforms.RandomGrayscale(p=1.0)(Image.open(path).convert("RGB"))
+    np.testing.assert_array_equal(actual, np.asarray(expected))
+
+
+@pytest.mark.parametrize(
+    "source_size,target_size",
+    [((3, 7), (9, 17)), ((1, 1), (4, 8)), ((7, 9), (1, 1)), ((19, 31), (3, 5))],
+)
+@pytest.mark.parametrize("mode", ["nearest", "bilinear", "bicubic", "lanczos3"])
+def test_resize_random_pixels_and_degenerate_axes(
+    tmp_path, source_size, target_size, mode
+):
+    pixels = np.random.default_rng(7).integers(
+        0, 256, (*source_size, 3), dtype=np.uint8
+    )
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    image = Image.fromarray(pixels)
+    image.save(class_dir / "sample.png")
+    actual = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path)
+        .decode_image()
+        .resize(target_size[1], target_size[0], mode),
+    )
+    interpolation = (
+        InterpolationMode.LANCZOS
+        if mode == "lanczos3"
+        else getattr(InterpolationMode, mode.upper())
+    )
+    expected = functional.resize(image, list(target_size), interpolation)
+    np.testing.assert_array_equal(actual, np.asarray(expected))
+
+
+@pytest.mark.parametrize("factor", [-0.5, -0.23, 0.0, 0.19, 0.5])
+def test_hue_random_rgb_matches_pillow(tmp_path, factor):
+    pixels = np.random.default_rng(137).integers(0, 256, (64, 67, 3), dtype=np.uint8)
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    image = Image.fromarray(pixels)
+    image.save(class_dir / "sample.png")
+    actual = _rivet_image(
+        tmp_path, rivet.scan_image_folder(tmp_path).decode_image().hue(factor)
+    )
+    np.testing.assert_array_equal(
+        actual, np.asarray(functional.adjust_hue(image, factor))
+    )

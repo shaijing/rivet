@@ -34,6 +34,19 @@ fn parse_interpolation(value: &str) -> PyResult<InterpolationMode> {
     value.parse::<InterpolationMode>().map_err(to_py_err)
 }
 
+fn parse_padding_mode(value: &str) -> PyResult<rivet_vision::api::PaddingMode> {
+    use rivet_vision::api::PaddingMode;
+    match value {
+        "constant" => Ok(PaddingMode::Constant),
+        "edge" => Ok(PaddingMode::Edge),
+        "reflect" => Ok(PaddingMode::Reflect),
+        "symmetric" => Ok(PaddingMode::Symmetric),
+        _ => Err(PyValueError::new_err(
+            "padding_mode must be constant, edge, reflect or symmetric",
+        )),
+    }
+}
+
 #[pyclass(name = "_Transform")]
 pub(crate) struct PyTransform {
     pub(crate) inner: TransformSequence,
@@ -85,21 +98,32 @@ impl PyTransform {
         }
     }
 
-    #[pyo3(signature = (padding, fill=0.0))]
-    fn pad(&self, padding: u32, fill: f32) -> Self {
-        Self {
-            inner: self.inner.clone().pad_with_fill(padding, fill),
-        }
+    #[pyo3(signature = (padding, fill=0.0, padding_mode="constant"))]
+    fn pad(&self, padding: u32, fill: f32, padding_mode: &str) -> PyResult<Self> {
+        let config = rivet_vision::api::PadConfig::new(padding)
+            .with_fill(fill)
+            .with_mode(parse_padding_mode(padding_mode)?);
+        Ok(Self {
+            inner: self.inner.clone().pad_with_config(config),
+        })
     }
 
-    #[pyo3(signature = (left, top, right, bottom, fill=0.0))]
-    fn pad_with_sides(&self, left: u32, top: u32, right: u32, bottom: u32, fill: f32) -> Self {
-        Self {
-            inner: self
-                .inner
-                .clone()
-                .pad_with_sides(left, top, right, bottom, fill),
-        }
+    #[pyo3(signature = (left, top, right, bottom, fill=0.0, padding_mode="constant"))]
+    fn pad_with_sides(
+        &self,
+        left: u32,
+        top: u32,
+        right: u32,
+        bottom: u32,
+        fill: f32,
+        padding_mode: &str,
+    ) -> PyResult<Self> {
+        let config = rivet_vision::api::PadConfig::with_sides(left, top, right, bottom)
+            .with_fill(fill)
+            .with_mode(parse_padding_mode(padding_mode)?);
+        Ok(Self {
+            inner: self.inner.clone().pad_with_config(config),
+        })
     }
 
     fn horizontal_flip(&self) -> Self {
@@ -154,7 +178,7 @@ impl PyTransform {
         }
     }
 
-    fn brightness(&self, value: i32) -> Self {
+    fn brightness(&self, value: f32) -> Self {
         Self {
             inner: self.inner.clone().brightness(value),
         }
@@ -166,8 +190,8 @@ impl PyTransform {
         }
     }
 
-    #[pyo3(signature = (brightness=0, contrast=0.0, hue=0))]
-    fn color_jitter(&self, brightness: i32, contrast: f32, hue: i32) -> Self {
+    #[pyo3(signature = (brightness=0.0, contrast=0.0, hue=0.0))]
+    fn color_jitter(&self, brightness: f32, contrast: f32, hue: f32) -> Self {
         Self {
             inner: self.inner.clone().color_jitter(brightness, contrast, hue),
         }
@@ -209,15 +233,20 @@ impl PyTransform {
         }
     }
 
-    fn gaussian_blur(&self, sigma: f32) -> Self {
+    #[pyo3(signature = (sigma, kernel_size=None))]
+    fn gaussian_blur(&self, sigma: f32, kernel_size: Option<u32>) -> Self {
+        let mut config = rivet_vision::api::GaussianBlurConfig::new(sigma);
+        if let Some(size) = kernel_size {
+            config = config.with_kernel_size(size);
+        }
         Self {
-            inner: self.inner.clone().gaussian_blur(sigma),
+            inner: self.inner.clone().gaussian_blur_with_config(config),
         }
     }
 
-    fn hue(&self, degrees: i32) -> Self {
+    fn hue(&self, factor: f32) -> Self {
         Self {
-            inner: self.inner.clone().hue(degrees),
+            inner: self.inner.clone().hue(factor),
         }
     }
 
@@ -228,7 +257,7 @@ impl PyTransform {
         }
     }
 
-    #[pyo3(signature = (probability=0.1, num_output_channels=1))]
+    #[pyo3(signature = (probability=0.1, num_output_channels=3))]
     fn random_grayscale(&self, probability: f64, num_output_channels: u8) -> Self {
         Self {
             inner: self
@@ -285,7 +314,7 @@ impl PyTransform {
         })
     }
 
-    #[pyo3(signature = (angle, interpolation="bilinear", expand=true, fill=0))]
+    #[pyo3(signature = (angle, interpolation="nearest", expand=false, fill=0))]
     fn arbitrary_rotate(
         &self,
         angle: f32,
@@ -304,7 +333,7 @@ impl PyTransform {
         })
     }
 
-    #[pyo3(signature = (degrees, translate=None, scale=None, shear=None, interpolation="bilinear", fill=0))]
+    #[pyo3(signature = (degrees, translate=None, scale=None, shear=None, interpolation="nearest", fill=0))]
     fn random_affine(
         &self,
         degrees: f32,
@@ -460,21 +489,32 @@ impl PyImagePipeline {
         }
     }
 
-    #[pyo3(signature = (padding, fill=0.0))]
-    fn pad(&self, padding: u32, fill: f32) -> Self {
-        Self {
-            inner: self.inner.clone().pad_with_fill(padding, fill),
-        }
+    #[pyo3(signature = (padding, fill=0.0, padding_mode="constant"))]
+    fn pad(&self, padding: u32, fill: f32, padding_mode: &str) -> PyResult<Self> {
+        let config = rivet_vision::api::PadConfig::new(padding)
+            .with_fill(fill)
+            .with_mode(parse_padding_mode(padding_mode)?);
+        Ok(Self {
+            inner: self.inner.clone().pad_with_config(config),
+        })
     }
 
-    #[pyo3(signature = (left, top, right, bottom, fill=0.0))]
-    fn pad_with_sides(&self, left: u32, top: u32, right: u32, bottom: u32, fill: f32) -> Self {
-        Self {
-            inner: self
-                .inner
-                .clone()
-                .pad_with_sides(left, top, right, bottom, fill),
-        }
+    #[pyo3(signature = (left, top, right, bottom, fill=0.0, padding_mode="constant"))]
+    fn pad_with_sides(
+        &self,
+        left: u32,
+        top: u32,
+        right: u32,
+        bottom: u32,
+        fill: f32,
+        padding_mode: &str,
+    ) -> PyResult<Self> {
+        let config = rivet_vision::api::PadConfig::with_sides(left, top, right, bottom)
+            .with_fill(fill)
+            .with_mode(parse_padding_mode(padding_mode)?);
+        Ok(Self {
+            inner: self.inner.clone().pad_with_config(config),
+        })
     }
 
     fn horizontal_flip(&self) -> Self {
@@ -529,7 +569,7 @@ impl PyImagePipeline {
         }
     }
 
-    fn brightness(&self, value: i32) -> Self {
+    fn brightness(&self, value: f32) -> Self {
         Self {
             inner: self.inner.clone().brightness(value),
         }
@@ -541,8 +581,8 @@ impl PyImagePipeline {
         }
     }
 
-    #[pyo3(signature = (brightness=0, contrast=0.0, hue=0))]
-    fn color_jitter(&self, brightness: i32, contrast: f32, hue: i32) -> Self {
+    #[pyo3(signature = (brightness=0.0, contrast=0.0, hue=0.0))]
+    fn color_jitter(&self, brightness: f32, contrast: f32, hue: f32) -> Self {
         Self {
             inner: self.inner.clone().color_jitter(brightness, contrast, hue),
         }
@@ -616,15 +656,20 @@ impl PyImagePipeline {
         }
     }
 
-    fn gaussian_blur(&self, sigma: f32) -> Self {
+    #[pyo3(signature = (sigma, kernel_size=None))]
+    fn gaussian_blur(&self, sigma: f32, kernel_size: Option<u32>) -> Self {
+        let mut config = rivet_vision::api::GaussianBlurConfig::new(sigma);
+        if let Some(size) = kernel_size {
+            config = config.with_kernel_size(size);
+        }
         Self {
-            inner: self.inner.clone().gaussian_blur(sigma),
+            inner: self.inner.clone().gaussian_blur_with_config(config),
         }
     }
 
-    fn hue(&self, degrees: i32) -> Self {
+    fn hue(&self, factor: f32) -> Self {
         Self {
-            inner: self.inner.clone().hue(degrees),
+            inner: self.inner.clone().hue(factor),
         }
     }
 
@@ -635,7 +680,7 @@ impl PyImagePipeline {
         }
     }
 
-    #[pyo3(signature = (probability=0.1, num_output_channels=1))]
+    #[pyo3(signature = (probability=0.1, num_output_channels=3))]
     fn random_grayscale(&self, probability: f64, num_output_channels: u8) -> Self {
         Self {
             inner: self
@@ -692,7 +737,7 @@ impl PyImagePipeline {
         })
     }
 
-    #[pyo3(signature = (angle, interpolation="bilinear", expand=true, fill=0))]
+    #[pyo3(signature = (angle, interpolation="nearest", expand=false, fill=0))]
     fn arbitrary_rotate(
         &self,
         angle: f32,
@@ -711,7 +756,7 @@ impl PyImagePipeline {
         })
     }
 
-    #[pyo3(signature = (degrees, translate=None, scale=None, shear=None, interpolation="bilinear", fill=0))]
+    #[pyo3(signature = (degrees, translate=None, scale=None, shear=None, interpolation="nearest", fill=0))]
     fn random_affine(
         &self,
         degrees: f32,

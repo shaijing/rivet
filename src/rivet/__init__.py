@@ -303,13 +303,23 @@ class Transform:
     def center_crop(self, width: int, height: int) -> Transform:
         return Transform(self._inner.center_crop(width, height))
 
-    def pad(self, padding: int, fill: float = 0.0) -> Transform:
-        return Transform(self._inner.pad(padding, fill))
+    def pad(
+        self, padding: int, fill: float = 0.0, padding_mode: str = "constant"
+    ) -> Transform:
+        return Transform(self._inner.pad(padding, fill, padding_mode))
 
     def pad_with_sides(
-        self, left: int, top: int, right: int, bottom: int, fill: float = 0.0
+        self,
+        left: int,
+        top: int,
+        right: int,
+        bottom: int,
+        fill: float = 0.0,
+        padding_mode: str = "constant",
     ) -> Transform:
-        return Transform(self._inner.pad_with_sides(left, top, right, bottom, fill))
+        return Transform(
+            self._inner.pad_with_sides(left, top, right, bottom, fill, padding_mode)
+        )
 
     def horizontal_flip(self) -> Transform:
         return Transform(self._inner.horizontal_flip())
@@ -344,14 +354,15 @@ class Transform:
     def random_horizontal_flip(self, probability: float = 0.5) -> Transform:
         return Transform(self._inner.random_horizontal_flip(probability))
 
-    def brightness(self, value: int) -> Transform:
+    def brightness(self, value: float) -> Transform:
+        """Adjust brightness by a nonnegative factor (1 is identity)."""
         return Transform(self._inner.brightness(value))
 
     def contrast(self, value: float) -> Transform:
         return Transform(self._inner.contrast(value))
 
     def color_jitter(
-        self, brightness: int = 0, contrast: float = 0.0, hue: int = 0
+        self, brightness: float = 0.0, contrast: float = 0.0, hue: float = 0.0
     ) -> Transform:
         return Transform(self._inner.color_jitter(brightness, contrast, hue))
 
@@ -373,17 +384,18 @@ class Transform:
     def sharpness(self, amount: float) -> Transform:
         return Transform(self._inner.sharpness(amount))
 
-    def gaussian_blur(self, sigma: float) -> Transform:
-        return Transform(self._inner.gaussian_blur(sigma))
+    def gaussian_blur(self, sigma: float, kernel_size: int | None = None) -> Transform:
+        return Transform(self._inner.gaussian_blur(sigma, kernel_size))
 
-    def hue(self, degrees: int) -> Transform:
-        return Transform(self._inner.hue(degrees))
+    def hue(self, factor: float) -> Transform:
+        """Shift HSV hue by a factor in [-0.5, 0.5]."""
+        return Transform(self._inner.hue(factor))
 
     def grayscale(self, num_output_channels: int = 1) -> Transform:
         return Transform(self._inner.grayscale(num_output_channels))
 
     def random_grayscale(
-        self, probability: float = 0.1, num_output_channels: int = 1
+        self, probability: float = 0.1, num_output_channels: int = 3
     ) -> Transform:
         return Transform(self._inner.random_grayscale(probability, num_output_channels))
 
@@ -415,8 +427,8 @@ class Transform:
     def arbitrary_rotate(
         self,
         angle: float,
-        interpolation: str = "bilinear",
-        expand: bool = True,
+        interpolation: str = "nearest",
+        expand: bool = False,
         fill: int = 0,
     ) -> Transform:
         return Transform(
@@ -429,7 +441,7 @@ class Transform:
         translate: Iterable[float] | None = None,
         scale: Iterable[float] | None = None,
         shear: Iterable[float] | None = None,
-        interpolation: str = "bilinear",
+        interpolation: str = "nearest",
         fill: int = 0,
     ) -> Transform:
         return Transform(
@@ -530,14 +542,24 @@ class Pipeline:
     def center_crop(self, width: int, height: int) -> Pipeline:
         return Pipeline(self._inner.center_crop(width, height), as_numpy=self.as_numpy)
 
-    def pad(self, padding: int, fill: float = 0.0) -> Pipeline:
-        return Pipeline(self._inner.pad(padding, fill), as_numpy=self.as_numpy)
-
-    def pad_with_sides(
-        self, left: int, top: int, right: int, bottom: int, fill: float = 0.0
+    def pad(
+        self, padding: int, fill: float = 0.0, padding_mode: str = "constant"
     ) -> Pipeline:
         return Pipeline(
-            self._inner.pad_with_sides(left, top, right, bottom, fill),
+            self._inner.pad(padding, fill, padding_mode), as_numpy=self.as_numpy
+        )
+
+    def pad_with_sides(
+        self,
+        left: int,
+        top: int,
+        right: int,
+        bottom: int,
+        fill: float = 0.0,
+        padding_mode: str = "constant",
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.pad_with_sides(left, top, right, bottom, fill, padding_mode),
             as_numpy=self.as_numpy,
         )
 
@@ -602,14 +624,15 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
-    def brightness(self, value: int) -> Pipeline:
+    def brightness(self, value: float) -> Pipeline:
+        """Adjust brightness by a nonnegative factor (1 is identity)."""
         return Pipeline(self._inner.brightness(value), as_numpy=self.as_numpy)
 
     def contrast(self, value: float) -> Pipeline:
         return Pipeline(self._inner.contrast(value), as_numpy=self.as_numpy)
 
     def color_jitter(
-        self, brightness: int = 0, contrast: float = 0.0, hue: int = 0
+        self, brightness: float = 0.0, contrast: float = 0.0, hue: float = 0.0
     ) -> Pipeline:
         return Pipeline(
             self._inner.color_jitter(brightness, contrast, hue),
@@ -655,11 +678,14 @@ class Pipeline:
     def sharpness(self, amount: float) -> Pipeline:
         return Pipeline(self._inner.sharpness(amount), as_numpy=self.as_numpy)
 
-    def gaussian_blur(self, sigma: float) -> Pipeline:
-        return Pipeline(self._inner.gaussian_blur(sigma), as_numpy=self.as_numpy)
+    def gaussian_blur(self, sigma: float, kernel_size: int | None = None) -> Pipeline:
+        return Pipeline(
+            self._inner.gaussian_blur(sigma, kernel_size), as_numpy=self.as_numpy
+        )
 
-    def hue(self, degrees: int) -> Pipeline:
-        return Pipeline(self._inner.hue(degrees), as_numpy=self.as_numpy)
+    def hue(self, factor: float) -> Pipeline:
+        """Shift HSV hue by a factor in [-0.5, 0.5]."""
+        return Pipeline(self._inner.hue(factor), as_numpy=self.as_numpy)
 
     def grayscale(self, num_output_channels: int = 1) -> Pipeline:
         return Pipeline(
@@ -667,7 +693,7 @@ class Pipeline:
         )
 
     def random_grayscale(
-        self, probability: float = 0.1, num_output_channels: int = 1
+        self, probability: float = 0.1, num_output_channels: int = 3
     ) -> Pipeline:
         return Pipeline(
             self._inner.random_grayscale(probability, num_output_channels),
@@ -703,8 +729,8 @@ class Pipeline:
     def arbitrary_rotate(
         self,
         angle: float,
-        interpolation: str = "bilinear",
-        expand: bool = True,
+        interpolation: str = "nearest",
+        expand: bool = False,
         fill: int = 0,
     ) -> Pipeline:
         return Pipeline(
@@ -718,7 +744,7 @@ class Pipeline:
         translate: Iterable[float] | None = None,
         scale: Iterable[float] | None = None,
         shear: Iterable[float] | None = None,
-        interpolation: str = "bilinear",
+        interpolation: str = "nearest",
         fill: int = 0,
     ) -> Pipeline:
         return Pipeline(

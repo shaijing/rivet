@@ -49,11 +49,6 @@ impl PadConfig {
     }
 
     pub fn validate(&self) -> RivetResult<()> {
-        if self.mode != PaddingMode::Constant {
-            return Err(invalid_argument(
-                "only constant padding is implemented in Phase 2",
-            ));
-        }
         if !self.value.is_finite() {
             return Err(invalid_argument("padding fill value must be finite"));
         }
@@ -92,6 +87,66 @@ impl PadConfig {
             ImageAxisOrder::Chw => vec![channels, output_height, output_width],
         };
 
+        if self.mode != PaddingMode::Constant {
+            if height == 0 || width == 0 {
+                return Err(invalid_shape(
+                    "nonconstant padding requires a nonempty image",
+                ));
+            }
+            let indices = |len: usize, count: usize, before: u32| {
+                (0..count)
+                    .map(|i| {
+                        let offset = i as i64 - i64::from(before);
+                        match self.mode {
+                            PaddingMode::Edge => offset.clamp(0, len as i64 - 1) as usize,
+                            PaddingMode::Reflect if len == 1 => 0,
+                            PaddingMode::Reflect => {
+                                let period = 2 * (len as i64 - 1);
+                                let i = offset.rem_euclid(period);
+                                i.min(period - i) as usize
+                            }
+                            PaddingMode::Symmetric => {
+                                let period = 2 * len as i64;
+                                let i = offset.rem_euclid(period);
+                                i.min(period - 1 - i) as usize
+                            }
+                            PaddingMode::Constant => unreachable!(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let xs = indices(width, output_width, self.left);
+            let ys = indices(height, output_height, self.top);
+            let image = input.with_cpu_storage(|storage, layout| match storage {
+                CpuStorageRef::U8(values) => mapped_padding(
+                    values,
+                    layout,
+                    input.device(),
+                    axis_order,
+                    &xs,
+                    &ys,
+                    channels,
+                ),
+                CpuStorageRef::F32(values) => mapped_padding(
+                    values,
+                    layout,
+                    input.device(),
+                    axis_order,
+                    &xs,
+                    &ys,
+                    channels,
+                ),
+                _ => Err(rivet_core::Error::UnexpectedDType {
+                    expected: DType::U8,
+                    actual: input.dtype(),
+                }),
+            })?;
+            return Ok(ImageSample::Decoded(crate::sample::image::DecodedSample {
+                image,
+                label: sample.label,
+            }));
+        }
+
         // Use the image backend for the common RGB/u8 path. The generic
         // tensor kernel below remains necessary for float images and for
         // arbitrary channel counts/layouts.
@@ -111,7 +166,7 @@ impl PadConfig {
                 },
                 "pad",
             )?;
-            let fill = self.value.clamp(0.0, 255.0).round() as u8;
+            let fill = self.value.clamp(0.0, 255.0) as u8;
             let mut padded = RgbImage::from_pixel(output_width, output_height, Rgb([fill; 3]));
             replace(
                 &mut padded,
@@ -133,7 +188,7 @@ impl PadConfig {
 
         let output = match input.dtype() {
             DType::U8 => {
-                let fill = self.value.clamp(0.0, 255.0).round() as u8;
+                let fill = self.value.clamp(0.0, 255.0) as u8;
                 let values = input.with_cpu_storage(|storage, layout| {
                     let CpuStorageRef::U8(values) = storage else {
                         return Err(rivet_core::Error::UnexpectedDType {
@@ -210,6 +265,50 @@ impl PadConfig {
             label: sample.label,
         }))
     }
+}
+
+fn mapped_padding<T: rivet_core::WithDType + Copy>(
+    values: &[T],
+    layout: &rivet_core::Layout,
+    device: &rivet_core::Device,
+    order: ImageAxisOrder,
+    xs: &[usize],
+    ys: &[usize],
+    channels: usize,
+) -> rivet_core::Result<Tensor> {
+    let shape = match order {
+        ImageAxisOrder::Hwc => [ys.len(), xs.len(), channels],
+        ImageAxisOrder::Chw => [channels, ys.len(), xs.len()],
+    };
+    let read = |coords: [usize; 3]| {
+        values
+            .get(logical_offset(layout, &coords)?)
+            .copied()
+            .ok_or(rivet_core::Error::StorageOutOfBounds)
+    };
+    Tensor::from_exact_writer::<T, _, _>(shape, device, |out| {
+        match order {
+            ImageAxisOrder::Hwc => {
+                for &y in ys {
+                    for &x in xs {
+                        for c in 0..channels {
+                            out.write_next(read([y, x, c])?)?;
+                        }
+                    }
+                }
+            }
+            ImageAxisOrder::Chw => {
+                for c in 0..channels {
+                    for &y in ys {
+                        for &x in xs {
+                            out.write_next(read([c, y, x])?)?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    })
 }
 
 fn append_padded_u8<F>(
@@ -362,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn constant_pad_supports_chw_and_rejects_other_modes() {
+    fn constant_pad_supports_chw() {
         let input = Tensor::from_vec(vec![1u8, 2, 3, 4], [1, 2, 2], &Device::Cpu).unwrap();
         let output = PadConfig::new(1)
             .apply(
@@ -380,7 +479,7 @@ mod tests {
             PadConfig::new(1)
                 .with_mode(crate::transforms::PaddingMode::Reflect)
                 .validate()
-                .is_err()
+                .is_ok()
         );
     }
 }

@@ -98,10 +98,9 @@ impl RandomErasingConfig {
             );
             let ratio = interpolate(uniform(rng), log_ratio_min, log_ratio_max).exp();
             let target = area * scale;
-            let erase_width = (target * ratio).sqrt().round() as usize;
-            let erase_height = (target / ratio).sqrt().round() as usize;
-            if erase_width > 0 && erase_height > 0 && erase_width <= width && erase_height <= height
-            {
+            let erase_width = (target / ratio).sqrt().round_ties_even() as usize;
+            let erase_height = (target * ratio).sqrt().round_ties_even() as usize;
+            if erase_width > 0 && erase_height > 0 && erase_width < width && erase_height < height {
                 let x = if width == erase_width {
                     0
                 } else {
@@ -120,12 +119,7 @@ impl RandomErasingConfig {
                 });
             }
         }
-        Some(EraseRegion {
-            x: 0,
-            y: 0,
-            width,
-            height,
-        })
+        None // torchvision returns the original image after ten failed attempts.
     }
 
     pub fn apply(
@@ -153,7 +147,7 @@ impl RandomErasingConfig {
 
         let output = match sample.image.dtype() {
             DType::U8 => {
-                let fill = self.value.clamp(0.0, 255.0).round() as u8;
+                let fill = self.value.clamp(0.0, 255.0) as u8;
                 sample.image.with_cpu_storage(|storage, layout| {
                     let CpuStorageRef::U8(values) = storage else {
                         return Err(rivet_core::Error::UnexpectedDType {
@@ -312,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn random_erasing_can_erase_full_image_without_in_place_mutation() {
+    fn random_erasing_failed_sampling_preserves_original_storage() {
         let input = sample().into_decoded().unwrap().image;
         let ctx = SampleContext::new(0);
         let mut rng = ctx.stream(OpKey::from_parts("RandomErasing", 0));
@@ -331,7 +325,7 @@ mod tests {
             .into_decoded()
             .unwrap();
         assert_eq!(output.image.dtype(), DType::U8);
-        assert_eq!(output.image.to_vec::<u8>().unwrap(), [9, 9, 9, 9, 9, 9]);
-        assert!(!output.image.same_storage(&input));
+        assert_eq!(output.image.to_vec::<u8>().unwrap(), [1, 2, 3, 4, 5, 6]);
+        assert!(output.image.same_storage(&input));
     }
 }

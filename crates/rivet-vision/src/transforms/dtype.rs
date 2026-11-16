@@ -1,12 +1,12 @@
-use crate::errors::{invalid_argument, invalid_shape, RivetResult};
+use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{ImageAxisOrder, ImageSample};
 use rivet_core::{CpuStorageRef, DType, Tensor};
 
 /// Semantic image dtype conversion.
 ///
 /// U8 values are interpreted in `[0, 255]` and converted to F32 in `[0, 1]`;
-/// F32 values are clamped to `[0, 1]`, scaled to `[0, 255]`, and rounded when
-/// converted to U8. Other dtype pairs are intentionally rejected.
+/// F32 values are multiplied by `256 - 1e-3`, truncated and wrapped to U8,
+/// matching torchvision convert_image_dtype. Other dtype pairs are rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConvertImageDtypeConfig {
     pub dtype: DType,
@@ -109,12 +109,12 @@ impl ConvertImageDtypeConfig {
                             .get(index)
                             .copied()
                             .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-                        let value = if value.is_nan() {
-                            0.0
+                        let scaled = value * (256.0 - 1e-3);
+                        Ok(if scaled.is_finite() {
+                            scaled.trunc().rem_euclid(256.0) as u8
                         } else {
-                            value.clamp(0.0, 1.0)
-                        };
-                        Ok((value * 255.0).round() as u8)
+                            0
+                        })
                     });
                     Tensor::from_exact_try_iter(output, dims.clone(), input.device())
                 })?;
@@ -135,7 +135,7 @@ mod tests {
     use rivet_core::{DType, Device, Tensor};
 
     #[test]
-    fn semantic_u8_f32_conversion_scales_and_clamps() {
+    fn semantic_u8_f32_conversion_matches_torchvision() {
         let input = Tensor::from_vec(vec![0u8, 128, 255], [1, 3, 1], &Device::Cpu).unwrap();
         let output = ConvertImageDtypeConfig::new(DType::F32)
             .apply(
@@ -169,7 +169,7 @@ mod tests {
             .unwrap()
             .into_decoded()
             .unwrap();
-        assert_eq!(output.image.to_vec::<u8>().unwrap(), [0, 128, 255, 0]);
+        assert_eq!(output.image.to_vec::<u8>().unwrap(), [1, 127, 255, 0]);
     }
 
     #[test]
@@ -258,7 +258,7 @@ mod tests {
             actual.to_vec::<u8>().unwrap(),
             expected.to_vec::<u8>().unwrap()
         );
-        assert_eq!(actual.to_vec::<u8>().unwrap(), [0, 128, 255, 0]);
+        assert_eq!(actual.to_vec::<u8>().unwrap(), [1, 127, 255, 0]);
     }
 
     #[test]

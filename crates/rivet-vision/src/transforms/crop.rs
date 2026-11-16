@@ -39,14 +39,26 @@ impl CropConfig {
         let y = self.y as usize;
         let crop_width = self.width as usize;
         let crop_height = self.height as usize;
-        if x.checked_add(crop_width).is_none_or(|end| end > width)
-            || y.checked_add(crop_height).is_none_or(|end| end > height)
-        {
-            return Err(invalid_shape(format!(
-                "crop rectangle ({}, {}, {}, {}) exceeds image shape {}x{}",
-                self.x, self.y, self.width, self.height, width, height
-            )));
-        }
+        let right = x
+            .checked_add(crop_width)
+            .ok_or_else(|| invalid_shape("crop width overflows usize"))?
+            .saturating_sub(width);
+        let bottom = y
+            .checked_add(crop_height)
+            .ok_or_else(|| invalid_shape("crop height overflows usize"))?
+            .saturating_sub(height);
+        let sample = if right != 0 || bottom != 0 {
+            super::pad::PadConfig::with_sides(
+                0,
+                0,
+                u32::try_from(right).map_err(|_| invalid_shape("crop padding too large"))?,
+                u32::try_from(bottom).map_err(|_| invalid_shape("crop padding too large"))?,
+            )
+            .apply(ImageSample::Decoded(sample), layout)?
+            .into_decoded()?
+        } else {
+            sample
+        };
         let image = match layout {
             ImageAxisOrder::Hwc => sample
                 .image
@@ -87,12 +99,22 @@ impl CenterCropConfig {
             ImageAxisOrder::Hwc => (sample.image.dims()[0], sample.image.dims()[1]),
             ImageAxisOrder::Chw => (sample.image.dims()[1], sample.image.dims()[2]),
         };
-        if self.width as usize > image_width || self.height as usize > image_height {
-            return Err(invalid_shape(format!(
-                "center_crop size {}x{} exceeds image shape {}x{}",
-                self.width, self.height, image_width, image_height
-            )));
-        }
+        let pad_width = (self.width as usize).saturating_sub(image_width) as u32;
+        let pad_height = (self.height as usize).saturating_sub(image_height) as u32;
+        let sample = if pad_width != 0 || pad_height != 0 {
+            super::pad::PadConfig::with_sides(
+                pad_width / 2,
+                pad_height / 2,
+                pad_width - pad_width / 2,
+                pad_height - pad_height / 2,
+            )
+            .apply(ImageSample::Decoded(sample), layout)?
+            .into_decoded()?
+        } else {
+            sample
+        };
+        let image_width = image_width.max(self.width as usize);
+        let image_height = image_height.max(self.height as usize);
 
         // Python round uses ties-to-even for half-pixel center offsets.
         let center_offset = |difference: u32| difference / 2 + (difference % 4 == 3) as u32;

@@ -19,7 +19,7 @@ impl Point2 {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ArbitraryRotateConfig {
-    /// Positive angles rotate clockwise in image coordinates (x right, y down).
+    /// Positive angles rotate counter-clockwise, as in torchvision rotate.
     pub angle: f32,
     pub expand: bool,
     pub interpolation: InterpolationMode,
@@ -30,8 +30,8 @@ impl ArbitraryRotateConfig {
     pub const fn new(angle: f32) -> Self {
         Self {
             angle,
-            expand: true,
-            interpolation: InterpolationMode::Bilinear,
+            expand: false,
+            interpolation: InterpolationMode::Nearest,
             fill: 0,
         }
     }
@@ -64,25 +64,24 @@ impl ArbitraryRotateConfig {
         let sample = require_u8_image(sample, "arbitrary rotation")?;
         let dims = sample.image.dims();
         let (height, width, _) = image_dims(dims, axis_order)?;
-        let angle = self.angle.to_radians();
-        let matrix = rotation_matrix(angle);
-        let source_center = center(width, height);
-        let (output_width, output_height, destination_center) = if self.expand {
-            expanded_rotation_shape(width, height, matrix)?
-        } else {
-            (width, height, source_center)
-        };
-        let translation = subtract(destination_center, matrix_point(matrix, source_center));
-        warp_affine(
+        let (matrix, output_width, output_height) =
+            rotation_inverse(width, height, self.angle, self.expand);
+        warp_decoded::<false, _>(
             sample,
             axis_order,
             output_width,
             output_height,
-            matrix,
-            translation,
             self.interpolation,
             self.fill,
             "arbitrary rotation",
+            move |x, y| {
+                let x = x as f64 + 0.5;
+                let y = y as f64 + 0.5;
+                [
+                    matrix[0] * x + matrix[1] * y + matrix[2] - 0.5,
+                    matrix[3] * x + matrix[4] * y + matrix[5] - 0.5,
+                ]
+            },
         )
         .map(ImageSample::Decoded)
     }
@@ -109,7 +108,7 @@ impl RandomAffineConfig {
             translate: [0.0, 0.0],
             scale: [1.0, 1.0],
             shear: [0.0, 0.0],
-            interpolation: InterpolationMode::Bilinear,
+            interpolation: InterpolationMode::Nearest,
             fill: 0,
         }
     }
@@ -181,36 +180,38 @@ impl RandomAffineConfig {
         let sample = require_u8_image(sample, "random affine")?;
         let dims = sample.image.dims();
         let (height, width, _) = image_dims(dims, axis_order)?;
-        let angle = uniform(rng, -self.degrees, self.degrees).to_radians();
-        let translate_x =
-            uniform(rng, -self.translate[0], self.translate[0]) * width.saturating_sub(1) as f32;
-        let translate_y =
-            uniform(rng, -self.translate[1], self.translate[1]) * height.saturating_sub(1) as f32;
-        let scale = uniform(rng, self.scale[0], self.scale[1]);
-        let shear_x = uniform(rng, -self.shear[0], self.shear[0]).to_radians();
-        let shear_y = uniform(rng, -self.shear[1], self.shear[1]).to_radians();
-        let matrix = multiply_matrix(
-            rotation_matrix(angle),
-            multiply_matrix(
-                [[scale, 0.0], [0.0, scale]],
-                [[1.0, shear_x.tan()], [shear_y.tan(), 1.0]],
-            ),
-        );
-        let center = center(width, height);
-        let translation = add(
-            subtract(center, matrix_point(matrix, center)),
-            [translate_x, translate_y],
-        );
-        warp_affine(
+        let angle = f64::from(uniform(rng, -self.degrees, self.degrees)).to_radians();
+        let tx = (f64::from(uniform(rng, -self.translate[0], self.translate[0])) * width as f64)
+            .round_ties_even();
+        let ty = (f64::from(uniform(rng, -self.translate[1], self.translate[1])) * height as f64)
+            .round_ties_even();
+        let scale = f64::from(uniform(rng, self.scale[0], self.scale[1]));
+        let sx = f64::from(uniform(rng, -self.shear[0], self.shear[0])).to_radians();
+        let sy = f64::from(uniform(rng, -self.shear[1], self.shear[1])).to_radians();
+        // torchvision functional._get_inverse_affine_matrix: R * S * SHy * SHx.
+        let a = (angle - sy).cos() / sy.cos();
+        let b = -(angle - sy).cos() * sx.tan() / sy.cos() - angle.sin();
+        let c = (angle - sy).sin() / sy.cos();
+        let d = -(angle - sy).sin() * sx.tan() / sy.cos() + angle.cos();
+        let (cx, cy) = (width as f64 * 0.5, height as f64 * 0.5);
+        let m = [d / scale, -b / scale, -c / scale, a / scale];
+        let ox = m[0] * (-cx - tx) + m[1] * (-cy - ty) + cx;
+        let oy = m[2] * (-cx - tx) + m[3] * (-cy - ty) + cy;
+        warp_decoded::<false, _>(
             sample,
             axis_order,
             width,
             height,
-            matrix,
-            translation,
             self.interpolation,
             self.fill,
             "random affine",
+            move |x, y| {
+                let (x, y) = (x as f64 + 0.5, y as f64 + 0.5);
+                [
+                    m[0] * x + m[1] * y + ox - 0.5,
+                    m[2] * x + m[3] * y + oy - 0.5,
+                ]
+            },
         )
         .map(ImageSample::Decoded)
     }
@@ -335,19 +336,27 @@ impl RandomPerspectiveConfig {
         }
         let max_x = width.saturating_sub(1) as f32;
         let max_y = height.saturating_sub(1) as f32;
-        let half_x = max_x * self.distortion_scale * 0.5;
-        let half_y = max_y * self.distortion_scale * 0.5;
+        let half_x = (self.distortion_scale * (width / 2) as f32) as usize;
+        let half_y = (self.distortion_scale * (height / 2) as f32) as usize;
         let corners = [
             Point2::new(0.0, 0.0),
             Point2::new(max_x, 0.0),
             Point2::new(max_x, max_y),
             Point2::new(0.0, max_y),
         ];
-        let mut end_points = corners;
-        for point in &mut end_points {
-            point.x += uniform(rng, -half_x, half_x);
-            point.y += uniform(rng, -half_y, half_y);
-        }
+        let mut draw = |max: usize| {
+            rng.gen_range_usize(0..max + 1)
+                .expect("nonempty perspective range") as f32
+        };
+        let end_points = [
+            Point2::new(draw(half_x), draw(half_y)),
+            Point2::new(max_x - half_x as f32 + draw(half_x), draw(half_y)),
+            Point2::new(
+                max_x - half_x as f32 + draw(half_x),
+                max_y - half_y as f32 + draw(half_y),
+            ),
+            Point2::new(draw(half_x), max_y - half_y as f32 + draw(half_y)),
+        ];
         warp_perspective(
             sample,
             axis_order,
@@ -363,7 +372,7 @@ impl RandomPerspectiveConfig {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ElasticTransformConfig {
-    /// Maximum displacement in pixels after smoothing.
+    /// torchvision displacement magnitude (pixel offsets are noise * alpha / 2).
     pub alpha: f32,
     /// Gaussian smoothing sigma in pixels; zero keeps white-noise offsets.
     pub sigma: f32,
@@ -398,7 +407,15 @@ impl ElasticTransformConfig {
                 "elastic transform sigma must be finite and non-negative",
             ));
         }
-        validate_interpolation(self.interpolation, "elastic transform")
+        if !matches!(
+            self.interpolation,
+            InterpolationMode::Nearest | InterpolationMode::Bilinear
+        ) {
+            return Err(invalid_argument(
+                "elastic transform supports nearest or bilinear interpolation",
+            ));
+        }
+        Ok(())
     }
 
     pub fn apply(
@@ -414,20 +431,24 @@ impl ElasticTransformConfig {
         let count = height
             .checked_mul(width)
             .ok_or_else(|| invalid_shape("elastic transform image is too large"))?;
-        let seed_x = rng.next_u64();
-        let seed_y = rng.next_u64();
         let mut x_field = (0..count)
-            .map(|index| hash_unit(seed_x, index))
+            .map(|_| rng.next_f32() * 2.0 - 1.0)
             .collect::<Vec<_>>();
         let mut y_field = (0..count)
-            .map(|index| hash_unit(seed_y, index))
+            .map(|_| rng.next_f32() * 2.0 - 1.0)
             .collect::<Vec<_>>();
+        let radius = ((8.0 * self.sigma + 1.0) as usize | 1) / 2;
+        if self.sigma > 0.0 && (radius >= width || radius >= height) {
+            return Err(invalid_argument(
+                "elastic transform reflection padding must be smaller than image dimensions",
+            ));
+        }
         if self.sigma > 0.0 {
             x_field = smooth_field(&x_field, width, height, self.sigma);
             y_field = smooth_field(&y_field, width, height, self.sigma);
         }
-        let alpha = self.alpha;
-        warp_decoded(
+        let alpha = self.alpha * 0.5;
+        warp_decoded::<true, _>(
             sample,
             axis_order,
             width,
@@ -438,8 +459,8 @@ impl ElasticTransformConfig {
             move |x, y| {
                 let index = y * width + x;
                 [
-                    x as f32 + alpha * x_field[index],
-                    y as f32 + alpha * y_field[index],
+                    x as f64 + f64::from(alpha * x_field[index]),
+                    y as f64 + f64::from(alpha * y_field[index]),
                 ]
             },
         )
@@ -449,9 +470,11 @@ impl ElasticTransformConfig {
 
 fn validate_interpolation(mode: InterpolationMode, op_name: &str) -> RivetResult<()> {
     match mode {
-        InterpolationMode::Nearest | InterpolationMode::Bilinear => Ok(()),
-        InterpolationMode::Bicubic | InterpolationMode::Lanczos3 => Err(invalid_argument(format!(
-            "{op_name} supports only nearest or bilinear interpolation"
+        InterpolationMode::Nearest | InterpolationMode::Bilinear | InterpolationMode::Bicubic => {
+            Ok(())
+        }
+        InterpolationMode::Lanczos3 => Err(invalid_argument(format!(
+            "{op_name} supports nearest, bilinear or bicubic interpolation"
         ))),
     }
 }
@@ -486,35 +509,6 @@ fn image_dims(dims: &[usize], axis_order: ImageAxisOrder) -> RivetResult<(usize,
     Ok((height, width, channels))
 }
 
-fn warp_affine(
-    sample: DecodedSample,
-    axis_order: ImageAxisOrder,
-    output_width: usize,
-    output_height: usize,
-    matrix: [[f32; 2]; 2],
-    translation: [f32; 2],
-    interpolation: InterpolationMode,
-    fill: u8,
-    op_name: &str,
-) -> RivetResult<DecodedSample> {
-    let inverse = inverse_matrix(matrix)
-        .ok_or_else(|| invalid_argument(format!("{op_name} transform matrix is singular")))?;
-    warp_decoded(
-        sample,
-        axis_order,
-        output_width,
-        output_height,
-        interpolation,
-        fill,
-        op_name,
-        move |x, y| {
-            let destination = [x as f32, y as f32];
-            let relative = subtract(destination, translation);
-            matrix_point(inverse, relative)
-        },
-    )
-}
-
 fn warp_perspective(
     sample: DecodedSample,
     axis_order: ImageAxisOrder,
@@ -528,7 +522,7 @@ fn warp_perspective(
         .ok_or_else(|| invalid_argument(format!("{op_name} points define a singular transform")))?;
     let dims = sample.image.dims();
     let (height, width, _) = image_dims(dims, axis_order)?;
-    warp_decoded(
+    warp_decoded::<false, _>(
         sample,
         axis_order,
         width,
@@ -536,11 +530,14 @@ fn warp_perspective(
         interpolation,
         fill,
         op_name,
-        move |x, y| apply_homography(inverse, [x as f32, y as f32]),
+        move |x, y| {
+            let p = apply_homography(inverse, [x as f64 + 0.5, y as f64 + 0.5]);
+            [p[0] - 0.5, p[1] - 0.5]
+        },
     )
 }
 
-fn warp_decoded<F>(
+fn warp_decoded<const TENSOR: bool, F>(
     sample: DecodedSample,
     axis_order: ImageAxisOrder,
     output_width: usize,
@@ -551,7 +548,7 @@ fn warp_decoded<F>(
     mut map: F,
 ) -> RivetResult<DecodedSample>
 where
-    F: FnMut(usize, usize) -> [f32; 2],
+    F: FnMut(usize, usize) -> [f64; 2],
 {
     if output_width == 0 || output_height == 0 {
         return Err(invalid_shape(format!(
@@ -578,8 +575,19 @@ where
                 .copied()
                 .ok_or(rivet_core::Error::StorageOutOfBounds)
         };
-        let mut append_pixel = |channel: usize, y: usize, x: usize| {
-            let source = map(x, y);
+        let sample_pixel = |channel: usize, source: [f64; 2]| {
+            if TENSOR {
+                return tensor_sample_value(
+                    &read,
+                    channel,
+                    source[1] as f32,
+                    source[0] as f32,
+                    width,
+                    height,
+                    interpolation,
+                    fill,
+                );
+            }
             sample_value(
                 &read,
                 channel,
@@ -595,13 +603,20 @@ where
             ImageAxisOrder::Hwc => vec![output_height, output_width, channels],
             ImageAxisOrder::Chw => vec![channels, output_height, output_width],
         };
-        Tensor::from_exact_fn::<u8, _, _>(output_dims, input.device(), |write| {
+        Tensor::from_exact_writer::<u8, _, _>(output_dims, input.device(), |write| {
             match axis_order {
                 ImageAxisOrder::Hwc => {
                     for y in 0..output_height {
                         for x in 0..output_width {
-                            for channel in 0..channels {
-                                write(append_pixel(channel, y, x)?)?;
+                            let source = map(x, y);
+                            if channels == 3 {
+                                write.write_next(sample_pixel(0, source)?)?;
+                                write.write_next(sample_pixel(1, source)?)?;
+                                write.write_next(sample_pixel(2, source)?)?;
+                            } else {
+                                for channel in 0..channels {
+                                    write.write_next(sample_pixel(channel, source)?)?;
+                                }
                             }
                         }
                     }
@@ -610,7 +625,7 @@ where
                     for channel in 0..channels {
                         for y in 0..output_height {
                             for x in 0..output_width {
-                                write(append_pixel(channel, y, x)?)?;
+                                write.write_next(sample_pixel(channel, map(x, y))?)?;
                             }
                         }
                     }
@@ -625,11 +640,53 @@ where
     })
 }
 
+fn tensor_sample_value<F>(
+    read: &F,
+    c: usize,
+    y: f32,
+    x: f32,
+    width: usize,
+    height: usize,
+    mode: InterpolationMode,
+    fill: u8,
+) -> rivet_core::Result<u8>
+where
+    F: Fn(usize, usize, usize) -> rivet_core::Result<u8>,
+{
+    let inside = |x: isize, y: isize| x >= 0 && y >= 0 && x < width as isize && y < height as isize;
+    if mode == InterpolationMode::Nearest {
+        let (sx, sy) = (x.round_ties_even() as isize, y.round_ties_even() as isize);
+        return if inside(sx, sy) {
+            read(c, sy as usize, sx as usize)
+        } else {
+            Ok(fill)
+        };
+    }
+    let (x0, y0) = (x.floor() as isize, y.floor() as isize);
+    let (dx, dy) = (x - x.floor(), y - y.floor());
+    let mut sum = 0.0f32;
+    let mut mask = 0.0f32;
+    for (sx, sy, weight) in [
+        (x0, y0, (1.0 - dx) * (1.0 - dy)),
+        (x0 + 1, y0, dx * (1.0 - dy)),
+        (x0, y0 + 1, (1.0 - dx) * dy),
+        (x0 + 1, y0 + 1, dx * dy),
+    ] {
+        if inside(sx, sy) {
+            sum += f32::from(read(c, sy as usize, sx as usize)?) * weight;
+            mask += weight;
+        }
+    }
+    Ok((sum * mask + (1.0 - mask) * f32::from(fill))
+        .round_ties_even()
+        .clamp(0.0, 255.0) as u8)
+}
+
 fn sample_value<F>(
     read: &F,
     channel: usize,
-    y: f32,
-    x: f32,
+    y: f64,
+    x: f64,
     width: usize,
     height: usize,
     interpolation: InterpolationMode,
@@ -638,136 +695,109 @@ fn sample_value<F>(
 where
     F: Fn(usize, usize, usize) -> rivet_core::Result<u8>,
 {
+    // Pixel centers are integers here; Pillow's Geometry.c receives edge
+    // coordinates and subtracts 0.5 before interpolating.
     if !x.is_finite()
         || !y.is_finite()
-        || x < 0.0
-        || y < 0.0
-        || x > width.saturating_sub(1) as f32
-        || y > height.saturating_sub(1) as f32
+        || x < -0.5
+        || y < -0.5
+        || x >= width as f64 - 0.5
+        || y >= height as f64 - 0.5
     {
         return Ok(fill);
     }
     if interpolation == InterpolationMode::Nearest {
-        return read(channel, y.round() as usize, x.round() as usize);
+        return read(
+            channel,
+            (y + 0.5).floor() as usize,
+            (x + 0.5).floor() as usize,
+        );
     }
-    let x0 = x.floor() as usize;
-    let y0 = y.floor() as usize;
-    let x1 = (x0 + 1).min(width - 1);
-    let y1 = (y0 + 1).min(height - 1);
-    let wx = x - x0 as f32;
-    let wy = y - y0 as f32;
-    let top =
-        f32::from(read(channel, y0, x0)?) * (1.0 - wx) + f32::from(read(channel, y0, x1)?) * wx;
-    let bottom =
-        f32::from(read(channel, y1, x0)?) * (1.0 - wx) + f32::from(read(channel, y1, x1)?) * wx;
-    Ok((top * (1.0 - wy) + bottom * wy).round().clamp(0.0, 255.0) as u8)
+    let x0 = x.floor() as isize;
+    let y0 = y.floor() as isize;
+    let dx = x - x.floor();
+    let dy = y - y.floor();
+    let clip_x = |x: isize| x.clamp(0, width as isize - 1) as usize;
+    let clip_y = |y: isize| y.clamp(0, height as isize - 1) as usize;
+    let value = if interpolation == InterpolationMode::Bicubic {
+        let cubic = |v: [f64; 4], d: f64| {
+            let p1 = v[1];
+            let p2 = -v[0] + v[2];
+            let p3 = 2.0 * (v[0] - v[1]) + v[2] - v[3];
+            let p4 = -v[0] + v[1] - v[2] + v[3];
+            p1 + d * (p2 + d * (p3 + d * p4))
+        };
+        let mut rows = [0.0; 4];
+        for (i, row) in rows.iter_mut().enumerate() {
+            let sy = clip_y(y0 - 1 + i as isize);
+            let mut pixels = [0.0; 4];
+            for (j, pixel) in pixels.iter_mut().enumerate() {
+                *pixel = f64::from(read(channel, sy, clip_x(x0 - 1 + j as isize))?);
+            }
+            *row = cubic(pixels, dx);
+        }
+        cubic(rows, dy)
+    } else {
+        let row = |y| -> rivet_core::Result<f64> {
+            let a = f64::from(read(channel, clip_y(y), clip_x(x0))?);
+            let b = f64::from(read(channel, clip_y(y), clip_x(x0 + 1))?);
+            Ok(a + (b - a) * dx)
+        };
+        let a = row(y0)?;
+        let b = row(y0 + 1)?;
+        a + (b - a) * dy
+    };
+    Ok(value.clamp(0.0, 255.0) as u8)
 }
 
-fn expanded_rotation_shape(
+fn rotation_inverse(
     width: usize,
     height: usize,
-    matrix: [[f32; 2]; 2],
-) -> RivetResult<(usize, usize, [f32; 2])> {
-    let center = center(width, height);
-    let corners = [
-        [0.0, 0.0],
-        [width.saturating_sub(1) as f32, 0.0],
-        [
-            width.saturating_sub(1) as f32,
-            height.saturating_sub(1) as f32,
-        ],
-        [0.0, height.saturating_sub(1) as f32],
-    ];
-    let transformed =
-        corners.map(|corner| add(matrix_point(matrix, subtract(corner, center)), center));
-    let min_x = transformed
-        .iter()
-        .map(|point| point[0])
-        .fold(f32::INFINITY, f32::min);
-    let max_x = transformed
-        .iter()
-        .map(|point| point[0])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let min_y = transformed
-        .iter()
-        .map(|point| point[1])
-        .fold(f32::INFINITY, f32::min);
-    let max_y = transformed
-        .iter()
-        .map(|point| point[1])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let output_width = usize::try_from((max_x - min_x + 1.0).ceil() as u64)
-        .map_err(|_| invalid_shape("arbitrary rotation output width is too large"))?
-        .max(1);
-    let output_height = usize::try_from((max_y - min_y + 1.0).ceil() as u64)
-        .map_err(|_| invalid_shape("arbitrary rotation output height is too large"))?
-        .max(1);
-    Ok((
-        output_width,
-        output_height,
-        [
-            (output_width.saturating_sub(1) as f32) * 0.5,
-            (output_height.saturating_sub(1) as f32) * 0.5,
-        ],
-    ))
-}
-
-fn center(width: usize, height: usize) -> [f32; 2] {
-    [
-        width.saturating_sub(1) as f32 * 0.5,
-        height.saturating_sub(1) as f32 * 0.5,
-    ]
-}
-
-fn rotation_matrix(angle: f32) -> [[f32; 2]; 2] {
-    let (sin, cos) = angle.sin_cos();
-    [[cos, -sin], [sin, cos]]
-}
-
-fn matrix_point(matrix: [[f32; 2]; 2], point: [f32; 2]) -> [f32; 2] {
-    [
-        matrix[0][0] * point[0] + matrix[0][1] * point[1],
-        matrix[1][0] * point[0] + matrix[1][1] * point[1],
-    ]
-}
-
-fn multiply_matrix(lhs: [[f32; 2]; 2], rhs: [[f32; 2]; 2]) -> [[f32; 2]; 2] {
-    [
-        [
-            lhs[0][0] * rhs[0][0] + lhs[0][1] * rhs[1][0],
-            lhs[0][0] * rhs[0][1] + lhs[0][1] * rhs[1][1],
-        ],
-        [
-            lhs[1][0] * rhs[0][0] + lhs[1][1] * rhs[1][0],
-            lhs[1][0] * rhs[0][1] + lhs[1][1] * rhs[1][1],
-        ],
-    ]
-}
-
-fn inverse_matrix(matrix: [[f32; 2]; 2]) -> Option<[[f32; 2]; 2]> {
-    let determinant = matrix[0][0] * matrix[1][1] - matrix[0][1] * matrix[1][0];
-    if !determinant.is_finite() || determinant.abs() < 1e-6 {
-        return None;
+    angle: f32,
+    expand: bool,
+) -> ([f64; 6], usize, usize) {
+    // Image.py Image.rotate: reverse transform, rounded trigonometric
+    // coefficients, edge-coordinate bounds, then expansion translation.
+    let radians = -f64::from(angle.rem_euclid(360.0)).to_radians();
+    let round15 = |v: f64| (v * 1e15).round_ties_even() / 1e15;
+    let (sin, cos) = (round15(radians.sin()), round15(radians.cos()));
+    let (cx, cy) = (width as f64 * 0.5, height as f64 * 0.5);
+    let mut m = [cos, sin, 0.0, -sin, cos, 0.0];
+    m[2] = -cos * cx - sin * cy + cx;
+    m[5] = sin * cx - cos * cy + cy;
+    let (mut ow, mut oh) = (width, height);
+    if expand {
+        let corners = [
+            [0.0, 0.0],
+            [width as f64, 0.0],
+            [width as f64, height as f64],
+            [0.0, height as f64],
+        ];
+        let xs = corners.map(|[x, y]| m[0] * x + m[1] * y + m[2]);
+        let ys = corners.map(|[x, y]| m[3] * x + m[4] * y + m[5]);
+        ow = (xs.into_iter().fold(f64::NEG_INFINITY, f64::max).ceil()
+            - xs.into_iter().fold(f64::INFINITY, f64::min).floor()) as usize;
+        oh = (ys.into_iter().fold(f64::NEG_INFINITY, f64::max).ceil()
+            - ys.into_iter().fold(f64::INFINITY, f64::min).floor()) as usize;
+        // Image.rotate short-circuits right angles through transpose, whose
+        // expanded size swaps axes even when width/height parity differs.
+        if angle.rem_euclid(180.0) == 90.0 {
+            ow = height;
+            oh = width;
+        }
+        let tx = -(ow as f64 - width as f64) * 0.5;
+        let ty = -(oh as f64 - height as f64) * 0.5;
+        m[2] += m[0] * tx + m[1] * ty;
+        m[5] += m[3] * tx + m[4] * ty;
     }
-    Some([
-        [matrix[1][1] / determinant, -matrix[0][1] / determinant],
-        [-matrix[1][0] / determinant, matrix[0][0] / determinant],
-    ])
-}
-
-fn add(lhs: [f32; 2], rhs: [f32; 2]) -> [f32; 2] {
-    [lhs[0] + rhs[0], lhs[1] + rhs[1]]
-}
-
-fn subtract(lhs: [f32; 2], rhs: [f32; 2]) -> [f32; 2] {
-    [lhs[0] - rhs[0], lhs[1] - rhs[1]]
+    (m, ow, oh)
 }
 
 fn uniform(rng: &mut RandomStream, min: f32, max: f32) -> f32 {
     min + (max - min) * rng.next_f32()
 }
 
-fn homography(from: &[Point2; 4], to: &[Point2; 4]) -> Option<[[f32; 3]; 3]> {
+fn homography(from: &[Point2; 4], to: &[Point2; 4]) -> Option<[[f64; 3]; 3]> {
     let mut matrix = [[0.0f64; 9]; 8];
     for (index, (source, target)) in from.iter().zip(to).enumerate() {
         let x = f64::from(source.x);
@@ -803,25 +833,20 @@ fn homography(from: &[Point2; 4], to: &[Point2; 4]) -> Option<[[f32; 3]; 3]> {
             }
         }
     }
+    // torchvision solves in f64 then quantizes the eight coefficients to
+    // float32 before passing them to Pillow's double-coordinate sampler.
+    let coefficient = |i: usize| f64::from(matrix[i][8] as f32);
     Some([
-        [
-            matrix[0][8] as f32,
-            matrix[1][8] as f32,
-            matrix[2][8] as f32,
-        ],
-        [
-            matrix[3][8] as f32,
-            matrix[4][8] as f32,
-            matrix[5][8] as f32,
-        ],
-        [matrix[6][8] as f32, matrix[7][8] as f32, 1.0],
+        [coefficient(0), coefficient(1), coefficient(2)],
+        [coefficient(3), coefficient(4), coefficient(5)],
+        [coefficient(6), coefficient(7), 1.0],
     ])
 }
 
-fn apply_homography(matrix: [[f32; 3]; 3], point: [f32; 2]) -> [f32; 2] {
+fn apply_homography(matrix: [[f64; 3]; 3], point: [f64; 2]) -> [f64; 2] {
     let denominator = matrix[2][0] * point[0] + matrix[2][1] * point[1] + matrix[2][2];
     if denominator.abs() < 1e-7 || !denominator.is_finite() {
-        [f32::NAN, f32::NAN]
+        [f64::NAN, f64::NAN]
     } else {
         [
             (matrix[0][0] * point[0] + matrix[0][1] * point[1] + matrix[0][2]) / denominator,
@@ -830,16 +855,18 @@ fn apply_homography(matrix: [[f32; 3]; 3], point: [f32; 2]) -> [f32; 2] {
     }
 }
 
-fn hash_unit(seed: u64, index: usize) -> f32 {
-    let mut value = seed.wrapping_add((index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    let value = value ^ (value >> 31);
-    ((value >> 11) as f32 * (1.0 / (1u64 << 53) as f32)) * 2.0 - 1.0
+fn reflect_coordinate(i: isize, len: usize) -> usize {
+    if i < 0 {
+        (-i) as usize
+    } else if i >= len as isize {
+        2 * len - i as usize - 2
+    } else {
+        i as usize
+    }
 }
 
 fn smooth_field(field: &[f32], width: usize, height: usize, sigma: f32) -> Vec<f32> {
-    let radius = (sigma * 3.0).ceil() as usize;
+    let radius = ((8.0 * sigma + 1.0) as usize | 1) / 2;
     if radius == 0 {
         return field.to_vec();
     }
@@ -857,10 +884,8 @@ fn smooth_field(field: &[f32], width: usize, height: usize, sigma: f32) -> Vec<f
         for x in 0..width {
             let mut value = 0.0;
             for (index, weight) in kernel.iter().enumerate() {
-                let source_x = x
-                    .saturating_add(index)
-                    .saturating_sub(radius)
-                    .min(width - 1);
+                let coordinate = x as isize + index as isize - radius as isize;
+                let source_x = reflect_coordinate(coordinate, width);
                 value += field[y * width + source_x] * weight;
             }
             horizontal[y * width + x] = value;
@@ -871,22 +896,11 @@ fn smooth_field(field: &[f32], width: usize, height: usize, sigma: f32) -> Vec<f
         for x in 0..width {
             let mut value = 0.0;
             for (index, weight) in kernel.iter().enumerate() {
-                let source_y = y
-                    .saturating_add(index)
-                    .saturating_sub(radius)
-                    .min(height - 1);
+                let coordinate = y as isize + index as isize - radius as isize;
+                let source_y = reflect_coordinate(coordinate, height);
                 value += horizontal[source_y * width + x] * weight;
             }
             output[y * width + x] = value;
-        }
-    }
-    let max_abs = output
-        .iter()
-        .map(|value| value.abs())
-        .fold(0.0f32, f32::max);
-    if max_abs > 0.0 {
-        for value in &mut output {
-            *value /= max_abs;
         }
     }
     output
@@ -902,6 +916,44 @@ mod tests {
     use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
     use rivet_core::{DType, Device, Tensor};
     use rivet_data::random::{OpKey, RandomContext};
+
+    #[test]
+    fn tensor_displacement_sampling_matches_local_torchvision() {
+        // torchvision 0.29 functional.elastic_transform, uint8 [1,3,4],
+        // constant displacement (+0.2, -0.3) pixels, fill=37.
+        let read = |_: usize, y: usize, x: usize| Ok((y * 4 + x + 1) as u8);
+        let mut values = Vec::new();
+        for y in 0..3 {
+            for x in 0..4 {
+                values.push(
+                    super::tensor_sample_value(
+                        &read,
+                        0,
+                        y as f32 - 0.3,
+                        x as f32 + 0.2,
+                        4,
+                        3,
+                        crate::transforms::InterpolationMode::Bilinear,
+                        37,
+                    )
+                    .unwrap(),
+                );
+            }
+        }
+        assert_eq!(values, [12, 12, 13, 18, 4, 5, 6, 12, 8, 9, 10, 14]);
+    }
+
+    #[test]
+    fn elastic_smoothing_matches_torchvision_reflection_without_renormalizing() {
+        let field: Vec<f32> = (0..30).map(|x| x as f32 / 30.0).collect();
+        let output = super::smooth_field(&field, 6, 5, 0.5);
+        let expected = [
+            0.04992329, 0.07614232, 0.2023261, 0.20723744, 0.46666658, 0.9167432,
+        ];
+        for (i, expected) in [0, 1, 5, 6, 14, 29].into_iter().zip(expected) {
+            assert!((output[i] - expected).abs() < 1e-6);
+        }
+    }
 
     fn image() -> ImageSample {
         ImageSample::Decoded(DecodedSample {
@@ -943,6 +995,7 @@ mod tests {
     fn arbitrary_rotation_expand_swaps_rectangular_geometry() {
         let input = Tensor::from_vec(vec![1u8, 2, 3, 4, 5, 6], [2, 3, 1], &Device::Cpu).unwrap();
         let output = ArbitraryRotateConfig::new(90.0)
+            .with_options(true, crate::transforms::InterpolationMode::Nearest, 0)
             .apply(
                 ImageSample::Decoded(DecodedSample {
                     image: input,
@@ -1011,7 +1064,7 @@ mod tests {
 
         let ctx = SampleContext::new(0);
         let mut rng = ctx.stream(OpKey::from_parts("ElasticTransform", 0));
-        let elastic = ElasticTransformConfig::new(0.0, 1.0)
+        let elastic = ElasticTransformConfig::new(0.0, 0.1)
             .apply(image(), &mut rng, ImageAxisOrder::Hwc)
             .unwrap()
             .into_decoded()
@@ -1023,7 +1076,7 @@ mod tests {
         assert!(ArbitraryRotateConfig::new(f32::NAN).validate().is_err());
         assert!(
             PerspectiveConfig::new(corners(), corners())
-                .with_options(crate::transforms::InterpolationMode::Bicubic, 0)
+                .with_options(crate::transforms::InterpolationMode::Lanczos3, 0)
                 .validate()
                 .is_err()
         );

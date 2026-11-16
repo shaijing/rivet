@@ -52,8 +52,8 @@ impl FiveCropConfig {
         }
         let x_right = width - self.width;
         let y_bottom = height - self.height;
-        let x_center = x_right / 2;
-        let y_center = y_bottom / 2;
+        let x_center = x_right / 2 + (x_right % 4 == 3) as u32;
+        let y_center = y_bottom / 2 + (y_bottom % 4 == 3) as u32;
         let regions = [
             (0, 0),
             (x_right, 0),
@@ -133,6 +133,15 @@ mod tests {
             (6..12).chain(18..24).collect::<Vec<_>>()
         );
         assert!(first.image.same_storage(&second.image));
+    }
+
+    #[test]
+    fn five_crop_center_rounds_half_pixel_to_even() {
+        let outputs = FiveCropConfig::new(1, 1)
+            .apply(sample(), ImageAxisOrder::Hwc)
+            .unwrap();
+        let center = outputs[4].clone().into_decoded().unwrap();
+        assert_eq!(center.image.to_vec::<u8>().unwrap(), [30, 31, 32]);
     }
 
     #[test]

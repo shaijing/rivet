@@ -559,7 +559,7 @@ mod tests {
             pipeline(19, workers)
                 .pad(1)
                 .random_resized_crop(1, 1)
-                .color_jitter(4, 0.2, 10)
+                .color_jitter(0.016, 0.2, 0.028)
                 .random_grayscale(0.5, 3)
                 .random_erasing(0.5)
                 .shuffle(17)
@@ -577,10 +577,10 @@ mod tests {
         let configure = |workers| {
             pipeline(19, workers)
                 .epoch(4)
-                .random_apply(0.5, TransformSequence::new().brightness(10))
+                .random_apply(0.5, TransformSequence::new().brightness(1.039))
                 .random_choice(vec![
                     TransformSequence::new().invert(),
-                    TransformSequence::new().brightness(3),
+                    TransformSequence::new().brightness(1.012),
                 ])
                 .random_order(TransformSequence::new().contrast(0.8).invert())
                 .shuffle(23)
@@ -599,7 +599,7 @@ mod tests {
             pipeline(19, workers)
                 .epoch(4)
                 .random_affine(12.0)
-                .elastic_transform(1.0, 1.0)
+                .elastic_transform(1.0, 0.1)
                 .shuffle(23)
                 .batch(4, false)
         };
@@ -622,7 +622,7 @@ mod tests {
             pipeline.random_horizontal_flip(0.5)
         });
         assert_random_op_is_worker_independent("ColorJitter", |pipeline| {
-            pipeline.color_jitter(24, 0.7, 24)
+            pipeline.color_jitter(0.094, 0.7, 0.067)
         });
         assert_random_op_is_worker_independent("RandomErasing", |pipeline| {
             pipeline.random_erasing(0.75)
@@ -635,7 +635,7 @@ mod tests {
             let mut loader = decoded_pipeline(4)
                 .random_crop(8, 8, 2)
                 .random_horizontal_flip(0.5)
-                .color_jitter(24, 0.7, 24)
+                .color_jitter(0.094, 0.7, 0.067)
                 .random_erasing(0.75)
                 .seed(0xD15EA5E)
                 .epoch(epoch)
@@ -662,13 +662,13 @@ mod tests {
                     0.75,
                     TransformSequence::new()
                         .random_horizontal_flip(0.5)
-                        .color_jitter(18, 0.5, 12),
+                        .color_jitter(0.071, 0.5, 0.033),
                 )
                 .random_choice(vec![
                     TransformSequence::new().random_crop(8, 8, 0),
                     TransformSequence::new().random_crop(8, 8, 1),
                 ])
-                .random_order(TransformSequence::new().brightness(11).contrast(0.7))
+                .random_order(TransformSequence::new().brightness(1.043).contrast(0.7))
                 .seed(0xA11CE)
                 .epoch(epoch)
                 .batch(4, false)

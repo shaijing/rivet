@@ -39,9 +39,9 @@ impl RotateConfig {
         let sample = sample.into_decoded()?;
         let (image, label) = into_rgb_image(sample, "rotate")?;
         let rotated = match self.angle {
-            RotationAngle::Deg90 => rotate90(&image),
+            RotationAngle::Deg90 => rotate270(&image),
             RotationAngle::Deg180 => rotate180(&image),
-            RotationAngle::Deg270 => rotate270(&image),
+            RotationAngle::Deg270 => rotate90(&image),
         };
         Ok(ImageSample::Decoded(from_rgb_image(rotated, label)?))
     }
@@ -66,7 +66,7 @@ mod tests {
             .unwrap();
         assert_eq!(output.image.dims(), [1, 2, 3]);
         assert_eq!(output.image.dtype(), DType::U8);
-        assert_eq!(output.image.to_vec::<u8>().unwrap(), [4, 5, 6, 1, 2, 3]);
+        assert_eq!(output.image.to_vec::<u8>().unwrap(), [1, 2, 3, 4, 5, 6]);
     }
 
     #[test]

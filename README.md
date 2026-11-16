@@ -19,27 +19,14 @@ inputs and image branch joins, while retaining the CPU linear fast path.
 
 ## Image result compatibility
 
-Rust image kernels are checked against torchvision in
-[`tests/test_torch_image_compat.py`](tests/test_torch_image_compat.py).
-For RGB uint8 input, the reference is torchvision's **PIL backend**;
-its Tensor backend can have different rounding and interpolation results.
-No Python callback or PyTorch runtime is used by the Rust kernels.
+Rust image kernels follow torchvision's **PIL/RGB uint8** path for resize,
+color adjustments, crops, padding and geometric transforms. Gaussian blur and
+elastic transforms follow torchvision's Tensor path, including reflection
+padding and float rounding. Execution stays in Rust, without Python callbacks
+or a PyTorch runtime dependency.
 
-- Grayscale uses Pillow's BT.601 fixed-point coefficients and rounding.
-- Solarize inverts values greater than or equal to the threshold.
-- Equalize uses Pillow's integer histogram step, including identity for small histograms.
-- In-bounds center crop uses ties-to-even rounding of half-pixel offsets.
-- Crop, flips, constant padding, invert and posterize are tested for exact pixel equality;
-  dtype conversion and normalization use float tolerances.
-
-Compatibility is not complete: resize still uses the `image` backend with bounded
-pixel differences; oversized center crops still fail instead of zero-padding.
-Fixed rotations use clockwise positive angles. Brightness, contrast, hue,
-sharpness and random augmentation policies retain Rivet-specific contracts.
-Equal seeds do not imply equal random draws between Rivet and PyTorch.
-
-The grayscale, equalize, solarize threshold and center-crop rounding corrections
-change results relative to earlier Rivet versions.
+See [compatibility and migration notes](docs/torchvision-compatibility.md) for
+source references, tested tolerances, parameter changes and remaining limits.
 
 ## Workspace crates
 

@@ -75,6 +75,11 @@ impl TransformSequence {
         self
     }
 
+    pub fn pad_with_config(mut self, config: crate::transforms::PadConfig) -> Self {
+        self.ops.push(ImageOp::Pad(config));
+        self
+    }
+
     pub fn pad(mut self, padding: u32) -> Self {
         self.ops.push(ImageOp::pad(padding));
         self
@@ -129,7 +134,7 @@ impl TransformSequence {
         self
     }
 
-    pub fn brightness(mut self, value: i32) -> Self {
+    pub fn brightness(mut self, value: f32) -> Self {
         self.ops.push(ImageOp::brightness(value));
         self
     }
@@ -139,12 +144,12 @@ impl TransformSequence {
         self
     }
 
-    pub fn hue(mut self, degrees: i32) -> Self {
-        self.ops.push(ImageOp::hue(degrees));
+    pub fn hue(mut self, factor: f32) -> Self {
+        self.ops.push(ImageOp::hue(factor));
         self
     }
 
-    pub fn color_jitter(mut self, brightness: i32, contrast: f32, hue: i32) -> Self {
+    pub fn color_jitter(mut self, brightness: f32, contrast: f32, hue: f32) -> Self {
         self.ops
             .push(ImageOp::color_jitter(brightness, contrast, hue));
         self
@@ -242,6 +247,14 @@ impl TransformSequence {
     pub fn elastic_transform_with_config(mut self, config: ElasticTransformConfig) -> Self {
         self.ops
             .push(ImageOp::elastic_transform_with_config(config));
+        self
+    }
+
+    pub fn gaussian_blur_with_config(
+        mut self,
+        config: crate::transforms::GaussianBlurConfig,
+    ) -> Self {
+        self.ops.push(ImageOp::GaussianBlur(config));
         self
     }
 

@@ -41,10 +41,10 @@ impl PosterizeConfig {
     }
 
     pub fn validate(&self) -> RivetResult<()> {
-        if (1..=8).contains(&self.bits) {
+        if (0..=8).contains(&self.bits) {
             Ok(())
         } else {
-            Err(invalid_argument("posterize bits must be in [1, 8]"))
+            Err(invalid_argument("posterize bits must be in [0, 8]"))
         }
     }
 
@@ -54,7 +54,11 @@ impl PosterizeConfig {
         axis_order: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
         self.validate()?;
-        let mask = u8::MAX << (8 - self.bits);
+        let mask = if self.bits == 0 {
+            0
+        } else {
+            u8::MAX << (8 - self.bits)
+        };
         map_u8(sample, axis_order, "posterize", |value| value & mask)
     }
 }
@@ -231,9 +235,7 @@ impl EqualizeConfig {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SharpnessConfig {
-    /// Unsharp amount. `0` is identity; positive values increase local edge
-    /// contrast using a 3x3 box blur reference. This is a Rivet contract and
-    /// does not claim torchvision/image backend parity.
+    /// torchvision sharpness factor: 0 is smooth, 1 is identity.
     pub amount: f32,
 }
 
@@ -278,31 +280,44 @@ impl SharpnessConfig {
                     .copied()
                     .ok_or(rivet_core::Error::StorageOutOfBounds)
             };
-            Tensor::from_exact_fn::<u8, _, _>(dims.clone(), input.device(), |write| {
-                append_mapped_pixels(
-                    write,
-                    axis_order,
-                    (height, width, channels),
-                    |channel, y, x| {
-                        let center = f32::from(read(channel, y, x)?);
-                        let mut sum = 0.0;
-                        let mut count = 0.0;
-                        for dy in
-                            y.saturating_sub(1)..=y.saturating_add(1).min(height.saturating_sub(1))
-                        {
-                            for dx in x.saturating_sub(1)
-                                ..=x.saturating_add(1).min(width.saturating_sub(1))
-                            {
-                                sum += f32::from(read(channel, dy, dx)?);
-                                count += 1.0;
+            let sharpen = |channel: usize, y: usize, x: usize| {
+                let center = read(channel, y, x)?;
+                if y == 0 || x == 0 || y + 1 == height || x + 1 == width {
+                    return Ok(center); // Pillow SMOOTH leaves border pixels alone.
+                }
+                let weight = 1.0f32 / 13.0;
+                let mut sum = 0.5f32;
+                for dy in (y - 1..=y + 1).rev() {
+                    let center_weight = if dy == y { 5.0f32 / 13.0 } else { weight };
+                    sum += f32::from(read(channel, dy, x - 1)?) * weight
+                        + f32::from(read(channel, dy, x)?) * center_weight
+                        + f32::from(read(channel, dy, x + 1)?) * weight;
+                }
+                let blurred = sum.clamp(0.0, 255.0) as u8;
+                Ok(super::color::blend(blurred, center, self.amount))
+            };
+            Tensor::from_exact_writer::<u8, _, _>(dims.clone(), input.device(), |write| {
+                match axis_order {
+                    ImageAxisOrder::Hwc => {
+                        for y in 0..height {
+                            for x in 0..width {
+                                for c in 0..channels {
+                                    write.write_next(sharpen(c, y, x)?)?;
+                                }
                             }
                         }
-                        let blurred = sum / count;
-                        Ok((center + self.amount * (center - blurred))
-                            .clamp(0.0, 255.0)
-                            .round() as u8)
-                    },
-                )
+                    }
+                    ImageAxisOrder::Chw => {
+                        for c in 0..channels {
+                            for y in 0..height {
+                                for x in 0..width {
+                                    write.write_next(sharpen(c, y, x)?)?;
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(())
             })
         })?;
         Ok(ImageSample::Decoded(DecodedSample {
@@ -612,7 +627,7 @@ mod tests {
 
     #[test]
     fn posterize_and_sharpness_validate_arguments() {
-        assert!(PosterizeConfig::new(0).validate().is_err());
+        assert!(PosterizeConfig::new(0).validate().is_ok());
         assert!(PosterizeConfig::new(9).validate().is_err());
         assert!(SharpnessConfig::new(-1.0).validate().is_err());
         assert!(SharpnessConfig::new(f32::NAN).validate().is_err());

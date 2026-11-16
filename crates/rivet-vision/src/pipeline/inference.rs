@@ -293,14 +293,6 @@ pub(crate) fn infer_image_op(
         ImageOp::Crop(config) => {
             require_u8_decoded(input_state, "Crop")?;
             validate_rank(input, "crop")?;
-            validate_crop_bounds(
-                input,
-                config.x,
-                config.y,
-                config.width,
-                config.height,
-                "crop",
-            )?;
             set_spatial_shape(
                 &mut output,
                 ShapeDim::Known(config.height as usize),
@@ -311,7 +303,6 @@ pub(crate) fn infer_image_op(
         ImageOp::CenterCrop(config) => {
             require_u8_decoded(input_state, "CenterCrop")?;
             validate_rank(input, "center_crop")?;
-            validate_center_crop_bounds(input, config.width, config.height)?;
             set_spatial_shape(
                 &mut output,
                 ShapeDim::Known(config.height as usize),
@@ -689,47 +680,6 @@ fn validate_rank(properties: &ValueProperties, op: &str) -> RivetResult<()> {
             "{op} requires a known image rank"
         ))),
     }
-}
-
-fn validate_crop_bounds(
-    input: &ValueProperties,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-    op: &str,
-) -> RivetResult<()> {
-    let (height_dim, width_dim) = spatial_dims(input)?;
-    if let (ShapeDim::Known(image_height), ShapeDim::Known(image_width)) = (height_dim, width_dim) {
-        if (x as usize)
-            .checked_add(width as usize)
-            .is_none_or(|end| end > image_width)
-            || (y as usize)
-                .checked_add(height as usize)
-                .is_none_or(|end| end > image_height)
-        {
-            return Err(crate::errors::invalid_shape(format!(
-                "{op} rectangle ({x}, {y}, {width}, {height}) exceeds image shape {image_width}x{image_height}"
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_center_crop_bounds(
-    input: &ValueProperties,
-    width: u32,
-    height: u32,
-) -> RivetResult<()> {
-    let (height_dim, width_dim) = spatial_dims(input)?;
-    if let (ShapeDim::Known(image_height), ShapeDim::Known(image_width)) = (height_dim, width_dim) {
-        if width as usize > image_width || height as usize > image_height {
-            return Err(crate::errors::invalid_shape(format!(
-                "center_crop size {width}x{height} exceeds image shape {image_width}x{image_height}"
-            )));
-        }
-    }
-    Ok(())
 }
 
 fn validate_random_crop_fit(

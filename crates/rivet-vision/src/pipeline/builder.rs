@@ -111,6 +111,11 @@ impl ImagePipeline {
         self
     }
 
+    pub fn pad_with_config(mut self, config: crate::transforms::PadConfig) -> Self {
+        self.push_image(ImageOp::Pad(config));
+        self
+    }
+
     pub fn pad(mut self, padding: u32) -> Self {
         self.push_image(ImageOp::pad(padding));
         self
@@ -171,7 +176,7 @@ impl ImagePipeline {
         self
     }
 
-    pub fn brightness(mut self, value: i32) -> Self {
+    pub fn brightness(mut self, value: f32) -> Self {
         self.push_image(ImageOp::brightness(value));
         self
     }
@@ -181,7 +186,7 @@ impl ImagePipeline {
         self
     }
 
-    pub fn color_jitter(mut self, brightness: i32, contrast: f32, hue: i32) -> Self {
+    pub fn color_jitter(mut self, brightness: f32, contrast: f32, hue: f32) -> Self {
         self.push_image(ImageOp::color_jitter(brightness, contrast, hue));
         self
     }
@@ -216,13 +221,21 @@ impl ImagePipeline {
         self
     }
 
+    pub fn gaussian_blur_with_config(
+        mut self,
+        config: crate::transforms::GaussianBlurConfig,
+    ) -> Self {
+        self.push_image(ImageOp::GaussianBlur(config));
+        self
+    }
+
     pub fn gaussian_blur(mut self, sigma: f32) -> Self {
         self.push_image(ImageOp::gaussian_blur(sigma));
         self
     }
 
-    pub fn hue(mut self, degrees: i32) -> Self {
-        self.push_image(ImageOp::hue(degrees));
+    pub fn hue(mut self, factor: f32) -> Self {
+        self.push_image(ImageOp::hue(factor));
         self
     }
 

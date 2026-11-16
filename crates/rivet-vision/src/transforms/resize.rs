@@ -1,29 +1,17 @@
 use crate::errors::{RivetResult, invalid_argument};
 use crate::sample::image::ImageSample;
-use crate::transforms::{from_rgb_image, into_rgb_image};
-use image::imageops::{FilterType, resize};
+use crate::transforms::into_rgb_image;
 use std::str::FromStr;
 
 /// Interpolation policy owned by Rivet rather than the image backend.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum InterpolationMode {
     Nearest,
-    /// Bilinear interpolation, implemented by the backend's triangle filter.
+    /// Pillow-compatible triangle filter with uint8 pass rounding.
     #[default]
     Bilinear,
     Bicubic,
     Lanczos3,
-}
-
-impl InterpolationMode {
-    fn filter_type(self) -> FilterType {
-        match self {
-            Self::Nearest => FilterType::Nearest,
-            Self::Bilinear => FilterType::Triangle,
-            Self::Bicubic => FilterType::CatmullRom,
-            Self::Lanczos3 => FilterType::Lanczos3,
-        }
-    }
 }
 
 impl FromStr for InterpolationMode {
@@ -73,13 +61,196 @@ impl ResizeConfig {
     pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
         let (image, label) = into_rgb_image(sample, "resize")?;
-        let resized = resize(
-            &image,
-            self.width,
-            self.height,
-            self.interpolation.filter_type(),
-        );
-        Ok(ImageSample::Decoded(from_rgb_image(resized, label)?))
+        Ok(ImageSample::Decoded(crate::sample::image::DecodedSample {
+            image: resize_rgb(&image, self.width, self.height, self.interpolation)?,
+            label,
+        }))
+    }
+}
+
+// Pillow Resample.c: separable RGB/u8 resampling with signed 22-bit
+// coefficients. Each pass clips and rounds to u8 before the next pass.
+const PRECISION: i64 = 1 << 22;
+
+fn filter(mode: InterpolationMode, x: f64) -> f64 {
+    let x = x.abs();
+    match mode {
+        InterpolationMode::Bilinear => (1.0 - x).max(0.0),
+        InterpolationMode::Bicubic if x < 1.0 => (1.5 * x - 2.5) * x * x + 1.0,
+        InterpolationMode::Bicubic if x < 2.0 => (((x - 5.0) * x + 8.0) * x - 4.0) * -0.5,
+        InterpolationMode::Lanczos3 if x < 3.0 => {
+            let sinc = |x: f64| {
+                if x == 0.0 {
+                    1.0
+                } else {
+                    let x = x * std::f64::consts::PI;
+                    x.sin() / x
+                }
+            };
+            sinc(x) * sinc(x / 3.0)
+        }
+        _ => 0.0,
+    }
+}
+
+struct Coefficients {
+    start: usize,
+    weights: Vec<i32>,
+}
+
+fn coefficients(input: usize, output: usize, mode: InterpolationMode) -> Vec<Coefficients> {
+    let scale = input as f64 / output as f64;
+    let filter_scale = scale.max(1.0);
+    let support = filter_scale
+        * match mode {
+            InterpolationMode::Bilinear => 1.0,
+            InterpolationMode::Bicubic => 2.0,
+            InterpolationMode::Lanczos3 => 3.0,
+            InterpolationMode::Nearest => unreachable!(),
+        };
+    (0..output)
+        .map(|index| {
+            let center = (index as f64 + 0.5) * scale;
+            let start = ((center - support + 0.5) as isize).max(0) as usize;
+            let end = ((center + support + 0.5) as usize).min(input);
+            let weights: Vec<f64> = (start..end)
+                .map(|x| filter(mode, (x as f64 - center + 0.5) / filter_scale))
+                .collect();
+            let sum: f64 = weights.iter().sum();
+            Coefficients {
+                start,
+                weights: weights
+                    .into_iter()
+                    .map(|w| {
+                        let w = if sum != 0.0 { w / sum } else { w };
+                        (w * PRECISION as f64).round() as i32
+                    })
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn resize_rgb(
+    image: &image::RgbImage,
+    width: u32,
+    height: u32,
+    mode: InterpolationMode,
+) -> RivetResult<rivet_core::Tensor> {
+    use rivet_core::{Device, Tensor};
+    if width == 0 || height == 0 {
+        return Err(invalid_argument(
+            "resize width and height must be greater than 0",
+        ));
+    }
+    let (iw, ih) = (image.width() as usize, image.height() as usize);
+    let (ow, oh) = (width as usize, height as usize);
+    if iw == 0 || ih == 0 {
+        return Err(invalid_argument("resize requires a non-empty input image"));
+    }
+    let source = image.as_raw();
+    if mode == InterpolationMode::Nearest {
+        // Pillow's affine nearest path increments coordinates instead of
+        // multiplying for each pixel (observable at exact half-pixel ties).
+        let scale_x = iw as f64 / ow as f64;
+        let mut position = scale_x * 0.5;
+        let xs: Vec<usize> = (0..ow)
+            .map(|_| {
+                let x = (position as usize).min(iw - 1);
+                position += scale_x;
+                x
+            })
+            .collect();
+        return Ok(Tensor::from_exact_writer::<u8, _, _>(
+            [oh, ow, 3],
+            &Device::Cpu,
+            |out| {
+                let scale_y = ih as f64 / oh as f64;
+                let mut position = scale_y * 0.5;
+                for _ in 0..oh {
+                    let y = (position as usize).min(ih - 1);
+                    position += scale_y;
+                    for &x in &xs {
+                        let offset = (y * iw + x) * 3;
+                        out.write_next(source[offset])?;
+                        out.write_next(source[offset + 1])?;
+                        out.write_next(source[offset + 2])?;
+                    }
+                }
+                Ok(())
+            },
+        )?);
+    }
+    let clip = |value: i64| ((value + (PRECISION >> 1)) >> 22).clamp(0, 255) as u8;
+    let horizontal = if iw != ow {
+        let coeffs = coefficients(iw, ow, mode);
+        Some(Tensor::from_exact_writer::<u8, _, _>(
+            [ih, ow, 3],
+            &Device::Cpu,
+            |out| {
+                for y in 0..ih {
+                    for coeff in &coeffs {
+                        let mut sums = [0i64; 3];
+                        let start = (y * iw + coeff.start) * 3;
+                        for (pixel, &weight) in source[start..start + coeff.weights.len() * 3]
+                            .chunks_exact(3)
+                            .zip(&coeff.weights)
+                        {
+                            sums[0] += i64::from(pixel[0]) * i64::from(weight);
+                            sums[1] += i64::from(pixel[1]) * i64::from(weight);
+                            sums[2] += i64::from(pixel[2]) * i64::from(weight);
+                        }
+                        out.write_next(clip(sums[0]))?;
+                        out.write_next(clip(sums[1]))?;
+                        out.write_next(clip(sums[2]))?;
+                    }
+                }
+                Ok(())
+            },
+        )?)
+    } else {
+        None
+    };
+    if ih == oh {
+        return match horizontal {
+            Some(tensor) => Ok(tensor),
+            None => Ok(Tensor::from_exact_iter(
+                source.iter().copied(),
+                [oh, ow, 3],
+                &Device::Cpu,
+            )?),
+        };
+    }
+    let coeffs = coefficients(ih, oh, mode);
+    // The horizontal result is the required u8 pass boundary, not a staging
+    // Vec. Vertical output goes straight into the final aligned tensor.
+    let vertical = |pixels: &[u8]| {
+        Tensor::from_exact_writer::<u8, _, _>([oh, ow, 3], &Device::Cpu, |out| {
+            for coeff in &coeffs {
+                for x in 0..ow {
+                    let mut sums = [0i64; 3];
+                    for (row, &weight) in coeff.weights.iter().enumerate() {
+                        let offset = ((coeff.start + row) * ow + x) * 3;
+                        sums[0] += i64::from(pixels[offset]) * i64::from(weight);
+                        sums[1] += i64::from(pixels[offset + 1]) * i64::from(weight);
+                        sums[2] += i64::from(pixels[offset + 2]) * i64::from(weight);
+                    }
+                    out.write_next(clip(sums[0]))?;
+                    out.write_next(clip(sums[1]))?;
+                    out.write_next(clip(sums[2]))?;
+                }
+            }
+            Ok(())
+        })
+    };
+    match horizontal {
+        Some(tensor) => Ok(tensor.with_cpu_storage(|storage, _| {
+            let rivet_core::CpuStorageRef::U8(pixels) = storage else {
+                unreachable!()
+            };
+            vertical(pixels)
+        })?),
+        None => Ok(vertical(source)?),
     }
 }
 

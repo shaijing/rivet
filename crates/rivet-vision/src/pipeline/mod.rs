@@ -279,7 +279,7 @@ mod tests {
             .decode_image()
             .pad(1)
             .random_resized_crop(8, 8)
-            .color_jitter(4, 0.2, 10)
+            .color_jitter(0.016, 0.2, 0.028)
             .gaussian_blur(0.5)
             .random_grayscale(0.0, 3)
             .random_erasing(0.0)
@@ -316,11 +316,11 @@ mod tests {
         let err = compile_err(
             stub(1)
                 .decode_image()
-                .color_jitter(-1, 0.0, 0)
+                .color_jitter(-0.004, 0.0, 0.0)
                 .batch(1, false),
         );
         assert!(
-            err.contains("brightness/hue must be non-negative"),
+            err.contains("brightness factor must be finite and non-negative"),
             "got: {err}"
         );
     }
@@ -370,9 +370,9 @@ mod tests {
 
     #[test]
     fn phase3_invalid_configs_are_rejected_at_compile() {
-        let err = compile_err(stub(1).decode_image().posterize(0).batch(1, false));
+        let err = compile_err(stub(1).decode_image().posterize(9).batch(1, false));
         assert!(
-            err.contains("posterize bits must be in [1, 8]"),
+            err.contains("posterize bits must be in [0, 8]"),
             "got: {err}"
         );
 
@@ -387,13 +387,13 @@ mod tests {
     fn phase4_composition_controls_compile_into_sample_stage() {
         let loader = stub(1)
             .decode_image()
-            .compose(TransformSequence::new().brightness(2).invert())
+            .compose(TransformSequence::new().brightness(1.008).invert())
             .random_apply(0.5, TransformSequence::new().horizontal_flip())
             .random_choice(vec![
                 TransformSequence::new().contrast(1.0),
                 TransformSequence::new().solarize(100),
             ])
-            .random_order(TransformSequence::new().brightness(1).invert())
+            .random_order(TransformSequence::new().brightness(1.004).invert())
             .batch(1, false)
             .compile()
             .unwrap();
@@ -416,7 +416,7 @@ mod tests {
             .random_apply(
                 0.5,
                 TransformSequence::new().random_choice(vec![
-                    TransformSequence::new().brightness(2),
+                    TransformSequence::new().brightness(1.008),
                     TransformSequence::new()
                         .random_order(TransformSequence::new().invert().contrast(1.0)),
                 ]),
@@ -557,7 +557,7 @@ mod tests {
             .decode_image()
             .resize(1, 1)
             .random_crop(1, 1, 0)
-            .brightness(0)
+            .brightness(1.0)
             .random_horizontal_flip(0.5)
             .batch(1, false)
             .compile()
@@ -732,7 +732,7 @@ mod tests {
             stub(10)
                 .decode_image()
                 .convert_image_dtype(DType::F32)
-                .brightness(1)
+                .brightness(1.004)
                 .batch(4, false),
         );
         assert!(err.contains("Brightness requires uint8"), "got: {err}");
@@ -1435,21 +1435,13 @@ mod tests {
     }
 
     #[test]
-    fn property_inference_rejects_known_crop_bounds_before_execution() {
+    fn property_inference_accepts_zero_padded_crop() {
         let pipeline = stub(1)
             .decode_image()
             .resize(10, 8)
             .crop(9, 0, 2, 2)
             .batch(1, false);
-        let error = pipeline.infer_properties().unwrap_err().to_string();
-        assert!(
-            error.contains("property inference failed at node %3"),
-            "got: {error}"
-        );
-        assert!(
-            error.contains("crop rectangle (9, 0, 2, 2) exceeds image shape 10x8"),
-            "got: {error}"
-        );
+        pipeline.infer_properties().unwrap();
     }
 
     #[test]
@@ -1499,10 +1491,10 @@ mod tests {
             ImageOp::random_crop(1, 1, 0),
             ImageOp::random_resized_crop(1, 1),
             ImageOp::random_horizontal_flip(0.5),
-            ImageOp::brightness(1),
+            ImageOp::brightness(1.0),
             ImageOp::contrast(1.0),
-            ImageOp::hue(1),
-            ImageOp::color_jitter(1, 1.0, 1),
+            ImageOp::hue(0.1),
+            ImageOp::color_jitter(0.004, 1.0, 0.003),
             ImageOp::invert(),
             ImageOp::posterize(4),
             ImageOp::solarize(128),
@@ -1557,7 +1549,7 @@ mod tests {
         let normal = plan.add_node(LogicalNode::new(
             NodeKind::Op,
             [source],
-            Some(Arc::new(ImageOp::brightness(0))),
+            Some(Arc::new(ImageOp::brightness(1.0))),
         ));
         let inverted = plan.add_node(LogicalNode::new(
             NodeKind::Op,

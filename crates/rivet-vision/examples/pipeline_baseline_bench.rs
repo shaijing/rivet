@@ -129,7 +129,7 @@ fn make_pipeline(
         Workload::ImageNet => pipeline
             .random_resized_crop(224, 224)
             .random_horizontal_flip(0.5)
-            .color_jitter(32, 0.4, 12)
+            .color_jitter(0.125, 0.4, 0.033)
             .normalize(vec![0.485, 0.456, 0.406], vec![0.229, 0.224, 0.225])
             .hwc_to_chw(),
     };
@@ -208,7 +208,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "samples={} batch={} batches={} physical_cores={}",
         config.samples, config.batch, config.batches, physical
     );
-    println!("workload                                                     workers prefetch  first_ms steady_ms      img_s");
+    println!(
+        "workload                                                     workers prefetch  first_ms steady_ms      img_s"
+    );
     for workload in Workload::ALL {
         for &worker_count in &workers {
             for &prefetch_count in &prefetch {
