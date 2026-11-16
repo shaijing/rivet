@@ -21,6 +21,14 @@ pub(crate) struct RankOptions {
 
 pub(crate) trait ExtendedFloat: LinearFloat {
     #[cfg(feature = "blas")]
+    fn native_solve_matrix(
+        output: &mut [Self],
+        a: Input<'_, Self>,
+        rows: usize,
+        cols: usize,
+        options: TriangularOptions,
+    ) -> bool;
+    #[cfg(feature = "blas")]
     fn native_rank(
         output: &mut [Self],
         a: Input<'_, Self>,
@@ -699,8 +707,81 @@ pub(crate) fn givens(a: f64, b: f64) -> (f64, f64, f64) {
 }
 
 macro_rules! native {
-    ($ty:ty,$syr:ident,$syr2:ident,$syrk:ident,$syr2k:ident,$trmm:ident,$trmv:ident,$trsm:ident,$symm:ident,$axpby:ident,$copy:ident,$omatcopy:ident,$iamax:ident,$rot:ident,$swap:ident) => {
+    ($ty:ty,$syr:ident,$syr2:ident,$syrk:ident,$syr2k:ident,$trmm:ident,$trmv:ident,$trsm:ident,$trsv:ident,$symm:ident,$axpby:ident,$copy:ident,$omatcopy:ident,$iamax:ident,$rot:ident,$swap:ident) => {
         impl ExtendedFloat for $ty {
+            #[cfg(feature = "blas")]
+            fn native_solve_matrix(
+                out: &mut [Self],
+                a: Input<'_, Self>,
+                rows: usize,
+                cols: usize,
+                o: TriangularOptions,
+            ) -> bool {
+                let Some((physical, lda)) = matrix(a.layout) else {
+                    return false;
+                };
+                let (Ok(m), Ok(n)) = (CBlasInt::try_from(rows), CBlasInt::try_from(cols)) else {
+                    return false;
+                };
+                let physical_transpose = matches!(physical, CBlasTranspose::CBlasTrans);
+                let uplo = if o.upper ^ physical_transpose {
+                    CBlasUplo::CblasUpper
+                } else {
+                    CBlasUplo::CblasLower
+                };
+                let diag = if o.unit_diagonal {
+                    CBlasDiag::CblasUnit
+                } else {
+                    CBlasDiag::CblasNonUnit
+                };
+                let left = o.side == MatrixSide::Left;
+                let vector = (left && cols == 1) || (!left && rows == 1);
+                // A right-side vector solve X*op(A)=B is the column-vector
+                // equation op(A)^T*X^T=B^T. Uplo still describes physical A.
+                let trans = if physical_transpose ^ o.transpose ^ (vector && !left) {
+                    CBlasTranspose::CBlasTrans
+                } else {
+                    CBlasTranspose::CBlasNoTrans
+                };
+                // SAFETY: complete A span, square shape, every batch diagonal,
+                // ABI dimensions, and the exact exclusive output were checked.
+                // Output is contiguous and cannot alias the borrowed A.
+                unsafe {
+                    if vector {
+                        $trsv(
+                            CBlasLayout::CBlasRowMajor,
+                            uplo,
+                            trans,
+                            diag,
+                            if left { m } else { n },
+                            a.ptr(),
+                            lda,
+                            out.as_mut_ptr(),
+                            1,
+                        );
+                    } else {
+                        $trsm(
+                            CBlasLayout::CBlasRowMajor,
+                            if left {
+                                CBlasSide::CblasLeft
+                            } else {
+                                CBlasSide::CblasRight
+                            },
+                            uplo,
+                            trans,
+                            diag,
+                            m,
+                            n,
+                            1.0,
+                            a.ptr(),
+                            lda,
+                            out.as_mut_ptr(),
+                            n,
+                        );
+                    }
+                }
+                true
+            }
             #[cfg(feature = "blas")]
             fn native_rank(
                 out: &mut [Self],
@@ -1036,6 +1117,7 @@ native!(
     cblas_strmm,
     cblas_strmv,
     cblas_strsm,
+    cblas_strsv,
     cblas_ssymm,
     cblas_saxpby,
     cblas_scopy,
@@ -1053,6 +1135,7 @@ native!(
     cblas_dtrmm,
     cblas_dtrmv,
     cblas_dtrsm,
+    cblas_dtrsv,
     cblas_dsymm,
     cblas_daxpby,
     cblas_dcopy,

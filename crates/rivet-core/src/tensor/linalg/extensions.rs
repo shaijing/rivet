@@ -5,16 +5,6 @@ use crate::cpu_backend::linalg::extensions::{
     self as kernels, ExtendedFloat, RankOptions, RankUpdate,
 };
 
-macro_rules! dispatch_exclusive {
-    ($tensor:expr,$op:literal,$fun:ident $(,$arg:expr)*)=> {
-        match $tensor.dtype {
-            DType::F32=>$fun::<f32>($($arg),*),
-            DType::F64=>$fun::<f64>($($arg),*),
-            dtype=>Err(Error::UnsupportedDTypeForOp {op:$op,dtype}),
-        }
-    }
-}
-
 impl Tensor {
     /// Computes beta*C + alpha*x*x^T. Reads only C's selected triangle
     /// and returns a complete symmetric matrix.
@@ -261,7 +251,7 @@ fn rank<T: ExtendedFloat>(
     )
 }
 
-fn broadcast_inputs(a: &Tensor, b: &Tensor, reduce: bool) -> Result<(Tensor, Tensor, Shape)> {
+pub(super) fn broadcast_matrix_inputs(a: &Tensor, b: &Tensor) -> Result<(Tensor, Tensor)> {
     if a.rank() < 2 || b.rank() < 2 {
         return Err(Error::MatmulShapeMismatch {
             lhs: a.dims().to_vec(),
@@ -276,18 +266,21 @@ fn broadcast_inputs(a: &Tensor, b: &Tensor, reduce: bool) -> Result<(Tensor, Ten
     ashape.extend_from_slice(&ad[ad.len() - 2..]);
     let mut bshape = batch.dims().to_vec();
     bshape.extend_from_slice(&bd[bd.len() - 2..]);
+    Ok((a.broadcast_as(ashape)?, b.broadcast_as(bshape)?))
+}
+
+fn broadcast_inputs(a: &Tensor, b: &Tensor, reduce: bool) -> Result<(Tensor, Tensor, Shape)> {
+    let (a, b) = broadcast_matrix_inputs(a, b)?;
+    let rank = a.rank();
     let mut shape = if reduce {
         Vec::new()
     } else {
-        batch.dims().to_vec()
+        a.dims()[..rank - 2].to_vec()
     };
-    shape.extend_from_slice(&[ad[ad.len() - 2], bd[bd.len() - 1]]);
-    Ok((
-        a.broadcast_as(ashape)?,
-        b.broadcast_as(bshape)?,
-        shape.into(),
-    ))
+    shape.extend_from_slice(&[a.dims()[rank - 2], b.dims()[rank - 1]]);
+    Ok((a, b, shape.into()))
 }
+
 fn batch<T: ExtendedFloat>(
     c: &Tensor,
     a: &Tensor,
@@ -342,7 +335,7 @@ fn argmax_abs<T: ExtendedFloat>(x: &Tensor) -> Result<usize> {
 }
 
 impl ExclusiveTensor {
-    fn check_peer(&self, x: &Tensor) -> Result<()> {
+    pub(super) fn check_peer(&self, x: &Tensor) -> Result<()> {
         if self.dtype != x.dtype() {
             return Err(Error::DTypeMismatch {
                 lhs: self.dtype,

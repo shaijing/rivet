@@ -190,6 +190,48 @@ The benchmark checks results before timing and reports Rust allocations,
 excluding native BLAS workspaces. Omit `--features blas` and use a separate
 baseline name to measure the default kernels.
 
+### Batched vectors and triangular solves
+
+These CPU F32/F64 APIs broadcast leading batch axes while preserving strided
+input views. The matrix and vector RHS methods are explicit, so a two-dimensional
+RHS is never guessed to be either a batch of vectors or one matrix.
+
+| API | Shapes and operation |
+| --- | --- |
+| `a.batch_mv(&x, transpose)` | `op(A)*x`: `op(A)=[...,M,K]`, `x=[...,K]`, output `[...,M]` |
+| `y.batch_addmv(&a, &x, alpha, beta, transpose)` | `beta*y+alpha*op(A)*x`; y has the exact result shape |
+| `a.batch_triangular_solve(&b, options)` | `A=[...,N,N]`; Left solves `op(A)*X=B` with `B=[...,N,R]`; Right solves `X*op(A)=B` with `B=[...,R,N]` |
+| `a.batch_triangular_solve_vector(&b, options)` | Vector `B=[...,N]`; output `[...,N]`, interpreted as row vectors on the right |
+
+GEMV's `transpose` swaps A's last two axes before shape matching. Triangular
+options select the stored triangle before transpose and ignore stored diagonal
+values when `unit_diagonal=true`. A zero non-unit diagonal returns
+`BatchedSingularMatrix { batch, index }`, where batch is the flattened logical
+broadcast batch index. All diagonals are checked before in-place writes.
+An empty batch reads no matrix elements; a matrix RHS with zero columns still
+validates the coefficient diagonals, as with the non-batched solve.
+
+`ExclusiveTensor::batch_addmv` reuses an exact-shape contiguous output.
+`owned.batch_triangular_solve(&a, options)` and its `_vector` counterpart treat
+owned storage as the RHS and overwrite it with the solution. A may broadcast to
+that existing shape; an in-place destination cannot expand. Offset views are
+supported, and singular/shape/layout errors preserve the original RHS.
+
+Regular GEMV batches reuse GEMV or the typed fallback. Solves write directly
+into one final allocation through standard TRSV/TRSM or typed substitution.
+With `blas`, shared A can combine right-side RHS rows or left-side vector RHS
+into one TRSM without packing. Unsupported native layouts retain per-matrix
+fallback traversal. No vendor-specific batch symbol is required.
+
+```bash
+RAYON_NUM_THREADS=1 FLEXIBLAS=OPENBLAS-SERIAL OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  cargo bench -j 12 -p rivet-core --bench batch_vector_solve --features blas \
+  -- --save-baseline batch-vector-blas
+```
+
+This compares loop-and-stack with batched output and reused RHS storage.
+The reused solve benchmark includes resetting RHS data inside the timed loop.
+
 `TriangularOptions` adds side and transpose controls to
 `triangular_matmul_with_options` and `triangular_solve_with_options`:
 

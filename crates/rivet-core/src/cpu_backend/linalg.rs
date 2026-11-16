@@ -5,7 +5,9 @@ use crate::storage::validate_layout_for_storage;
 use crate::{Error, Layout, Result};
 use std::ops::{Add, Div, Mul, Sub};
 
+mod batch_solve;
 mod batched;
+pub(crate) use batch_solve::{triangular_batch, triangular_batch_into};
 pub(crate) mod extensions;
 use batched::StridedBatch;
 

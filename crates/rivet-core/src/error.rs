@@ -111,6 +111,9 @@ pub enum Error {
     #[error("triangular matrix has a zero diagonal at index {index}")]
     SingularMatrix { index: usize },
 
+    #[error("triangular matrix in flattened batch {batch} has a zero diagonal at index {index}")]
+    BatchedSingularMatrix { batch: usize, index: usize },
+
     #[error("{op} received negative index {value}")]
     NegativeIndex { op: &'static str, value: i64 },
 

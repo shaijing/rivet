@@ -45,6 +45,17 @@ macro_rules! dispatch {
     };
 }
 
+macro_rules! dispatch_exclusive {
+    ($tensor:expr,$op:literal,$fun:ident $(,$arg:expr)*)=> {
+        match $tensor.dtype {
+            DType::F32=>$fun::<f32>($($arg),*),
+            DType::F64=>$fun::<f64>($($arg),*),
+            dtype=>Err(Error::UnsupportedDTypeForOp {op:$op,dtype}),
+        }
+    }
+}
+
+mod batch;
 mod extensions;
 
 fn values<'a, T: WithDType>(tensor: &'a Tensor, _op: &'static str) -> Result<&'a [T]> {
