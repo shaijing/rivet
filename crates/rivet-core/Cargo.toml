@@ -43,3 +43,7 @@ required-features = ["blas", "bench-internals"]
 [[bench]]
 name = "linalg_ops"
 harness = false
+
+[[bench]]
+name = "batch_matmul"
+harness = false

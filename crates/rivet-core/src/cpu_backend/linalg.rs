@@ -5,7 +5,9 @@ use crate::storage::validate_layout_for_storage;
 use crate::{Error, Layout, Result};
 use std::ops::{Add, Div, Mul, Sub};
 
+mod batched;
 pub(crate) mod extensions;
+use batched::StridedBatch;
 
 #[cfg(feature = "blas")]
 use rivet_blas_sys::cblas::prelude::*;
@@ -24,6 +26,7 @@ pub(crate) trait LinearFloat:
 {
     fn from_f64(value: f64) -> Self;
     fn to_f64(self) -> f64;
+    fn strided_product(batch: &StridedBatch<'_, Self>, output: &mut [Self], alpha: Self) -> bool;
     #[cfg(feature = "blas")]
     fn native_asum(input: Input<'_, Self>) -> Option<Self>;
     #[cfg(feature = "blas")]
@@ -617,6 +620,11 @@ pub(crate) fn batched_fused<T: LinearFloat>(
     if count == 0 || m == 0 || n == 0 || k == 0 || alpha == T::from_f64(0.0) {
         return Ok(output);
     }
+    if let Some(batch) = StridedBatch::new(lhs, rhs, count, reduce)
+        && T::strided_product(&batch, output.as_mut_slice(), alpha)
+    {
+        return Ok(output);
+    }
     let lhs_batch = Layout::new(
         batch_dims.to_vec().into(),
         lhs.layout.stride()[..rank - 2].to_vec(),
@@ -662,6 +670,16 @@ fn matrix(layout: &Layout) -> Option<(CBlasTranspose, CBlasInt)> {
     let [rs, cs] = *layout.stride() else {
         return None;
     };
+    matrix_strides(rows, cols, rs, cs)
+}
+
+#[cfg(feature = "blas")]
+fn matrix_strides(
+    rows: usize,
+    cols: usize,
+    rs: usize,
+    cs: usize,
+) -> Option<(CBlasTranspose, CBlasInt)> {
     if (cols <= 1 || cs == 1) && (rows <= 1 || rs >= cols) {
         Some((
             CBlasTranspose::CBlasNoTrans,
@@ -685,6 +703,70 @@ macro_rules! impl_float {
             }
             fn to_f64(self) -> f64 {
                 self as f64
+            }
+
+            fn strided_product(
+                batch: &StridedBatch<'_, Self>,
+                output: &mut [Self],
+                alpha: Self,
+            ) -> bool {
+                #[cfg(not(feature = "blas"))]
+                return batch.gemm(output, alpha);
+                #[cfg(feature = "blas")]
+                {
+                    let Some(p) = batch.native_parameters() else {
+                        return false;
+                    };
+                    let a = batch.lhs.values.as_ptr();
+                    let b = batch.rhs.values.as_ptr();
+                    let c = output.as_mut_ptr();
+                    // SAFETY: Input::new checked the complete input spans.
+                    // StridedBatch checked constant batch offsets; the caller
+                    // allocated the exact, non-empty output. All native matrix
+                    // dimensions/increments were checked once above. Inputs
+                    // can alias each other, but never the fresh output. A
+                    // reduction deliberately accumulates serially into C.
+                    unsafe {
+                        if batch.n == 1 {
+                            for index in 0..batch.count {
+                                $gemv(
+                                    CBlasLayout::CBlasRowMajor,
+                                    p.ta,
+                                    p.vector_rows,
+                                    p.vector_cols,
+                                    alpha,
+                                    a.add(batch.lhs_offset(index)),
+                                    p.lda,
+                                    b.add(batch.rhs_offset(index)),
+                                    p.vector_step,
+                                    1.0,
+                                    c.add(batch.output_offset(index)),
+                                    1,
+                                );
+                            }
+                        } else {
+                            for index in 0..batch.count {
+                                $gemm(
+                                    CBlasLayout::CBlasRowMajor,
+                                    p.ta,
+                                    p.tb,
+                                    p.m,
+                                    p.n,
+                                    p.k,
+                                    alpha,
+                                    a.add(batch.lhs_offset(index)),
+                                    p.lda,
+                                    b.add(batch.rhs_offset(index)),
+                                    p.ldb,
+                                    1.0,
+                                    c.add(batch.output_offset(index)),
+                                    p.n,
+                                );
+                            }
+                        }
+                    }
+                    true
+                }
             }
 
             #[cfg(feature = "blas")]
