@@ -78,11 +78,6 @@ pub(crate) enum SampleKernel {
 pub(crate) enum BatchKernel {
     Normalize(CompiledNormalize),
     NormalizeToChw(CompiledNormalize),
-    #[allow(dead_code)]
-    NormalizeToChwWithCudaAugmentations {
-        normalize: CompiledNormalize,
-        augmentations: Vec<CompiledSampleOp>,
-    },
     ConvertImageDtype {
         config: ConvertImageDtypeConfig,
         input_layout: ImageAxisOrder,
@@ -200,7 +195,6 @@ impl BatchKernel {
         match self {
             Self::Normalize(_) => "Normalize",
             Self::NormalizeToChw(_) => "NormalizeToChw",
-            Self::NormalizeToChwWithCudaAugmentations { .. } => "VisionAugmentNormalizeToChw",
             Self::ConvertImageDtype { .. } => "ConvertImageDtype",
             Self::Layout { .. } => "Layout",
         }
@@ -213,18 +207,16 @@ impl BatchKernel {
                 ImageOp::ConvertImageDtype(config.clone()).transition(input)
             }
             Self::Layout { config, .. } => ImageOp::Layout(config.clone()).transition(input),
-            Self::NormalizeToChw(_) | Self::NormalizeToChwWithCudaAugmentations { .. } => {
-                match input {
-                    PipelineImageState::Decoded {
-                        dtype: DType::U8,
-                        axis_order: ImageAxisOrder::Hwc,
-                    } => Ok(PipelineImageState::Decoded {
-                        dtype: DType::F32,
-                        axis_order: ImageAxisOrder::Chw,
-                    }),
-                    _ => Err(invalid_pipeline("NormalizeToChw requires U8 HWC input")),
-                }
-            }
+            Self::NormalizeToChw(_) => match input {
+                PipelineImageState::Decoded {
+                    dtype: DType::U8,
+                    axis_order: ImageAxisOrder::Hwc,
+                } => Ok(PipelineImageState::Decoded {
+                    dtype: DType::F32,
+                    axis_order: ImageAxisOrder::Chw,
+                }),
+                _ => Err(invalid_pipeline("NormalizeToChw requires U8 HWC input")),
+            },
         }
     }
 
@@ -235,9 +227,6 @@ impl BatchKernel {
                 debug_assert_eq!(op.input_layout, ImageAxisOrder::Hwc);
                 op.config.apply_batch_to_chw_trusted(batch)
             }
-            Self::NormalizeToChwWithCudaAugmentations { .. } => Err(invalid_pipeline(
-                "vision CUDA augmentation fusion must execute on its planned CUDA lane",
-            )),
             Self::ConvertImageDtype {
                 config,
                 input_layout,

@@ -123,7 +123,6 @@ pub enum Contiguity {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum DeviceClass {
     Cpu,
-    Cuda,
     Metal,
     Other(Arc<str>),
 }

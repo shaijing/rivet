@@ -1140,7 +1140,7 @@ mod tests {
             assert_eq!(
                 target,
                 ExecutionLane::Device {
-                    class: DeviceClass::Cuda,
+                    class: DeviceClass::Metal,
                     ordinal: 0
                 }
             );
@@ -1196,7 +1196,7 @@ mod tests {
                 ExecutionLane::Transfer,
             )
             .with_transfer_target(ExecutionLane::Device {
-                class: DeviceClass::Cuda,
+                class: DeviceClass::Metal,
                 ordinal: 0,
             }),
             [batch_kernel],
@@ -1206,7 +1206,7 @@ mod tests {
             PhysicalNodeSpec::new(
                 PhysicalNodeKind::Sink,
                 ExecutionLane::Device {
-                    class: DeviceClass::Cuda,
+                    class: DeviceClass::Metal,
                     ordinal: 0,
                 },
             ),

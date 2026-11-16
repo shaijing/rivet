@@ -62,10 +62,10 @@ maturin build --release -j 12 --features blas
 
 Lance remains enabled by default; add `--no-default-features` to build without
 Lance. BLAS is a Cargo build feature selected when compiling the extension.
-Enable both backends with `--features blas,cuda`. CUDA allocation state is
-stored indirectly so enabling CUDA keeps CPU `Storage` at its original size.
-Each CUDA storage owns one extra host metadata allocation; tensor views share
-the existing storage without allocating another metadata box.
+
+The native runtime on `main` supports CPU execution. CUDA development lives on
+the `cuda/cuda13.3` branch. The tensor device and storage boundaries remain in
+place so accelerator backends can be integrated without changing tensor layouts.
 
 Compare vector reductions and matrix-vector multiplication in release mode:
 

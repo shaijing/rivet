@@ -50,8 +50,6 @@ mod extensions;
 fn values<'a, T: WithDType>(tensor: &'a Tensor, _op: &'static str) -> Result<&'a [T]> {
     match tensor.storage() {
         Storage::Cpu(storage) => T::cpu_storage_as_slice(storage),
-        #[cfg(feature = "cuda")]
-        Storage::Cuda(_) => Err(Error::UnsupportedCudaOp { op: _op }),
     }
 }
 
@@ -170,8 +168,6 @@ impl Tensor {
             (Storage::Cpu(_), Storage::Cpu(_)) => {
                 dispatch!(self, "broadcast_matmul", batched, self, rhs, shape).map(Some)
             }
-            #[cfg(feature = "cuda")]
-            _ => Ok(None),
         }
     }
 }
@@ -327,14 +323,7 @@ fn mutable_values<'a, T: WithDType>(
     if !tensor.layout.is_contiguous() {
         return Err(Error::UnsupportedLayoutForOp { op });
     }
-    #[cfg(not(feature = "cuda"))]
     let Storage::Cpu(storage) = &mut tensor.storage;
-    #[cfg(feature = "cuda")]
-    let storage = match &mut tensor.storage {
-        Storage::Cpu(storage) => storage,
-        #[cfg(feature = "cuda")]
-        Storage::Cuda(_) => return Err(Error::UnsupportedCudaOp { op }),
-    };
     let values = T::cpu_storage_as_mut_slice(storage)?;
     validate_layout_for_storage(&tensor.layout, values.len())?;
     let count = tensor.layout.checked_elem_count()?;

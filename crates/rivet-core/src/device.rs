@@ -1,33 +1,19 @@
 use std::hash::{Hash, Hasher};
-#[cfg(feature = "cuda")]
-use std::sync::Arc;
 
 use crate::backend::BackendDevice;
 use crate::cpu_backend::{CpuDevice, buffer::AlignedBuffer};
 use crate::dtype::{ExactOutput, IntoCpuStorageBuffer};
 use crate::{DType, Result, Shape, Storage, WithDType};
 
-#[cfg(feature = "cuda")]
-use crate::{Error, cuda_backend::CudaDevice};
-
-/// Logical device locations. A CUDA location identifies a physical GPU ordinal;
-/// context and stream identity remain runtime details of `CudaDevice`.
+/// Logical device locations, separate from backend runtime handles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeviceLocation {
     Cpu,
-
-    #[cfg(feature = "cuda")]
-    Cuda {
-        ordinal: usize,
-    },
 }
 
 #[derive(Debug, Clone)]
 pub enum Device {
     Cpu,
-
-    #[cfg(feature = "cuda")]
-    Cuda(Arc<CudaDevice>),
 }
 
 impl PartialEq for Device {
@@ -48,11 +34,6 @@ impl Device {
     pub fn location(&self) -> DeviceLocation {
         match self {
             Self::Cpu => DeviceLocation::Cpu,
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(device) => DeviceLocation::Cuda {
-                ordinal: device.ordinal(),
-            },
         }
     }
 
@@ -60,36 +41,16 @@ impl Device {
         matches!(self, Self::Cpu)
     }
 
-    #[cfg(feature = "cuda")]
-    pub fn is_cuda(&self) -> bool {
-        matches!(self, Self::Cuda(_))
-    }
-
-    #[cfg(feature = "cuda")]
-    pub fn cuda(ordinal: usize) -> Result<Self> {
-        Ok(Self::Cuda(Arc::new(CudaDevice::new(ordinal)?)))
-    }
-
     pub fn same_device(&self, rhs: &Self) -> bool {
         match (self, rhs) {
             (Self::Cpu, Self::Cpu) => true,
-
-            #[cfg(feature = "cuda")]
-            (Self::Cuda(lhs), Self::Cuda(rhs)) => lhs.same_device(rhs),
-
-            #[cfg(feature = "cuda")]
-            _ => false,
         }
     }
 
-    /// Waits for work submitted to this device. CPU is already synchronous;
-    /// CUDA waits on its single default stream.
+    /// Waits for work submitted to this device. CPU is already synchronous.
     pub fn synchronize(&self) -> Result<()> {
         match self {
             Self::Cpu => Ok(()),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(device) => device.synchronize(),
         }
     }
 
@@ -101,42 +62,24 @@ impl Device {
     pub(crate) fn zeros(&self, shape: &Shape, dtype: DType) -> Result<Storage> {
         match self {
             Self::Cpu => Ok(Storage::Cpu(CpuDevice.zeros(shape, dtype)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(device) => Ok(Storage::Cuda(device.zeros(shape, dtype)?)),
         }
     }
 
     pub(crate) fn ones(&self, shape: &Shape, dtype: DType) -> Result<Storage> {
         match self {
             Self::Cpu => Ok(Storage::Cpu(CpuDevice.ones(shape, dtype)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(device) => Ok(Storage::Cuda(device.ones(shape, dtype)?)),
         }
     }
 
     pub(crate) fn storage_from_vec<T: WithDType>(&self, data: Vec<T>) -> Result<Storage> {
         match self {
             Self::Cpu => Ok(Storage::Cpu(CpuDevice.storage_from_vec(data)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(device) => Ok(Storage::Cuda(T::into_cuda_storage(
-                data,
-                Arc::clone(device),
-            )?)),
         }
     }
 
     pub(crate) fn storage_from_slice<T: WithDType>(&self, data: &[T]) -> Result<Storage> {
         match self {
             Self::Cpu => Ok(Storage::Cpu(CpuDevice.storage_from_slice(data)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(device) => Ok(Storage::Cuda(T::into_cuda_storage(
-                data.to_vec(),
-                Arc::clone(device),
-            )?)),
         }
     }
 
@@ -148,11 +91,6 @@ impl Device {
             Self::Cpu => Ok(Storage::Cpu(
                 crate::cpu_backend::CpuStorage::from_aligned_buffer(buffer),
             )),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(_) => Err(Error::UnsupportedCudaOp {
-                op: "storage_from_aligned_buffer",
-            }),
         }
     }
 
@@ -163,11 +101,6 @@ impl Device {
     {
         match self {
             Self::Cpu => Ok(Storage::Cpu(T::into_cpu_storage_iter(data)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(_) => Err(Error::UnsupportedCudaOp {
-                op: "storage_from_exact_iter",
-            }),
         }
     }
 
@@ -178,11 +111,6 @@ impl Device {
     {
         match self {
             Self::Cpu => Ok(Storage::Cpu(T::try_into_cpu_storage_iter(data)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(_) => Err(Error::UnsupportedCudaOp {
-                op: "storage_from_exact_try_iter",
-            }),
         }
     }
 
@@ -193,11 +121,6 @@ impl Device {
     {
         match self {
             Self::Cpu => Ok(Storage::Cpu(T::into_cpu_storage_with(len, fill)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(_) => Err(Error::UnsupportedCudaOp {
-                op: "storage_from_exact_fn",
-            }),
         }
     }
 
@@ -208,11 +131,6 @@ impl Device {
     {
         match self {
             Self::Cpu => Ok(Storage::Cpu(T::into_cpu_storage_writer(len, fill)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(_) => Err(Error::UnsupportedCudaOp {
-                op: "storage_from_exact_writer",
-            }),
         }
     }
 }

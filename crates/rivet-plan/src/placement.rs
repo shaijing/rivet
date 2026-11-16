@@ -1263,7 +1263,7 @@ mod tests {
         let mut caps = KernelCapabilities::default();
         for (kind, class, device) in [
             (NodeKind::Source, KernelClass::Source, DeviceClass::Cpu),
-            (NodeKind::Op, KernelClass::Batch, DeviceClass::Cuda),
+            (NodeKind::Op, KernelClass::Batch, DeviceClass::Metal),
         ] {
             caps.register(KernelCapability {
                 name: format!("demo-{class:?}"),
@@ -1289,7 +1289,7 @@ mod tests {
             });
         }
         let machine = MachineProfile {
-            available_devices: vec![DeviceClass::Cpu, DeviceClass::Cuda],
+            available_devices: vec![DeviceClass::Cpu, DeviceClass::Metal],
             ..MachineProfile::default()
         };
         let selected = place(&plan, &props, &caps, &machine).unwrap();

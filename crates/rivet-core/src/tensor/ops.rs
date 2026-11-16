@@ -225,14 +225,11 @@ impl Tensor {
         Self::from_exact_owned_storage(storage, Shape::from(()))
     }
 
-    /// Computes a rank-2 matrix product using the CPU GEMM backend or CUDA
-    /// cuBLAS for supported device dtypes.
+    /// Computes a rank-2 matrix product using the CPU GEMM backend.
     ///
-    /// CPU execution supports F32/F64 inputs including transposed and strided
-    /// views, with native kernels for supported layouts; CUDA
-    /// supports regular row/column-major views and materializes general
-    /// strided inputs. The output is always a fresh row-major contiguous
-    /// tensor.
+    /// Supports F32/F64 inputs including transposed and strided views, with
+    /// native kernels for supported layouts. The output is always a fresh
+    /// row-major contiguous tensor.
     pub fn matmul(&self, rhs: &Self) -> Result<Self> {
         if self.dtype() != rhs.dtype() {
             return Err(Error::DTypeMismatch {
@@ -469,8 +466,7 @@ impl Tensor {
 
     /// Returns the indices that sort the last dimension of each row.
     ///
-    /// CUDA currently provides this operation through the migrated argsort
-    /// kernel; CPU callers receive an explicit unsupported-operation error.
+    /// The CPU backend currently returns an unsupported-operation error.
     pub fn arg_sort_last_dim(&self, descending: bool) -> Result<Self> {
         if self.rank() == 0 {
             return Err(Error::InvalidDim { dim: 0, rank: 0 });

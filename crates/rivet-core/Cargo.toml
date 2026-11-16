@@ -7,11 +7,9 @@ repository.workspace = true
 description = "Core tensor types, storage, layouts, and operations for Rivet"
 
 [dependencies]
-cudarc = { workspace = true, optional = true }
 gemm = { version = "0.19.0", default-features = false, features = ["std", "rayon"] }
 half.workspace = true
 rivet-blas-sys = { version = "0.1.1", optional = true }
-rivet-kernels = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
@@ -23,15 +21,6 @@ default = []
 # Use native CBLAS for CPU F32/F64 linear algebra. The binding defaults to
 # dynamic LP64 FlexiBLAS and requires its development libraries at build time.
 blas = ["dep:rivet-blas-sys"]
-
-# CUDA runtime, context, default stream, cuBLAS handle, and static PTX loading.
-# `cudarc/nvrtc` only exposes its Ptx wrapper here; Rivet does not compile
-# source at runtime in this feature.
-cuda = ["dep:cudarc", "dep:rivet-kernels", "cudarc/nvrtc"]
-
-# Optional runtime PTX compilation; static CUDA runtime support does not depend
-# on NVRTC.
-cuda-nvrtc = ["cuda", "cudarc/nvrtc"]
 
 # Makes narrowly scoped internal measurement helpers available to Criterion
 # targets without committing them to the normal public API.

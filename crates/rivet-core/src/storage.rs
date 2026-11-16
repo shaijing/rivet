@@ -1,19 +1,12 @@
 use crate::cpu_backend::CpuStorage;
-#[cfg(feature = "cuda")]
-use crate::cuda_backend::CudaStorage;
 use crate::ops::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
 use crate::{DType, Device, Error, Layout, Result, Shape, WithDType};
-#[cfg(feature = "cuda")]
-use std::sync::Arc;
 
 /// Backend storage. Storage itself is deliberately not `Clone`; cloning an
 /// allocation is explicit through `try_clone`.
 #[derive(Debug)]
 pub enum Storage {
     Cpu(CpuStorage),
-
-    #[cfg(feature = "cuda")]
-    Cuda(CudaStorage),
 }
 
 impl Storage {
@@ -42,14 +35,6 @@ impl Storage {
             (Self::Cpu(lhs), Self::Cpu(rhs)) => {
                 Ok(Self::Cpu(lhs.binary(lhs_layout, rhs, rhs_layout, op)?))
             }
-
-            #[cfg(feature = "cuda")]
-            (Self::Cuda(lhs), Self::Cuda(rhs)) => {
-                Ok(Self::Cuda(lhs.binary(lhs_layout, rhs, rhs_layout, op)?))
-            }
-
-            #[cfg(feature = "cuda")]
-            _ => Err(Error::DeviceMismatch),
         }
     }
 
@@ -61,9 +46,6 @@ impl Storage {
     ) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.binary_scalar(layout, scalar, op)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(storage) => Ok(Self::Cuda(storage.binary_scalar(layout, scalar, op)?)),
         }
     }
 
@@ -77,41 +59,24 @@ impl Storage {
             (Self::Cpu(lhs), Self::Cpu(rhs)) => {
                 Ok(Self::Cpu(lhs.matmul(lhs_layout, rhs, rhs_layout)?))
             }
-
-            #[cfg(feature = "cuda")]
-            (Self::Cuda(lhs), Self::Cuda(rhs)) => {
-                Ok(Self::Cuda(lhs.matmul(lhs_layout, rhs, rhs_layout)?))
-            }
-
-            #[cfg(feature = "cuda")]
-            _ => Err(Error::DeviceMismatch),
         }
     }
 
     pub(crate) fn affine(storage: &Self, layout: &Layout, mul: f64, add: f64) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.affine(layout, mul, add)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(storage) => Ok(Self::Cuda(storage.affine(layout, mul, add)?)),
         }
     }
 
     pub(crate) fn elu(storage: &Self, layout: &Layout, alpha: f64) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.elu(layout, alpha)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(_) => unsupported_cuda("elu"),
         }
     }
 
     pub(crate) fn powf(storage: &Self, layout: &Layout, exponent: f64) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.powf(layout, exponent)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(_) => unsupported_cuda("powf"),
         }
     }
 
@@ -125,12 +90,6 @@ impl Storage {
             (Self::Cpu(lhs), Self::Cpu(rhs)) => {
                 Ok(Self::Cpu(lhs.pow(lhs_layout, rhs, rhs_layout)?))
             }
-
-            #[cfg(feature = "cuda")]
-            (Self::Cuda(_), Self::Cuda(_)) => unsupported_cuda("pow"),
-
-            #[cfg(feature = "cuda")]
-            _ => Err(Error::DeviceMismatch),
         }
     }
 
@@ -144,48 +103,30 @@ impl Storage {
             (Self::Cpu(lhs), Self::Cpu(rhs)) => {
                 Ok(Self::Cpu(lhs.dot(lhs_layout, rhs, rhs_layout)?))
             }
-
-            #[cfg(feature = "cuda")]
-            (Self::Cuda(_), Self::Cuda(_)) => unsupported_cuda("dot"),
-
-            #[cfg(feature = "cuda")]
-            _ => Err(Error::DeviceMismatch),
         }
     }
 
     pub(crate) fn norm(storage: &Self, layout: &Layout) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.norm(layout)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(_) => unsupported_cuda("norm"),
         }
     }
 
     pub(crate) fn cumsum(storage: &Self, layout: &Layout, dim: usize) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.cumsum(layout, dim)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(_) => unsupported_cuda("cumsum"),
         }
     }
 
     pub(crate) fn log_sum_exp(storage: &Self, layout: &Layout, dim: usize) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.log_sum_exp(layout, dim)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(_) => unsupported_cuda("log_sum_exp"),
         }
     }
 
     pub(crate) fn flip(storage: &Self, layout: &Layout, dims: &[usize]) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.flip(layout, dims)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(_) => unsupported_cuda("flip"),
         }
     }
 
@@ -203,17 +144,6 @@ impl Storage {
                 indexes_layout,
                 dim,
             )?)),
-
-            #[cfg(feature = "cuda")]
-            (Self::Cuda(storage), Self::Cuda(indexes)) => Ok(Self::Cuda(storage.gather(
-                layout,
-                indexes,
-                indexes_layout,
-                dim,
-            )?)),
-
-            #[cfg(feature = "cuda")]
-            _ => Err(Error::DeviceMismatch),
         }
     }
 
@@ -231,17 +161,6 @@ impl Storage {
                 indexes_layout,
                 dim,
             )?)),
-
-            #[cfg(feature = "cuda")]
-            (Self::Cuda(storage), Self::Cuda(indexes)) => Ok(Self::Cuda(storage.index_select(
-                layout,
-                indexes,
-                indexes_layout,
-                dim,
-            )?)),
-
-            #[cfg(feature = "cuda")]
-            _ => Err(Error::DeviceMismatch),
         }
     }
 
@@ -267,22 +186,6 @@ impl Storage {
                     add,
                 )?))
             }
-
-            #[cfg(feature = "cuda")]
-            (Self::Cuda(storage), Self::Cuda(indexes), Self::Cuda(source)) => {
-                Ok(Self::Cuda(storage.scatter(
-                    layout,
-                    indexes,
-                    indexes_layout,
-                    source,
-                    source_layout,
-                    dim,
-                    add,
-                )?))
-            }
-
-            #[cfg(feature = "cuda")]
-            _ => Err(Error::DeviceMismatch),
         }
     }
 
@@ -299,23 +202,12 @@ impl Storage {
             (Self::Cpu(storage), Self::Cpu(indexes), Self::Cpu(source)) => Ok(Self::Cpu(
                 storage.index_add(layout, indexes, indexes_layout, source, source_layout, dim)?,
             )),
-
-            #[cfg(feature = "cuda")]
-            (Self::Cuda(storage), Self::Cuda(indexes), Self::Cuda(source)) => Ok(Self::Cuda(
-                storage.index_add(layout, indexes, indexes_layout, source, source_layout, dim)?,
-            )),
-
-            #[cfg(feature = "cuda")]
-            _ => Err(Error::DeviceMismatch),
         }
     }
 
     pub(crate) fn unary(storage: &Self, layout: &Layout, op: UnaryOp) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.unary(layout, op)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(storage) => Ok(Self::Cuda(storage.unary(layout, op)?)),
         }
     }
 
@@ -330,14 +222,6 @@ impl Storage {
             (Self::Cpu(lhs), Self::Cpu(rhs)) => {
                 Ok(Self::Cpu(lhs.cmp(lhs_layout, rhs, rhs_layout, op)?))
             }
-
-            #[cfg(feature = "cuda")]
-            (Self::Cuda(lhs), Self::Cuda(rhs)) => {
-                Ok(Self::Cuda(lhs.cmp(lhs_layout, rhs, rhs_layout, op)?))
-            }
-
-            #[cfg(feature = "cuda")]
-            _ => Err(Error::DeviceMismatch),
         }
     }
 
@@ -349,9 +233,6 @@ impl Storage {
     ) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.cmp_scalar(layout, scalar, op)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(storage) => Ok(Self::Cuda(storage.cmp_scalar(layout, scalar, op)?)),
         }
     }
 
@@ -374,21 +255,6 @@ impl Storage {
                     false_layout,
                 )?))
             }
-
-            #[cfg(feature = "cuda")]
-            (Self::Cuda(condition), Self::Cuda(on_true), Self::Cuda(on_false)) => {
-                Ok(Self::Cuda(CudaStorage::where_cond(
-                    condition,
-                    condition_layout,
-                    on_true,
-                    true_layout,
-                    on_false,
-                    false_layout,
-                )?))
-            }
-
-            #[cfg(feature = "cuda")]
-            _ => Err(Error::DeviceMismatch),
         }
     }
 
@@ -401,18 +267,12 @@ impl Storage {
     ) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.reduce_dim(layout, dim, keepdim, op)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(storage) => Ok(Self::Cuda(storage.reduce_dim(layout, dim, op)?)),
         }
     }
 
     pub(crate) fn reduce_all(storage: &Self, layout: &Layout, op: ReduceOp) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.reduce_all(layout, op)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(storage) => Ok(Self::Cuda(storage.reduce_all(layout, op)?)),
         }
     }
 
@@ -426,9 +286,6 @@ impl Storage {
                 op: "arg_sort_last_dim",
                 dtype: storage.dtype(),
             }),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(storage) => Ok(Self::Cuda(storage.arg_sort_last_dim(_layout, _descending)?)),
         }
     }
 
@@ -440,18 +297,12 @@ impl Storage {
     ) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.mean_dim(layout, dim, keepdim)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(storage) => Ok(Self::Cuda(storage.mean_dim(layout, dim, keepdim)?)),
         }
     }
 
     pub(crate) fn mean_all(storage: &Self, layout: &Layout) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.mean_all(layout)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(storage) => Ok(Self::Cuda(storage.mean_all(layout)?)),
         }
     }
 
@@ -463,42 +314,21 @@ impl Storage {
     ) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.var_dim(layout, dim, keepdim)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(_) => unsupported_cuda("var_dim"),
         }
     }
 
     pub(crate) fn copy_logical(storage: &Self, layout: &Layout) -> Result<Self> {
         match storage {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.copy_logical(layout)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(storage) => Ok(Self::Cuda(storage.copy_logical(layout)?)),
         }
     }
 
     /// Copies a logical view to a target device as a new contiguous storage.
-    /// Contiguous ranges use direct backend copies; strided CUDA views use the
-    /// explicit materialization fallback owned by the CUDA storage backend.
     pub(crate) fn to_device(&self, layout: &Layout, device: &Device) -> Result<Self> {
         validate_layout_for_storage(layout, self.len())?;
 
         match (self, device) {
             (Self::Cpu(storage), Device::Cpu) => Ok(Self::Cpu(storage.copy_logical(layout)?)),
-
-            #[cfg(feature = "cuda")]
-            (Self::Cpu(storage), Device::Cuda(device)) => Ok(Self::Cuda(
-                CudaStorage::from_cpu_storage(Arc::clone(device), storage, layout)?,
-            )),
-
-            #[cfg(feature = "cuda")]
-            (Self::Cuda(storage), Device::Cpu) => Ok(Self::Cpu(storage.to_cpu_storage(layout)?)),
-
-            #[cfg(feature = "cuda")]
-            (Self::Cuda(storage), Device::Cuda(device)) => Ok(Self::Cuda(
-                storage.copy_to_device(Arc::clone(device), layout)?,
-            )),
         }
     }
 
@@ -514,8 +344,6 @@ impl Storage {
             .iter()
             .map(|(storage, layout)| match storage {
                 Self::Cpu(storage) => Ok((storage, *layout)),
-                #[cfg(feature = "cuda")]
-                Self::Cuda(_) => unsupported_cuda("cat"),
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(Self::Cpu(CpuStorage::cat(&cpu_inputs, output_shape, dim)?))
@@ -529,8 +357,6 @@ impl Storage {
             .iter()
             .map(|(storage, layout)| match storage {
                 Self::Cpu(storage) => Ok((storage, *layout)),
-                #[cfg(feature = "cuda")]
-                Self::Cuda(_) => unsupported_cuda("stack_dim0"),
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(Self::Cpu(CpuStorage::stack_dim0(
@@ -542,18 +368,12 @@ impl Storage {
     pub fn dtype(&self) -> DType {
         match self {
             Self::Cpu(storage) => storage.dtype(),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(storage) => storage.dtype(),
         }
     }
 
     pub fn device(&self) -> Device {
         match self {
             Self::Cpu(_) => Device::Cpu,
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(storage) => Device::Cuda(storage.device_handle()),
         }
     }
 
@@ -564,18 +384,12 @@ impl Storage {
     pub fn len(&self) -> usize {
         match self {
             Self::Cpu(storage) => storage.len(),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(storage) => storage.len(),
         }
     }
 
     pub fn try_clone(&self, _layout: &Layout) -> Result<Self> {
         match self {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.clone())),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(storage) => Ok(Self::Cuda(storage.try_clone()?)),
         }
     }
 
@@ -587,9 +401,6 @@ impl Storage {
         }
         match self {
             Self::Cpu(storage) => Ok(Self::Cpu(storage.to_dtype(layout, dtype)?)),
-
-            #[cfg(feature = "cuda")]
-            Self::Cuda(storage) => Ok(Self::Cuda(storage.to_dtype(layout, dtype)?)),
         }
     }
 }
@@ -611,11 +422,6 @@ pub(crate) fn validate_layout_for_storage(layout: &Layout, storage_len: usize) -
     Ok(())
 }
 
-#[cfg(feature = "cuda")]
-fn unsupported_cuda<T>(op: &'static str) -> Result<T> {
-    Err(Error::UnsupportedCudaOp { op })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,20 +429,12 @@ mod tests {
     use crate::cpu_backend::CpuDevice;
 
     #[test]
-    fn storage_keeps_the_cpu_payload_size_with_optional_backends() {
+    fn storage_keeps_the_cpu_payload_size() {
         assert_eq!(
             std::mem::size_of::<Storage>(),
             std::mem::size_of::<CpuStorage>(),
-            "optional backends must not enlarge CPU storage allocations",
+            "the storage dispatch boundary must not enlarge CPU allocations",
         );
-
-        #[cfg(feature = "cuda")]
-        {
-            // Preserve the public variant constructor without boxing at
-            // callers. This test needs no CUDA runtime or physical GPU.
-            let _constructor: fn(CudaStorage) -> Storage = Storage::Cuda;
-            assert!(std::mem::size_of::<CudaStorage>() <= std::mem::size_of::<CpuStorage>());
-        }
     }
 
     #[test]

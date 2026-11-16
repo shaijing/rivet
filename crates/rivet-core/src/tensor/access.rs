@@ -138,9 +138,6 @@ impl Tensor {
     pub fn storage_base_ptr(&self) -> *const u8 {
         match self.storage() {
             Storage::Cpu(storage) => storage.base_ptr(),
-
-            #[cfg(feature = "cuda")]
-            Storage::Cuda(storage) => storage.base_ptr(),
         }
     }
 
@@ -148,9 +145,6 @@ impl Tensor {
     pub fn storage_alignment(&self) -> usize {
         match self.storage() {
             Storage::Cpu(storage) => storage.base_alignment(),
-
-            #[cfg(feature = "cuda")]
-            Storage::Cuda(storage) => storage.base_alignment(),
         }
     }
 
@@ -160,9 +154,6 @@ impl Tensor {
     pub fn effective_alignment(&self) -> Result<usize> {
         match self.storage() {
             Storage::Cpu(storage) => storage.effective_alignment(self.layout()),
-
-            #[cfg(feature = "cuda")]
-            Storage::Cuda(storage) => storage.effective_alignment(self.layout()),
         }
     }
 
@@ -192,12 +183,6 @@ impl Tensor {
                 let values = T::cpu_storage_ref_as_slice(storage.as_ref())?;
                 logical_values(values, self.layout())
             }
-
-            #[cfg(feature = "cuda")]
-            Storage::Cuda(storage) => {
-                let values = T::cuda_storage_to_vec(storage)?;
-                logical_values(&values, self.layout())
-            }
         }
     }
 
@@ -216,13 +201,6 @@ impl Tensor {
                     f(value);
                 }
             }
-
-            #[cfg(feature = "cuda")]
-            Storage::Cuda(_) => {
-                for value in self.to_vec::<T>()? {
-                    f(value);
-                }
-            }
         }
         Ok(())
     }
@@ -235,11 +213,6 @@ impl Tensor {
         let storage = self.storage();
         match &*storage {
             Storage::Cpu(storage) => f(storage.as_ref(), self.layout()),
-
-            #[cfg(feature = "cuda")]
-            Storage::Cuda(_) => Err(Error::UnsupportedCudaOp {
-                op: "with_cpu_storage",
-            }),
         }
     }
 

@@ -1432,7 +1432,7 @@ mod tests {
             PhysicalNodeSpec::new(
                 PhysicalNodeKind::Sink,
                 ExecutionLane::Device {
-                    class: DeviceClass::Cuda,
+                    class: DeviceClass::Metal,
                     ordinal: 2,
                 },
             ),
@@ -1451,7 +1451,7 @@ mod tests {
         assert_eq!(
             transfer.transfer_target,
             Some(ExecutionLane::Device {
-                class: DeviceClass::Cuda,
+                class: DeviceClass::Metal,
                 ordinal: 2
             })
         );
@@ -1459,7 +1459,7 @@ mod tests {
         assert_eq!(graph.node(batch).unwrap().last_use_count, 1);
         graph.set_transfer_estimate(transfers[0], 512).unwrap();
         assert!(graph.explain().unwrap().contains(
-            "Transfer(H2D) lane=Transfer parallelism=Serial target=Device { class: Cuda, ordinal: 2 } estimated_transfer_bytes=512"
+            "Transfer(H2D) lane=Transfer parallelism=Serial target=Device { class: Metal, ordinal: 2 } estimated_transfer_bytes=512"
         ));
     }
 
@@ -1490,7 +1490,7 @@ mod tests {
         assert_eq!(
             transfer_for_lanes(
                 &ExecutionLane::Device {
-                    class: DeviceClass::Cuda,
+                    class: DeviceClass::Metal,
                     ordinal: 0,
                 },
                 &ExecutionLane::Cpu,
@@ -1500,11 +1500,11 @@ mod tests {
         assert_eq!(
             transfer_for_lanes(
                 &ExecutionLane::Device {
-                    class: DeviceClass::Cuda,
+                    class: DeviceClass::Metal,
                     ordinal: 0,
                 },
                 &ExecutionLane::Device {
-                    class: DeviceClass::Cuda,
+                    class: DeviceClass::Metal,
                     ordinal: 1,
                 }
             ),

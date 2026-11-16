@@ -1010,7 +1010,7 @@ mod tests {
         );
 
         let mut device = decoded_properties(DataType::U8);
-        device.residency = Some(Residency::Device(DeviceClass::Cuda));
+        device.residency = Some(Residency::Device(DeviceClass::Metal));
         let error = infer_image_op(&ImageOp::resize(4, 4), &device).unwrap_err();
         assert!(error.to_string().contains("host-resident input"));
 

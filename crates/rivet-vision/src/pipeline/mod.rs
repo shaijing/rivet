@@ -1160,36 +1160,6 @@ mod tests {
         assert!(multi.contains("source access=RandomAccess"));
     }
 
-    #[cfg(feature = "cuda")]
-    #[test]
-    fn cuda_capabilities_do_not_place_pipeline_without_device_request() {
-        assert!(
-            super::optimizer::vision_kernel_capabilities()
-                .iter()
-                .any(|capability| {
-                    capability.device == rivet_plan::DeviceClass::Cuda
-                        && capability.name == "vision::NormalizeToChw-cuda-Fused"
-                })
-        );
-        let mut loader = decoded_stub()
-            .normalize(vec![0.5; 3], vec![0.5; 3])
-            .hwc_to_chw()
-            .batch(1, false)
-            .compile()
-            .unwrap();
-
-        let physical = loader.physical_explain().unwrap();
-        assert!(!physical.contains("Transfer(H2D)"), "{physical}");
-        assert!(!physical.contains("lane=Device"), "{physical}");
-        assert!(physical.contains("BatchKernel lane=Cpu"), "{physical}");
-
-        let batch = loader.next_batch().unwrap().unwrap();
-        assert!(batch.images.device().is_cpu());
-        assert_eq!(batch.images.dims(), [1, 3, 1, 1]);
-        assert_eq!(batch.images.dtype(), DType::F32);
-    }
-
-    #[cfg(not(feature = "cuda"))]
     #[test]
     fn placement_rejects_unavailable_preferred_device_sink() {
         let pipeline = decoded_stub()
@@ -1200,9 +1170,9 @@ mod tests {
                 cpu_threads: 4,
                 available_devices: vec![
                     rivet_plan::DeviceClass::Cpu,
-                    rivet_plan::DeviceClass::Cuda,
+                    rivet_plan::DeviceClass::Metal,
                 ],
-                preferred_sink_device: Some(rivet_plan::DeviceClass::Cuda),
+                preferred_sink_device: Some(rivet_plan::DeviceClass::Metal),
                 ..rivet_plan::MachineProfile::default()
             })
             .unwrap_err()
@@ -1220,14 +1190,12 @@ mod tests {
                 cpu_threads: 2,
                 available_devices: vec![
                     rivet_plan::DeviceClass::Cpu,
-                    rivet_plan::DeviceClass::Cuda,
                     rivet_plan::DeviceClass::Metal,
                 ],
                 ..rivet_plan::MachineProfile::default()
             })
             .unwrap();
         assert!(explanation.contains("device=Cpu"), "{explanation}");
-        assert!(!explanation.contains("device=Cuda"), "{explanation}");
         assert!(!explanation.contains("device=Metal"), "{explanation}");
     }
 
@@ -1236,12 +1204,12 @@ mod tests {
         let pipeline = stub(10)
             .decode_image()
             .resize(8, 6)
-            .device_cut_to_cuda(2)
+            .device_cut_to_metal(2)
             .normalize(vec![0.1, 0.2, 0.3], vec![1.0; 3])
             .batch(2, true);
         let logical = pipeline.to_logical_plan();
         let explain = logical.explain().unwrap();
-        assert!(explain.contains("DeviceCutToCuda(2)"), "{explain}");
+        assert!(explain.contains("DeviceCutToMetal(2)"), "{explain}");
 
         let ordered = logical
             .nodes()
@@ -1273,7 +1241,7 @@ mod tests {
             .filter_map(|(_, node)| node.payload_as::<rivet_plan::DeviceCut>())
             .map(|cut| cut.target.clone())
             .collect::<Vec<_>>();
-        assert_eq!(targets, [rivet_plan::DeviceTarget::cuda(2)]);
+        assert_eq!(targets, [rivet_plan::DeviceTarget::metal(2)]);
         assert_eq!(
             round_trip
                 .nodes()
@@ -1290,7 +1258,7 @@ mod tests {
     #[test]
     fn device_cut_sets_output_residency_without_changing_value_properties() {
         let logical = decoded_stub()
-            .device_cut_to_cuda(0)
+            .device_cut_to_metal(0)
             .normalize(vec![0.5; 3], vec![0.5; 3])
             .hwc_to_chw()
             .batch(1, false)
@@ -1308,20 +1276,24 @@ mod tests {
         assert_eq!(before.residency, Some(rivet_plan::Residency::Host));
         assert_eq!(
             cut.residency,
-            Some(rivet_plan::Residency::Device(rivet_plan::DeviceClass::Cuda))
+            Some(rivet_plan::Residency::Device(
+                rivet_plan::DeviceClass::Metal
+            ))
         );
         let after_batch = annotations.get(nodes[4].0).unwrap();
         assert_eq!(after_batch.dtype, Some(rivet_plan::DataType::F32));
         assert_eq!(after_batch.axis_order, Some(rivet_plan::AxisOrder::Nchw));
         assert_eq!(
             after_batch.residency,
-            Some(rivet_plan::Residency::Device(rivet_plan::DeviceClass::Cuda))
+            Some(rivet_plan::Residency::Device(
+                rivet_plan::DeviceClass::Metal
+            ))
         );
     }
 
     #[test]
     fn device_cut_compile_fails_until_physical_lowering_exists() {
-        let error = compile_err(decoded_stub().device_cut_to_cuda(0).batch(1, false));
+        let error = compile_err(decoded_stub().device_cut_to_metal(0).batch(1, false));
         assert!(
             error.contains("DeviceCut execution is not implemented yet"),
             "{error}"
@@ -1346,7 +1318,7 @@ mod tests {
 
     #[test]
     fn device_cut_after_batch_round_trips_after_the_batch_node() {
-        let pipeline = decoded_stub().batch(3, false).device_cut_to_cuda(4);
+        let pipeline = decoded_stub().batch(3, false).device_cut_to_metal(4);
         let logical = pipeline.to_logical_plan();
         let order = logical
             .nodes()
@@ -1372,7 +1344,9 @@ mod tests {
         let sink = logical.root().unwrap();
         assert_eq!(
             annotations.get(sink).unwrap().residency,
-            Some(rivet_plan::Residency::Device(rivet_plan::DeviceClass::Cuda))
+            Some(rivet_plan::Residency::Device(
+                rivet_plan::DeviceClass::Metal
+            ))
         );
     }
 

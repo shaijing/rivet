@@ -14,7 +14,9 @@ use super::ImageOptimizationOptions;
 use super::cached_inference::CachedInferProperties as InferProperties;
 use super::inference::VisionPropertyInference;
 use super::logical::FusionGroupPayload;
-use super::op::{ImageOp, IndexOp, SourceOp};
+#[cfg(test)]
+use super::op::SourceOp;
+use super::op::{ImageOp, IndexOp};
 use crate::errors::invalid_pipeline;
 use crate::sample::image::ImageAxisOrder;
 
@@ -61,7 +63,6 @@ fn optimize_vision_plan_impl(
     let mut registry = PlanRegistry::default();
     registry.register_plugin(&VisionPlanPlugin {
         workers,
-        enable_cuda_augmentation_fusion: false,
         machine: machine.clone(),
         options,
         prepare_execution,
@@ -135,13 +136,9 @@ impl super::builder::ImagePipeline {
         // that device; they do not opt a pipeline into device execution.
         machine.available_devices = vec![DeviceClass::Cpu];
         let mut plan = self.to_logical_plan();
-        let enable_cuda_augmentation_fusion =
-            machine.available_devices.contains(&DeviceClass::Cuda)
-                && has_fixed_shape_batch_source(&plan);
         let mut registry = PlanRegistry::default();
         registry.register_plugin(&VisionPlanPlugin {
             workers: self.runtime.num_workers,
-            enable_cuda_augmentation_fusion,
             machine,
             options: ImageOptimizationOptions::default(),
             prepare_execution: false,
@@ -169,16 +166,8 @@ impl super::builder::ImagePipeline {
     }
 }
 
-fn has_fixed_shape_batch_source(plan: &LogicalPlan) -> bool {
-    plan.nodes().any(|(_, node)| {
-        node.payload_as::<SourceOp>()
-            .is_some_and(SourceOp::supports_batch_read)
-    })
-}
-
 struct VisionPlanPlugin {
     workers: usize,
-    enable_cuda_augmentation_fusion: bool,
     machine: MachineProfile,
     options: ImageOptimizationOptions,
     prepare_execution: bool,
@@ -253,9 +242,7 @@ impl PlanPlugin for VisionPlanPlugin {
         passes
     }
     fn fusion_rules(&self) -> Vec<Arc<dyn FusionRule>> {
-        vec![Arc::new(NormalizeLayoutFusion {
-            enable_cuda_augmentation_fusion: self.enable_cuda_augmentation_fusion,
-        })]
+        vec![Arc::new(NormalizeLayoutFusion)]
     }
     fn physical_candidates(&self) -> Vec<Arc<dyn PhysicalCandidateProvider>> {
         vec![Arc::new(VisionPhysicalCandidates)]
@@ -710,9 +697,7 @@ impl OptimizerPass for FusionDiscovery {
     }
 }
 
-struct NormalizeLayoutFusion {
-    enable_cuda_augmentation_fusion: bool,
-}
+struct NormalizeLayoutFusion;
 impl FusionRule for NormalizeLayoutFusion {
     fn name(&self) -> &'static str {
         "normalize-layout"
@@ -754,40 +739,7 @@ impl FusionRule for NormalizeLayoutFusion {
                 let Some(normalize_input) = normalize.inputs().get(0) else {
                     continue;
                 };
-                let mut augmentation_ids = Vec::new();
-                let mut input_id = normalize_input;
-                if self.enable_cuda_augmentation_fusion {
-                    loop {
-                        let input_node = plan.node(input_id).map_err(|error| error.to_string())?;
-                        if !input_node
-                            .payload_as::<ImageOp>()
-                            .is_some_and(is_cuda_batch_augmentation)
-                        {
-                            break;
-                        }
-                        augmentation_ids.push(input_id);
-                        let Some(previous) = input_node.inputs().get(0) else {
-                            break;
-                        };
-                        input_id = previous;
-                    }
-                    augmentation_ids.reverse();
-                }
-                let mut crop_count = 0;
-                for augmentation_id in &augmentation_ids {
-                    let augmentation = plan
-                        .node(*augmentation_id)
-                        .map_err(|error| error.to_string())?;
-                    crop_count += usize::from(matches!(
-                        augmentation.payload_as::<ImageOp>(),
-                        Some(ImageOp::RandomResizedCrop(_))
-                    ));
-                }
-                if crop_count > 1 {
-                    augmentation_ids.clear();
-                    input_id = normalize_input;
-                }
-                let props = annotations.get(input_id);
+                let props = annotations.get(normalize_input);
                 let shared_normalize = uses.get(&normalize_id).copied() != Some(1);
                 let legal = !shared_normalize
                     && props.is_some_and(|p| {
@@ -806,10 +758,7 @@ impl FusionRule for NormalizeLayoutFusion {
                 };
                 candidates.push(FusionCandidate {
                     rule: self.name(),
-                    nodes: augmentation_ids
-                        .into_iter()
-                        .chain([normalize_id, id])
-                        .collect(),
+                    nodes: vec![normalize_id, id],
                     name: "NormalizeToChw".to_owned(),
                     legal,
                     reason,
@@ -840,9 +789,7 @@ impl FusionRule for NormalizeLayoutFusion {
             // A horizontal flip commutes with per-channel affine normalization
             // for the same HWC image values, but the available implementation
             // crosses sample and batch stages, so it remains unfused.
-            if !self.enable_cuda_augmentation_fusion
-                && matches!(node.payload_as::<ImageOp>(), Some(ImageOp::Normalize(_)))
-            {
+            if matches!(node.payload_as::<ImageOp>(), Some(ImageOp::Normalize(_))) {
                 if let Some(flip_id) = node.inputs().get(0) {
                     let flip = plan.node(flip_id).map_err(|error| error.to_string())?;
                     if matches!(flip.payload_as::<ImageOp>(), Some(ImageOp::Flip(_))) {
@@ -879,12 +826,8 @@ impl FusionRule for NormalizeLayoutFusion {
         if candidate.name != "NormalizeToChw" {
             return Ok(PassResult::unchanged());
         }
-        if candidate.nodes.len() < 2 {
+        let [normalize_id, layout_id] = candidate.nodes.as_slice() else {
             return Err("NormalizeToChw fusion requires two node ids".to_owned());
-        }
-        let (augmentation_ids, tail) = candidate.nodes.split_at(candidate.nodes.len() - 2);
-        let [normalize_id, layout_id] = tail else {
-            unreachable!("candidate length was checked")
         };
         let normalize_node = plan
             .node(*normalize_id)
@@ -896,31 +839,14 @@ impl FusionRule for NormalizeLayoutFusion {
         let Some(ImageOp::Layout(layout)) = layout_node.payload_as::<ImageOp>() else {
             return Err("NormalizeToChw fusion lost its Layout node".to_owned());
         };
-        let mut input = normalize_node
+        let input = normalize_node
             .inputs()
             .get(0)
             .ok_or_else(|| "Normalize node has no input".to_owned())?;
-        let mut ops = Vec::with_capacity(augmentation_ids.len() + 2);
-        if let Some(first_augmentation_id) = augmentation_ids.first() {
-            let first_augmentation = plan
-                .node(*first_augmentation_id)
-                .map_err(|error| error.to_string())?;
-            input = first_augmentation
-                .inputs()
-                .get(0)
-                .ok_or_else(|| "augmentation node has no input".to_owned())?;
-        }
-        for augmentation_id in augmentation_ids {
-            let augmentation = plan
-                .node(*augmentation_id)
-                .map_err(|error| error.to_string())?;
-            let Some(op) = augmentation.payload_as::<ImageOp>() else {
-                return Err("NormalizeToChw fusion lost an augmentation node".to_owned());
-            };
-            ops.push(op.clone());
-        }
-        ops.push(ImageOp::Normalize(normalize.clone()));
-        ops.push(ImageOp::Layout(*layout));
+        let ops = vec![
+            ImageOp::Normalize(normalize.clone()),
+            ImageOp::Layout(*layout),
+        ];
         let fused = plan.add_node(LogicalNode::new(
             NodeKind::Op,
             [input],
@@ -942,13 +868,6 @@ impl FusionRule for NormalizeLayoutFusion {
             ),
         ))
     }
-}
-
-fn is_cuda_batch_augmentation(op: &ImageOp) -> bool {
-    matches!(
-        op,
-        ImageOp::Flip(_) | ImageOp::RandomHorizontalFlip(_) | ImageOp::RandomResizedCrop(_)
-    )
 }
 
 /// Selection currently executes only as a contiguous, unbranched source
@@ -1125,18 +1044,6 @@ impl PhysicalCandidateProvider for VisionPhysicalCandidates {
             name,
             backend: "cpu".to_owned(),
         }];
-        #[cfg(feature = "cuda")]
-        if node
-            .payload_as::<FusionGroupPayload>()
-            .is_some_and(|group| group.name == "NormalizeToChw")
-        {
-            let mut candidates = candidates;
-            candidates.push(PhysicalCandidate {
-                name: "vision-normalize-to-chw-fused".to_owned(),
-                backend: "cuda".to_owned(),
-            });
-            return candidates;
-        }
         candidates
     }
 }
@@ -1297,17 +1204,6 @@ pub(super) fn vision_kernel_capabilities() -> KernelCapabilities {
     batch_fused.requirements.output_axis_order = Some(AxisOrder::Nchw);
     batch_fused.requirements.output_stage = Some(OperatorStage::Batch);
     caps.register(batch_fused);
-    #[cfg(feature = "cuda")]
-    {
-        let mut cuda_fused = caps
-            .iter()
-            .find(|capability| capability.name == "vision::NormalizeToChw-cpu-Fused")
-            .expect("CPU fused capability was registered above")
-            .clone();
-        cuda_fused.name = "vision::NormalizeToChw-cuda-Fused".to_owned();
-        cuda_fused.device = DeviceClass::Cuda;
-        caps.register(cuda_fused);
-    }
     caps
 }
 
@@ -1329,7 +1225,7 @@ mod device_cut_tests {
         let cut = plan.add_node(LogicalNode::new(
             NodeKind::DeviceCut,
             [normalize],
-            Some(Arc::new(DeviceCut::new(DeviceTarget::cuda(0)))),
+            Some(Arc::new(DeviceCut::new(DeviceTarget::metal(0)))),
         ));
         let layout = plan.add_node(LogicalNode::new(
             NodeKind::Op,
@@ -1339,11 +1235,9 @@ mod device_cut_tests {
         let sink = plan.add_node(LogicalNode::new(NodeKind::Sink, [layout], None));
         plan.set_root(sink).unwrap();
 
-        let candidates = NormalizeLayoutFusion {
-            enable_cuda_augmentation_fusion: true,
-        }
-        .discover(&plan, &PropertyAnnotations::default())
-        .unwrap();
+        let candidates = NormalizeLayoutFusion
+            .discover(&plan, &PropertyAnnotations::default())
+            .unwrap();
         assert!(candidates.is_empty());
         assert!(plan.validate().is_ok());
     }

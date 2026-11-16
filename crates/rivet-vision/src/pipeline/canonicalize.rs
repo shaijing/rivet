@@ -378,7 +378,7 @@ mod tests {
             let ids = plan.topological_order().unwrap();
             let payload = if kind == NodeKind::DeviceCut {
                 Some(
-                    Arc::new(rivet_plan::DeviceCut::new(rivet_plan::DeviceTarget::cuda(
+                    Arc::new(rivet_plan::DeviceCut::new(rivet_plan::DeviceTarget::metal(
                         0,
                     ))) as Arc<dyn rivet_plan::PlanPayload>,
                 )

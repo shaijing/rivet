@@ -401,25 +401,17 @@ impl ImagePipeline {
         self
     }
 
-    /// Insert a fixed host-to-CUDA semantic boundary after the image
-    /// transformations appended so far. If `.batch(...)` has already been
-    /// configured, the cut follows the batch node; otherwise the batch node
-    /// follows the image transformation chain.
-    pub fn device_cut_to_cuda(self, ordinal: usize) -> Self {
-        self.device_cut(DeviceTarget::cuda(ordinal))
-    }
-
     /// Insert a fixed host-to-Metal semantic boundary after the image
-    /// transformations appended so far, with the same batch ordering as
-    /// [`Self::device_cut_to_cuda`]. Runtime execution requires a Metal
+    /// transformations appended so far. A cut follows the batch node when
+    /// batching is already configured. Runtime execution requires a Metal
     /// backend implementation.
     pub fn device_cut_to_metal(self, ordinal: usize) -> Self {
         self.device_cut(DeviceTarget::metal(ordinal))
     }
 
     /// Insert a fixed host-to-device semantic boundary after the image
-    /// transformations appended so far, with the same batch ordering as
-    /// [`Self::device_cut_to_cuda`].
+    /// transformations appended so far. If batching is already configured,
+    /// the cut follows the batch node; otherwise it precedes batching.
     pub fn device_cut(mut self, target: DeviceTarget) -> Self {
         self.steps
             .push(PipelineStep::DeviceCut(self.device_cuts.len()));

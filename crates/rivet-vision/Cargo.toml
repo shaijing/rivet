@@ -10,7 +10,6 @@ description = "Image semantics, transforms, and image dataset adapters for Rivet
 default = ["lance"]
 lance = ["rivet-data/lance", "dep:lance"]
 blas = ["rivet-core/blas"]
-cuda = ["rivet-core/cuda"]
 
 [dependencies]
 arrow.workspace = true
@@ -38,11 +37,6 @@ num_cpus = "1.17"
 [[bench]]
 name = "phase3_fusions"
 harness = false
-
-[[bench]]
-name = "cuda_batch_normalize"
-harness = false
-required-features = ["cuda"]
 
 [[example]]
 name = "lance"

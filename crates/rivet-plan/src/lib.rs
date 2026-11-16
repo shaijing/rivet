@@ -75,10 +75,6 @@ impl DeviceTarget {
         Self { class, ordinal }
     }
 
-    pub fn cuda(ordinal: usize) -> Self {
-        Self::new(DeviceClass::Cuda, ordinal)
-    }
-
     pub fn metal(ordinal: usize) -> Self {
         Self::new(DeviceClass::Metal, ordinal)
     }
@@ -103,7 +99,6 @@ impl PlanPayload for DeviceCut {
 
     fn name(&self) -> &'static str {
         match self.target.class {
-            DeviceClass::Cuda => "DeviceCutToCuda",
             DeviceClass::Metal => "DeviceCutToMetal",
             _ => "DeviceCut",
         }
@@ -607,7 +602,7 @@ impl LogicalPlan {
         for (id, node) in self.arena.iter() {
             let label = if let Some(cut) = node.payload_as::<DeviceCut>() {
                 match &cut.target.class {
-                    DeviceClass::Cuda | DeviceClass::Metal => {
+                    DeviceClass::Metal => {
                         format!(" rivet::{}({})", cut.name(), cut.target.ordinal)
                     }
                     class => format!(
@@ -744,30 +739,30 @@ mod tests {
     fn device_cut_is_plain_target_data_and_participates_in_plan_traversal() {
         let mut plan = LogicalPlan::new();
         let source = plan.add_node(LogicalNode::new(NodeKind::Source, [], None));
-        let cuda_cut = plan.add_node(LogicalNode::new(
+        let metal_cut = plan.add_node(LogicalNode::new(
             NodeKind::DeviceCut,
             [source],
-            Some(Arc::new(DeviceCut::new(DeviceTarget::cuda(3)))),
+            Some(Arc::new(DeviceCut::new(DeviceTarget::metal(3)))),
         ));
-        let sink = plan.add_node(LogicalNode::new(NodeKind::Sink, [cuda_cut], None));
+        let sink = plan.add_node(LogicalNode::new(NodeKind::Sink, [metal_cut], None));
         plan.set_root(sink).unwrap();
 
         let traversal = plan.preorder().unwrap();
-        assert_eq!(traversal, [sink, cuda_cut, source]);
+        assert_eq!(traversal, [sink, metal_cut, source]);
         assert_eq!(plan.clone().preorder().unwrap(), traversal);
-        assert_eq!(plan.parents(cuda_cut).unwrap(), [source]);
-        assert_eq!(plan.children(cuda_cut).unwrap(), [sink]);
+        assert_eq!(plan.parents(metal_cut).unwrap(), [source]);
+        assert_eq!(plan.children(metal_cut).unwrap(), [sink]);
         let explanation = plan.explain().unwrap();
-        assert!(explanation.contains("DeviceCutToCuda(3)"), "{explanation}");
+        assert!(explanation.contains("DeviceCutToMetal(3)"), "{explanation}");
 
-        let cuda = plan
-            .node(cuda_cut)
+        let metal = plan
+            .node(metal_cut)
             .unwrap()
             .payload_as::<DeviceCut>()
             .unwrap();
-        assert_eq!(cuda.target, DeviceTarget::cuda(3));
-        assert_eq!(cuda.target.class, DeviceClass::Cuda);
-        assert_eq!(cuda.target.ordinal, 3);
+        assert_eq!(metal.target, DeviceTarget::metal(3));
+        assert_eq!(metal.target.class, DeviceClass::Metal);
+        assert_eq!(metal.target.ordinal, 3);
 
         let metal = DeviceCut::new(DeviceTarget::metal(1));
         assert_eq!(metal.name(), "DeviceCutToMetal");
@@ -791,7 +786,7 @@ mod tests {
         let cut = bad_arity.add_node(LogicalNode::new(
             NodeKind::DeviceCut,
             [source, source],
-            Some(Arc::new(DeviceCut::new(DeviceTarget::cuda(0)))),
+            Some(Arc::new(DeviceCut::new(DeviceTarget::metal(0)))),
         ));
         let sink = bad_arity.add_node(LogicalNode::new(NodeKind::Sink, [cut], None));
         bad_arity.set_root(sink).unwrap();
