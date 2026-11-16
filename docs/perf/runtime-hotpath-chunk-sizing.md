@@ -25,7 +25,7 @@ Release extension benchmark, five runs per configuration:
 ```bash
 .venv/bin/python bench/compare_cifar10_torchvision_rivet_decoded.py \
   --torch-root ~/.data/pytorch \
-  --rivet-root /data/datasets/rivet/cifar10 \
+  --rivet-root ~/.cache/rivet/datasets/cifar10 \
   --batch 128 --workers 24 --epochs 3
 ```
 

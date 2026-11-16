@@ -1,12 +1,13 @@
 import io
+from pathlib import Path
 
 import lance
 from PIL import Image
 
-root = "/data/datasets/custom/nuimages"
+root = Path.home() / ".cache" / "rivet" / "datasets" / "nuimages_classification"
 
-train = lance.dataset(f"{root}/train.lance")
-val = lance.dataset(f"{root}/val.lance")
+train = lance.dataset(str(root / "train.lance"))
+val = lance.dataset(str(root / "val.lance"))
 
 print("Train rows:", train.count_rows())
 print("Val rows:", val.count_rows())

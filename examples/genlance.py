@@ -4,7 +4,7 @@ from pathlib import Path
 import lance
 import pyarrow as pa
 
-ROOT = Path("/data/datasets/custom/nuimages_classification")
+ROOT = Path.home() / ".data" / "custom" / "nuimages_classification"
 OUTPUT = Path("/tmp/my_dataset")
 
 BATCH_SIZE = 1024

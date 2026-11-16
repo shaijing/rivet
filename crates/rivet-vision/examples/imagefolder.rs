@@ -8,7 +8,7 @@
 //! The dataset has the usual split/class directory layout:
 //!
 //! ```text
-//! /data/datasets/custom/nuimages_classification/
+//! ~/.data/custom/nuimages_classification/
 //! ├── train/<class>/*.jpg
 //! └── val/<class>/*.jpg
 //! ```
@@ -17,10 +17,10 @@ use rivet_data::dataset::Dataset;
 use rivet_vision::datasets::ImageFolderDatasetCore;
 use rivet_vision::pipeline::ImagePipeline;
 use std::env;
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-const DATASET_ROOT: &str = "/data/datasets/custom/nuimages_classification";
+const DATASET_ROOT: &str = ".data/custom/nuimages_classification";
 const IMAGE_SIZE: u32 = 224;
 const BATCH_SIZE: usize = 8;
 
@@ -33,7 +33,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .transpose()?
         .unwrap_or(2);
 
-    let root = Path::new(DATASET_ROOT).join(&split);
+    let root = PathBuf::from(env::var_os("HOME").ok_or("HOME is not set")?)
+        .join(DATASET_ROOT)
+        .join(&split);
     let dataset = Arc::new(ImageFolderDatasetCore::new(root.clone())?);
 
     println!("root: {}", root.display());
