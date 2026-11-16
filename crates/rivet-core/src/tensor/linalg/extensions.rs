@@ -364,6 +364,154 @@ impl ExclusiveTensor {
         }
         Ok(())
     }
+    /// Computes beta*self + alpha*A*B per broadcast batch in the existing
+    /// contiguous CPU F32/F64 view. Its shape must exactly match the result.
+    /// Zero coefficients ignore operand values, including NaNs.
+    pub fn baddbmm(&mut self, a: &Tensor, b: &Tensor, alpha: f64, beta: f64) -> Result<()> {
+        self.check_peer(a)?;
+        self.check_peer(b)?;
+        dispatch_exclusive!(
+            self,
+            "baddbmm",
+            update_batch,
+            self,
+            a,
+            b,
+            alpha,
+            beta,
+            false
+        )
+    }
+
+    /// Adds the ordered sum of broadcast batch products into this contiguous
+    /// matrix. beta scales the destination once, before any products are added.
+    pub fn addbmm(&mut self, a: &Tensor, b: &Tensor, alpha: f64, beta: f64) -> Result<()> {
+        self.check_peer(a)?;
+        self.check_peer(b)?;
+        dispatch_exclusive!(self, "addbmm", update_batch, self, a, b, alpha, beta, true)
+    }
+
+    /// Overwrites this contiguous matrix with A*A^T, or A^T*A when transpose
+    /// is true. Existing destination values are ignored, including NaNs.
+    pub fn gram(&mut self, a: &Tensor, transpose: bool) -> Result<()> {
+        self.check_peer(a)?;
+        dispatch_exclusive!(self, "gram", update_gram, self, a, transpose)
+    }
+
+    /// Computes beta*self + alpha*A*A^T (A^T*A when transpose=true), reading
+    /// only the selected seed triangle and publishing a full symmetric matrix.
+    pub fn gram_update(
+        &mut self,
+        a: &Tensor,
+        transpose: bool,
+        alpha: f64,
+        beta: f64,
+        upper: bool,
+    ) -> Result<()> {
+        self.check_peer(a)?;
+        dispatch_exclusive!(
+            self,
+            "gram_update",
+            update_rank,
+            self,
+            a,
+            None,
+            RankOptions {
+                kind: RankUpdate::Gram,
+                transpose,
+                upper,
+                alpha,
+                beta
+            }
+        )
+    }
+
+    /// Computes beta*self + alpha*x*x^T in this contiguous matrix, using only
+    /// the selected seed triangle and mirroring the result to the other half.
+    pub fn symmetric_rank1_update(
+        &mut self,
+        x: &Tensor,
+        alpha: f64,
+        beta: f64,
+        upper: bool,
+    ) -> Result<()> {
+        self.check_peer(x)?;
+        dispatch_exclusive!(
+            self,
+            "symmetric_rank1_update",
+            update_rank,
+            self,
+            x,
+            None,
+            RankOptions {
+                kind: RankUpdate::One,
+                transpose: false,
+                upper,
+                alpha,
+                beta
+            }
+        )
+    }
+
+    /// Computes beta*self + alpha*(x*y^T+y*x^T) in this contiguous matrix.
+    /// Only the selected seed triangle is read; the result is fully symmetric.
+    pub fn symmetric_rank2_update(
+        &mut self,
+        x: &Tensor,
+        y: &Tensor,
+        alpha: f64,
+        beta: f64,
+        upper: bool,
+    ) -> Result<()> {
+        self.check_peer(x)?;
+        self.check_peer(y)?;
+        dispatch_exclusive!(
+            self,
+            "symmetric_rank2_update",
+            update_rank,
+            self,
+            x,
+            Some(y),
+            RankOptions {
+                kind: RankUpdate::Two,
+                transpose: false,
+                upper,
+                alpha,
+                beta
+            }
+        )
+    }
+
+    /// Computes beta*self + alpha*(A*B^T+B*A^T), or A^T*B+B^T*A when
+    /// transpose=true, preserving the selected-triangle seed semantics.
+    pub fn symmetric_rank2k_update(
+        &mut self,
+        a: &Tensor,
+        b: &Tensor,
+        transpose: bool,
+        alpha: f64,
+        beta: f64,
+        upper: bool,
+    ) -> Result<()> {
+        self.check_peer(a)?;
+        self.check_peer(b)?;
+        dispatch_exclusive!(
+            self,
+            "symmetric_rank2k_update",
+            update_rank,
+            self,
+            a,
+            Some(b),
+            RankOptions {
+                kind: RankUpdate::TwoK,
+                transpose,
+                upper,
+                alpha,
+                beta
+            }
+        )
+    }
+
     /// Updates an exclusive contiguous matrix without allocating an output.
     pub fn addmm(&mut self, a: &Tensor, b: &Tensor, alpha: f64, beta: f64) -> Result<()> {
         self.check_peer(a)?;
@@ -431,6 +579,58 @@ fn matrix_dims(t: &ExclusiveTensor) -> Result<[usize; 2]> {
     };
     Ok([m, n])
 }
+
+fn update_batch<T: ExtendedFloat>(
+    t: &mut ExclusiveTensor,
+    a: &Tensor,
+    b: &Tensor,
+    alpha: f64,
+    beta: f64,
+    reduce: bool,
+) -> Result<()> {
+    let op = if reduce { "addbmm" } else { "baddbmm" };
+    let (a, b, shape) = broadcast_inputs(a, b, reduce)?;
+    if t.layout.shape() != &shape {
+        return Err(Error::ShapeMismatchBinary {
+            lhs: t.layout.dims().to_vec(),
+            rhs: shape.dims().to_vec(),
+        });
+    }
+    let a = input::<T>(&a, op)?;
+    let b = input::<T>(&b, op)?;
+    linalg::batched_into(
+        mutable_values::<T>(t, op)?,
+        shape.dims(),
+        a,
+        b,
+        alpha,
+        beta,
+        reduce,
+    )
+}
+
+fn update_gram<T: ExtendedFloat>(
+    t: &mut ExclusiveTensor,
+    a: &Tensor,
+    transpose: bool,
+) -> Result<()> {
+    let dims = matrix_dims(t)?;
+    let a = input::<T>(a, "gram")?;
+    linalg::gram_into(mutable_values::<T>(t, "gram")?, &dims, a, transpose)
+}
+
+fn update_rank<T: ExtendedFloat>(
+    t: &mut ExclusiveTensor,
+    a: &Tensor,
+    b: Option<&Tensor>,
+    options: RankOptions,
+) -> Result<()> {
+    let dims = matrix_dims(t)?;
+    let a = input::<T>(a, "rank_update")?;
+    let b = b.map(|b| input::<T>(b, "rank_update")).transpose()?;
+    kernels::rank_update_into(mutable_values::<T>(t, "rank_update")?, &dims, a, b, options)
+}
+
 fn update_mm<T: ExtendedFloat>(
     t: &mut ExclusiveTensor,
     a: &Tensor,

@@ -421,11 +421,52 @@ pub(crate) fn gram<T: LinearFloat>(
         n.checked_mul(n).ok_or(Error::StorageOutOfBounds)?,
         0.0,
     )?;
+    gram_product(output.as_mut_slice(), input, transpose, n, k)?;
+    Ok(output)
+}
+
+pub(crate) fn gram_into<T: LinearFloat>(
+    output: &mut [T],
+    dims: &[usize],
+    input: Input<'_, T>,
+    transpose: bool,
+) -> Result<()> {
+    let [rows, cols] = *input.layout.dims() else {
+        return Err(Error::InvalidRank {
+            expected: 2,
+            actual: input.layout.dims().len(),
+        });
+    };
+    let (n, k) = if transpose {
+        (cols, rows)
+    } else {
+        (rows, cols)
+    };
+    if dims != [n, n] {
+        return Err(Error::ShapeMismatchBinary {
+            lhs: dims.to_vec(),
+            rhs: vec![n, n],
+        });
+    }
+    if output.len() != n.checked_mul(n).ok_or(Error::StorageOutOfBounds)? {
+        return Err(Error::StorageOutOfBounds);
+    }
+    gram_product(output, input, transpose, n, k)
+}
+
+fn gram_product<T: LinearFloat>(
+    output: &mut [T],
+    input: Input<'_, T>,
+    transpose: bool,
+    n: usize,
+    k: usize,
+) -> Result<()> {
     if n == 0 || k == 0 {
-        return Ok(output);
+        output.fill(T::from_f64(0.0));
+        return Ok(());
     }
     #[cfg(feature = "blas")]
-    let native = T::native_gram(input, output.as_mut_slice(), transpose);
+    let native = T::native_gram(input, output, transpose);
     #[cfg(not(feature = "blas"))]
     let native = false;
     if !native {
@@ -436,7 +477,7 @@ pub(crate) fn gram<T: LinearFloat>(
         } else {
             (input, transposed)
         };
-        multiply(
+        multiply_scaled(
             &Product {
                 lhs,
                 rhs,
@@ -444,18 +485,19 @@ pub(crate) fn gram<T: LinearFloat>(
                 n,
                 k,
             },
-            output.as_mut_slice(),
+            output,
             T::from_f64(1.0),
+            T::from_f64(0.0),
         )?;
     }
     // SYRK writes only the requested triangle. Publish a complete symmetric
     // tensor, also enforcing the same symmetry contract on fallback kernels.
     for row in 0..n {
         for col in 0..row {
-            output.as_mut_slice()[row * n + col] = output.as_slice()[col * n + row];
+            output[row * n + col] = output[col * n + row];
         }
     }
-    Ok(output)
+    Ok(())
 }
 
 fn square_rhs<T: LinearFloat>(matrix: Input<'_, T>, rhs: Input<'_, T>) -> Result<(usize, usize)> {
@@ -565,14 +607,22 @@ pub(crate) fn batched<T: LinearFloat>(
     batched_fused(lhs, rhs, None, 1.0, 0.0, false)
 }
 
-pub(crate) fn batched_fused<T: LinearFloat>(
+#[derive(Clone, Copy)]
+struct BatchParameters {
+    count: usize,
+    m: usize,
+    n: usize,
+    k: usize,
+    matrix_len: usize,
+    len: usize,
+}
+
+fn batch_parameters<T: LinearFloat>(
     lhs: Input<'_, T>,
     rhs: Input<'_, T>,
-    add: Option<Input<'_, T>>,
-    alpha: f64,
-    beta: f64,
+    output_dims: Option<&[usize]>,
     reduce: bool,
-) -> Result<AlignedBuffer<T>> {
+) -> Result<BatchParameters> {
     let rank = lhs.layout.dims().len();
     if rank < 2 || rhs.layout.dims().len() != rank {
         return Err(Error::MatmulShapeMismatch {
@@ -592,21 +642,25 @@ pub(crate) fn batched_fused<T: LinearFloat>(
             rhs: rhs.layout.dims().to_vec(),
         });
     }
-    let count = crate::Shape::from(batch_dims.to_vec()).checked_elem_count()?;
+    let count = batch_dims
+        .iter()
+        .try_fold(1usize, |count, &dim| count.checked_mul(dim))
+        .ok_or(Error::ShapeElementCountOverflow)?;
     let matrix_len = m.checked_mul(n).ok_or(Error::StorageOutOfBounds)?;
-    let mut expected = if reduce {
-        Vec::new()
-    } else {
-        batch_dims.to_vec()
-    };
-    expected.extend_from_slice(&[m, n]);
-    if let Some(add) = add
-        && add.layout.dims() != expected
-    {
-        return Err(Error::ShapeMismatchBinary {
-            lhs: add.layout.dims().to_vec(),
-            rhs: expected,
-        });
+    if let Some(dims) = output_dims {
+        let expected_rank = if reduce { 2 } else { rank };
+        let expected_batch = if reduce { &[][..] } else { batch_dims };
+        if dims.len() != expected_rank
+            || dims[..expected_rank - 2] != *expected_batch
+            || dims[expected_rank - 2..] != [m, n]
+        {
+            let mut expected = expected_batch.to_vec();
+            expected.extend_from_slice(&[m, n]);
+            return Err(Error::ShapeMismatchBinary {
+                lhs: dims.to_vec(),
+                rhs: expected,
+            });
+        }
     }
     let len = if reduce {
         matrix_len
@@ -615,15 +669,75 @@ pub(crate) fn batched_fused<T: LinearFloat>(
             .checked_mul(matrix_len)
             .ok_or(Error::StorageOutOfBounds)?
     };
-    let mut output = seed(add, len, beta)?;
+    Ok(BatchParameters {
+        count,
+        m,
+        n,
+        k,
+        matrix_len,
+        len,
+    })
+}
+
+pub(crate) fn batched_fused<T: LinearFloat>(
+    lhs: Input<'_, T>,
+    rhs: Input<'_, T>,
+    add: Option<Input<'_, T>>,
+    alpha: f64,
+    beta: f64,
+    reduce: bool,
+) -> Result<AlignedBuffer<T>> {
+    let parameters = batch_parameters(lhs, rhs, add.map(|input| input.layout.dims()), reduce)?;
+    let mut output = seed(add, parameters.len, beta)?;
+    batched_accumulate(output.as_mut_slice(), lhs, rhs, alpha, reduce, parameters)?;
+    Ok(output)
+}
+
+/// Validates all dimensions before changing the exclusive output. Inputs are
+/// borrowed; neither packing nor an intermediate output allocation is needed.
+pub(crate) fn batched_into<T: LinearFloat>(
+    output: &mut [T],
+    dims: &[usize],
+    lhs: Input<'_, T>,
+    rhs: Input<'_, T>,
+    alpha: f64,
+    beta: f64,
+    reduce: bool,
+) -> Result<()> {
+    let parameters = batch_parameters(lhs, rhs, Some(dims), reduce)?;
+    if output.len() != parameters.len {
+        return Err(Error::StorageOutOfBounds);
+    }
+    scale(output, beta);
+    batched_accumulate(output, lhs, rhs, alpha, reduce, parameters)
+}
+
+fn batched_accumulate<T: LinearFloat>(
+    output: &mut [T],
+    lhs: Input<'_, T>,
+    rhs: Input<'_, T>,
+    alpha: f64,
+    reduce: bool,
+    parameters: BatchParameters,
+) -> Result<()> {
+    let BatchParameters {
+        count,
+        m,
+        n,
+        k,
+        matrix_len,
+        ..
+    } = parameters;
+    let rank = lhs.layout.dims().len();
+    let batch_dims = &lhs.layout.dims()[..rank - 2];
     let alpha = T::from_f64(alpha);
     if count == 0 || m == 0 || n == 0 || k == 0 || alpha == T::from_f64(0.0) {
-        return Ok(output);
+        return Ok(());
     }
     if let Some(batch) = StridedBatch::new(lhs, rhs, count, reduce)
-        && T::strided_product(&batch, output.as_mut_slice(), alpha)
+        && T::strided_product(&batch, output, alpha)
     {
-        return Ok(output);
+        return Ok(());
     }
     let lhs_batch = Layout::new(
         batch_dims.to_vec().into(),
@@ -655,11 +769,11 @@ pub(crate) fn batched_fused<T: LinearFloat>(
         let start = if reduce { 0 } else { batch * matrix_len };
         multiply(
             &Product { lhs, rhs, m, n, k },
-            &mut output.as_mut_slice()[start..start + matrix_len],
+            &mut output[start..start + matrix_len],
             alpha,
         )?;
     }
-    Ok(output)
+    Ok(())
 }
 
 #[cfg(feature = "blas")]
@@ -722,9 +836,9 @@ macro_rules! impl_float {
                     let c = output.as_mut_ptr();
                     // SAFETY: Input::new checked the complete input spans.
                     // StridedBatch checked constant batch offsets; the caller
-                    // allocated the exact, non-empty output. All native matrix
+                    // validated the exact, non-empty output. All native matrix
                     // dimensions/increments were checked once above. Inputs
-                    // can alias each other, but never the fresh output. A
+                    // can alias each other, but never the exclusive output. A
                     // reduction deliberately accumulates serially into C.
                     unsafe {
                         if batch.n == 1 {
@@ -1024,7 +1138,7 @@ macro_rules! impl_float {
                     return true;
                 }
                 // SAFETY: checked input spans and shapes, non-zero dimensions,
-                // valid leading dimensions, fresh output, and checked ABI sizes.
+                // valid leading dimensions, exclusive output, and checked ABI sizes.
                 unsafe {
                     $gemm(
                         CBlasLayout::CBlasRowMajor,
@@ -1140,3 +1254,32 @@ impl_float!(
     cblas_dtrsm,
     cblas_dtrsv
 );
+
+#[cfg(test)]
+mod output_bounds_tests {
+    use super::*;
+    use extensions::{RankOptions, RankUpdate, rank_update_into};
+
+    #[test]
+    fn output_span_and_shape_errors_precede_any_writes() {
+        let layout = Layout::contiguous((2, 2));
+        let input = Input::new(&[1.0f64, 2.0, 3.0, 4.0], &layout).unwrap();
+        let options = RankOptions {
+            kind: RankUpdate::Gram,
+            transpose: false,
+            upper: true,
+            alpha: 1.0,
+            beta: 0.0,
+        };
+        let mut short = [7.0; 3];
+        assert!(batched_into(&mut short, &[2, 2], input, input, 1.0, 0.0, false).is_err());
+        assert!(gram_into(&mut short, &[2, 2], input, false).is_err());
+        assert!(rank_update_into(&mut short, &[2, 2], input, None, options).is_err());
+        assert_eq!(short, [7.0; 3]);
+        let mut wrong_shape = [7.0; 4];
+        assert!(batched_into(&mut wrong_shape, &[2, 3], input, input, 1.0, 0.0, false).is_err());
+        assert!(gram_into(&mut wrong_shape, &[2, 3], input, false).is_err());
+        assert!(rank_update_into(&mut wrong_shape, &[2, 3], input, None, options).is_err());
+        assert_eq!(wrong_shape, [7.0; 4]);
+    }
+}

@@ -118,14 +118,14 @@ diagonal ignores stored diagonal values. Otherwise triangular solve reports an
 exactly zero diagonal as `SingularMatrix`. Gram returns a full symmetric matrix.
 BLAS reductions may have different rounding from the default kernels.
 
-Immutable tensors retain their shared-storage semantics. In-place vector
+Immutable tensors retain their shared-storage semantics. In-place
 updates require exclusive contiguous CPU storage and support offset views:
 
 ```rust
 let mut owned = tensor.try_into_exclusive().unwrap();
 owned.axpy(0.5, &x)?; // owned += 0.5 * x; AXPY when available
 owned.scale(2.0)?;   // owned *= 2; SCAL when available
-let tensor = owned.into_tensor(); // no allocation or storage copy
+let tensor = owned.into_tensor(); // reuse storage without copying data
 ```
 
 `axpy` requires exact shape/dtype/device matching. Non-contiguous sources use
@@ -168,6 +168,27 @@ full symmetric tensor. `transpose=true` selects `A^T*A` for Gram and
 Batch operands broadcast their leading dimensions; addends require the exact
 output shape. `addbmm` reduces all leading batch axes, including empty batches,
 without allocating intermediate batch products.
+
+`ExclusiveTensor` also provides `baddbmm`, `addbmm`, `gram_update`, and all three
+`symmetric_rank*_update` methods with the same coefficients and triangle options.
+`owned.gram(&a, transpose)` overwrites the destination with a Gram matrix.
+These methods return `Result<()>` and reuse the existing contiguous F32/F64
+allocation, including offset views. The destination must already have the exact
+result shape; values outside its view are preserved. Shapes, dtypes, and output
+layout are checked before writing. Source tensors may share storage with each
+other; destination aliases prevent `try_into_exclusive` from succeeding.
+
+Compare fresh output allocations with a destination reused across calls:
+
+```bash
+RAYON_NUM_THREADS=1 FLEXIBLAS=OPENBLAS-SERIAL OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  cargo bench -j 12 -p rivet-core --bench exclusive_linalg --features blas \
+  -- --save-baseline exclusive-blas
+```
+
+The benchmark checks results before timing and reports Rust allocations,
+excluding native BLAS workspaces. Omit `--features blas` and use a separate
+baseline name to measure the default kernels.
 
 `TriangularOptions` adds side and transpose controls to
 `triangular_matmul_with_options` and `triangular_solve_with_options`:

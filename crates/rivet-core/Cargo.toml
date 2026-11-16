@@ -47,3 +47,7 @@ harness = false
 [[bench]]
 name = "batch_matmul"
 harness = false
+
+[[bench]]
+name = "exclusive_linalg"
+harness = false

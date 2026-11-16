@@ -84,18 +84,14 @@ fn mirror<T: Copy>(out: &mut [T], n: usize) {
     }
 }
 
-pub(crate) fn rank_update<T: ExtendedFloat>(
-    c: Input<'_, T>,
+fn rank_dimensions<T: ExtendedFloat>(
+    dims: &[usize],
     a: Input<'_, T>,
     b: Option<Input<'_, T>>,
     options: RankOptions,
-) -> Result<AlignedBuffer<T>> {
+) -> Result<(usize, usize, usize)> {
     let RankOptions {
-        kind,
-        transpose,
-        upper,
-        alpha,
-        beta,
+        kind, transpose, ..
     } = options;
     let (n, k) = match kind {
         RankUpdate::One | RankUpdate::Two => {
@@ -131,19 +127,33 @@ pub(crate) fn rank_update<T: ExtendedFloat>(
             }
         }
     };
-    if c.layout.dims() != [n, n] {
-        return Err(mismatch(c, &[n, n]));
+    if dims != [n, n] {
+        return Err(Error::ShapeMismatchBinary {
+            lhs: dims.to_vec(),
+            rhs: vec![n, n],
+        });
     }
-    let beta = T::from_f64(beta);
-    let alpha = T::from_f64(alpha);
     let len = n.checked_mul(n).ok_or(Error::StorageOutOfBounds)?;
-    let mut out = seed(None, len, 0.0)?;
+    Ok((n, k, len))
+}
+
+pub(crate) fn rank_update<T: ExtendedFloat>(
+    c: Input<'_, T>,
+    a: Input<'_, T>,
+    b: Option<Input<'_, T>>,
+    options: RankOptions,
+) -> Result<AlignedBuffer<T>> {
+    let (n, k, len) = rank_dimensions(c.layout.dims(), a, b, options)?;
+    let mut output = seed(None, len, 0.0)?;
+    let out = output.as_mut_slice();
+    let beta = T::from_f64(options.beta);
+    let upper = options.upper;
     // Read only the caller's chosen triangle, including when the other half
     // contains NaNs. beta=0 ignores all seed values.
     if beta != T::from_f64(0.0) {
         for row in 0..n {
             for col in row..n {
-                out.as_mut_slice()[row * n + col] = beta
+                out[row * n + col] = beta
                     * if upper {
                         c.read(row, col)
                     } else {
@@ -152,14 +162,67 @@ pub(crate) fn rank_update<T: ExtendedFloat>(
             }
         }
     }
-    mirror(out.as_mut_slice(), n);
+    mirror(out, n);
+    rank_accumulate(out, a, b, options, n, k)?;
+    Ok(output)
+}
+
+pub(crate) fn rank_update_into<T: ExtendedFloat>(
+    out: &mut [T],
+    dims: &[usize],
+    a: Input<'_, T>,
+    b: Option<Input<'_, T>>,
+    options: RankOptions,
+) -> Result<()> {
+    let (n, k, len) = rank_dimensions(dims, a, b, options)?;
+    if out.len() != len {
+        return Err(Error::StorageOutOfBounds);
+    }
+    let beta = T::from_f64(options.beta);
+    let upper = options.upper;
+    if beta == T::from_f64(0.0) {
+        out.fill(T::from_f64(0.0));
+    }
+    // Read only the caller's chosen triangle, including when the other half
+    // contains NaNs. beta=0 ignores all seed values.
+    if beta != T::from_f64(0.0) {
+        for row in 0..n {
+            for col in row..n {
+                out[row * n + col] = beta
+                    * if upper {
+                        out[row * n + col]
+                    } else {
+                        out[col * n + row]
+                    };
+            }
+        }
+    }
+    mirror(out, n);
+    rank_accumulate(out, a, b, options, n, k)
+}
+
+fn rank_accumulate<T: ExtendedFloat>(
+    out: &mut [T],
+    a: Input<'_, T>,
+    b: Option<Input<'_, T>>,
+    options: RankOptions,
+    n: usize,
+    k: usize,
+) -> Result<()> {
+    let RankOptions {
+        kind,
+        transpose,
+        alpha,
+        ..
+    } = options;
+    let alpha = T::from_f64(alpha);
     if n == 0 || k == 0 || alpha == T::from_f64(0.0) {
-        return Ok(out);
+        return Ok(());
     }
     #[cfg(feature = "blas")]
-    if T::native_rank(out.as_mut_slice(), a, b, kind, transpose, alpha) {
-        mirror(out.as_mut_slice(), n);
-        return Ok(out);
+    if T::native_rank(out, a, b, kind, transpose, alpha) {
+        mirror(out, n);
+        return Ok(());
     }
     match kind {
         RankUpdate::One | RankUpdate::Two => {
@@ -175,7 +238,7 @@ pub(crate) fn rank_update<T: ExtendedFloat>(
                         ar * ac
                     };
                     let index = row * n + col;
-                    out.as_mut_slice()[index] = out.as_slice()[index] + alpha * product;
+                    out[index] = out[index] + alpha * product;
                 }
             }
         }
@@ -196,7 +259,7 @@ pub(crate) fn rank_update<T: ExtendedFloat>(
                     n,
                     k,
                 },
-                out.as_mut_slice(),
+                out,
                 alpha,
             )?;
             if matches!(kind, RankUpdate::TwoK) {
@@ -213,14 +276,14 @@ pub(crate) fn rank_update<T: ExtendedFloat>(
                         n,
                         k,
                     },
-                    out.as_mut_slice(),
+                    out,
                     alpha,
                 )?;
             }
         }
     }
-    mirror(out.as_mut_slice(), n);
-    Ok(out)
+    mirror(out, n);
+    Ok(())
 }
 
 fn structured_shape<T: Copy>(

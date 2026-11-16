@@ -113,7 +113,7 @@ impl<'a, T: LinearFloat> StridedBatch<'a, T> {
         for index in 0..self.count {
             // SAFETY: complete input spans were validated before constructing
             // this descriptor. The checked constant strides reproduce logical
-            // batch order. Output is fresh and has the exact checked length.
+            // batch order. Output is exclusive and has the exact checked length.
             unsafe {
                 gemm::gemm(
                     self.m,
