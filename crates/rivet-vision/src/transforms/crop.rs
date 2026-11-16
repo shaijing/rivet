@@ -94,8 +94,10 @@ impl CenterCropConfig {
             )));
         }
 
-        let x = (image_width as u32 - self.width) / 2;
-        let y = (image_height as u32 - self.height) / 2;
+        // Python round uses ties-to-even for half-pixel center offsets.
+        let center_offset = |difference: u32| difference / 2 + (difference % 4 == 3) as u32;
+        let x = center_offset(image_width as u32 - self.width);
+        let y = center_offset(image_height as u32 - self.height);
         CropConfig::new(x, y, self.width, self.height).apply(ImageSample::Decoded(sample), layout)
     }
 }

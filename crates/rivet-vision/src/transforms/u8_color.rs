@@ -75,7 +75,7 @@ impl SolarizeConfig {
         axis_order: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
         map_u8(sample, axis_order, "solarize", |value| {
-            if value > self.threshold {
+            if value >= self.threshold {
                 255 - value
             } else {
                 value
@@ -193,22 +193,21 @@ impl EqualizeConfig {
             for channel in 0..channels {
                 let histogram = &histograms[channel];
                 let total = histogram.iter().sum::<u64>();
-                let cdf_min = histogram
-                    .iter()
-                    .copied()
-                    .find(|&count| count > 0)
-                    .unwrap_or(0);
-                if total == 0 || total == cdf_min {
+                // Pillow / torchvision equalize excludes the highest occupied
+                // bin when computing the integer step. Small histograms with
+                // step zero are identity, rather than stretched to [0, 255].
+                let last = histogram.iter().rposition(|&count| count != 0);
+                let step = last.map_or(0, |last| (total - histogram[last]) / 255);
+                if step == 0 {
                     for value in 0..256 {
                         luts[channel][value] = value as u8;
                     }
                     continue;
                 }
-                let mut cumulative = 0u64;
+                let mut cumulative = step / 2;
                 for value in 0..256 {
+                    luts[channel][value] = (cumulative / step).min(255) as u8;
                     cumulative += histogram[value];
-                    luts[channel][value] = (cumulative.saturating_sub(cdf_min).saturating_mul(255)
-                        / (total - cdf_min)) as u8;
                 }
             }
             Tensor::from_exact_fn::<u8, _, _>(dims.clone(), input.device(), |write| {
@@ -492,8 +491,33 @@ mod tests {
             .unwrap();
         assert_eq!(
             solarized.image.to_vec::<u8>().unwrap(),
-            [0, 1, 2, 100, 154, 153, 1, 0, 127]
+            [0, 1, 2, 155, 154, 153, 1, 0, 127]
         );
+    }
+
+    #[test]
+    fn equalize_uses_integer_step_and_half_step_rounding() {
+        let pixels: Vec<u8> = [10u8, 100, 200]
+            .into_iter()
+            .flat_map(|value| std::iter::repeat_n(value, 256))
+            .collect();
+        let output = EqualizeConfig::new()
+            .apply(
+                ImageSample::Decoded(DecodedSample {
+                    image: Tensor::from_vec(pixels, [1, 768, 1], &Device::Cpu).unwrap(),
+                    label: 4,
+                }),
+                ImageAxisOrder::Hwc,
+            )
+            .unwrap()
+            .into_decoded()
+            .unwrap();
+        let expected: Vec<u8> = [0u8, 128, 255]
+            .into_iter()
+            .flat_map(|value| std::iter::repeat_n(value, 256))
+            .collect();
+        assert_eq!(output.image.to_vec::<u8>().unwrap(), expected);
+        assert_eq!(output.label, 4);
     }
 
     #[test]
@@ -529,7 +553,7 @@ mod tests {
         assert_eq!(equalized.image.dtype(), DType::U8);
         assert_eq!(
             equalized.image.to_vec::<u8>().unwrap(),
-            [0, 255, 0, 255, 0, 255]
+            [0, 10, 20, 30, 40, 50]
         );
 
         let sharp = SharpnessConfig::new(0.0)

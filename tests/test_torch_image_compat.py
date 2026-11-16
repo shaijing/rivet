@@ -132,10 +132,10 @@ def test_crop_flip_and_pad_match_torchvision_exactly(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("channels", [1, 3])
-def test_grayscale_stays_within_known_luma_difference_of_torchvision(
+def test_grayscale_matches_torchvision(
     tmp_path: Path, channels: int
 ) -> None:
-    """Bound the Rec.709 (Rivet) versus torchvision luma-coefficient drift."""
+    """Rust grayscale matches the torchvision PIL uint8 backend exactly."""
     class_dir = tmp_path / "class"
     class_dir.mkdir()
     image_path, _ = _write_test_image(class_dir)
@@ -155,9 +155,7 @@ def test_grayscale_stays_within_known_luma_difference_of_torchvision(
         actual.astype(np.int16),
         expected_array.astype(np.int16),
         rtol=0.0,
-        # Rivet uses Rec.709 coefficients; torchvision/Pillow uses the
-        # traditional RGB luma coefficients. Their theoretical u8 gap is < 34.
-        atol=34,
+        atol=0,
     )
 
 
@@ -166,9 +164,10 @@ def test_grayscale_stays_within_known_luma_difference_of_torchvision(
     [
         ("invert", None, functional.invert),
         ("posterize", 4, functional.posterize),
-        # Avoid an exact-threshold pixel: Pillow and image differ on whether
-        # that value itself is inverted.
         ("solarize", 122, functional.solarize),
+        ("solarize", 0, functional.solarize),
+        ("solarize", 128, functional.solarize),
+        ("solarize", 255, functional.solarize),
         ("autocontrast", None, functional.autocontrast),
         ("equalize", None, functional.equalize),
     ],
@@ -198,8 +197,7 @@ def test_u8_color_operations_match_torchvision(
         actual.astype(np.int16),
         np.asarray(expected, dtype=np.int16),
         rtol=0.0,
-        # Equalize histogram bins round differently in the two backends.
-        atol=9 if name == "equalize" else 0,
+        atol=0,
     )
 
 
@@ -328,3 +326,33 @@ def test_identity_parameterizations_match_torchvision_identity(
     actual = _rivet_image(class_dir.parent, build(pipeline))  # type: ignore[operator]
 
     np.testing.assert_array_equal(actual, pixels)
+
+
+@pytest.mark.parametrize("size", [(8, 10), (6, 8), (10, 12)])
+def test_center_crop_half_pixel_rounding_matches_torchvision(tmp_path, size):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    path, _ = _write_test_image(class_dir)
+    height, width = size
+    actual = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path).decode_image().center_crop(width, height),
+    )
+    expected = functional.center_crop(Image.open(path).convert("RGB"), size)
+    np.testing.assert_array_equal(actual, np.asarray(expected))
+
+
+@pytest.mark.parametrize("shape", [(7, 9), (32, 32), (67, 71)])
+@pytest.mark.parametrize("kind", ["random", "constant", "sparse"])
+def test_equalize_histograms_match_torchvision(tmp_path, shape, kind):
+    pixels = np.random.default_rng(19).integers(0, 256, (*shape, 3), dtype=np.uint8)
+    if kind == "constant":
+        pixels[:] = [17, 90, 255]
+    elif kind == "sparse":
+        pixels = (pixels % 3 * 100).astype(np.uint8)
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    image = Image.fromarray(pixels)
+    image.save(class_dir / "sample.png")
+    actual = _rivet_image(tmp_path, rivet.scan_image_folder(tmp_path).decode_image().equalize())
+    np.testing.assert_array_equal(actual, np.asarray(functional.equalize(image)))

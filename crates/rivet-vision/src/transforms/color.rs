@@ -1,8 +1,7 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{ImageAxisOrder, ImageSample};
 use crate::transforms::{from_rgb_image, into_rgb_image};
-use image::Rgb;
-use image::imageops::{brighten, contrast, grayscale, grayscale_with_type, huerotate};
+use image::imageops::{brighten, contrast, huerotate};
 use rivet_core::{DType, Device, Tensor};
 use rivet_data::random::RandomStream;
 
@@ -145,15 +144,31 @@ impl GrayscaleConfig {
             },
             "grayscale",
         )?;
-        let output = if self.num_output_channels == 1 {
-            let gray = grayscale(&image);
-            crate::sample::image::DecodedSample {
-                image: Tensor::from_vec(gray.into_raw(), [height, width, 1], &Device::Cpu)?,
-                label,
-            }
-        } else {
-            let rgb = grayscale_with_type::<Rgb<u8>, _>(&image);
-            from_rgb_image(rgb, label)?
+        // Match torchvision's PIL uint8 backend (Pillow RGB -> L):
+        // BT.601 fixed-point coefficients and round-to-nearest, not Rec.709.
+        // Write directly into the final aligned allocation.
+        let output_channels = usize::from(self.num_output_channels);
+        let output = crate::sample::image::DecodedSample {
+            image: Tensor::from_exact_writer::<u8, _, _>(
+                [height, width, output_channels],
+                &Device::Cpu,
+                |write| {
+                    for rgb in image.as_raw().chunks_exact(3) {
+                        let luma = ((19595 * u32::from(rgb[0])
+                            + 38470 * u32::from(rgb[1])
+                            + 7471 * u32::from(rgb[2])
+                            + 32768)
+                            >> 16) as u8;
+                        write.write_next(luma)?;
+                        if output_channels == 3 {
+                            write.write_next(luma)?;
+                            write.write_next(luma)?;
+                        }
+                    }
+                    Ok(())
+                },
+            )?,
+            label,
         };
         let output = if axis_order == ImageAxisOrder::Hwc {
             output
@@ -348,7 +363,7 @@ mod tests {
             .into_decoded()
             .unwrap();
         assert_eq!(hwc.image.dims(), [1, 2, 1]);
-        assert_eq!(hwc.image.to_vec::<u8>().unwrap(), [54, 182]);
+        assert_eq!(hwc.image.to_vec::<u8>().unwrap(), [76, 150]);
 
         let chw_input =
             Tensor::from_vec(vec![255u8, 0, 0, 255, 0, 0], [3, 1, 2], &Device::Cpu).unwrap();
@@ -366,7 +381,7 @@ mod tests {
         assert_eq!(chw.image.dims(), [3, 1, 2]);
         assert_eq!(
             chw.image.to_vec::<u8>().unwrap(),
-            [54, 182, 54, 182, 54, 182]
+            [76, 150, 76, 150, 76, 150]
         );
     }
 
