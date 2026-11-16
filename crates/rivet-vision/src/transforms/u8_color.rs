@@ -1,7 +1,6 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
-use crate::transforms::{from_rgb_image, into_rgb_image, logical_offset};
-use image::imageops::invert;
+use crate::transforms::{contiguous_values, logical_offset};
 use rivet_core::{CpuStorageRef, DType, Tensor};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -17,16 +16,7 @@ impl InvertConfig {
         sample: ImageSample,
         axis_order: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
-        let sample = require_u8_image(sample, "invert")?;
-        if image_dims(sample.image.dims(), axis_order)?.2 == 3 {
-            return Ok(ImageSample::Decoded(invert_rgb(sample, axis_order)?));
-        }
-        map_u8(
-            ImageSample::Decoded(sample),
-            axis_order,
-            "invert",
-            |value| 255 - value,
-        )
+        map_u8(sample, axis_order, "invert", |value| 255 - value)
     }
 }
 
@@ -112,6 +102,29 @@ impl AutocontrastConfig {
                     actual: input.dtype(),
                 });
             };
+            if axis_order == ImageAxisOrder::Hwc && channels == 3 && layout.is_contiguous() {
+                let pixels = contiguous_values(values, layout)?;
+                let mut min = [255u8; 3];
+                let mut max = [0u8; 3];
+                for rgb in pixels.chunks_exact(3) {
+                    for c in 0..3 {
+                        min[c] = min[c].min(rgb[c]);
+                        max[c] = max[c].max(rgb[c]);
+                    }
+                }
+                let luts = std::array::from_fn(|c| {
+                    std::array::from_fn(|v| {
+                        if min[c] >= max[c] {
+                            v as u8
+                        } else {
+                            ((v.saturating_sub(min[c] as usize) * 255)
+                                / usize::from(max[c] - min[c]))
+                            .min(255) as u8
+                        }
+                    })
+                });
+                return map_rgb_luts(pixels, &dims, input.device(), &luts);
+            }
             let read = |coords: [usize; 3]| {
                 values
                     .get(logical_offset(layout, &coords)?)
@@ -178,6 +191,17 @@ impl EqualizeConfig {
                     actual: input.dtype(),
                 });
             };
+            if axis_order == ImageAxisOrder::Hwc && channels == 3 && layout.is_contiguous() {
+                let pixels = contiguous_values(values, layout)?;
+                let mut histograms = [[0u64; 256]; 3];
+                for rgb in pixels.chunks_exact(3) {
+                    histograms[0][rgb[0] as usize] += 1;
+                    histograms[1][rgb[1] as usize] += 1;
+                    histograms[2][rgb[2] as usize] += 1;
+                }
+                let luts = histograms.map(|histogram| equalize_lut(&histogram));
+                return map_rgb_luts(pixels, &dims, input.device(), &luts);
+            }
             let read = |coords: [usize; 3]| {
                 values
                     .get(logical_offset(layout, &coords)?)
@@ -195,24 +219,7 @@ impl EqualizeConfig {
             }
             let mut luts = vec![[0u8; 256]; channels];
             for channel in 0..channels {
-                let histogram = &histograms[channel];
-                let total = histogram.iter().sum::<u64>();
-                // Pillow / torchvision equalize excludes the highest occupied
-                // bin when computing the integer step. Small histograms with
-                // step zero are identity, rather than stretched to [0, 255].
-                let last = histogram.iter().rposition(|&count| count != 0);
-                let step = last.map_or(0, |last| (total - histogram[last]) / 255);
-                if step == 0 {
-                    for value in 0..256 {
-                        luts[channel][value] = value as u8;
-                    }
-                    continue;
-                }
-                let mut cumulative = step / 2;
-                for value in 0..256 {
-                    luts[channel][value] = (cumulative / step).min(255) as u8;
-                    cumulative += histogram[value];
-                }
+                luts[channel] = equalize_lut(&histograms[channel]);
             }
             Tensor::from_exact_fn::<u8, _, _>(dims.clone(), input.device(), |write| {
                 append_mapped_pixels(
@@ -271,6 +278,15 @@ impl SharpnessConfig {
                     actual: input.dtype(),
                 });
             };
+            if axis_order == ImageAxisOrder::Hwc && channels == 3 && layout.is_contiguous() {
+                return sharpness_rgb(
+                    contiguous_values(values, layout)?,
+                    width,
+                    height,
+                    self.amount,
+                    input.device(),
+                );
+            }
             let read = |channel: usize, y: usize, x: usize| {
                 values
                     .get(logical_offset(
@@ -327,6 +343,81 @@ impl SharpnessConfig {
     }
 }
 
+fn map_rgb_luts(
+    pixels: &[u8],
+    shape: &[usize],
+    device: &rivet_core::Device,
+    luts: &[[u8; 256]; 3],
+) -> rivet_core::Result<Tensor> {
+    Tensor::from_exact_writer::<u8, _, _>(shape, device, |out| {
+        for rgb in pixels.chunks_exact(3) {
+            out.write_next(luts[0][rgb[0] as usize])?;
+            out.write_next(luts[1][rgb[1] as usize])?;
+            out.write_next(luts[2][rgb[2] as usize])?;
+        }
+        Ok(())
+    })
+}
+
+fn equalize_lut(histogram: &[u64; 256]) -> [u8; 256] {
+    let total = histogram.iter().sum::<u64>();
+    let last = histogram.iter().rposition(|&count| count != 0);
+    let step = last.map_or(0, |last| (total - histogram[last]) / 255);
+    if step == 0 {
+        return std::array::from_fn(|v| v as u8);
+    }
+    let mut cumulative = step / 2;
+    std::array::from_fn(|v| {
+        let output = (cumulative / step).min(255) as u8;
+        cumulative += histogram[v];
+        output
+    })
+}
+
+fn sharpness_rgb(
+    pixels: &[u8],
+    width: usize,
+    height: usize,
+    amount: f32,
+    device: &rivet_core::Device,
+) -> rivet_core::Result<Tensor> {
+    let shape = [height, width, 3];
+    if width < 3 || height < 3 || amount == 1.0 {
+        return Tensor::from_exact_iter(pixels.iter().copied(), shape, device);
+    }
+    let stride = width * 3;
+    Tensor::from_exact_writer::<u8, _, _>(shape, device, |out| {
+        out.extend_from_slice(&pixels[..stride])?;
+        for y in 1..height - 1 {
+            let top = &pixels[(y - 1) * stride..y * stride];
+            let center = &pixels[y * stride..(y + 1) * stride];
+            let bottom = &pixels[(y + 1) * stride..(y + 2) * stride];
+            out.extend_from_slice(&center[..3])?;
+            let sharpen = |i: usize| {
+                let weighted_row = |row: &[u8], middle: f32| {
+                    f32::from(row[i - 3]) * (1.0f32 / 13.0)
+                        + f32::from(row[i]) * middle
+                        + f32::from(row[i + 3]) * (1.0f32 / 13.0)
+                };
+                // Keep Pillow's row grouping and bottom/center/top order.
+                let mut sum = 0.5f32;
+                sum += weighted_row(bottom, 1.0f32 / 13.0);
+                sum += weighted_row(center, 5.0f32 / 13.0);
+                sum += weighted_row(top, 1.0f32 / 13.0);
+                super::color::blend(sum.clamp(0.0, 255.0) as u8, center[i], amount)
+            };
+            for x in 1..width - 1 {
+                out.write_next(sharpen(x * 3))?;
+                out.write_next(sharpen(x * 3 + 1))?;
+                out.write_next(sharpen(x * 3 + 2))?;
+            }
+            out.extend_from_slice(&center[stride - 3..])?;
+        }
+        out.extend_from_slice(&pixels[(height - 1) * stride..])?;
+        Ok(())
+    })
+}
+
 fn require_u8_image(sample: ImageSample, op_name: &str) -> RivetResult<DecodedSample> {
     let sample = sample.into_decoded()?;
     if sample.image.dtype() != DType::U8 || sample.image.rank() != 3 {
@@ -355,30 +446,6 @@ fn pixel_coords(axis_order: ImageAxisOrder, channel: usize, y: usize, x: usize) 
     match axis_order {
         ImageAxisOrder::Hwc => [y, x, channel],
         ImageAxisOrder::Chw => [channel, y, x],
-    }
-}
-
-fn invert_rgb(sample: DecodedSample, axis_order: ImageAxisOrder) -> RivetResult<DecodedSample> {
-    let image = match axis_order {
-        ImageAxisOrder::Hwc => sample.image,
-        ImageAxisOrder::Chw => sample.image.permute(&[1, 2, 0])?,
-    };
-    let (mut image, label) = into_rgb_image(
-        DecodedSample {
-            image,
-            label: sample.label,
-        },
-        "invert",
-    )?;
-    invert(&mut image);
-    let output = from_rgb_image(image, label)?;
-    if axis_order == ImageAxisOrder::Hwc {
-        Ok(output)
-    } else {
-        Ok(DecodedSample {
-            image: output.image.permute(&[2, 0, 1])?.contiguous()?,
-            label: output.label,
-        })
     }
 }
 
@@ -432,6 +499,13 @@ where
                 actual: sample.image.dtype(),
             });
         };
+        if layout.is_contiguous() {
+            return Tensor::from_exact_iter(
+                contiguous_values(values, layout)?.iter().copied().map(map),
+                dims.clone(),
+                sample.image.device(),
+            );
+        }
         let output = layout.strided_index().map(|index| {
             values
                 .get(index)
@@ -508,6 +582,59 @@ mod tests {
             solarized.image.to_vec::<u8>().unwrap(),
             [0, 1, 2, 155, 154, 153, 1, 0, 127]
         );
+    }
+
+    #[test]
+    fn rgb_fast_paths_match_chw_fallback_with_offsets_and_small_images() {
+        for (h, w) in [(1, 1), (2, 7), (5, 3), (11, 13), (32, 33)] {
+            for pattern in 0..3 {
+                let pixels: Vec<u8> = (0..h * w * 3)
+                    .map(|i| match pattern {
+                        0 => 37,
+                        1 => [0, 127, 255][(i / 7) % 3],
+                        _ => ((i * 17 + i / 31) % 256) as u8,
+                    })
+                    .collect();
+                let mut storage = vec![19u8; pixels.len()];
+                storage.extend_from_slice(&pixels);
+                let image = Tensor::from_vec(storage, [2, h, w, 3], &Device::Cpu)
+                    .unwrap()
+                    .get(1)
+                    .unwrap();
+                let chw = image.permute(&[2, 0, 1]).unwrap();
+                for op in 0..6 {
+                    let apply = |tensor, axis| {
+                        let sample = ImageSample::Decoded(DecodedSample {
+                            image: tensor,
+                            label: 4,
+                        });
+                        match op {
+                            0 => AutocontrastConfig::new().apply(sample, axis),
+                            1 => EqualizeConfig::new().apply(sample, axis),
+                            2 => SharpnessConfig::new(0.0).apply(sample, axis),
+                            3 => SharpnessConfig::new(0.3).apply(sample, axis),
+                            4 => SharpnessConfig::new(1.0).apply(sample, axis),
+                            _ => SharpnessConfig::new(2.0).apply(sample, axis),
+                        }
+                        .unwrap()
+                        .into_decoded()
+                        .unwrap()
+                    };
+                    let actual = apply(image.clone(), ImageAxisOrder::Hwc);
+                    let expected = apply(chw.clone(), ImageAxisOrder::Chw)
+                        .image
+                        .permute(&[1, 2, 0])
+                        .unwrap();
+                    assert_eq!(
+                        actual.image.to_vec::<u8>().unwrap(),
+                        expected.to_vec::<u8>().unwrap(),
+                        "shape={h}x{w} pattern={pattern} op={op}"
+                    );
+                    assert!(!actual.image.same_storage(&image));
+                    assert_eq!(actual.label, 4);
+                }
+            }
+        }
     }
 
     #[test]

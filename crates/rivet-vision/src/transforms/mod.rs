@@ -84,6 +84,59 @@ pub(crate) fn require_u8_hwc(sample: DecodedSample, op_name: &str) -> RivetResul
     Ok(sample)
 }
 
+/// Borrow the active contiguous range, including a sample's storage offset.
+/// Callers retain their strided fallback rather than treating a view as dense.
+pub(crate) fn contiguous_values<'a, T>(
+    values: &'a [T],
+    layout: &Layout,
+) -> rivet_core::Result<&'a [T]> {
+    let end = layout
+        .start_offset()
+        .checked_add(layout.checked_elem_count()?)
+        .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+    values
+        .get(layout.start_offset()..end)
+        .ok_or(rivet_core::Error::StorageOutOfBounds)
+}
+
+/// Native RGB kernels can borrow the input; only strided inputs need packing.
+/// The callback is per image and statically dispatched, never per pixel.
+pub(crate) fn with_rgb_pixels<T>(
+    input: &Tensor,
+    op_name: &str,
+    f: impl FnOnce(&[u8], usize, usize) -> RivetResult<T>,
+) -> RivetResult<T> {
+    let dims = input.dims();
+    if input.dtype() != DType::U8 || dims.len() != 3 || dims[2] != 3 {
+        return Err(invalid_argument(format!(
+            "{op_name} requires uint8 HWC RGB input, got dtype {:?} shape {:?}",
+            input.dtype(),
+            dims
+        )));
+    }
+    let (height, width) = (dims[0], dims[1]);
+    u32::try_from(width)
+        .map_err(|_| invalid_shape(format!("{op_name} image width is too large: {width}")))?;
+    u32::try_from(height)
+        .map_err(|_| invalid_shape(format!("{op_name} image height is too large: {height}")))?;
+    let packed;
+    let input = if input.is_contiguous() {
+        input
+    } else {
+        packed = input.contiguous()?;
+        &packed
+    };
+    input.with_cpu_storage(|storage, layout| {
+        let CpuStorageRef::U8(values) = storage else {
+            return Err(rivet_core::Error::UnexpectedDType {
+                expected: DType::U8,
+                actual: input.dtype(),
+            });
+        };
+        Ok(f(contiguous_values(values, layout)?, width, height))
+    })?
+}
+
 pub(crate) fn into_rgb_image(sample: DecodedSample, op_name: &str) -> RivetResult<(RgbImage, i64)> {
     let sample = require_u8_hwc(sample, op_name)?;
     let label = sample.label;

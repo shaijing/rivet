@@ -1,6 +1,8 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{ImageAxisOrder, ImageSample};
-use crate::transforms::{PaddingMode, from_rgb_image, into_rgb_image, logical_offset};
+use crate::transforms::{
+    PaddingMode, from_rgb_image, into_rgb_image, logical_offset, with_rgb_pixels,
+};
 use image::imageops::replace;
 use image::{Rgb, RgbImage};
 use rivet_core::{CpuStorageRef, DType, Tensor};
@@ -147,14 +149,44 @@ impl PadConfig {
             }));
         }
 
-        // Use the image backend for the common RGB/u8 path. The generic
-        // tensor kernel below remains necessary for float images and for
-        // arbitrary channel counts/layouts.
+        // RGB HWC writes rows directly; retain the image backend for CHW.
+        // Float images and arbitrary channel counts use the generic kernel.
         if input.dtype() == DType::U8 && channels == 3 {
             let output_width = u32::try_from(output_width)
                 .map_err(|_| invalid_shape("pad output width is too large for image backend"))?;
             let output_height = u32::try_from(output_height)
                 .map_err(|_| invalid_shape("pad output height is too large for image backend"))?;
+            if axis_order == ImageAxisOrder::Hwc {
+                let image = with_rgb_pixels(input, "pad", |pixels, width, height| {
+                    let fill = self.value.clamp(0.0, 255.0) as u8;
+                    let block = [fill; 256];
+                    Ok(Tensor::from_exact_writer::<u8, _, _>(
+                        output_dims.clone(),
+                        input.device(),
+                        |out| {
+                            let fill = |out: &mut rivet_core::ExactOutput<u8>, mut count: usize| {
+                                while count >= block.len() {
+                                    out.extend_from_slice(&block)?;
+                                    count -= block.len();
+                                }
+                                out.extend_from_slice(&block[..count])
+                            };
+                            fill(out, self.top as usize * output_width as usize * 3)?;
+                            for y in 0..height {
+                                fill(out, self.left as usize * 3)?;
+                                out.extend_from_slice(&pixels[y * width * 3..(y + 1) * width * 3])?;
+                                fill(out, self.right as usize * 3)?;
+                            }
+                            fill(out, self.bottom as usize * output_width as usize * 3)?;
+                            Ok(())
+                        },
+                    )?)
+                })?;
+                return Ok(ImageSample::Decoded(crate::sample::image::DecodedSample {
+                    image,
+                    label: sample.label,
+                }));
+            }
             let image = match axis_order {
                 ImageAxisOrder::Hwc => input.clone(),
                 ImageAxisOrder::Chw => input.permute(&[1, 2, 0])?,
@@ -435,6 +467,59 @@ mod tests {
     use super::PadConfig;
     use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
     use rivet_core::{Device, Tensor};
+
+    #[test]
+    fn direct_rgb_padding_matches_backend_with_views_and_fractional_fill() {
+        let base = Tensor::from_vec(
+            (0..2 * 5 * 7 * 3).map(|v| v as u8).collect::<Vec<_>>(),
+            [2, 5, 7, 3],
+            &Device::Cpu,
+        )
+        .unwrap()
+        .get(1)
+        .unwrap();
+        for image in [
+            base.clone(),
+            base.permute(&[1, 0, 2]).unwrap(),
+            base.narrow(0, 1, 3).unwrap().narrow(1, 2, 4).unwrap(),
+        ] {
+            for fill in [-1.0, 37.75, 1000.0] {
+                let config = PadConfig::with_sides(1, 2, 3, 4).with_fill(fill);
+                let actual = config
+                    .apply(
+                        ImageSample::Decoded(DecodedSample {
+                            image: image.clone(),
+                            label: 7,
+                        }),
+                        ImageAxisOrder::Hwc,
+                    )
+                    .unwrap()
+                    .into_decoded()
+                    .unwrap();
+                let chw = image.permute(&[2, 0, 1]).unwrap();
+                let expected = config
+                    .apply(
+                        ImageSample::Decoded(DecodedSample {
+                            image: chw,
+                            label: 7,
+                        }),
+                        ImageAxisOrder::Chw,
+                    )
+                    .unwrap()
+                    .into_decoded()
+                    .unwrap()
+                    .image
+                    .permute(&[1, 2, 0])
+                    .unwrap();
+                assert_eq!(
+                    actual.image.to_vec::<u8>().unwrap(),
+                    expected.to_vec::<u8>().unwrap()
+                );
+                assert!(!actual.image.same_storage(&image));
+                assert_eq!(actual.label, 7);
+            }
+        }
+    }
 
     #[test]
     fn constant_pad_preserves_layout_semantics_and_copies() {

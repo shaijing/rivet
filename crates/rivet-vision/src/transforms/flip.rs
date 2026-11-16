@@ -1,6 +1,6 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
-use crate::transforms::{from_rgb_image, into_rgb_image};
+use crate::transforms::{from_rgb_image, into_rgb_image, with_rgb_pixels};
 use image::imageops::{flip_horizontal, flip_vertical};
 use rivet_core::{CpuStorageRef, DType, Tensor};
 use rivet_data::random::RandomStream;
@@ -110,9 +110,41 @@ fn flip_decoded(
         )));
     }
 
-    // `image` has optimized implementations for the common RGB path. Keep
-    // the generic tensor kernel below for non-RGB tensors, which are still a
-    // supported part of this transform's public contract.
+    if channels == 3 && axis_order == ImageAxisOrder::Hwc {
+        let image = with_rgb_pixels(&sample.image, op_name, |pixels, width, height| {
+            Ok(Tensor::from_exact_writer::<u8, _, _>(
+                [height, width, 3],
+                sample.image.device(),
+                |out| {
+                    match direction {
+                        FlipDirection::Horizontal => {
+                            for row in pixels.chunks_exact(width * 3) {
+                                for rgb in row.rchunks_exact(3) {
+                                    out.write_next(rgb[0])?;
+                                    out.write_next(rgb[1])?;
+                                    out.write_next(rgb[2])?;
+                                }
+                            }
+                        }
+                        FlipDirection::Vertical => {
+                            for row in pixels.rchunks_exact(width * 3) {
+                                out.extend_from_slice(row)?;
+                            }
+                        }
+                    }
+                    Ok(())
+                },
+            )?)
+        })?;
+        return Ok(DecodedSample {
+            image,
+            label: sample.label,
+        });
+    }
+
+    // Retain the image backend for RGB CHW input and the generic tensor
+    // kernel below for non-RGB images. The HWC RGB path above writes directly
+    // into the final allocation.
     if channels == 3 {
         let image = match axis_order {
             ImageAxisOrder::Hwc => sample.image,
@@ -248,6 +280,55 @@ mod tests {
             .apply(Decoded(asymmetric_image()), &mut rng)
             .unwrap();
         raw_pixels(out)
+    }
+
+    #[test]
+    fn direct_rgb_flips_match_chw_backend_for_offset_and_strided_views() {
+        let base = Tensor::from_vec(
+            (0..2 * 5 * 7 * 3).map(|v| v as u8).collect::<Vec<_>>(),
+            [2, 5, 7, 3],
+            &Device::Cpu,
+        )
+        .unwrap()
+        .get(1)
+        .unwrap();
+        for image in [
+            base.clone(),
+            base.permute(&[1, 0, 2]).unwrap(),
+            base.narrow(0, 1, 3).unwrap().narrow(1, 2, 4).unwrap(),
+        ] {
+            for config in [FlipConfig::horizontal(), FlipConfig::vertical()] {
+                let actual = config
+                    .apply(ImageSample::Decoded(DecodedSample {
+                        image: image.clone(),
+                        label: 7,
+                    }))
+                    .unwrap()
+                    .into_decoded()
+                    .unwrap();
+                let chw = image.permute(&[2, 0, 1]).unwrap();
+                let expected = config
+                    .apply_with_axis_order(
+                        ImageSample::Decoded(DecodedSample {
+                            image: chw,
+                            label: 7,
+                        }),
+                        ImageAxisOrder::Chw,
+                    )
+                    .unwrap()
+                    .into_decoded()
+                    .unwrap()
+                    .image
+                    .permute(&[1, 2, 0])
+                    .unwrap();
+                assert_eq!(
+                    actual.image.to_vec::<u8>().unwrap(),
+                    expected.to_vec::<u8>().unwrap()
+                );
+                assert!(!actual.image.same_storage(&image));
+                assert_eq!(actual.label, 7);
+            }
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use crate::errors::{RivetResult, invalid_argument};
 use crate::sample::image::ImageSample;
-use crate::transforms::into_rgb_image;
+use crate::transforms::with_rgb_pixels;
 use std::str::FromStr;
 
 /// Interpolation policy owned by Rivet rather than the image backend.
@@ -60,10 +60,19 @@ impl ResizeConfig {
 
     pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
         let sample = sample.into_decoded()?;
-        let (image, label) = into_rgb_image(sample, "resize")?;
+        let image = with_rgb_pixels(&sample.image, "resize", |pixels, width, height| {
+            resize_rgb(
+                pixels,
+                width,
+                height,
+                self.width,
+                self.height,
+                self.interpolation,
+            )
+        })?;
         Ok(ImageSample::Decoded(crate::sample::image::DecodedSample {
-            image: resize_rgb(&image, self.width, self.height, self.interpolation)?,
-            label,
+            image,
+            label: sample.label,
         }))
     }
 }
@@ -132,7 +141,9 @@ fn coefficients(input: usize, output: usize, mode: InterpolationMode) -> Vec<Coe
 }
 
 pub(crate) fn resize_rgb(
-    image: &image::RgbImage,
+    source: &[u8],
+    iw: usize,
+    ih: usize,
     width: u32,
     height: u32,
     mode: InterpolationMode,
@@ -143,12 +154,10 @@ pub(crate) fn resize_rgb(
             "resize width and height must be greater than 0",
         ));
     }
-    let (iw, ih) = (image.width() as usize, image.height() as usize);
     let (ow, oh) = (width as usize, height as usize);
     if iw == 0 || ih == 0 {
         return Err(invalid_argument("resize requires a non-empty input image"));
     }
-    let source = image.as_raw();
     if mode == InterpolationMode::Nearest {
         // Pillow's affine nearest path increments coordinates instead of
         // multiplying for each pixel (observable at exact half-pixel ties).

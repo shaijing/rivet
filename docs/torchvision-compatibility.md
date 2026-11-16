@@ -120,8 +120,13 @@ cargo test -j 12 -p rivet-vision --lib --no-default-features
 Use the CIFAR release benchmark in `AGENTS.md` to check the common decoded
 pipeline; this throughput check does not benchmark every augmentation kernel.
 
-The completed validation run passed 216 Rust library tests and the full Python
+The initial compatibility validation passed 216 Rust library tests and the full Python
 suite (220 tests plus 28 subtests). Five complete release CIFAR runs during this
 change measured `737277`, `714489`, `735307`, `730894` and `740055 img/s`:
 mean `731604 img/s`, versus the same-environment reference mean `731303 img/s`
 (approximately +0.04%). No meaningful common-pipeline regression was observed.
+
+
+Subsequent semantics-preserving fast paths and their current validation and
+throughput measurements are documented in
+[compatible transform performance](perf/torchvision-compatible-transforms.md).

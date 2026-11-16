@@ -38,6 +38,10 @@ num_cpus = "1.17"
 name = "phase3_fusions"
 harness = false
 
+[[bench]]
+name = "transforms"
+harness = false
+
 [[example]]
 name = "lance"
 required-features = ["lance"]

@@ -1,8 +1,7 @@
 use crate::errors::{RivetResult, invalid_shape};
 use crate::sample::image::{ImageAxisOrder, ImageSample};
-use crate::transforms::{from_rgb_image, into_rgb_image};
-use image::imageops::crop_imm;
-use image::{Rgb, RgbImage};
+use crate::transforms::with_rgb_pixels;
+use rivet_core::{ExactOutput, Tensor};
 use rivet_data::random::RandomStream;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,52 +155,75 @@ impl RandomCropConfig {
                 "random_crop currently requires uint8 HWC input",
             ));
         }
-        let (image, label) = into_rgb_image(sample, "random_crop")?;
-        let (width, height) = image.dimensions();
-
-        let pad = u64::from(self.padding);
-        let padded_width = u64::from(width) + 2 * pad;
-        let padded_height = u64::from(height) + 2 * pad;
-        let (padded_width, padded_height) =
-            match (u32::try_from(padded_width), u32::try_from(padded_height)) {
-                (Ok(width), Ok(height)) => (width, height),
-                _ => {
-                    return Err(invalid_shape(format!(
-                        "random_crop padding {} makes image {}x{} too large",
-                        self.padding, width, height
-                    )));
-                }
-            };
-        let (crop_width, crop_height) = (u64::from(self.width), u64::from(self.height));
-        if crop_width > u64::from(padded_width) || crop_height > u64::from(padded_height) {
-            return Err(invalid_shape(format!(
-                "random_crop size {}x{} exceeds padded image {}x{}",
-                self.width, self.height, padded_width, padded_height
-            )));
-        }
-
-        let x_count = u64::from(padded_width) - crop_width + 1;
-        let y_count = u64::from(padded_height) - crop_height + 1;
-        let y = rng.gen_range_usize(0..y_count as usize)? as u32;
-        let x = rng.gen_range_usize(0..x_count as usize)? as u32;
-
-        let mut padded = RgbImage::from_pixel(padded_width, padded_height, Rgb([0, 0, 0]));
-        // Both images are tightly packed RGB buffers. Copy each source row
-        // directly instead of going through the generic per-pixel backend.
-        let source = image.as_raw();
-        let dest = padded.as_mut();
-        let source_row = width as usize * 3;
-        let dest_row = padded_width as usize * 3;
-        let offset = self.padding as usize;
-        for row in 0..height as usize {
-            let start = (offset + row) * dest_row + offset * 3;
-            dest[start..start + source_row]
-                .copy_from_slice(&source[row * source_row..(row + 1) * source_row]);
-        }
-
-        let cropped = crop_imm(&padded, x, y, self.width, self.height).to_image();
-        Ok(ImageSample::Decoded(from_rgb_image(cropped, label)?))
+        let image = with_rgb_pixels(&sample.image, "random_crop", |source, width, height| {
+            let pad = u64::from(self.padding);
+            let padded_width = width as u64 + 2 * pad;
+            let padded_height = height as u64 + 2 * pad;
+            let (padded_width, padded_height) =
+                match (u32::try_from(padded_width), u32::try_from(padded_height)) {
+                    (Ok(width), Ok(height)) => (width, height),
+                    _ => {
+                        return Err(invalid_shape(format!(
+                            "random_crop padding {} makes image {}x{} too large",
+                            self.padding, width, height
+                        )));
+                    }
+                };
+            if self.width > padded_width || self.height > padded_height {
+                return Err(invalid_shape(format!(
+                    "random_crop size {}x{} exceeds padded image {}x{}",
+                    self.width, self.height, padded_width, padded_height
+                )));
+            }
+            // Keep both draws, in y/x order, even for a single possible window.
+            let y = rng.gen_range_usize(
+                0..(u64::from(padded_height) - u64::from(self.height) + 1) as usize,
+            )?;
+            let x = rng.gen_range_usize(
+                0..(u64::from(padded_width) - u64::from(self.width) + 1) as usize,
+            )?;
+            let (out_width, out_height, pad) = (
+                self.width as usize,
+                self.height as usize,
+                self.padding as usize,
+            );
+            let left = pad.saturating_sub(x).min(out_width);
+            let source_x = x.saturating_sub(pad);
+            let copy_width = width.saturating_sub(source_x).min(out_width - left);
+            Ok(Tensor::from_exact_writer::<u8, _, _>(
+                [out_height, out_width, 3],
+                sample.image.device(),
+                |out| {
+                    for row in 0..out_height {
+                        let source_y = y + row;
+                        if source_y < pad || source_y - pad >= height || copy_width == 0 {
+                            write_zeros(out, out_width * 3)?;
+                        } else {
+                            write_zeros(out, left * 3)?;
+                            let start = ((source_y - pad) * width + source_x) * 3;
+                            out.extend_from_slice(&source[start..start + copy_width * 3])?;
+                            write_zeros(out, (out_width - left - copy_width) * 3)?;
+                        }
+                    }
+                    Ok(())
+                },
+            )?)
+        })?;
+        Ok(ImageSample::Decoded(crate::sample::image::DecodedSample {
+            image,
+            label: sample.label,
+        }))
     }
+}
+
+#[inline]
+fn write_zeros(out: &mut ExactOutput<u8>, mut count: usize) -> rivet_core::Result<()> {
+    const ZEROS: [u8; 256] = [0; 256];
+    while count >= ZEROS.len() {
+        out.extend_from_slice(&ZEROS)?;
+        count -= ZEROS.len();
+    }
+    out.extend_from_slice(&ZEROS[..count])
 }
 
 #[cfg(test)]
@@ -232,6 +254,69 @@ mod tests {
             .into_decoded()
             .unwrap();
         out.image.to_vec::<u8>().unwrap()
+    }
+
+    #[test]
+    fn direct_random_crop_matches_padded_backend_for_views_and_rng() {
+        use crate::transforms::into_rgb_image;
+        use image::{Rgb, RgbImage};
+        let base = Tensor::from_vec(
+            (0..2 * 5 * 7 * 3).map(|v| v as u8).collect::<Vec<_>>(),
+            [2, 5, 7, 3],
+            &Device::Cpu,
+        )
+        .unwrap();
+        let image = base.get(1).unwrap();
+        let views = [
+            image.clone(),
+            image.permute(&[1, 0, 2]).unwrap(),
+            image.narrow(0, 1, 3).unwrap().narrow(1, 2, 4).unwrap(),
+        ];
+        for view in views {
+            for pad in [0, 1, 4, 9] {
+                let width = view.dims()[1] as u32;
+                let height = view.dims()[0] as u32;
+                for (cw, ch) in [(1, 1), (width, height), (width + 2 * pad, height + 2 * pad)] {
+                    for seed in 0..20 {
+                        let sample = DecodedSample {
+                            image: view.clone(),
+                            label: 7,
+                        };
+                        let ctx = RandomContext::new(seed);
+                        let mut actual_rng = ctx.stream(
+                            rivet_data::random::SampleKey::from_index(3),
+                            OpKey::from_parts("RandomCrop", 0),
+                        );
+                        let mut expected_rng = actual_rng.clone();
+                        let actual = RandomCropConfig::new(cw, ch, pad)
+                            .apply(
+                                Decoded(sample.clone()),
+                                &mut actual_rng,
+                                ImageAxisOrder::Hwc,
+                            )
+                            .unwrap()
+                            .into_decoded()
+                            .unwrap();
+                        let (rgb, _) = into_rgb_image(sample, "reference").unwrap();
+                        let mut padded =
+                            RgbImage::from_pixel(width + 2 * pad, height + 2 * pad, Rgb([0; 3]));
+                        image::imageops::replace(&mut padded, &rgb, i64::from(pad), i64::from(pad));
+                        let y = expected_rng
+                            .gen_range_usize(0..(height + 2 * pad - ch + 1) as usize)
+                            .unwrap() as u32;
+                        let x = expected_rng
+                            .gen_range_usize(0..(width + 2 * pad - cw + 1) as usize)
+                            .unwrap() as u32;
+                        let expected = image::imageops::crop_imm(&padded, x, y, cw, ch).to_image();
+                        assert_eq!(actual.image.to_vec::<u8>().unwrap(), expected.into_raw());
+                        assert_eq!(actual_rng.next_u64(), expected_rng.next_u64());
+                        assert_eq!(actual.label, 7);
+                        assert!(actual.image.is_contiguous());
+                        assert!(!actual.image.same_storage(&view));
+                    }
+                }
+            }
+        }
     }
 
     #[test]

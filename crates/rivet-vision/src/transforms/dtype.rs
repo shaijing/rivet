@@ -1,3 +1,4 @@
+use super::contiguous_values;
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{ImageAxisOrder, ImageSample};
 use rivet_core::{CpuStorageRef, DType, Tensor};
@@ -85,6 +86,15 @@ impl ConvertImageDtypeConfig {
                             actual: input.dtype(),
                         });
                     };
+                    if layout.is_contiguous() {
+                        return Tensor::from_exact_iter(
+                            contiguous_values(values, layout)?
+                                .iter()
+                                .map(|&value| value as f32 / 255.0),
+                            dims.clone(),
+                            input.device(),
+                        );
+                    }
                     let output = layout.strided_index().map(|index| {
                         values
                             .get(index)
@@ -104,17 +114,30 @@ impl ConvertImageDtypeConfig {
                             actual: input.dtype(),
                         });
                     };
+                    let convert = |value: f32| {
+                        let scaled = value * (256.0 - 1e-3);
+                        if scaled.is_finite() {
+                            scaled.trunc().rem_euclid(256.0) as u8
+                        } else {
+                            0
+                        }
+                    };
+                    if layout.is_contiguous() {
+                        return Tensor::from_exact_iter(
+                            contiguous_values(values, layout)?
+                                .iter()
+                                .copied()
+                                .map(convert),
+                            dims.clone(),
+                            input.device(),
+                        );
+                    }
                     let output = layout.strided_index().map(|index| {
                         let value = values
                             .get(index)
                             .copied()
                             .ok_or(rivet_core::Error::StorageOutOfBounds)?;
-                        let scaled = value * (256.0 - 1e-3);
-                        Ok(if scaled.is_finite() {
-                            scaled.trunc().rem_euclid(256.0) as u8
-                        } else {
-                            0
-                        })
+                        Ok(convert(value))
                     });
                     Tensor::from_exact_try_iter(output, dims.clone(), input.device())
                 })?;
@@ -170,6 +193,80 @@ mod tests {
             .into_decoded()
             .unwrap();
         assert_eq!(output.image.to_vec::<u8>().unwrap(), [1, 127, 255, 0]);
+    }
+
+    #[test]
+    fn contiguous_offset_and_strided_conversions_match_exactly() {
+        let u8_base = Tensor::from_vec(
+            (0..2 * 4 * 4 * 3).map(|v| v as u8).collect::<Vec<_>>(),
+            [2, 4, 4, 3],
+            &Device::Cpu,
+        )
+        .unwrap()
+        .get(1)
+        .unwrap();
+        let floats = [
+            -1.0f32,
+            -0.5,
+            0.0,
+            0.0039,
+            0.5,
+            0.999,
+            1.0,
+            2.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            1234.5,
+        ];
+        let f32_base = Tensor::from_vec(floats.repeat(8), [2, 4, 4, 3], &Device::Cpu)
+            .unwrap()
+            .get(1)
+            .unwrap();
+        for (input, target) in [(u8_base, DType::F32), (f32_base, DType::U8)] {
+            let config = ConvertImageDtypeConfig::new(target);
+            for view in [input.clone(), input.permute(&[1, 0, 2]).unwrap()] {
+                let strided = view.permute(&[1, 0, 2]).unwrap();
+                let packed = match strided.dtype() {
+                    DType::U8 => Tensor::from_vec(
+                        strided.to_vec::<u8>().unwrap(),
+                        strided.dims(),
+                        &Device::Cpu,
+                    )
+                    .unwrap(),
+                    DType::F32 => Tensor::from_vec(
+                        strided.to_vec::<f32>().unwrap(),
+                        strided.dims(),
+                        &Device::Cpu,
+                    )
+                    .unwrap(),
+                    _ => unreachable!(),
+                };
+                let apply = |image| {
+                    config
+                        .apply(
+                            ImageSample::Decoded(DecodedSample { image, label: 4 }),
+                            ImageAxisOrder::Hwc,
+                        )
+                        .unwrap()
+                        .into_decoded()
+                        .unwrap()
+                };
+                let expected = apply(strided);
+                let actual = apply(packed);
+                match target {
+                    DType::U8 => assert_eq!(
+                        actual.image.to_vec::<u8>().unwrap(),
+                        expected.image.to_vec::<u8>().unwrap()
+                    ),
+                    DType::F32 => assert_eq!(
+                        actual.image.to_vec::<f32>().unwrap(),
+                        expected.image.to_vec::<f32>().unwrap()
+                    ),
+                    _ => unreachable!(),
+                }
+            }
+        }
     }
 
     #[test]

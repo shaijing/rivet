@@ -1,6 +1,6 @@
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{ImageAxisOrder, ImageSample};
-use crate::transforms::into_rgb_image;
+use crate::transforms::with_rgb_pixels;
 use rivet_core::{DType, Device, Tensor};
 use rivet_data::random::RandomStream;
 
@@ -24,9 +24,8 @@ impl BrightnessConfig {
     }
     pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
         self.validate()?;
-        map_rgb(sample, "brightness", |rgb| {
-            rgb.map(|v| blend(0, v, self.value))
-        })
+        let lut: [u8; 256] = std::array::from_fn(|v| blend(0, v as u8, self.value));
+        map_rgb_bytes(sample, "brightness", |value| lut[value as usize])
     }
 }
 
@@ -44,20 +43,27 @@ impl ContrastConfig {
     }
     pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
         self.validate()?;
-        let (image, label) = into_rgb_image(sample.into_decoded()?, "contrast")?;
-        // ImageEnhance.Contrast averages the rounded L image, not RGB values.
-        let total: u64 = image
-            .as_raw()
-            .chunks_exact(3)
-            .map(|p| u64::from(luma(p)))
-            .sum();
-        let count = u64::from(image.width()) * u64::from(image.height());
-        let mean = if count == 0 {
-            0
-        } else {
-            (total as f64 / count as f64 + 0.5) as u8
-        };
-        rgb_output(&image, label, |rgb| rgb.map(|v| blend(mean, v, self.value)))
+        let sample = sample.into_decoded()?;
+        let image = with_rgb_pixels(&sample.image, "contrast", |pixels, width, height| {
+            // Compute the mean from the same rounded Pillow L values.
+            let total: u64 = pixels.chunks_exact(3).map(|p| u64::from(luma(p))).sum();
+            let count = width as u64 * height as u64;
+            let mean = if count == 0 {
+                0
+            } else {
+                (total as f64 / count as f64 + 0.5) as u8
+            };
+            let lut: [u8; 256] = std::array::from_fn(|v| blend(mean, v as u8, self.value));
+            Ok(Tensor::from_exact_iter(
+                pixels.iter().map(|&v| lut[v as usize]),
+                [height, width, 3],
+                sample.image.device(),
+            )?)
+        })?;
+        Ok(ImageSample::Decoded(crate::sample::image::DecodedSample {
+            image,
+            label: sample.label,
+        }))
     }
 }
 
@@ -105,34 +111,47 @@ pub(super) fn blend(base: u8, value: u8, factor: f32) -> u8 {
     (f32::from(base) + factor * (f32::from(value) - f32::from(base))).clamp(0.0, 255.0) as u8
 }
 
+fn map_rgb_bytes<F>(sample: ImageSample, name: &str, map: F) -> RivetResult<ImageSample>
+where
+    F: FnMut(u8) -> u8,
+{
+    let sample = sample.into_decoded()?;
+    let image = with_rgb_pixels(&sample.image, name, |pixels, width, height| {
+        Ok(Tensor::from_exact_iter(
+            pixels.iter().copied().map(map),
+            [height, width, 3],
+            sample.image.device(),
+        )?)
+    })?;
+    Ok(ImageSample::Decoded(crate::sample::image::DecodedSample {
+        image,
+        label: sample.label,
+    }))
+}
+
 fn map_rgb<F>(sample: ImageSample, name: &str, map: F) -> RivetResult<ImageSample>
 where
     F: Fn([u8; 3]) -> [u8; 3],
 {
-    let (image, label) = into_rgb_image(sample.into_decoded()?, name)?;
-    rgb_output(&image, label, map)
-}
-
-fn rgb_output<F>(image: &image::RgbImage, label: i64, map: F) -> RivetResult<ImageSample>
-where
-    F: Fn([u8; 3]) -> [u8; 3],
-{
-    let output = Tensor::from_exact_writer::<u8, _, _>(
-        [image.height() as usize, image.width() as usize, 3],
-        &Device::Cpu,
-        |out| {
-            for pixel in image.as_raw().chunks_exact(3) {
-                let rgb = map([pixel[0], pixel[1], pixel[2]]);
-                out.write_next(rgb[0])?;
-                out.write_next(rgb[1])?;
-                out.write_next(rgb[2])?;
-            }
-            Ok(())
-        },
-    )?;
+    let sample = sample.into_decoded()?;
+    let image = with_rgb_pixels(&sample.image, name, |pixels, width, height| {
+        Ok(Tensor::from_exact_writer::<u8, _, _>(
+            [height, width, 3],
+            sample.image.device(),
+            |out| {
+                for pixel in pixels.chunks_exact(3) {
+                    let rgb = map([pixel[0], pixel[1], pixel[2]]);
+                    out.write_next(rgb[0])?;
+                    out.write_next(rgb[1])?;
+                    out.write_next(rgb[2])?;
+                }
+                Ok(())
+            },
+        )?)
+    })?;
     Ok(ImageSample::Decoded(crate::sample::image::DecodedSample {
-        image: output,
-        label,
+        image,
+        label: sample.label,
     }))
 }
 
@@ -239,38 +258,27 @@ impl GrayscaleConfig {
             ImageAxisOrder::Hwc => input.clone(),
             ImageAxisOrder::Chw => input.permute(&[1, 2, 0])?,
         };
-        let (image, label) = into_rgb_image(
-            crate::sample::image::DecodedSample {
-                image,
-                label: sample.label,
-            },
-            "grayscale",
-        )?;
-        // Match torchvision's PIL uint8 backend (Pillow RGB -> L):
-        // BT.601 fixed-point coefficients and round-to-nearest, not Rec.709.
-        // Write directly into the final aligned allocation.
         let output_channels = usize::from(self.num_output_channels);
-        let output = crate::sample::image::DecodedSample {
-            image: Tensor::from_exact_writer::<u8, _, _>(
+        let output_image = with_rgb_pixels(&image, "grayscale", |pixels, _, _| {
+            Ok(Tensor::from_exact_writer::<u8, _, _>(
                 [height, width, output_channels],
                 &Device::Cpu,
                 |write| {
-                    for rgb in image.as_raw().chunks_exact(3) {
-                        let luma = ((19595 * u32::from(rgb[0])
-                            + 38470 * u32::from(rgb[1])
-                            + 7471 * u32::from(rgb[2])
-                            + 32768)
-                            >> 16) as u8;
-                        write.write_next(luma)?;
+                    for rgb in pixels.chunks_exact(3) {
+                        let gray = luma(rgb);
+                        write.write_next(gray)?;
                         if output_channels == 3 {
-                            write.write_next(luma)?;
-                            write.write_next(luma)?;
+                            write.write_next(gray)?;
+                            write.write_next(gray)?;
                         }
                     }
                     Ok(())
                 },
-            )?,
-            label,
+            )?)
+        })?;
+        let output = crate::sample::image::DecodedSample {
+            image: output_image,
+            label: sample.label,
         };
         let output = if axis_order == ImageAxisOrder::Hwc {
             output
@@ -489,6 +497,49 @@ mod tests {
             chw.image.to_vec::<u8>().unwrap(),
             [76, 150, 76, 150, 76, 150]
         );
+    }
+
+    #[test]
+    fn borrowed_color_kernels_support_offset_and_strided_rgb() {
+        let base = Tensor::from_vec(
+            (0..2 * 5 * 7 * 3).map(|i| i as u8).collect::<Vec<_>>(),
+            [2, 5, 7, 3],
+            &Device::Cpu,
+        )
+        .unwrap()
+        .get(1)
+        .unwrap();
+        for view in [
+            base.clone(),
+            base.permute(&[1, 0, 2]).unwrap(),
+            base.narrow(0, 1, 3).unwrap().narrow(1, 2, 4).unwrap(),
+        ] {
+            let packed =
+                Tensor::from_vec(view.to_vec::<u8>().unwrap(), view.dims(), &Device::Cpu).unwrap();
+            for op in 0..5 {
+                let apply = |image| {
+                    let sample = ImageSample::Decoded(DecodedSample { image, label: 9 });
+                    match op {
+                        0 => BrightnessConfig::new(1.3).apply(sample),
+                        1 => ContrastConfig::new(0.7).apply(sample),
+                        2 => HueConfig::new(-0.17).apply(sample),
+                        3 => GrayscaleConfig::new(1).apply(sample, ImageAxisOrder::Hwc),
+                        _ => GrayscaleConfig::new(3).apply(sample, ImageAxisOrder::Hwc),
+                    }
+                    .unwrap()
+                    .into_decoded()
+                    .unwrap()
+                };
+                let actual = apply(view.clone());
+                let expected = apply(packed.clone());
+                assert_eq!(
+                    actual.image.to_vec::<u8>().unwrap(),
+                    expected.image.to_vec::<u8>().unwrap()
+                );
+                assert_eq!(actual.label, 9);
+                assert!(!actual.image.same_storage(&view));
+            }
+        }
     }
 
     #[test]
