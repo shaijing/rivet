@@ -15,6 +15,8 @@ jobs:
       CARGO_BUILD_JOBS: "2"
       # Use Zig's linker instead of the repository's local mold override.
       RUSTFLAGS: ""
+      PROTOC: /usr/bin/protoc
+      PROTOC_INCLUDE: /usr/include
 
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +31,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build pkg-config protobuf-compiler
+            build-essential cmake ninja-build pkg-config \
+            protobuf-compiler libprotobuf-dev
+
+      - name: Check Protobuf toolchain
+        run: |
+          "$PROTOC" --version
+          test -f "$PROTOC_INCLUDE/google/protobuf/empty.proto"
+          "$PROTOC" --proto_path="$PROTOC_INCLUDE" \
+            --descriptor_set_out="$RUNNER_TEMP/protobuf-empty.pb" \
+            google/protobuf/empty.proto
 
       - name: Build wheel with Zig
         uses: PyO3/maturin-action@v1
