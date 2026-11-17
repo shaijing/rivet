@@ -1,0 +1,577 @@
+"""Lazy image pipeline construction and execution."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from typing import TYPE_CHECKING
+
+from ._rivet import _ImagePipeline
+from ._transforms import Transform
+
+if TYPE_CHECKING:
+    from ._loader import DataLoader
+
+
+class Pipeline:
+    """Lazy image input pipeline."""
+
+    def __init__(self, inner: _ImagePipeline, *, as_numpy: bool = True) -> None:
+        self._inner = inner
+        self.as_numpy = as_numpy
+
+    def decode_image(self) -> Pipeline:
+        return Pipeline(self._inner.decode_image(), as_numpy=self.as_numpy)
+
+    def resize(
+        self, width: int, height: int, interpolation: str = "bilinear"
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.resize(width, height, interpolation), as_numpy=self.as_numpy
+        )
+
+    def crop(self, x: int, y: int, width: int, height: int) -> Pipeline:
+        return Pipeline(self._inner.crop(x, y, width, height), as_numpy=self.as_numpy)
+
+    def center_crop(self, width: int, height: int) -> Pipeline:
+        return Pipeline(self._inner.center_crop(width, height), as_numpy=self.as_numpy)
+
+    def pad(
+        self, padding: int, fill: float = 0.0, padding_mode: str = "constant"
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.pad(padding, fill, padding_mode), as_numpy=self.as_numpy
+        )
+
+    def pad_with_sides(
+        self,
+        left: int,
+        top: int,
+        right: int,
+        bottom: int,
+        fill: float = 0.0,
+        padding_mode: str = "constant",
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.pad_with_sides(left, top, right, bottom, fill, padding_mode),
+            as_numpy=self.as_numpy,
+        )
+
+    def auto_augment(
+        self, policy: str = "imagenet", interpolation: str = "nearest", fill: int = 0
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.auto_augment(policy, interpolation, fill),
+            as_numpy=self.as_numpy,
+        )
+
+    def rand_augment(
+        self,
+        num_ops: int = 2,
+        magnitude: int = 9,
+        num_magnitude_bins: int = 31,
+        interpolation: str = "nearest",
+        fill: int = 0,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.rand_augment(
+                num_ops, magnitude, num_magnitude_bins, interpolation, fill
+            ),
+            as_numpy=self.as_numpy,
+        )
+
+    def trivial_augment_wide(
+        self,
+        num_magnitude_bins: int = 31,
+        interpolation: str = "nearest",
+        fill: int = 0,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.trivial_augment_wide(num_magnitude_bins, interpolation, fill),
+            as_numpy=self.as_numpy,
+        )
+
+    def augmix(
+        self,
+        severity: int = 3,
+        mixture_width: int = 3,
+        chain_depth: int = -1,
+        alpha: float = 1.0,
+        all_ops: bool = True,
+        interpolation: str = "bilinear",
+        fill: int = 0,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.augmix(
+                severity,
+                mixture_width,
+                chain_depth,
+                alpha,
+                all_ops,
+                interpolation,
+                fill,
+            ),
+            as_numpy=self.as_numpy,
+        )
+
+    def to_tensor(self) -> Pipeline:
+        """Convert decoded HWC pixels to float32 CHW, scaling uint8 by 255."""
+        return Pipeline(self._inner.to_tensor(), as_numpy=self.as_numpy)
+
+    def pil_to_tensor(self) -> Pipeline:
+        """Convert decoded HWC pixels to CHW without changing dtype/range."""
+        return Pipeline(self._inner.pil_to_tensor(), as_numpy=self.as_numpy)
+
+    def linear_transform(
+        self, matrix: Iterable[Iterable[float]], mean: Iterable[float]
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.linear_transform([list(row) for row in matrix], list(mean)),
+            as_numpy=self.as_numpy,
+        )
+
+    def saturation(self, factor: float) -> Pipeline:
+        return Pipeline(self._inner.saturation(factor), as_numpy=self.as_numpy)
+
+    def gamma(self, gamma: float, gain: float = 1.0) -> Pipeline:
+        return Pipeline(self._inner.gamma(gamma, gain), as_numpy=self.as_numpy)
+
+    def affine(
+        self,
+        angle: float,
+        translate: Iterable[float] | None = None,
+        scale: float = 1.0,
+        shear: Iterable[float] | None = None,
+        interpolation: str = "nearest",
+        fill: int = 0,
+        center: Iterable[float] | None = None,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.affine(
+                angle,
+                None if translate is None else list(translate),
+                scale,
+                None if shear is None else list(shear),
+                interpolation,
+                fill,
+                None if center is None else list(center),
+            ),
+            as_numpy=self.as_numpy,
+        )
+
+    def erase(
+        self,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        value: float | Iterable[float] = 0.0,
+    ) -> Pipeline:
+        values = [float(value)] if isinstance(value, (int, float)) else list(value)
+        return Pipeline(
+            self._inner.erase(x, y, width, height, values), as_numpy=self.as_numpy
+        )
+
+    def resized_crop(
+        self,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        out_width: int,
+        out_height: int,
+        interpolation: str = "bilinear",
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.resized_crop(
+                x, y, width, height, out_width, out_height, interpolation
+            ),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_rotation(
+        self,
+        degrees: float | Iterable[float],
+        interpolation: str = "nearest",
+        expand: bool = False,
+        fill: int = 0,
+    ) -> Pipeline:
+        if isinstance(degrees, (int, float)):
+            if degrees < 0:
+                raise ValueError("degrees must be non-negative")
+            degrees = [-float(degrees), float(degrees)]
+        return Pipeline(
+            self._inner.random_rotation(list(degrees), interpolation, expand, fill),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_gaussian_blur(
+        self, kernel_size: int, sigma: Iterable[float] | None = None
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.random_gaussian_blur(
+                kernel_size, None if sigma is None else list(sigma)
+            ),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_vertical_flip(self, probability: float = 0.5) -> Pipeline:
+        return Pipeline(
+            self._inner.random_vertical_flip(probability), as_numpy=self.as_numpy
+        )
+
+    def random_invert(self, probability: float = 0.5) -> Pipeline:
+        return Pipeline(self._inner.random_invert(probability), as_numpy=self.as_numpy)
+
+    def random_posterize(self, bits: int, probability: float = 0.5) -> Pipeline:
+        return Pipeline(
+            self._inner.random_posterize(bits, probability), as_numpy=self.as_numpy
+        )
+
+    def random_solarize(self, threshold: int, probability: float = 0.5) -> Pipeline:
+        return Pipeline(
+            self._inner.random_solarize(threshold, probability), as_numpy=self.as_numpy
+        )
+
+    def random_adjust_sharpness(
+        self, factor: float, probability: float = 0.5
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.random_adjust_sharpness(factor, probability),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_autocontrast(self, probability: float = 0.5) -> Pipeline:
+        return Pipeline(
+            self._inner.random_autocontrast(probability), as_numpy=self.as_numpy
+        )
+
+    def random_equalize(self, probability: float = 0.5) -> Pipeline:
+        return Pipeline(
+            self._inner.random_equalize(probability), as_numpy=self.as_numpy
+        )
+
+    def horizontal_flip(self) -> Pipeline:
+        return Pipeline(self._inner.horizontal_flip(), as_numpy=self.as_numpy)
+
+    def vertical_flip(self) -> Pipeline:
+        return Pipeline(self._inner.vertical_flip(), as_numpy=self.as_numpy)
+
+    def random_crop(
+        self,
+        width: int,
+        height: int,
+        padding: int = 0,
+    ) -> Pipeline:
+        """Zero-pad each image by `padding` pixels on every side, then crop
+        a `width`x`height` window at a per-sample random offset.
+
+        Stochastic ops are seeded by the pipeline seed: when the pipeline
+        shuffles (``.shuffle(seed)``), the same seed reproduces the same
+        sample order *and* the same augmentations at any worker count; use
+        ``.epoch(epoch)`` for a fresh augmentation stream per epoch. Without
+        a shuffle the augmentations are still deterministic.
+        Requires decoded uint8 HWC input.
+        """
+        return Pipeline(
+            self._inner.random_crop(width, height, padding),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_resized_crop(self, width: int, height: int) -> Pipeline:
+        return Pipeline(
+            self._inner.random_resized_crop(width, height), as_numpy=self.as_numpy
+        )
+
+    def random_resized_crop_with_options(
+        self,
+        width: int,
+        height: int,
+        scale: Iterable[float] | None = None,
+        ratio: Iterable[float] | None = None,
+        interpolation: str = "bilinear",
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.random_resized_crop_with_options(
+                width,
+                height,
+                None if scale is None else list(scale),
+                None if ratio is None else list(ratio),
+                interpolation,
+            ),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_horizontal_flip(self, probability: float = 0.5) -> Pipeline:
+        """Randomly flip each image horizontally with `probability`
+        (one draw per sample from the pipeline seed, see `random_crop`).
+        Requires decoded uint8 HWC input.
+        """
+        return Pipeline(
+            self._inner.random_horizontal_flip(probability),
+            as_numpy=self.as_numpy,
+        )
+
+    def brightness(self, value: float) -> Pipeline:
+        """Adjust brightness by a nonnegative factor (1 is identity)."""
+        return Pipeline(self._inner.brightness(value), as_numpy=self.as_numpy)
+
+    def contrast(self, value: float) -> Pipeline:
+        return Pipeline(self._inner.contrast(value), as_numpy=self.as_numpy)
+
+    def color_jitter(
+        self,
+        brightness: float = 0.0,
+        contrast: float = 0.0,
+        hue: float = 0.0,
+        saturation: float = 0.0,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.color_jitter(brightness, contrast, hue, saturation),
+            as_numpy=self.as_numpy,
+        )
+
+    def compose(self, sequence: Transform) -> Pipeline:
+        return Pipeline(self._inner.compose(sequence._inner), as_numpy=self.as_numpy)
+
+    def random_apply(self, probability: float, sequence: Transform) -> Pipeline:
+        return Pipeline(
+            self._inner.random_apply(probability, sequence._inner),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_choice(self, choices: Iterable[Transform]) -> Pipeline:
+        return Pipeline(
+            self._inner.random_choice([choice._inner for choice in choices]),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_order(self, sequence: Transform) -> Pipeline:
+        return Pipeline(
+            self._inner.random_order(sequence._inner),
+            as_numpy=self.as_numpy,
+        )
+
+    def invert(self) -> Pipeline:
+        return Pipeline(self._inner.invert(), as_numpy=self.as_numpy)
+
+    def posterize(self, bits: int) -> Pipeline:
+        return Pipeline(self._inner.posterize(bits), as_numpy=self.as_numpy)
+
+    def solarize(self, threshold: int) -> Pipeline:
+        return Pipeline(self._inner.solarize(threshold), as_numpy=self.as_numpy)
+
+    def autocontrast(self) -> Pipeline:
+        return Pipeline(self._inner.autocontrast(), as_numpy=self.as_numpy)
+
+    def equalize(self) -> Pipeline:
+        return Pipeline(self._inner.equalize(), as_numpy=self.as_numpy)
+
+    def sharpness(self, amount: float) -> Pipeline:
+        return Pipeline(self._inner.sharpness(amount), as_numpy=self.as_numpy)
+
+    def gaussian_blur(self, sigma: float, kernel_size: int | None = None) -> Pipeline:
+        return Pipeline(
+            self._inner.gaussian_blur(sigma, kernel_size), as_numpy=self.as_numpy
+        )
+
+    def hue(self, factor: float) -> Pipeline:
+        """Shift HSV hue by a factor in [-0.5, 0.5]."""
+        return Pipeline(self._inner.hue(factor), as_numpy=self.as_numpy)
+
+    def grayscale(self, num_output_channels: int = 1) -> Pipeline:
+        return Pipeline(
+            self._inner.grayscale(num_output_channels), as_numpy=self.as_numpy
+        )
+
+    def random_grayscale(
+        self, probability: float = 0.1, num_output_channels: int = 3
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.random_grayscale(probability, num_output_channels),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_erasing(self, probability: float = 0.5) -> Pipeline:
+        return Pipeline(self._inner.random_erasing(probability), as_numpy=self.as_numpy)
+
+    def random_erasing_with_options(
+        self,
+        probability: float = 0.5,
+        scale: Iterable[float] | None = None,
+        ratio: Iterable[float] | None = None,
+        value: float = 0.0,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.random_erasing_with_options(
+                probability,
+                None if scale is None else list(scale),
+                None if ratio is None else list(ratio),
+                value,
+            ),
+            as_numpy=self.as_numpy,
+        )
+
+    def convert_image_dtype(self, dtype: str) -> Pipeline:
+        return Pipeline(self._inner.convert_image_dtype(dtype), as_numpy=self.as_numpy)
+
+    def rotate(self, angle: int) -> Pipeline:
+        return Pipeline(self._inner.rotate(angle), as_numpy=self.as_numpy)
+
+    def arbitrary_rotate(
+        self,
+        angle: float,
+        interpolation: str = "nearest",
+        expand: bool = False,
+        fill: int = 0,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.arbitrary_rotate(angle, interpolation, expand, fill),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_affine(
+        self,
+        degrees: float,
+        translate: Iterable[float] | None = None,
+        scale: Iterable[float] | None = None,
+        shear: Iterable[float] | None = None,
+        interpolation: str = "nearest",
+        fill: int = 0,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.random_affine(
+                degrees,
+                None if translate is None else list(translate),
+                None if scale is None else list(scale),
+                None if shear is None else list(shear),
+                interpolation,
+                fill,
+            ),
+            as_numpy=self.as_numpy,
+        )
+
+    def perspective(
+        self,
+        start_points: Iterable[Iterable[float]],
+        end_points: Iterable[Iterable[float]],
+        interpolation: str = "bilinear",
+        fill: int = 0,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.perspective(
+                [list(point) for point in start_points],
+                [list(point) for point in end_points],
+                interpolation,
+                fill,
+            ),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_perspective(
+        self,
+        distortion_scale: float = 0.5,
+        probability: float = 0.5,
+        interpolation: str = "bilinear",
+        fill: int = 0,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.random_perspective(
+                distortion_scale, probability, interpolation, fill
+            ),
+            as_numpy=self.as_numpy,
+        )
+
+    def elastic_transform(
+        self,
+        alpha: float,
+        sigma: float,
+        interpolation: str = "bilinear",
+        fill: int = 0,
+    ) -> Pipeline:
+        return Pipeline(
+            self._inner.elastic_transform(alpha, sigma, interpolation, fill),
+            as_numpy=self.as_numpy,
+        )
+
+    def normalize(self, mean: list[float], std: list[float]) -> Pipeline:
+        return Pipeline(self._inner.normalize(mean, std), as_numpy=self.as_numpy)
+
+    def hwc_to_chw(self) -> Pipeline:
+        return Pipeline(self._inner.hwc_to_chw(), as_numpy=self.as_numpy)
+
+    def chw_to_hwc(self) -> Pipeline:
+        return Pipeline(self._inner.chw_to_hwc(), as_numpy=self.as_numpy)
+
+    def skip(self, count: int) -> Pipeline:
+        return Pipeline(self._inner.skip(count), as_numpy=self.as_numpy)
+
+    def take(self, count: int) -> Pipeline:
+        return Pipeline(self._inner.take(count), as_numpy=self.as_numpy)
+
+    def batch(self, size: int, *, drop_last: bool = False) -> Pipeline:
+        return Pipeline(
+            self._inner.batch(size, drop_last),
+            as_numpy=self.as_numpy,
+        )
+
+    def seed(self, seed: int) -> Pipeline:
+        """Set the pipeline-owned seed for sampling and transforms."""
+        return Pipeline(self._inner.seed(seed), as_numpy=self.as_numpy)
+
+    def shuffle(self, seed: int | None = None) -> Pipeline:
+        """Deterministically shuffle the sampled window.
+
+        The same seed reproduces the same order at any worker count.
+        If ``seed`` is omitted, use the pipeline-owned seed configured by
+        :meth:`seed`; ``.epoch(epoch)`` changes both sampler and transform
+        namespaces.
+        """
+        return Pipeline(
+            self._inner.shuffle(seed),
+            as_numpy=self.as_numpy,
+        )
+
+    def epoch(self, epoch: int) -> Pipeline:
+        """Set the deterministic augmentation epoch without reordering data."""
+        return Pipeline(self._inner.epoch(epoch), as_numpy=self.as_numpy)
+
+    def workers(self, num_workers: int) -> Pipeline:
+        """Load samples on a persistent pool of `num_workers` threads.
+
+        Zero (the default) keeps synchronous loading; ordering and batch
+        contents are identical for any worker count.
+        """
+        return Pipeline(
+            self._inner.workers(num_workers),
+            as_numpy=self.as_numpy,
+        )
+
+    def prefetch_batches(self, prefetch: int) -> Pipeline:
+        """Prepare `prefetch` future batches ahead (worker pools only).
+
+        The current batch plus `prefetch` more are in flight; ``0`` keeps
+        only the current batch running.
+        """
+        return Pipeline(
+            self._inner.prefetch_batches(prefetch),
+            as_numpy=self.as_numpy,
+        )
+
+    def with_numpy(self, enabled: bool = True) -> Pipeline:
+        return Pipeline(self._inner, as_numpy=enabled)
+
+    def execute(self, *, as_numpy: bool | None = None) -> DataLoader:
+        from ._loader import DataLoader
+
+        return DataLoader(
+            self,
+            as_numpy=self.as_numpy if as_numpy is None else as_numpy,
+        )
+
+    def explain(self) -> str:
+        """Explain declared/optimized IR and placement without reading images.
+
+        This validates and optimizes a separate plan for inspection. Calling
+        execute() still compiles its own execution plan.
+        """
+        return self._inner.explain()
