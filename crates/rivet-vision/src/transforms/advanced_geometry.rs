@@ -1100,7 +1100,7 @@ where
     Ok(value.clamp(0.0, 255.0) as u8)
 }
 
-fn rotation_inverse(
+pub(crate) fn rotation_inverse(
     width: usize,
     height: usize,
     angle: f32,
@@ -1150,7 +1150,7 @@ fn uniform(rng: &mut RandomStream, min: f32, max: f32) -> f32 {
     min + (max - min) * rng.next_f32()
 }
 
-fn homography(from: &[Point2; 4], to: &[Point2; 4]) -> Option<[[f64; 3]; 3]> {
+pub(crate) fn homography(from: &[Point2; 4], to: &[Point2; 4]) -> Option<[[f64; 3]; 3]> {
     let mut matrix = [[0.0f64; 9]; 8];
     for (index, (source, target)) in from.iter().zip(to).enumerate() {
         let x = f64::from(source.x);

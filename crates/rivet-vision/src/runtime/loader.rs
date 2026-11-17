@@ -129,6 +129,10 @@ pub struct ImageDataLoader {
     pub sampler: IndexSampler,
     graph: Arc<ImageExecutionGraph>,
     executor: ImageExecutor,
+    batch_mixing: Vec<crate::batch::BatchMixConfig>,
+    mix_random: rivet_data::random::RandomContext,
+    batch_ordinal: usize,
+    mix_failed: bool,
 }
 
 impl ImageDataLoader {
@@ -177,11 +181,28 @@ impl ImageDataLoader {
             sampler,
             graph,
             executor,
+            batch_mixing: Vec::new(),
+            mix_random: rivet_data::random::RandomContext::new(0),
+            batch_ordinal: 0,
+            mix_failed: false,
         })
     }
 
+    pub(crate) fn with_batch_mixing(
+        mut self,
+        configs: Vec<crate::batch::BatchMixConfig>,
+        random: rivet_data::random::RandomContext,
+    ) -> Self {
+        self.batch_mixing = configs;
+        self.mix_random = random;
+        self
+    }
+
     pub fn next_batch(&mut self) -> RivetResult<Option<ImageBatch>> {
-        match &mut self.executor {
+        if self.mix_failed {
+            return Ok(None);
+        }
+        let result = match &mut self.executor {
             ImageExecutor::Linear(executor) => {
                 executor
                     .next_batch(&mut self.sampler)
@@ -195,7 +216,25 @@ impl ImageDataLoader {
                 .map_err(|error| RivetError::Worker(error.to_string()))?
                 .map(ImageExecutionGraph::output_batch)
                 .transpose(),
+        };
+        let Some(mut batch) = result? else {
+            return Ok(None);
+        };
+        for (index, config) in self.batch_mixing.iter().enumerate() {
+            let mut rng = self.mix_random.stream(
+                rivet_data::random::SampleKey::from_index(self.batch_ordinal),
+                rivet_data::random::OpKey::from_parts(config.name(), index as u32),
+            );
+            match config.apply(batch, &mut rng) {
+                Ok(output) => batch = output,
+                Err(error) => {
+                    self.mix_failed = true;
+                    return Err(error);
+                }
+            }
         }
+        self.batch_ordinal += 1;
+        Ok(Some(batch))
     }
 
     pub fn physical_explain(&mut self) -> RivetResult<String> {

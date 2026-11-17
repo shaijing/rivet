@@ -267,3 +267,5 @@ pub use v2::V2Config;
 
 mod v2_jpeg;
 mod v2_numeric;
+
+pub(crate) use advanced_geometry::{homography, rotation_inverse};

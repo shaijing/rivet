@@ -102,6 +102,8 @@ pub(super) fn image_batch_to_py(py: Python<'_>, batch: ImageBatch) -> PyResult<P
         labels,
         axis_order,
     } = batch;
+    let label_shape = labels.dims().to_vec();
+    let label_dtype = dtype::name(labels.dtype());
     let dtype = images.dtype();
     let shape = images.dims().to_vec();
     let images = tensor_to_numpy(py, images)?;
@@ -113,16 +115,22 @@ pub(super) fn image_batch_to_py(py: Python<'_>, batch: ImageBatch) -> PyResult<P
     out.set_item("shape", &shape)?;
     out.set_item("dtype", dtype::name(dtype))?;
     out.set_item("layout", axis_order.batch_as_str())?;
+    if label_shape.len() == 2 {
+        out.set_item("labels_shape", label_shape)?;
+        out.set_item("labels_dtype", label_dtype)?;
+    }
 
     Ok(out.into())
 }
 
-fn image_batch_to_dlpack(py: Python<'_>, batch: ImageBatch) -> PyResult<Py<PyDict>> {
+pub(crate) fn image_batch_to_dlpack(py: Python<'_>, batch: ImageBatch) -> PyResult<Py<PyDict>> {
     let ImageBatch {
         images,
         labels,
         axis_order,
     } = batch;
+    let label_shape = labels.dims().to_vec();
+    let label_dtype = dtype::name(labels.dtype());
     let shape = images.dims().to_vec();
     let dtype_name = dtype::name(images.dtype());
     let out = PyDict::new(py);
@@ -131,6 +139,10 @@ fn image_batch_to_dlpack(py: Python<'_>, batch: ImageBatch) -> PyResult<Py<PyDic
     out.set_item("shape", shape)?;
     out.set_item("dtype", dtype_name)?;
     out.set_item("layout", axis_order.batch_as_str())?;
+    if label_shape.len() == 2 {
+        out.set_item("labels_shape", label_shape)?;
+        out.set_item("labels_dtype", label_dtype)?;
+    }
     Ok(out.into())
 }
 

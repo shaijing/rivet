@@ -1,8 +1,8 @@
 """Canonical image namespace for Rivet.
 
-Only image APIs live here for now. Future modalities should get their own
-namespace only when their public implementation exists; this module does not
-reserve placeholder namespaces.
+Includes image pipelines, structured detection/segmentation samples and
+decoded video temporal sampling. Pixel processing runs in the native runtime;
+Python owns configuration and framework handoff.
 """
 
 from ._datasets import (
@@ -26,17 +26,34 @@ from ._io import (
 )
 from ._loader import DataLoader
 from ._pipeline import Pipeline
+from ._structured import (
+    AnnotatedSample,
+    CutMix,
+    MixUp,
+    StructuredDataLoader,
+    StructuredPipeline,
+    UniformTemporalSubsample,
+    VideoSample,
+    uniform_temporal_subsample,
+)
 from ._transforms import Compose, Transform
 
 __all__ = [
+    "AnnotatedSample",
     "ArrowDataset",
     "Compose",
+    "CutMix",
     "DataLoader",
     "DatasetDict",
     "ImageFolder",
     "LanceDataset",
+    "MixUp",
     "Pipeline",
+    "StructuredDataLoader",
+    "StructuredPipeline",
     "Transform",
+    "UniformTemporalSubsample",
+    "VideoSample",
     "dataset",
     "hf_arrow_files",
     "load_dataset",
@@ -48,4 +65,5 @@ __all__ = [
     "scan_hf",
     "scan_image_folder",
     "scan_lance",
+    "uniform_temporal_subsample",
 ]

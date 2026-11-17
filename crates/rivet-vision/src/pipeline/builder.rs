@@ -37,6 +37,8 @@ pub struct ImagePipeline {
     pub ops: Vec<ImageOp>,
     pub batch: Option<BatchConfig>,
     pub(crate) device_cuts: Vec<DeviceCutPlacement>,
+    pub(crate) batch_mixing: Vec<crate::batch::BatchMixConfig>,
+    pub(crate) batch_mix_boundary: Option<(usize, usize, usize, bool)>,
     pub runtime: RuntimeConfig,
     pub epoch: u64,
     pub global_seed: Option<u64>,
@@ -71,10 +73,26 @@ impl ImagePipeline {
             ops: Vec::new(),
             batch: None,
             device_cuts: Vec::new(),
+            batch_mixing: Vec::new(),
+            batch_mix_boundary: None,
             runtime: RuntimeConfig::default(),
             epoch: 0,
             global_seed: None,
         }
+    }
+
+    /// Append terminal batch mixing after an explicit batch barrier.
+    pub fn batch_mix(mut self, config: crate::batch::BatchMixConfig) -> Self {
+        if self.batch_mix_boundary.is_none() {
+            self.batch_mix_boundary = Some((
+                self.steps.len(),
+                self.ops.len(),
+                self.index_ops.len(),
+                self.batch.is_some(),
+            ));
+        }
+        self.batch_mixing.push(config);
+        self
     }
 
     /// Add a torchvision v2 image transform.

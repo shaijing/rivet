@@ -94,6 +94,22 @@ impl super::builder::ImagePipeline {
         &self,
         options: ImageOptimizationOptions,
     ) -> Result<String, crate::errors::VisionError> {
+        if self
+            .batch_mix_boundary
+            .is_some_and(|(steps, ops, indices, batched)| {
+                !batched
+                    || steps != self.steps.len()
+                    || ops != self.ops.len()
+                    || indices != self.index_ops.len()
+            })
+        {
+            return Err(invalid_pipeline(
+                "MixUp/CutMix must follow an explicit batch and all image/index operations",
+            ));
+        }
+        for config in &self.batch_mixing {
+            config.validate()?;
+        }
         let mut plan = self.to_logical_plan();
         super::logical::assign_missing_random_identities(&mut plan)?;
         let original = plan
@@ -118,6 +134,14 @@ impl super::builder::ImagePipeline {
         }
         for (pass, snapshot) in context.snapshots {
             explanation.push_str(&format!("\nSnapshot {pass}:\n{snapshot}"));
+        }
+        for config in &self.batch_mixing {
+            explanation.push_str(&format!(
+                "\nTerminal batch output: {} alpha={} num_classes={:?}\n",
+                config.name(),
+                config.alpha,
+                config.num_classes
+            ));
         }
         Ok(explanation)
     }

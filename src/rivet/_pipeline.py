@@ -751,6 +751,35 @@ class Pipeline:
     def take(self, count: int) -> Pipeline:
         return Pipeline(self._inner.take(count), as_numpy=self.as_numpy)
 
+    def mixup(self, num_classes: int, alpha: float = 1.0) -> Pipeline:
+        """Mix float32 images and emit [B, num_classes] float32 soft labels.
+
+        Place after batch and all image transforms. Pair each item with the
+        previous batch item (roll by one). A shared Beta(alpha, alpha)
+        coefficient is drawn per output batch, independent of worker count.
+        """
+        if (
+            isinstance(num_classes, bool)
+            or not isinstance(num_classes, int)
+            or num_classes <= 0
+        ):
+            raise ValueError("num_classes must be a positive integer")
+        return Pipeline(self._inner.batch_mix(alpha, num_classes, False))
+
+    def cutmix(self, num_classes: int, alpha: float = 1.0) -> Pipeline:
+        """Cut/paste from the previous item and mix labels by actual patch area.
+
+        Accept uint8 or float32 images. Place after batch and all image
+        transforms. Tail batches use their actual size, including size one.
+        """
+        if (
+            isinstance(num_classes, bool)
+            or not isinstance(num_classes, int)
+            or num_classes <= 0
+        ):
+            raise ValueError("num_classes must be a positive integer")
+        return Pipeline(self._inner.batch_mix(alpha, num_classes, True))
+
     def batch(self, size: int, *, drop_last: bool = False) -> Pipeline:
         """Group source samples; multi-view crops yield ``size * V`` images.
 

@@ -2146,6 +2146,19 @@ impl PyImagePipeline {
         }
     }
 
+    #[pyo3(signature = (alpha=1.0, num_classes=None, cutmix=false))]
+    fn batch_mix(&self, alpha: f64, num_classes: Option<usize>, cutmix: bool) -> PyResult<Self> {
+        let config = rivet_vision::api::BatchMixConfig {
+            alpha,
+            num_classes,
+            cutmix,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().batch_mix(config),
+        })
+    }
+
     fn seed(&self, seed: u64) -> Self {
         Self {
             inner: self.inner.clone().seed(seed),

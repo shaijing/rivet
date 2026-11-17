@@ -14,11 +14,13 @@ use super::op::{BatchConfig, ImageOp, IndexOp, SourceOp};
 use crate::errors::{RivetResult, invalid_pipeline};
 use crate::runtime::RuntimeConfig;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct ImagePipelineContext {
     pub(crate) runtime: RuntimeConfig,
     pub(crate) epoch: u64,
     pub(crate) global_seed: Option<u64>,
+    pub(crate) batch_mixing: Vec<crate::batch::BatchMixConfig>,
+    pub(crate) batch_mix_valid: bool,
 }
 
 impl PlanPayload for ImagePipelineContext {
@@ -122,6 +124,15 @@ impl ImagePipeline {
             runtime: self.runtime,
             epoch: self.epoch,
             global_seed: self.global_seed,
+            batch_mixing: self.batch_mixing.clone(),
+            batch_mix_valid: self.batch_mix_boundary.is_none_or(
+                |(steps, ops, indices, batched)| {
+                    batched
+                        && steps == self.steps.len()
+                        && ops == self.ops.len()
+                        && indices == self.index_ops.len()
+                },
+            ),
         }));
         let mut previous = plan.add_node(LogicalNode::new(
             NodeKind::Source,
@@ -309,6 +320,12 @@ impl ImagePipeline {
             }
         }
         let source = source.ok_or_else(|| invalid_pipeline("logical plan has no source node"))?;
+        let batch_mix_boundary = (!context.batch_mixing.is_empty()).then_some((
+            steps.len(),
+            ops.len(),
+            index_ops.len(),
+            context.batch_mix_valid,
+        ));
         Ok(Self {
             steps,
             source,
@@ -316,6 +333,8 @@ impl ImagePipeline {
             ops,
             batch,
             device_cuts,
+            batch_mixing: context.batch_mixing.clone(),
+            batch_mix_boundary,
             runtime: context.runtime,
             epoch: context.epoch,
             global_seed: context.global_seed,

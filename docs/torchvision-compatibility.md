@@ -235,3 +235,26 @@ Tensor batch prefixes and PIL objects remain outside the native sample model.
 A sampled scale that produces a zero or unrepresentable output dimension is
 rejected rather than silently clamped. Random-size transforms need a fixed-size
 crop or resize before stacking a batch.
+
+
+## P3 batch, annotation and temporal references
+
+MixUp and CutMix follow torchvision v2's previous-row pairing and shared Beta
+coefficient. Images use float32 MixUp or uint8/float32 CutMix; labels become
+float32 probability matrices and CutMix uses actual clipped area. Random streams
+are Rivet-specific and deterministic for seed, epoch and output batch ordinal.
+The terminal batch stage is not reordered into per-sample operations.
+
+Structured geometry uses the existing PIL image kernels and shared resolved
+parameters for targets. Bounding-box/keypoint differential tests use float32
+coordinate tolerances; mask tests use exact categorical values. Affine and
+perspective masks mirror float32 normalized Tensor-grid nearest selection,
+while categorical int64 values are kept in integer storage. Expanded rotations
+use the PIL image canvas, which can differ from Tensor annotation offsets.
+Unsupported structured transforms fail explicitly. SSD crop bounds its outer
+retries and returns identity on exhaustion, unlike torchvision's unbounded loop.
+
+Temporal selection follows CPU float32 linspace including mirrored endpoint
+rounding, rather than exact rational indices. Oversampling repeats frame indices
+and timestamps together. All input/export and modality limits are documented
+in the [structured and video guide](structured-vision.md).

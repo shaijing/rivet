@@ -30,17 +30,34 @@ from ._io import (
 )
 from ._loader import DataLoader
 from ._pipeline import Pipeline
+from ._structured import (
+    AnnotatedSample,
+    CutMix,
+    MixUp,
+    StructuredDataLoader,
+    StructuredPipeline,
+    UniformTemporalSubsample,
+    VideoSample,
+    uniform_temporal_subsample,
+)
 from ._transforms import Compose, Transform
 
 __all__ = [
+    "AnnotatedSample",
     "ArrowDataset",
     "Compose",
+    "CutMix",
     "DataLoader",
     "DatasetDict",
     "ImageFolder",
     "LanceDataset",
+    "MixUp",
     "Pipeline",
+    "StructuredDataLoader",
+    "StructuredPipeline",
     "Transform",
+    "UniformTemporalSubsample",
+    "VideoSample",
     "dataset",
     "hf_arrow_files",
     "load_dataset",
@@ -52,6 +69,7 @@ __all__ = [
     "scan_hf",
     "scan_image_folder",
     "scan_lance",
+    "uniform_temporal_subsample",
     "vision",
 ]
 

@@ -230,9 +230,18 @@ fn compile_graph(
     logical
         .canonicalize()
         .map_err(|error| invalid_pipeline(error.to_string()))?;
-    let context = *logical
+    let context = logical
         .context_as::<ImagePipelineContext>()
-        .ok_or_else(|| invalid_pipeline("logical plan has no vision context"))?;
+        .ok_or_else(|| invalid_pipeline("logical plan has no vision context"))?
+        .clone();
+    if !context.batch_mix_valid {
+        return Err(invalid_pipeline(
+            "MixUp/CutMix must follow an explicit batch and all image/index operations",
+        ));
+    }
+    for config in &context.batch_mixing {
+        config.validate()?;
+    }
     if logical
         .nodes()
         .any(|(_, node)| node.kind() == NodeKind::DeviceCut)
@@ -700,6 +709,7 @@ fn compile_graph(
         explanation,
     });
     ImageDataLoader::new(graph, IndexSampler::new(sampler, start), context.runtime)
+        .map(|loader| loader.with_batch_mixing(context.batch_mixing, random))
 }
 
 fn compile_sample_program(

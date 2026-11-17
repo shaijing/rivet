@@ -1,0 +1,245 @@
+use super::{BoxFormat, RandomIoUCropConfig, StructuredSample};
+use crate::errors::{RivetResult, invalid_argument, invalid_shape};
+use crate::pipeline::{
+    TransformSequence,
+    op::{ImageOp, SampleContext},
+};
+use rivet_core::Tensor;
+use rivet_data::random::{OpKey, RandomContext, SampleKey};
+use std::sync::Arc;
+
+#[derive(Clone)]
+pub enum StructuredOp {
+    Image(ImageOp),
+    ConvertBoxes(BoxFormat),
+    ClampBoxes,
+    Sanitize { min_size: f32, min_area: f32 },
+    RandomIoUCrop(RandomIoUCropConfig),
+}
+impl StructuredOp {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Image(op) => op.name(),
+            Self::ConvertBoxes(_) => "ConvertBoundingBoxFormat",
+            Self::ClampBoxes => "ClampBoundingBoxes",
+            Self::Sanitize { .. } => "SanitizeBoundingBoxes",
+            Self::RandomIoUCrop(_) => "RandomIoUCrop",
+        }
+    }
+    pub fn validate(&self) -> RivetResult<()> {
+        match self {
+            Self::Image(op) => validate_image(op),
+            Self::RandomIoUCrop(c) => c.validate(),
+            Self::Sanitize { min_size, min_area }
+                if !min_size.is_finite()
+                    || *min_size < 1.0
+                    || !min_area.is_finite()
+                    || *min_area < 1.0 =>
+            {
+                Err(invalid_argument(
+                    "sanitize thresholds must be finite and >=1",
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+fn validate_image(op: &ImageOp) -> RivetResult<()> {
+    op.validate()?;
+    match op {
+        ImageOp::Decode(_)
+        | ImageOp::FiveCrop(_)
+        | ImageOp::TenCrop(_)
+        | ImageOp::ElasticTransform(_)
+        | ImageOp::AutoAugment(_)
+        | ImageOp::RandAugment(_)
+        | ImageOp::TrivialAugmentWide(_)
+        | ImageOp::AugMix(_) => Err(invalid_argument(format!(
+            "{} is unsupported for structured samples",
+            op.name()
+        ))),
+        ImageOp::RandomApply { ops, .. } | ImageOp::RandomOrder { ops } => {
+            for op in ops {
+                validate_image(op)?;
+            }
+            Ok(())
+        }
+        ImageOp::RandomChoice { choices, .. } => {
+            for ops in choices {
+                for op in ops {
+                    validate_image(op)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+#[derive(Clone)]
+pub struct StructuredPipeline {
+    pub samples: Arc<Vec<StructuredSample>>,
+    pub ops: Vec<StructuredOp>,
+    pub seed: u64,
+    pub epoch: u64,
+    pub workers: usize,
+    pub batch_size: usize,
+    pub drop_last: bool,
+    pub shuffle: bool,
+}
+impl StructuredPipeline {
+    pub fn new(samples: Vec<StructuredSample>) -> RivetResult<Self> {
+        for sample in &samples {
+            sample.validate()?;
+        }
+        Ok(Self {
+            samples: Arc::new(samples),
+            ops: Vec::new(),
+            seed: 0,
+            epoch: 0,
+            workers: 0,
+            batch_size: 1,
+            drop_last: false,
+            shuffle: false,
+        })
+    }
+    pub fn compose(mut self, sequence: TransformSequence) -> Self {
+        self.ops
+            .extend(sequence.ops.into_iter().map(StructuredOp::Image));
+        self
+    }
+    pub fn push(mut self, op: StructuredOp) -> Self {
+        self.ops.push(op);
+        self
+    }
+    pub fn compile(self) -> RivetResult<StructuredLoader> {
+        if self.batch_size == 0 || self.workers > 256 {
+            return Err(invalid_argument(
+                "batch size must be positive and workers <=256",
+            ));
+        }
+        for op in &self.ops {
+            op.validate()?;
+        }
+        let mut indices: Vec<_> = (0..self.samples.len()).collect();
+        if self.shuffle {
+            let mut rng = RandomContext::new(self.seed).with_epoch(self.epoch).stream(
+                SampleKey::from_index(0),
+                OpKey::from_parts("StructuredShuffle", 0),
+            );
+            for i in (1..indices.len()).rev() {
+                let j = rng.gen_range_usize(0..i + 1)?;
+                indices.swap(i, j);
+            }
+        }
+        Ok(StructuredLoader {
+            pipeline: self,
+            indices,
+            position: 0,
+            failed: false,
+        })
+    }
+    pub fn apply(
+        &self,
+        mut sample: StructuredSample,
+        index: usize,
+    ) -> RivetResult<StructuredSample> {
+        sample.validate()?;
+        let ctx =
+            SampleContext::with_random(index, RandomContext::new(self.seed).with_epoch(self.epoch));
+        let mut counts = std::collections::HashMap::<&str, u32>::new();
+        for op in &self.ops {
+            let count = counts.entry(op.name()).or_default();
+            let key = OpKey::from_parts(op.name(), *count);
+            *count += 1;
+            let mut rng = ctx.stream(key);
+            sample = match op {
+                StructuredOp::Image(op) => super::geometry::apply(sample, op, &mut rng, &ctx, key)?,
+                StructuredOp::ConvertBoxes(format) => sample.convert_boxes(*format)?,
+                StructuredOp::ClampBoxes => sample.clamp_boxes()?,
+                StructuredOp::Sanitize { min_size, min_area } => {
+                    sample.sanitize(*min_size, *min_area)?
+                }
+                StructuredOp::RandomIoUCrop(c) => sample.random_iou_crop(c, &mut rng)?,
+            };
+        }
+        sample.validate()?;
+        Ok(sample)
+    }
+}
+pub struct StructuredBatch {
+    pub images: Tensor,
+    pub samples: Vec<StructuredSample>,
+}
+pub struct StructuredLoader {
+    pipeline: StructuredPipeline,
+    indices: Vec<usize>,
+    position: usize,
+    failed: bool,
+}
+impl StructuredLoader {
+    pub fn next_batch(&mut self) -> RivetResult<Option<StructuredBatch>> {
+        if self.failed || self.position >= self.indices.len() {
+            return Ok(None);
+        }
+        let end = self
+            .position
+            .saturating_add(self.pipeline.batch_size)
+            .min(self.indices.len());
+        if self.pipeline.drop_last && end - self.position < self.pipeline.batch_size {
+            self.position = self.indices.len();
+            return Ok(None);
+        }
+        let indices = &self.indices[self.position..end];
+        self.position = end;
+        let result = (|| -> RivetResult<StructuredBatch> {
+            let samples = if self.pipeline.workers == 0 || indices.len() < 2 {
+                indices
+                    .iter()
+                    .map(|&i| self.pipeline.apply(self.pipeline.samples[i].clone(), i))
+                    .collect::<RivetResult<Vec<_>>>()?
+            } else {
+                let chunk = indices
+                    .len()
+                    .div_ceil(self.pipeline.workers.min(indices.len()));
+                std::thread::scope(|scope| {
+                    let handles = indices
+                        .chunks(chunk)
+                        .map(|ids| {
+                            let pipeline = &self.pipeline;
+                            scope.spawn(move || {
+                                ids.iter()
+                                    .map(|&i| pipeline.apply(pipeline.samples[i].clone(), i))
+                                    .collect::<RivetResult<Vec<_>>>()
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    let mut values = Vec::with_capacity(indices.len());
+                    for handle in handles {
+                        values.extend(
+                            handle
+                                .join()
+                                .map_err(|_| invalid_argument("structured worker panicked"))??,
+                        );
+                    }
+                    Ok::<_, crate::errors::VisionError>(values)
+                })?
+            };
+            if samples
+                .iter()
+                .any(|s| s.axis_order != samples[0].axis_order)
+            {
+                return Err(invalid_shape("structured batch layouts must match"));
+            }
+            let refs: Vec<_> = samples.iter().map(|s| &s.image).collect();
+            let images = Tensor::stack(&refs, 0)?;
+            Ok(StructuredBatch { images, samples })
+        })();
+        match result {
+            Ok(batch) => Ok(Some(batch)),
+            Err(error) => {
+                self.failed = true;
+                Err(error)
+            }
+        }
+    }
+}

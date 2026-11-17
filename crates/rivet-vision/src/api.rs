@@ -68,3 +68,11 @@ pub fn empty_image_batch() -> VisionResult<ImageBatch> {
 }
 
 pub use crate::transforms::V2Config;
+
+pub use crate::batch::BatchMixConfig;
+
+pub use crate::structured::{
+    BoxFormat, RandomIoUCropConfig, StructuredBatch, StructuredLoader, StructuredOp,
+    StructuredPipeline, StructuredSample,
+};
+pub use crate::video::{VideoLayout, VideoSample, uniform_temporal_subsample};

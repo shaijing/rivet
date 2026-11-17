@@ -80,11 +80,11 @@ configurations, but this is not a full clone of torchvision's Python API.
 - The v2 image augmentation entries below cover native decoded images. They
   do not add arbitrary PIL objects, Tensor batches, structured annotations or
   torchvision dispatch by Python object type.
-- MixUp/CutMix need batch and soft-label semantics beyond the current scalar
-  class-label sample model. RandomIoUCrop and bounding-box/keypoint sanitation
-  need structured annotation support. UniformTemporalSubsample is a video
-  operation. Those are separate data-model extensions, not silently applied
-  to RGB images alone.
+- Structured samples and temporal sampling now have explicit native entry
+  points (see the P3 section below). Structured Arrow/Lance column ingestion,
+  rotated boxes, keypoint visibility triplets, video codecs and GPU/autograd
+  remain outside the current model. Structured ElasticTransform, learned
+  augmentation policies and multi-view expansion are explicitly rejected.
 
 ## Multi-view pipelines
 
@@ -350,3 +350,40 @@ keeping unrelated v2 configurations out of the ordinary batch node. Existing
 static RGB normalize and NHWC-to-NCHW writers remain intact. These measurements
 check the common decoded pipeline; they do not benchmark enabled augmentation
 kernels individually.
+
+
+## Batch and structured data model (P3)
+
+| Capability | Entry points and contract |
+| --- | --- |
+| MixUp / CutMix | Terminal `Pipeline.batch(...).mixup(num_classes, alpha=1)` / `.cutmix(...)`; callable `MixUp` / `CutMix` for NumPy batches and existing soft labels. Previous-row pairing, batch-level Beta sampling, corrected CutMix area, float32 `[B,C]` labels and NumPy/bytes/DLPack/Torch handoff. |
+| Detection / segmentation | `AnnotatedSample` + `StructuredPipeline.compose(Transform(...))`. One resolved geometric plan for images, bounding boxes, categorical masks and keypoints. Ragged instance counts, semantic masks and stable per-source random streams. |
+| Box maintenance | `convert_bounding_box_format`, `clamp_bounding_boxes`, `sanitize_bounding_boxes`, and bounded `random_iou_crop` on StructuredPipeline. Sanitization filters every instance field in lockstep. |
+| Video sampling | `VideoSample` carries decoded THWC/TCHW frames, sequence label and optional timestamps. `UniformTemporalSubsample` / `uniform_temporal_subsample` preserve sampled frame/timestamp alignment and support repeat-frame oversampling; the functional form supports batched prefixes. |
+
+See the [P3 guide](structured-vision.md) for runnable API patterns, sampling
+rules, ownership, supported geometry, numerical references and current limits.
+The original classification sample model and its specialized kernels remain
+separate from structured samples; existing imports and source schemas keep
+their behavior. Both Python namespaces export the new public entry points.
+
+
+### P3 validation (2026-11-17)
+
+The release extension passed 722 Python tests plus 28 subtests and 264 Rust
+library tests (`--no-default-features`). The 113 new Python cases cover
+MixUp/CutMix pairing, soft-label shape/dtype, clipped area, tail/drop-last,
+terminal ordering and all delivery modes; structured shared geometry, box
+formats, semantic/instance masks, sanitation and bounded IoU retries; and
+video endpoints, oversampling, float32 linspace boundaries and timestamp
+alignment. Source identity / seed / epoch / worker checks, strided inputs,
+empty instances, ownership and sticky errors are included. Changed-file Ruff,
+format and whitespace checks pass.
+
+Release CIFAR decoded throughput (batch 128, four workers, three epochs):
+three initial runs were 1,133,942 / 1,129,378 / 1,125,593 img/s, mean 1,129,638
+and population standard deviation 3,413. Five final runs were 1,128,773 /
+1,137,256 / 1,142,807 / 1,137,180 / 1,145,171 img/s, mean 1,138,237 and
+standard deviation 5,668 (+0.76%). The ordinary classification fast paths
+remain intact. This benchmark does not measure enabled batch mixing or
+structured/video processing.
