@@ -77,12 +77,9 @@ configurations, but this is not a full clone of torchvision's Python API.
   batches, all integer/float dtypes, GPU/autograd and every PIL mode are not
   supported. LinearTransformation currently accepts float32 only. Tensor
   conversion aliases retain Rivet's view/stride conventions.
-- v2-only image features remain: JPEG augmentation, GaussianNoise,
-  RandomChannelPermutation, RandomPhotometricDistort, RandomResize,
-  RandomShortestSize, RandomZoomOut and ScaleJitter. RGB decoding exists, but
-  there is no standalone v2 RGB conversion transform for arbitrary input modes.
-  JPEG parity additionally needs the corresponding encoder/subsampling contract;
-  it is not approximated by an incompatible `image` encoder.
+- The v2 image augmentation entries below cover native decoded images. They
+  do not add arbitrary PIL objects, Tensor batches, structured annotations or
+  torchvision dispatch by Python object type.
 - MixUp/CutMix need batch and soft-label semantics beyond the current scalar
   class-label sample model. RandomIoUCrop and bounding-box/keypoint sanitation
   need structured annotation support. UniformTemporalSubsample is a video
@@ -276,3 +273,80 @@ deviation 5,080), a +1.33% difference. This measures the ordinary single-view
 pipeline, not the cost of enabling multiple crops. Explicit inlining keeps
 its static RGB normalize writers and NHWC-to-NCHW writer optimized as the
 operator implementation grows.
+
+
+## v2 image augmentation
+
+The following methods are available on both `Transform` and `Pipeline`. Image
+processing and random sampling execute in Rust. The reference is the installed
+`torchvision.transforms.v2` implementation; equal seeds reproduce Rivet results,
+not PyTorch's random sequence.
+
+| API | Sampling and numeric contract |
+| --- | --- |
+| `permute_channels(permutation)` | The order contains every input channel exactly once. |
+| `random_channel_permutation()` | Uniform random permutation, including the identity. |
+| `random_photometric_distort(brightness=(.875,1.125), contrast=(.5,1.5), saturation=(.5,1.5), hue=(-.05,.05), probability=.5)` | Independent application decisions; brightness first, contrast randomly before or after saturation/hue, channel permutation last. Reuses the existing RGB uint8 color kernels. |
+| `random_resize(min_size, max_size, interpolation="bilinear")` | Uniform integer short edge in `[min_size,max_size)`, preserving aspect ratio. The upper bound is exclusive, following the torchvision source. |
+| `random_shortest_size(min_size, max_size=None, interpolation="bilinear")` | Uniform choice from a scalar or sequence of short edges; optional long-edge cap can reduce the requested short edge. |
+| `scale_jitter(width, height, scale_range=(.1,2.), interpolation="bilinear")` | Fit inside the width-first target, multiply by a uniform scale, truncate output dimensions. |
+| `random_zoom_out(fill=0, side_range=(1.,4.), probability=.5)` | Sample one canvas expansion factor; independently place the original image horizontally and vertically. Fill uses native pixel units. |
+| `gaussian_noise(mean=0, sigma=.1, clip=True)` | Float32 uses normalized units and clips to `[0,1]`; uint8 scales noise by 255, truncates noise before addition, and clips to `[0,255]`. Without clipping, uint8 conversion wraps. |
+| `jpeg(quality)` | Fixed integer quality or inclusive `[min,max]` quality range, from 1 to 100. Requires uint8 grayscale or RGB. |
+| `rgb()` | Independent conversion of decoded gray/gray-alpha/RGB/RGBA to RGB. Replicates grayscale and discards alpha; decoding already produces RGB. |
+| `to_dtype(dtype, scale=False)` | Explicit uint8/float32 conversion. `scale=False` preserves numeric units; `scale=True` reuses `convert_image_dtype` range conversion. |
+
+For example:
+
+```python
+from rivet import vision as rv
+
+train = (
+    rv.scan_image_folder("data/train")
+    .decode_image()
+    .random_photometric_distort()
+    .random_shortest_size([256, 288, 320], max_size=480)
+    .random_crop(224, 224)
+    .jpeg([65, 95])
+    .to_dtype("float32", scale=True)
+    .gaussian_noise(sigma=.02)
+    .hwc_to_chw()
+    .seed(42)
+    .workers(4)
+    .batch(128)
+)
+```
+
+Random spatial sizes must be made uniform before batching, for example by
+cropping or resizing to a fixed size. Existing width-first dimensions, supported
+interpolation filters, PIL resize numerics and individual kernel layout/dtype
+restrictions still apply. `ToDtype` covers the two supported image dtypes; it
+does not implement torchvision's dictionary of structured annotation dtypes.
+
+
+## v2 validation (2026-11-17)
+
+The final release extension passes 609 Python tests plus 28 subtests, including
+142 P2 cases, and 256 Rust library tests with `--no-default-features`. Ruff and
+format checks pass for changed files. P2 tests cover both Python APIs, PIL
+resize/color/JPEG differential checks, Tensor dtype/noise limits, noise
+statistics, invalid arguments, channel modes and strides, probability limits,
+seed/epoch/worker reproducibility, and batch conversion. An additional manual
+JPEG comparison covered 10 random 37×41 RGB images at every quality 1–100:
+all 1000 round trips matched Pillow byte for byte in this environment. The
+quality-9 integer quantization tie case is a permanent regression test.
+
+The release CIFAR decoded benchmark used batch 128, four workers and three
+epochs. The three initial pre-change runs were 1,141,212 / 1,141,491 / 1,149,368
+img/s (mean 1,144,024, population standard deviation 3,781). After an initial
+slowdown, the original implementation was rebuilt in an isolated checkout and
+remeasured during A/B investigation: five runs averaged 1,133,186 img/s
+(standard deviation 12,235). The final five runs were 1,133,747 / 1,138,625 /
+1,122,920 / 1,127,716 / 1,138,066 img/s: mean 1,132,215, standard deviation
+6,071, -0.09% versus the rebuilt baseline and -1.03% versus the initial runs.
+
+The investigation narrowed the batch kernel to a dedicated ToDtype payload,
+keeping unrelated v2 configurations out of the ordinary batch node. Existing
+static RGB normalize and NHWC-to-NCHW writers remain intact. These measurements
+check the common decoded pipeline; they do not benchmark enabled augmentation
+kernels individually.

@@ -261,3 +261,9 @@ mod tests {
         assert_eq!(rgb.into_raw(), (12..24).collect::<Vec<u8>>());
     }
 }
+
+mod v2;
+pub use v2::V2Config;
+
+mod v2_jpeg;
+mod v2_numeric;

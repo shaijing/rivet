@@ -89,7 +89,7 @@ impl PhysicalLowering for VisionPhysicalLowering {
         // padding semantics; stage classification alone grants no permission.
         if matches!(operator.as_ref(), ImageKernel::BatchOp(node) if matches!(node.op,
             BatchKernel::Normalize(_) | BatchKernel::NormalizeToChw(_) |
-            BatchKernel::ConvertImageDtype { .. } | BatchKernel::Layout { .. }))
+            BatchKernel::ConvertImageDtype { .. } | BatchKernel::ToDtype { .. } | BatchKernel::Layout { .. }))
         {
             spec = spec.with_batch_lift_equivalence();
         }
@@ -463,6 +463,13 @@ fn compile_graph(
                     {
                         let input_layout = state_axis_order(input_state);
                         let kernel = match op {
+                            ImageOp::V2(crate::transforms::V2Config::ToDtype { dtype, scale }) => {
+                                BatchKernel::ToDtype {
+                                    dtype,
+                                    scale,
+                                    input_layout,
+                                }
+                            }
                             ImageOp::Normalize(config) => {
                                 BatchKernel::Normalize(CompiledNormalize {
                                     config,

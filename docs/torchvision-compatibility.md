@@ -95,8 +95,8 @@ torchvision API compatibility. Rivet still uses width-first dimensions and
 nonnegative crop coordinates/padding. Many color and resize kernels require
 RGB uint8 HWC input; arbitrary Tensor batches/dtypes and all PIL modes are not
 supported. A general Tensor-input torchvision pipeline may produce different
-results from the PIL path. Decoder parity, including JPEG, is outside these
-transform comparisons.
+results from the PIL path. General source-decoder parity is outside these comparisons; the standalone
+JPEG augmentation below defines its own encode/decode contract.
 
 Perspective coefficients can differ at floating-point degeneracies because the
 Rust linear solver is not LAPACK's `gels`; exact boundary ties are not guaranteed
@@ -174,3 +174,64 @@ views into the image batch and repeats labels; it does not return Python tuples
 of images. `batch(B)` counts source samples and `drop_last` preserves whole
 view groups. See the [multi-view guide](torchvision-coverage.md#multi-view-pipelines)
 for grouping metadata, random streams and current composition restrictions.
+
+
+## v2 image contracts
+
+The v2 augmentations use native image operations through both Python entry
+points. RandomPhotometricDistort follows brightness → optional early contrast
+→ saturation → hue → optional late contrast → optional channel permutation.
+Each enabled adjustment samples an independent factor from its configured
+interval, and contrast placement is an independent 50/50 draw. Its numerical
+reference is the existing PIL/RGB uint8 color implementation.
+
+RandomResize samples an integer short edge with an **exclusive** maximum, as
+in torchvision's implementation (the upstream prose describes this interval
+less precisely). RandomShortestSize samples a candidate uniformly and applies
+the long-edge cap to a shared floating scale before truncating both dimensions.
+ScaleJitter also truncates dimensions after sampling a shared scale. Resize
+filters retain Rivet's PIL reference numerics. RandomZoomOut samples a shared
+canvas ratio, truncates canvas dimensions, then samples horizontal and vertical
+placements with `int(extra_space * uniform[0,1))`; it preserves the original
+pixels and uses scalar or channel fill in the input dtype's units.
+
+GaussianNoise follows the Tensor reference instead of PIL. It accepts uint8 or
+float32 and uses normalized mean/sigma for both: uint8 multiplies them by 255,
+truncates sampled noise to int16 before addition, and clips or wraps the final
+uint8 result. Float32 adds noise directly and optionally clips to `[0,1]`.
+The normal samples use Rivet's random stream; equal parameters do not imply
+elementwise equality with PyTorch noise. Reproducibility, fixed-noise limits
+and distribution properties are tested separately.
+
+`rgb()` converts decoded channel modes independently of decoding. One or two
+channels mean gray or gray-alpha and replicate the luminance; four mean RGBA
+and discard alpha. Three channels are already RGB. This channel contract does
+not infer palette indices, CMYK or color profiles from an untyped tensor.
+
+`to_dtype("float32", scale=False)` casts uint8 to float32 without normalization.
+`to_dtype("uint8", scale=False)` truncates floats and wraps integer overflow.
+With `scale=True`, the existing image conversion applies (division by 255, or
+multiplication by `256 - 1e-3` before uint8 conversion). The default is False,
+matching v2 ToDtype; existing `convert_image_dtype` still scales by default.
+Only uint8 and float32 are supported, and no structured annotation dtype map
+is implied. Both conversions can execute after the batch barrier.
+
+
+The JPEG augmentation uses bundled MozJPEG in its `set_fastest_defaults()`
+libjpeg-v6 compatibility profile, rather than the `image` crate's JPEG encoder.
+RGB encoding explicitly selects 4:2:0 chroma subsampling; grayscale keeps one
+component. It uses baseline sequential coding with ordinary quality tables,
+without optimized entropy coding or progressive scans. The same libjpeg codec
+then decodes the result. Quality is sampled inclusively and uniformly from
+integer bounds in `[1,100]`. Fixed qualities are compared with Pillow's
+libjpeg JPEG round trip; these tests isolate augmentation from source decoding.
+Codec versions/builds can still differ slightly, so pixel comparisons allow
+one uint8 level. No Python encoder or decoder runs in the data pipeline.
+
+Spatial resize variants and photometric distortion retain the existing uint8
+HWC kernel contract. Permutation, RGB conversion, GaussianNoise and zoom-out
+support uint8/float32 in HWC or CHW; JPEG supports uint8 HWC/CHW. Arbitrary
+Tensor batch prefixes and PIL objects remain outside the native sample model.
+A sampled scale that produces a zero or unrepresentable output dimension is
+rejected rather than silently clamped. Random-size transforms need a fixed-size
+crop or resize before stacking a batch.

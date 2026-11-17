@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from ._rivet import _ImagePipeline
 from ._transforms import Transform
-from ._utils import _normalize_fill
+from ._utils import _normalize_fill, _normalize_jpeg_quality
 
 if TYPE_CHECKING:
     from ._loader import DataLoader
@@ -510,6 +510,123 @@ class Pipeline:
             ),
             as_numpy=self.as_numpy,
         )
+
+    def permute_channels(self, permutation: Iterable[int]) -> Pipeline:
+        """Reorder channels with a permutation containing each channel once."""
+        return Pipeline(
+            self._inner.permute_channels(list(permutation)), as_numpy=self.as_numpy
+        )
+
+    def random_channel_permutation(self) -> Pipeline:
+        """Uniformly shuffle image channels using the pipeline random stream."""
+        return Pipeline(
+            self._inner.random_channel_permutation(), as_numpy=self.as_numpy
+        )
+
+    def random_photometric_distort(
+        self,
+        brightness: Iterable[float] = (0.875, 1.125),
+        contrast: Iterable[float] = (0.5, 1.5),
+        saturation: Iterable[float] = (0.5, 1.5),
+        hue: Iterable[float] = (-0.05, 0.05),
+        probability: float = 0.5,
+    ) -> Pipeline:
+        """Sample brightness, contrast placement, saturation, hue and channels.
+
+        Each color adjustment and the final channel shuffle uses its own
+        probability draw. Contrast runs either before or after saturation/hue.
+        """
+        return Pipeline(
+            self._inner.random_photometric_distort(
+                list(brightness),
+                list(contrast),
+                list(saturation),
+                list(hue),
+                probability,
+            ),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_resize(
+        self, min_size: int, max_size: int, interpolation: str = "bilinear"
+    ) -> Pipeline:
+        """Resize the short edge to an integer in [min_size, max_size)."""
+        return Pipeline(
+            self._inner.random_resize(min_size, max_size, interpolation),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_shortest_size(
+        self,
+        min_size: int | Iterable[int],
+        max_size: int | None = None,
+        interpolation: str = "bilinear",
+    ) -> Pipeline:
+        """Choose a short edge uniformly, optionally capping the long edge."""
+        sizes = [min_size] if isinstance(min_size, int) else list(min_size)
+        return Pipeline(
+            self._inner.random_shortest_size(sizes, max_size, interpolation),
+            as_numpy=self.as_numpy,
+        )
+
+    def scale_jitter(
+        self,
+        width: int,
+        height: int,
+        scale_range: Iterable[float] = (0.1, 2.0),
+        interpolation: str = "bilinear",
+    ) -> Pipeline:
+        """Fit within target width/height, then sample a multiplicative scale."""
+        return Pipeline(
+            self._inner.scale_jitter(width, height, list(scale_range), interpolation),
+            as_numpy=self.as_numpy,
+        )
+
+    def random_zoom_out(
+        self,
+        fill: float | Iterable[float] = 0.0,
+        side_range: Iterable[float] = (1.0, 4.0),
+        probability: float = 0.5,
+    ) -> Pipeline:
+        """Place the image randomly on an expanded canvas with native-range fill."""
+        return Pipeline(
+            self._inner.random_zoom_out(
+                _normalize_fill(fill), list(side_range), probability
+            ),
+            as_numpy=self.as_numpy,
+        )
+
+    def gaussian_noise(
+        self, mean: float = 0.0, sigma: float = 0.1, clip: bool = True
+    ) -> Pipeline:
+        """Add Gaussian noise using mean/sigma in the [0, 1] convention.
+
+        Float32 output clips to [0, 1]; uint8 noise is scaled by 255 and clips
+        to [0, 255]. With ``clip=False``, uint8 arithmetic wraps on conversion.
+        """
+        return Pipeline(
+            self._inner.gaussian_noise(mean, sigma, clip), as_numpy=self.as_numpy
+        )
+
+    def jpeg(self, quality: int | Iterable[int]) -> Pipeline:
+        """JPEG encode/decode uint8 gray/RGB pixels; quality bounds are inclusive.
+
+        Uses libjpeg-compatible encoding with 4:2:0 chroma subsampling for RGB;
+        grayscale uses one component. Quality is sampled once per image.
+        """
+        qualities = _normalize_jpeg_quality(quality)
+        return Pipeline(self._inner.jpeg(qualities), as_numpy=self.as_numpy)
+
+    def rgb(self) -> Pipeline:
+        """Convert decoded grayscale/gray-alpha/RGB/RGBA pixels to RGB.
+
+        Alpha is discarded. Image decoding already produces RGB by default.
+        """
+        return Pipeline(self._inner.rgb(), as_numpy=self.as_numpy)
+
+    def to_dtype(self, dtype: str, scale: bool = False) -> Pipeline:
+        """Convert uint8/float32, scaling between [0,255] and [0,1] if requested."""
+        return Pipeline(self._inner.to_dtype(dtype, scale), as_numpy=self.as_numpy)
 
     def convert_image_dtype(self, dtype: str) -> Pipeline:
         return Pipeline(self._inner.convert_image_dtype(dtype), as_numpy=self.as_numpy)

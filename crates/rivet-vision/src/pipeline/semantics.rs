@@ -54,7 +54,8 @@ pub(crate) fn image_semantics(op: &ImageOp) -> OperatorSemantics {
             randomness: Randomness::None,
             may_error: true,
         },
-        ImageOp::Decode(_)
+        ImageOp::V2(_)
+        | ImageOp::Decode(_)
         | ImageOp::LinearTransformation(_)
         | ImageOp::AutoAugment(_)
         | ImageOp::RandAugment(_)

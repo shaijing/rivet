@@ -4,7 +4,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rivet_vision::api::{
     DType, ElasticTransformConfig, ImagePipeline, InterpolationMode, PerspectiveConfig, Point2,
-    RandomAffineConfig, RandomPerspectiveConfig, RotationAngle, TransformSequence,
+    RandomAffineConfig, RandomPerspectiveConfig, RotationAngle, TransformSequence, V2Config,
 };
 
 fn parse_pair<T: Clone + std::fmt::Debug>(
@@ -751,6 +751,169 @@ impl PyTransform {
         };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
+        })
+    }
+
+    fn permute_channels(&self, permutation: Vec<usize>) -> PyResult<Self> {
+        let config = V2Config::PermuteChannels(permutation);
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    fn random_channel_permutation(&self) -> Self {
+        Self {
+            inner: self
+                .inner
+                .clone()
+                .v2(V2Config::RandomChannelPermutation { probability: 1.0 }),
+        }
+    }
+
+    #[pyo3(signature = (brightness, contrast, saturation, hue, probability=0.5))]
+    fn random_photometric_distort(
+        &self,
+        brightness: Vec<f32>,
+        contrast: Vec<f32>,
+        saturation: Vec<f32>,
+        hue: Vec<f32>,
+        probability: f64,
+    ) -> PyResult<Self> {
+        let brightness = parse_pair(Some(brightness), "brightness", [0.875, 1.125])?;
+        let contrast = parse_pair(Some(contrast), "contrast", [0.5, 1.5])?;
+        let saturation = parse_pair(Some(saturation), "saturation", [0.5, 1.5])?;
+        let hue = parse_pair(Some(hue), "hue", [-0.05, 0.05])?;
+        let config = V2Config::RandomPhotometricDistort {
+            brightness: (brightness[0], brightness[1]),
+            contrast: (contrast[0], contrast[1]),
+            saturation: (saturation[0], saturation[1]),
+            hue: (hue[0], hue[1]),
+            probability,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (min_size, max_size, interpolation="bilinear"))]
+    fn random_resize(&self, min_size: u32, max_size: u32, interpolation: &str) -> PyResult<Self> {
+        let config = V2Config::RandomResize {
+            min_size,
+            max_size,
+            interpolation: parse_interpolation(interpolation)?,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (min_sizes, max_size=None, interpolation="bilinear"))]
+    fn random_shortest_size(
+        &self,
+        min_sizes: Vec<u32>,
+        max_size: Option<u32>,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        let config = V2Config::RandomShortestSize {
+            min_sizes,
+            max_size,
+            interpolation: parse_interpolation(interpolation)?,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (width, height, scale_range, interpolation="bilinear"))]
+    fn scale_jitter(
+        &self,
+        width: u32,
+        height: u32,
+        scale_range: Vec<f64>,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        let range = parse_pair(Some(scale_range), "scale_range", [0.1, 2.0])?;
+        let config = V2Config::ScaleJitter {
+            target_width: width,
+            target_height: height,
+            scale_range: (range[0], range[1]),
+            interpolation: parse_interpolation(interpolation)?,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (fill, side_range, probability=0.5))]
+    fn random_zoom_out(
+        &self,
+        fill: &Bound<'_, PyAny>,
+        side_range: Vec<f64>,
+        probability: f64,
+    ) -> PyResult<Self> {
+        let fill = if let Ok(value) = fill.extract::<f32>() {
+            vec![value]
+        } else {
+            fill.extract::<Vec<f32>>()?
+        };
+        let range = parse_pair(Some(side_range), "side_range", [1.0, 4.0])?;
+        let config = V2Config::RandomZoomOut {
+            fill,
+            side_range: (range[0], range[1]),
+            probability,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (mean=0.0, sigma=0.1, clip=true))]
+    fn gaussian_noise(&self, mean: f64, sigma: f64, clip: bool) -> PyResult<Self> {
+        let config = V2Config::GaussianNoise { mean, sigma, clip };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    fn jpeg(&self, quality: Vec<u8>) -> PyResult<Self> {
+        let range = parse_pair(Some(quality), "quality", [1, 100])?;
+        let config = V2Config::Jpeg {
+            quality: (range[0], range[1]),
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    fn rgb(&self) -> Self {
+        Self {
+            inner: self.inner.clone().v2(V2Config::Rgb),
+        }
+    }
+
+    #[pyo3(signature = (dtype, scale=false))]
+    fn to_dtype(&self, dtype: &str, scale: bool) -> PyResult<Self> {
+        let dtype = match dtype.trim().to_ascii_lowercase().as_str() {
+            "uint8" | "u8" => DType::U8,
+            "float32" | "f32" => DType::F32,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "dtype must be uint8/u8 or float32/f32",
+                ));
+            }
+        };
+        let config = V2Config::ToDtype { dtype, scale };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 
@@ -1605,6 +1768,169 @@ impl PyImagePipeline {
         };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
+        })
+    }
+
+    fn permute_channels(&self, permutation: Vec<usize>) -> PyResult<Self> {
+        let config = V2Config::PermuteChannels(permutation);
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    fn random_channel_permutation(&self) -> Self {
+        Self {
+            inner: self
+                .inner
+                .clone()
+                .v2(V2Config::RandomChannelPermutation { probability: 1.0 }),
+        }
+    }
+
+    #[pyo3(signature = (brightness, contrast, saturation, hue, probability=0.5))]
+    fn random_photometric_distort(
+        &self,
+        brightness: Vec<f32>,
+        contrast: Vec<f32>,
+        saturation: Vec<f32>,
+        hue: Vec<f32>,
+        probability: f64,
+    ) -> PyResult<Self> {
+        let brightness = parse_pair(Some(brightness), "brightness", [0.875, 1.125])?;
+        let contrast = parse_pair(Some(contrast), "contrast", [0.5, 1.5])?;
+        let saturation = parse_pair(Some(saturation), "saturation", [0.5, 1.5])?;
+        let hue = parse_pair(Some(hue), "hue", [-0.05, 0.05])?;
+        let config = V2Config::RandomPhotometricDistort {
+            brightness: (brightness[0], brightness[1]),
+            contrast: (contrast[0], contrast[1]),
+            saturation: (saturation[0], saturation[1]),
+            hue: (hue[0], hue[1]),
+            probability,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (min_size, max_size, interpolation="bilinear"))]
+    fn random_resize(&self, min_size: u32, max_size: u32, interpolation: &str) -> PyResult<Self> {
+        let config = V2Config::RandomResize {
+            min_size,
+            max_size,
+            interpolation: parse_interpolation(interpolation)?,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (min_sizes, max_size=None, interpolation="bilinear"))]
+    fn random_shortest_size(
+        &self,
+        min_sizes: Vec<u32>,
+        max_size: Option<u32>,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        let config = V2Config::RandomShortestSize {
+            min_sizes,
+            max_size,
+            interpolation: parse_interpolation(interpolation)?,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (width, height, scale_range, interpolation="bilinear"))]
+    fn scale_jitter(
+        &self,
+        width: u32,
+        height: u32,
+        scale_range: Vec<f64>,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        let range = parse_pair(Some(scale_range), "scale_range", [0.1, 2.0])?;
+        let config = V2Config::ScaleJitter {
+            target_width: width,
+            target_height: height,
+            scale_range: (range[0], range[1]),
+            interpolation: parse_interpolation(interpolation)?,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (fill, side_range, probability=0.5))]
+    fn random_zoom_out(
+        &self,
+        fill: &Bound<'_, PyAny>,
+        side_range: Vec<f64>,
+        probability: f64,
+    ) -> PyResult<Self> {
+        let fill = if let Ok(value) = fill.extract::<f32>() {
+            vec![value]
+        } else {
+            fill.extract::<Vec<f32>>()?
+        };
+        let range = parse_pair(Some(side_range), "side_range", [1.0, 4.0])?;
+        let config = V2Config::RandomZoomOut {
+            fill,
+            side_range: (range[0], range[1]),
+            probability,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (mean=0.0, sigma=0.1, clip=true))]
+    fn gaussian_noise(&self, mean: f64, sigma: f64, clip: bool) -> PyResult<Self> {
+        let config = V2Config::GaussianNoise { mean, sigma, clip };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    fn jpeg(&self, quality: Vec<u8>) -> PyResult<Self> {
+        let range = parse_pair(Some(quality), "quality", [1, 100])?;
+        let config = V2Config::Jpeg {
+            quality: (range[0], range[1]),
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    fn rgb(&self) -> Self {
+        Self {
+            inner: self.inner.clone().v2(V2Config::Rgb),
+        }
+    }
+
+    #[pyo3(signature = (dtype, scale=false))]
+    fn to_dtype(&self, dtype: &str, scale: bool) -> PyResult<Self> {
+        let dtype = match dtype.trim().to_ascii_lowercase().as_str() {
+            "uint8" | "u8" => DType::U8,
+            "float32" | "f32" => DType::F32,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "dtype must be uint8/u8 or float32/f32",
+                ));
+            }
+        };
+        let config = V2Config::ToDtype { dtype, scale };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

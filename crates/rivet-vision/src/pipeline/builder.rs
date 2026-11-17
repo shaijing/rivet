@@ -77,6 +77,12 @@ impl ImagePipeline {
         }
     }
 
+    /// Add a torchvision v2 image transform.
+    pub fn v2(mut self, config: crate::transforms::V2Config) -> Self {
+        self.push_image(ImageOp::V2(config));
+        self
+    }
+
     pub fn auto_augment(mut self, config: crate::transforms::AutoAugmentConfig) -> Self {
         self.push_image(ImageOp::AutoAugment(config));
         self

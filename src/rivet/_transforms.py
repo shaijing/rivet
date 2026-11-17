@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 
 from ._rivet import _Transform
-from ._utils import _normalize_fill
+from ._utils import _normalize_fill, _normalize_jpeg_quality
 
 
 class Transform:
@@ -414,6 +414,110 @@ class Transform:
                 value if isinstance(value, (int, float, str)) else list(value),
             )
         )
+
+    def permute_channels(self, permutation: Iterable[int]) -> Transform:
+        """Reorder channels with a permutation containing each channel once."""
+        return Transform(self._inner.permute_channels(list(permutation)))
+
+    def random_channel_permutation(self) -> Transform:
+        """Uniformly shuffle image channels using the pipeline random stream."""
+        return Transform(self._inner.random_channel_permutation())
+
+    def random_photometric_distort(
+        self,
+        brightness: Iterable[float] = (0.875, 1.125),
+        contrast: Iterable[float] = (0.5, 1.5),
+        saturation: Iterable[float] = (0.5, 1.5),
+        hue: Iterable[float] = (-0.05, 0.05),
+        probability: float = 0.5,
+    ) -> Transform:
+        """Sample brightness, contrast placement, saturation, hue and channels.
+
+        Each color adjustment and the final channel shuffle uses its own
+        probability draw. Contrast runs either before or after saturation/hue.
+        """
+        return Transform(
+            self._inner.random_photometric_distort(
+                list(brightness),
+                list(contrast),
+                list(saturation),
+                list(hue),
+                probability,
+            )
+        )
+
+    def random_resize(
+        self, min_size: int, max_size: int, interpolation: str = "bilinear"
+    ) -> Transform:
+        """Resize the short edge to an integer in [min_size, max_size)."""
+        return Transform(self._inner.random_resize(min_size, max_size, interpolation))
+
+    def random_shortest_size(
+        self,
+        min_size: int | Iterable[int],
+        max_size: int | None = None,
+        interpolation: str = "bilinear",
+    ) -> Transform:
+        """Choose a short edge uniformly, optionally capping the long edge."""
+        sizes = [min_size] if isinstance(min_size, int) else list(min_size)
+        return Transform(
+            self._inner.random_shortest_size(sizes, max_size, interpolation)
+        )
+
+    def scale_jitter(
+        self,
+        width: int,
+        height: int,
+        scale_range: Iterable[float] = (0.1, 2.0),
+        interpolation: str = "bilinear",
+    ) -> Transform:
+        """Fit within target width/height, then sample a multiplicative scale."""
+        return Transform(
+            self._inner.scale_jitter(width, height, list(scale_range), interpolation)
+        )
+
+    def random_zoom_out(
+        self,
+        fill: float | Iterable[float] = 0.0,
+        side_range: Iterable[float] = (1.0, 4.0),
+        probability: float = 0.5,
+    ) -> Transform:
+        """Place the image randomly on an expanded canvas with native-range fill."""
+        return Transform(
+            self._inner.random_zoom_out(
+                _normalize_fill(fill), list(side_range), probability
+            )
+        )
+
+    def gaussian_noise(
+        self, mean: float = 0.0, sigma: float = 0.1, clip: bool = True
+    ) -> Transform:
+        """Add Gaussian noise using mean/sigma in the [0, 1] convention.
+
+        Float32 output clips to [0, 1]; uint8 noise is scaled by 255 and clips
+        to [0, 255]. With ``clip=False``, uint8 arithmetic wraps on conversion.
+        """
+        return Transform(self._inner.gaussian_noise(mean, sigma, clip))
+
+    def jpeg(self, quality: int | Iterable[int]) -> Transform:
+        """JPEG encode/decode uint8 gray/RGB pixels; quality bounds are inclusive.
+
+        Uses libjpeg-compatible encoding with 4:2:0 chroma subsampling for RGB;
+        grayscale uses one component. Quality is sampled once per image.
+        """
+        qualities = _normalize_jpeg_quality(quality)
+        return Transform(self._inner.jpeg(qualities))
+
+    def rgb(self) -> Transform:
+        """Convert decoded grayscale/gray-alpha/RGB/RGBA pixels to RGB.
+
+        Alpha is discarded. Image decoding already produces RGB by default.
+        """
+        return Transform(self._inner.rgb())
+
+    def to_dtype(self, dtype: str, scale: bool = False) -> Transform:
+        """Convert uint8/float32, scaling between [0,255] and [0,1] if requested."""
+        return Transform(self._inner.to_dtype(dtype, scale))
 
     def convert_image_dtype(self, dtype: str) -> Transform:
         return Transform(self._inner.convert_image_dtype(dtype))

@@ -267,6 +267,73 @@ pub(crate) fn infer_image_op(
     use PipelineImageState::{Decoded, Encoded};
     let mut output = input.clone();
     match op {
+        ImageOp::V2(config) => {
+            use crate::transforms::V2Config;
+            require_u8_or_f32_decoded(input_state, op.name())?;
+            match config {
+                V2Config::RandomResize { .. }
+                | V2Config::RandomShortestSize { .. }
+                | V2Config::ScaleJitter { .. } => {
+                    require_u8_hwc(input_state, op.name())?;
+                    make_spatial_dynamic(&mut output);
+                }
+                V2Config::RandomZoomOut {
+                    probability,
+                    side_range,
+                    fill,
+                } => {
+                    if fill.len() == 3 && matches!(channel_dim(input), ShapeDim::Known(c) if c != 3)
+                    {
+                        return Err(invalid_pipeline(
+                            "per-channel zoom out fill requires three channels",
+                        ));
+                    }
+                    if *probability != 0.0 && *side_range != (1.0, 1.0) {
+                        make_spatial_dynamic(&mut output);
+                    }
+                }
+                V2Config::RandomPhotometricDistort { .. } => {
+                    require_u8_hwc(input_state, op.name())?;
+                }
+                V2Config::Jpeg { .. } => {
+                    if !matches!(
+                        input_state,
+                        Decoded {
+                            dtype: CoreDType::U8,
+                            ..
+                        }
+                    ) {
+                        return Err(invalid_pipeline("JPEG requires uint8 input"));
+                    }
+                    if matches!(channel_dim(input), ShapeDim::Known(c) if c != 1 && c != 3) {
+                        return Err(invalid_pipeline("JPEG requires one or three channels"));
+                    }
+                }
+                V2Config::Rgb => {
+                    if matches!(channel_dim(input), ShapeDim::Known(c) if !(1..=4).contains(&c)) {
+                        return Err(invalid_pipeline("RGB requires one to four channels"));
+                    }
+                    set_channel_dim(&mut output, ShapeDim::Known(3));
+                }
+                V2Config::PermuteChannels(order) => {
+                    if let ShapeDim::Known(c) = channel_dim(input) {
+                        if order.len() != c
+                            || order.iter().any(|&i| i >= c)
+                            || (0..c).any(|i| !order.contains(&i))
+                        {
+                            return Err(invalid_pipeline(
+                                "channel order must be a permutation of the input channels",
+                            ));
+                        }
+                    }
+                }
+                V2Config::ToDtype { dtype, .. } => {
+                    output.dtype = Some(core_dtype(*dtype));
+                }
+                V2Config::GaussianNoise { .. } | V2Config::RandomChannelPermutation { .. } => {}
+            }
+            output.contiguity = Some(Contiguity::Unknown);
+        }
         ImageOp::Decode(_) => match input_state {
             Encoded => {
                 output = image_properties(
@@ -1224,5 +1291,69 @@ mod tests {
             output.shape.as_ref().unwrap().dims(),
             [ShapeDim::Known(3), ShapeDim::Known(6), ShapeDim::Known(8)]
         );
+    }
+    #[test]
+    fn v2_inference_tracks_dtype_channels_and_random_spatial_extents() {
+        use crate::transforms::{InterpolationMode, V2Config};
+        let input = decoded_properties(DataType::U8);
+        let output = infer_image_op(
+            &ImageOp::V2(V2Config::ToDtype {
+                dtype: CoreDType::F32,
+                scale: false,
+            }),
+            &input,
+        )
+        .unwrap();
+        assert_eq!(output.dtype, Some(DataType::F32));
+        assert_eq!(output.shape, input.shape);
+        let random = infer_image_op(
+            &ImageOp::V2(V2Config::RandomResize {
+                min_size: 3,
+                max_size: 8,
+                interpolation: InterpolationMode::Bilinear,
+            }),
+            &input,
+        )
+        .unwrap();
+        assert_eq!(
+            random.shape.unwrap().dims(),
+            [ShapeDim::Dynamic, ShapeDim::Dynamic, ShapeDim::Known(3)]
+        );
+        let unchanged = infer_image_op(
+            &ImageOp::V2(V2Config::RandomZoomOut {
+                fill: vec![0.0],
+                side_range: (1.0, 4.0),
+                probability: 0.0,
+            }),
+            &input,
+        )
+        .unwrap();
+        assert_eq!(unchanged.shape, input.shape);
+        assert!(
+            infer_image_op(
+                &ImageOp::V2(V2Config::PermuteChannels(vec![0, 0, 1])),
+                &input
+            )
+            .is_err()
+        );
+        let float = decoded_properties(DataType::F32);
+        assert!(
+            infer_image_op(&ImageOp::V2(V2Config::Jpeg { quality: (50, 80) }), &float).is_err()
+        );
+        assert!(
+            infer_image_op(
+                &ImageOp::V2(V2Config::RandomResize {
+                    min_size: 3,
+                    max_size: 8,
+                    interpolation: InterpolationMode::Bilinear
+                }),
+                &float
+            )
+            .is_err()
+        );
+        let mut gray = input.clone();
+        set_channel_dim(&mut gray, ShapeDim::Known(1));
+        let rgb = infer_image_op(&ImageOp::V2(V2Config::Rgb), &gray).unwrap();
+        assert_eq!(channel_dim(&rgb), ShapeDim::Known(3));
     }
 }

@@ -77,6 +77,11 @@ pub(crate) enum SampleKernel {
 
 #[derive(Clone)]
 pub(crate) enum BatchKernel {
+    ToDtype {
+        dtype: DType,
+        scale: bool,
+        input_layout: ImageAxisOrder,
+    },
     Normalize(CompiledNormalize),
     NormalizeToChw(CompiledNormalize),
     ConvertImageDtype {
@@ -221,6 +226,7 @@ impl BatchKernel {
 
     pub(crate) fn name(&self) -> &'static str {
         match self {
+            Self::ToDtype { .. } => "ToDtype",
             Self::Normalize(_) => "Normalize",
             Self::NormalizeToChw(_) => "NormalizeToChw",
             Self::ConvertImageDtype { .. } => "ConvertImageDtype",
@@ -230,6 +236,13 @@ impl BatchKernel {
 
     pub(crate) fn transition(&self, input: PipelineImageState) -> RivetResult<PipelineImageState> {
         match self {
+            Self::ToDtype { dtype, scale, .. } => {
+                ImageOp::V2(crate::transforms::V2Config::ToDtype {
+                    dtype: *dtype,
+                    scale: *scale,
+                })
+                .transition(input)
+            }
             Self::Normalize(op) => ImageOp::Normalize(op.config.clone()).transition(input),
             Self::ConvertImageDtype { config, .. } => {
                 ImageOp::ConvertImageDtype(config.clone()).transition(input)
@@ -250,6 +263,15 @@ impl BatchKernel {
 
     pub(crate) fn execute(&self, batch: rivet_core::Tensor) -> RivetResult<rivet_core::Tensor> {
         match self {
+            Self::ToDtype {
+                dtype,
+                scale,
+                input_layout,
+            } => crate::transforms::V2Config::ToDtype {
+                dtype: *dtype,
+                scale: *scale,
+            }
+            .apply_batch(batch, *input_layout),
             Self::Normalize(op) => op.config.apply_batch_trusted(batch, op.input_layout),
             Self::NormalizeToChw(op) => {
                 debug_assert_eq!(op.input_layout, ImageAxisOrder::Hwc);

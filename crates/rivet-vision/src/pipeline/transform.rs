@@ -42,6 +42,12 @@ impl TransformSequence {
         self.ops
     }
 
+    /// Add a torchvision v2 image transform.
+    pub fn v2(mut self, config: crate::transforms::V2Config) -> Self {
+        self.ops.push(ImageOp::V2(config));
+        self
+    }
+
     pub fn auto_augment(mut self, config: crate::transforms::AutoAugmentConfig) -> Self {
         self.ops.push(ImageOp::AutoAugment(config));
         self

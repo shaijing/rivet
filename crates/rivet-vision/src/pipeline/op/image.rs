@@ -40,6 +40,7 @@ pub enum ExecutionKind {
 #[derive(Clone)]
 pub enum ImageOp {
     Decode(DecodeImageConfig),
+    V2(crate::transforms::V2Config),
     LinearTransformation(LinearTransformationConfig),
     AutoAugment(AutoAugmentConfig),
     RandAugment(RandAugmentConfig),
@@ -112,6 +113,7 @@ impl ImageOp {
     /// Stable semantic name used to assign per-operator random namespaces.
     pub fn random_key_kind(&self) -> Option<&'static str> {
         match self {
+            Self::V2(op) => op.is_random().then(|| op.name()),
             Self::RandomRotation(_) => Some("RandomRotation"),
             Self::RandomGaussianBlur(_) => Some("RandomGaussianBlur"),
             Self::AutoAugment(_) => Some("AutoAugment"),
@@ -136,6 +138,8 @@ impl ImageOp {
 
     pub fn execution_kind(&self) -> ExecutionKind {
         match self {
+            Self::V2(crate::transforms::V2Config::ToDtype { .. }) => ExecutionKind::Batch,
+            Self::V2(_) => ExecutionKind::Sample,
             Self::Normalize(_) | Self::ConvertImageDtype(_) | Self::Layout(_) => {
                 ExecutionKind::Batch
             }
@@ -189,6 +193,7 @@ impl ImageOp {
 
     pub fn name(&self) -> &'static str {
         match self {
+            Self::V2(op) => op.name(),
             Self::Saturation(_) => "Saturation",
             Self::Gamma(_) => "Gamma",
             Self::Affine(_) => "Affine",
@@ -244,6 +249,7 @@ impl ImageOp {
     /// protocol. Keep these values stable when variants are reordered.
     pub const fn planning_op_id(&self) -> u32 {
         match self {
+            Self::V2(op) => op.planning_op_id(),
             Self::Saturation(_) => 36,
             Self::Gamma(_) => 37,
             Self::Affine(_) => 38,
@@ -333,6 +339,11 @@ impl ImageOp {
             PipelineImageState::Decoded { axis_order, .. } => axis_order,
         };
         match self {
+            Self::V2(op) => {
+                let mut rng =
+                    ctx.stream(random_key.unwrap_or_else(|| OpKey::from_parts(op.name(), 0)));
+                op.apply(sample, input_layout, &mut rng)
+            }
             Self::Saturation(op) => op.apply(sample),
             Self::Gamma(op) => op.apply(sample),
             Self::Affine(op) => op.apply(sample, input_layout),
@@ -519,6 +530,7 @@ impl ImageOp {
         input_layout: ImageAxisOrder,
     ) -> RivetResult<rivet_core::Tensor> {
         match self {
+            Self::V2(op) => op.apply_batch(batch, input_layout),
             Self::Normalize(op) => op.apply_batch(batch, input_layout),
             Self::ConvertImageDtype(op) => op.apply_batch(batch, input_layout),
             Self::Layout(op) => op.apply_batch(batch, input_layout),
@@ -786,6 +798,7 @@ impl ImageOp {
     /// pipeline; that is `transition`'s job).
     pub fn validate(&self) -> RivetResult<()> {
         match self {
+            Self::V2(op) => op.validate(),
             Self::LinearTransformation(op) => op.validate(),
             Self::AutoAugment(op) => op.validate(),
             Self::RandAugment(op) => op.validate(),
