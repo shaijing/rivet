@@ -76,9 +76,17 @@ pub enum ImageOp {
     Perspective(PerspectiveConfig),
     RandomPerspective(RandomPerspectiveConfig),
     ElasticTransform(ElasticTransformConfig),
-    RandomApply { probability: f64, ops: Vec<ImageOp> },
-    RandomChoice { choices: Vec<Vec<ImageOp>> },
-    RandomOrder { ops: Vec<ImageOp> },
+    RandomApply {
+        probability: f64,
+        ops: Vec<ImageOp>,
+    },
+    RandomChoice {
+        choices: Vec<Vec<ImageOp>>,
+        weights: Option<Vec<f64>>,
+    },
+    RandomOrder {
+        ops: Vec<ImageOp>,
+    },
     GaussianBlur(GaussianBlurConfig),
     Grayscale(GrayscaleConfig),
     RandomGrayscale(RandomGrayscaleConfig),
@@ -399,14 +407,15 @@ impl ImageOp {
                         .map(|(sample, _)| sample)
                 }
             }
-            Self::RandomChoice { choices } => {
+            Self::RandomChoice { choices, weights } => {
                 let mut rng = required_rng(ctx, random_key, self.name())?;
                 let index = if choices.is_empty() {
                     return Err(invalid_argument(
                         "random_choice requires at least one choice",
                     ));
                 } else {
-                    rng.gen_range_usize(0..choices.len())?
+                    let cumulative = choice_cumulative_weights(choices.len(), weights.as_deref())?;
+                    choose_branch(&mut rng, choices.len(), cumulative.as_deref())?
                 };
                 apply_sequence(
                     sample,
@@ -517,6 +526,14 @@ impl ImageOp {
         Self::Resize(ResizeConfig::new(width, height))
     }
 
+    pub fn resize_short_edge(
+        size: u32,
+        max_size: Option<u32>,
+        interpolation: InterpolationMode,
+    ) -> Self {
+        Self::Resize(ResizeConfig::short_edge(size, max_size, interpolation))
+    }
+
     pub fn resize_with_interpolation(
         width: u32,
         height: u32,
@@ -551,6 +568,10 @@ impl ImageOp {
 
     pub fn random_crop(width: u32, height: u32, padding: u32) -> Self {
         Self::RandomCrop(RandomCropConfig::new(width, height, padding))
+    }
+
+    pub fn random_crop_with_config(config: RandomCropConfig) -> Self {
+        Self::RandomCrop(config)
     }
 
     pub fn random_resized_crop(width: u32, height: u32) -> Self {
@@ -630,6 +651,10 @@ impl ImageOp {
         ))
     }
 
+    pub fn arbitrary_rotate_with_config(config: ArbitraryRotateConfig) -> Self {
+        Self::ArbitraryRotate(config)
+    }
+
     pub fn random_affine(degrees: f32) -> Self {
         Self::RandomAffine(RandomAffineConfig::new(degrees))
     }
@@ -670,7 +695,17 @@ impl ImageOp {
     }
 
     pub fn random_choice(choices: Vec<Vec<Self>>) -> Self {
-        Self::RandomChoice { choices }
+        Self::RandomChoice {
+            choices,
+            weights: None,
+        }
+    }
+
+    pub fn random_choice_with_weights(choices: Vec<Vec<Self>>, weights: Vec<f64>) -> Self {
+        Self::RandomChoice {
+            choices,
+            weights: Some(weights),
+        }
     }
 
     pub fn random_order(ops: Vec<Self>) -> Self {
@@ -737,14 +772,7 @@ impl ImageOp {
             Self::RandomGaussianBlur(op) => op.validate(),
 
             Self::Decode(_) | Self::Flip(_) | Self::Layout(_) => Ok(()),
-            Self::Resize(op) => {
-                if op.width == 0 || op.height == 0 {
-                    return Err(invalid_argument(
-                        "resize width and height must be greater than 0",
-                    ));
-                }
-                Ok(())
-            }
+            Self::Resize(op) => op.validate(),
             Self::Crop(op) => {
                 if op.width == 0 || op.height == 0 {
                     return Err(invalid_argument(
@@ -762,14 +790,7 @@ impl ImageOp {
                 Ok(())
             }
             Self::Pad(op) => op.validate(),
-            Self::RandomCrop(op) => {
-                if op.width == 0 || op.height == 0 {
-                    return Err(invalid_argument(
-                        "random_crop width and height must be greater than 0",
-                    ));
-                }
-                Ok(())
-            }
+            Self::RandomCrop(op) => op.validate(),
             Self::RandomResizedCrop(op) => op.validate(),
             Self::RandomHorizontalFlip(op) => {
                 if !(0.0..=1.0).contains(&op.probability) {
@@ -797,12 +818,13 @@ impl ImageOp {
                 validate_probability(*probability, "random_apply")?;
                 validate_nested_ops(ops, "random_apply")
             }
-            Self::RandomChoice { choices } => {
+            Self::RandomChoice { choices, weights } => {
                 if choices.is_empty() {
                     return Err(invalid_argument(
                         "random_choice requires at least one choice",
                     ));
                 }
+                choice_cumulative_weights(choices.len(), weights.as_deref())?;
                 for choice in choices {
                     validate_nested_ops(choice, "random_choice")?;
                 }
@@ -892,4 +914,102 @@ fn required_rng(
     random_key
         .map(|key| ctx.stream(key))
         .ok_or_else(|| invalid_pipeline(format!("{op_name} is missing its random key")))
+}
+
+/// Validate relative weights and precompute a normalized cumulative distribution.
+/// None preserves the existing uniform integer sampler and its random stream.
+pub(crate) fn choice_cumulative_weights(
+    count: usize,
+    weights: Option<&[f64]>,
+) -> RivetResult<Option<Vec<f64>>> {
+    if count == 0 {
+        return Err(invalid_argument(
+            "random_choice requires at least one choice",
+        ));
+    }
+    let Some(weights) = weights else {
+        return Ok(None);
+    };
+    if weights.len() != count {
+        return Err(invalid_argument(
+            "random_choice weights must match the number of choices",
+        ));
+    }
+    if weights
+        .iter()
+        .any(|weight| !weight.is_finite() || *weight < 0.0)
+    {
+        return Err(invalid_argument(
+            "random_choice weights must be finite and non-negative",
+        ));
+    }
+    let total: f64 = weights.iter().sum();
+    if !total.is_finite() || total <= 0.0 {
+        return Err(invalid_argument(
+            "random_choice weights must have a finite positive sum",
+        ));
+    }
+    let mut sum = 0.0;
+    let mut cumulative: Vec<f64> = weights
+        .iter()
+        .map(|weight| {
+            sum += weight / total;
+            sum
+        })
+        .collect();
+    // Avoid rounding leaving a draw outside the distribution. Preserve trailing
+    // zero-weight branches by saturating at the final positive weight.
+    let last_positive = weights.iter().rposition(|weight| *weight > 0.0).unwrap();
+    cumulative[last_positive..].fill(1.0);
+    Ok(Some(cumulative))
+}
+
+pub(crate) fn choose_branch(
+    rng: &mut RandomStream,
+    count: usize,
+    cumulative: Option<&[f64]>,
+) -> RivetResult<usize> {
+    match cumulative {
+        None => Ok(rng.gen_range_usize(0..count)?),
+        Some(cumulative) => {
+            let draw = rng.next_f64();
+            Ok(cumulative
+                .partition_point(|&upper| upper <= draw)
+                .min(count - 1))
+        }
+    }
+}
+
+#[cfg(test)]
+mod choice_weight_tests {
+    use super::choice_cumulative_weights;
+
+    #[test]
+    fn uniform_choice_keeps_original_sampler() {
+        assert_eq!(choice_cumulative_weights(3, None).unwrap(), None);
+    }
+
+    #[test]
+    fn normalizes_weights_and_preserves_zero_probability_branches() {
+        assert_eq!(
+            choice_cumulative_weights(4, Some(&[0.0, 1.0, 3.0, 0.0])).unwrap(),
+            Some(vec![0.0, 0.25, 1.0, 1.0])
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_choice_weights() {
+        assert!(choice_cumulative_weights(0, None).is_err());
+        for weights in [
+            vec![],
+            vec![1.0],
+            vec![0.0, 0.0],
+            vec![-1.0, 2.0],
+            vec![f64::NAN, 1.0],
+            vec![f64::INFINITY, 1.0],
+            vec![f64::MAX, f64::MAX],
+        ] {
+            assert!(choice_cumulative_weights(2, Some(&weights)).is_err());
+        }
+    }
 }

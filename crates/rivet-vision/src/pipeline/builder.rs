@@ -4,8 +4,8 @@ use crate::runtime::RuntimeConfig;
 use crate::sample::image::EncodedImageSample;
 use crate::source::ImageSource;
 use crate::transforms::{
-    ElasticTransformConfig, InterpolationMode, PerspectiveConfig, Point2, RandomAffineConfig,
-    RandomErasingConfig, RandomPerspectiveConfig, RandomResizedCropConfig,
+    ArbitraryRotateConfig, ElasticTransformConfig, InterpolationMode, PerspectiveConfig, Point2,
+    RandomAffineConfig, RandomErasingConfig, RandomPerspectiveConfig, RandomResizedCropConfig,
 };
 use rivet_core::DType;
 use rivet_data::dataset::Dataset;
@@ -220,6 +220,25 @@ impl ImagePipeline {
         self
     }
 
+    pub fn resize_short_edge(mut self, size: u32, max_size: Option<u32>) -> Self {
+        self.push_image(ImageOp::resize_short_edge(
+            size,
+            max_size,
+            crate::transforms::InterpolationMode::Bilinear,
+        ));
+        self
+    }
+
+    pub fn resize_short_edge_with_interpolation(
+        mut self,
+        size: u32,
+        max_size: Option<u32>,
+        interpolation: crate::transforms::InterpolationMode,
+    ) -> Self {
+        self.push_image(ImageOp::resize_short_edge(size, max_size, interpolation));
+        self
+    }
+
     pub fn resize_with_interpolation(
         mut self,
         width: u32,
@@ -289,6 +308,11 @@ impl ImagePipeline {
     /// the same augmentations at any worker count.
     pub fn random_crop(mut self, width: u32, height: u32, padding: u32) -> Self {
         self.push_image(ImageOp::random_crop(width, height, padding));
+        self
+    }
+
+    pub fn random_crop_with_config(mut self, config: crate::transforms::RandomCropConfig) -> Self {
+        self.push_image(ImageOp::random_crop_with_config(config));
         self
     }
 
@@ -423,6 +447,11 @@ impl ImagePipeline {
         self
     }
 
+    pub fn arbitrary_rotate_with_config(mut self, config: ArbitraryRotateConfig) -> Self {
+        self.push_image(ImageOp::arbitrary_rotate_with_config(config));
+        self
+    }
+
     pub fn random_affine(mut self, degrees: f32) -> Self {
         self.push_image(ImageOp::random_affine(degrees));
         self
@@ -497,6 +526,22 @@ impl ImagePipeline {
                 .into_iter()
                 .map(TransformSequence::into_ops)
                 .collect(),
+        ));
+        self
+    }
+
+    /// Choose a transform sequence using nonnegative relative weights.
+    pub fn random_choice_with_weights(
+        mut self,
+        choices: Vec<TransformSequence>,
+        weights: Vec<f64>,
+    ) -> Self {
+        self.push_image(ImageOp::random_choice_with_weights(
+            choices
+                .into_iter()
+                .map(TransformSequence::into_ops)
+                .collect(),
+            weights,
         ));
         self
     }

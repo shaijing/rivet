@@ -1,8 +1,9 @@
 use super::op::ImageOp;
 use crate::sample::image::ImageAxisOrder;
 use crate::transforms::{
-    ElasticTransformConfig, InterpolationMode, PerspectiveConfig, Point2, RandomAffineConfig,
-    RandomErasingConfig, RandomPerspectiveConfig, RandomResizedCropConfig, RotationAngle,
+    ArbitraryRotateConfig, ElasticTransformConfig, InterpolationMode, PerspectiveConfig, Point2,
+    RandomAffineConfig, RandomErasingConfig, RandomPerspectiveConfig, RandomResizedCropConfig,
+    RotationAngle,
 };
 use rivet_core::DType;
 
@@ -186,6 +187,26 @@ impl TransformSequence {
         self
     }
 
+    pub fn resize_short_edge(mut self, size: u32, max_size: Option<u32>) -> Self {
+        self.ops.push(ImageOp::resize_short_edge(
+            size,
+            max_size,
+            crate::transforms::InterpolationMode::Bilinear,
+        ));
+        self
+    }
+
+    pub fn resize_short_edge_with_interpolation(
+        mut self,
+        size: u32,
+        max_size: Option<u32>,
+        interpolation: crate::transforms::InterpolationMode,
+    ) -> Self {
+        self.ops
+            .push(ImageOp::resize_short_edge(size, max_size, interpolation));
+        self
+    }
+
     pub fn resize_with_interpolation(
         mut self,
         width: u32,
@@ -250,6 +271,11 @@ impl TransformSequence {
 
     pub fn random_crop(mut self, width: u32, height: u32, padding: u32) -> Self {
         self.ops.push(ImageOp::random_crop(width, height, padding));
+        self
+    }
+
+    pub fn random_crop_with_config(mut self, config: crate::transforms::RandomCropConfig) -> Self {
+        self.ops.push(ImageOp::random_crop_with_config(config));
         self
     }
 
@@ -338,6 +364,11 @@ impl TransformSequence {
             interpolation,
             fill,
         ));
+        self
+    }
+
+    pub fn arbitrary_rotate_with_config(mut self, config: ArbitraryRotateConfig) -> Self {
+        self.ops.push(ImageOp::arbitrary_rotate_with_config(config));
         self
     }
 
@@ -459,6 +490,15 @@ impl TransformSequence {
     pub fn random_choice(mut self, choices: Vec<Self>) -> Self {
         self.ops.push(ImageOp::random_choice(
             choices.into_iter().map(Self::into_ops).collect(),
+        ));
+        self
+    }
+
+    /// Choose a transform sequence using nonnegative relative weights.
+    pub fn random_choice_with_weights(mut self, choices: Vec<Self>, weights: Vec<f64>) -> Self {
+        self.ops.push(ImageOp::random_choice_with_weights(
+            choices.into_iter().map(Self::into_ops).collect(),
+            weights,
         ));
         self
     }

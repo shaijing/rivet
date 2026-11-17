@@ -14,6 +14,7 @@ pub struct PadConfig {
     pub top: u32,
     pub bottom: u32,
     pub value: f32,
+    pub fill_channels: Option<[f32; 3]>,
     pub mode: PaddingMode,
 }
 
@@ -25,6 +26,7 @@ impl PadConfig {
             top: padding,
             bottom: padding,
             value: 0.0,
+            fill_channels: None,
             mode: PaddingMode::Constant,
         }
     }
@@ -36,12 +38,19 @@ impl PadConfig {
             top,
             bottom,
             value: 0.0,
+            fill_channels: None,
             mode: PaddingMode::Constant,
         }
     }
 
     pub const fn with_fill(mut self, value: f32) -> Self {
         self.value = value;
+        self.fill_channels = None;
+        self
+    }
+
+    pub const fn with_fill_channels(mut self, value: [f32; 3]) -> Self {
+        self.fill_channels = Some(value);
         self
     }
 
@@ -51,7 +60,11 @@ impl PadConfig {
     }
 
     pub fn validate(&self) -> RivetResult<()> {
-        if !self.value.is_finite() {
+        if !self.value.is_finite()
+            || self
+                .fill_channels
+                .is_some_and(|values| values.iter().any(|value| !value.is_finite()))
+        {
             return Err(invalid_argument("padding fill value must be finite"));
         }
         Ok(())
@@ -76,6 +89,11 @@ impl PadConfig {
             ImageAxisOrder::Hwc => (dims[0], dims[1], dims[2]),
             ImageAxisOrder::Chw => (dims[1], dims[2], dims[0]),
         };
+        if self.fill_channels.is_some() && channels != 3 {
+            return Err(invalid_argument(format!(
+                "per-channel padding fill requires a 3-channel image, got {channels} channels"
+            )));
+        }
         let output_height = height
             .checked_add(self.top as usize)
             .and_then(|value| value.checked_add(self.bottom as usize))
@@ -151,7 +169,7 @@ impl PadConfig {
 
         // RGB HWC writes rows directly; retain the image backend for CHW.
         // Float images and arbitrary channel counts use the generic kernel.
-        if input.dtype() == DType::U8 && channels == 3 {
+        if input.dtype() == DType::U8 && channels == 3 && self.fill_channels.is_none() {
             let output_width = u32::try_from(output_width)
                 .map_err(|_| invalid_shape("pad output width is too large for image backend"))?;
             let output_height = u32::try_from(output_height)
@@ -220,7 +238,10 @@ impl PadConfig {
 
         let output = match input.dtype() {
             DType::U8 => {
-                let fill = self.value.clamp(0.0, 255.0) as u8;
+                let fill = self
+                    .fill_channels
+                    .unwrap_or([self.value; 3])
+                    .map(|value| value.clamp(0.0, 255.0) as u8);
                 let values = input.with_cpu_storage(|storage, layout| {
                     let CpuStorageRef::U8(values) = storage else {
                         return Err(rivet_core::Error::UnexpectedDType {
@@ -253,7 +274,7 @@ impl PadConfig {
                 values
             }
             DType::F32 => {
-                let fill = self.value;
+                let fill = self.fill_channels.unwrap_or([self.value; 3]);
                 let values = input.with_cpu_storage(|storage, layout| {
                     let CpuStorageRef::F32(values) = storage else {
                         return Err(rivet_core::Error::UnexpectedDType {
@@ -349,7 +370,7 @@ fn append_padded_u8<F>(
     (height, width, channels): (usize, usize, usize),
     (output_height, output_width): (usize, usize),
     (top, left): (usize, usize),
-    fill: u8,
+    fill: [u8; 3],
     mut read: F,
 ) -> rivet_core::Result<()>
 where
@@ -365,7 +386,7 @@ where
                         output(if inside_y && inside_x {
                             read([y - top, x - left, c])?
                         } else {
-                            fill
+                            fill.get(c).copied().unwrap_or(fill[0])
                         })?;
                     }
                 }
@@ -380,7 +401,7 @@ where
                         output(if inside_y && inside_x {
                             read([c, y - top, x - left])?
                         } else {
-                            fill
+                            fill.get(c).copied().unwrap_or(fill[0])
                         })?;
                     }
                 }
@@ -396,7 +417,7 @@ fn append_padded_f32<F>(
     dims: (usize, usize, usize),
     output_dims: (usize, usize),
     offset: (usize, usize),
-    fill: f32,
+    fill: [f32; 3],
     read: F,
 ) -> rivet_core::Result<()>
 where
@@ -420,7 +441,7 @@ fn append_padded_u8_like<T, F>(
     (height, width, channels): (usize, usize, usize),
     (output_height, output_width): (usize, usize),
     (top, left): (usize, usize),
-    fill: T,
+    fill: [T; 3],
     read: &mut F,
 ) -> rivet_core::Result<()>
 where
@@ -437,7 +458,7 @@ where
                         output(if inside_y && inside_x {
                             read([y - top, x - left, c])?
                         } else {
-                            fill
+                            fill.get(c).copied().unwrap_or(fill[0])
                         })?;
                     }
                 }
@@ -452,7 +473,7 @@ where
                         output(if inside_y && inside_x {
                             read([c, y - top, x - left])?
                         } else {
-                            fill
+                            fill.get(c).copied().unwrap_or(fill[0])
                         })?;
                     }
                 }
@@ -566,5 +587,27 @@ mod tests {
                 .validate()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn constant_pad_uses_per_channel_fill_for_rgb() {
+        let input = Tensor::from_vec(vec![1u8, 2, 3], [1, 1, 3], &Device::Cpu).unwrap();
+        let output = PadConfig::new(1)
+            .with_fill_channels([10.0, 20.0, 30.0])
+            .apply(
+                ImageSample::Decoded(DecodedSample {
+                    image: input,
+                    label: 0,
+                }),
+                ImageAxisOrder::Hwc,
+            )
+            .unwrap()
+            .into_decoded()
+            .unwrap();
+        let values = output.image.to_vec::<u8>().unwrap();
+        assert_eq!(&values[0..3], &[10, 20, 30]);
+        assert_eq!(&values[3..6], &[10, 20, 30]);
+        assert_eq!(&values[12..15], &[1, 2, 3]);
+        assert_eq!(&values[18..21], &[10, 20, 30]);
     }
 }

@@ -737,7 +737,9 @@ fn compile_sample_op(
                 None,
             )
         }
-        ImageOp::RandomChoice { choices } => {
+        ImageOp::RandomChoice { choices, weights } => {
+            let cumulative_weights =
+                super::op::choice_cumulative_weights(choices.len(), weights.as_deref())?;
             let key = random_key.expect("RandomChoice must have a random key");
             if choices.is_empty() {
                 return Err(invalid_pipeline(
@@ -764,7 +766,11 @@ fn compile_sample_op(
             }
 
             (
-                SampleKernel::RandomChoice { key, branches },
+                SampleKernel::RandomChoice {
+                    key,
+                    branches,
+                    cumulative_weights,
+                },
                 output_state.expect("RandomChoice choices cannot be empty"),
                 None,
             )

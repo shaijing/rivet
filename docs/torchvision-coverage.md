@@ -70,12 +70,9 @@ configurations, but this is not a full clone of torchvision's Python API.
 
 - `ToPILImage` and arbitrary Python `Lambda` are Python object/callback bridges,
   not native image kernels. They are not installed as runtime dependencies.
-- Some arguments remain narrower: width-first dimensions; nonnegative crop
-  positions/padding; scalar geometric fill; square Gaussian kernels; no custom
-  rotation center; no Resize scalar short-edge/max-size overload; RandomCrop
-  has constant symmetric padding and lacks `pad_if_needed`; RandomAffine still
-  exposes symmetric angle/shear ranges. Standard random wrappers are available
-  but not every arbitrary per-channel or random-valued RandomErasing fill.
+- Dimensions remain width-first and crop positions/padding are nonnegative.
+  See the API completion section below for supported parameter overloads and
+  the distinction between legacy shear maxima and explicit shear intervals.
 - RGB uint8 is the main pixel-kernel contract. Generic torchvision Tensor
   batches, all integer/float dtypes, GPU/autograd and every PIL mode are not
   supported. LinearTransformation currently accepts float32 only. Tensor
@@ -91,6 +88,50 @@ configurations, but this is not a full clone of torchvision's Python API.
   need structured annotation support. UniformTemporalSubsample is a video
   operation. Those are separate data-model extensions, not silently applied
   to RGB images alone.
+
+## Existing API parameter completion
+
+These additions are available on both `rivet.Transform` and `rivet.Pipeline`.
+They extend existing operators; the v2-only image and data-model gaps above
+remain separate work.
+
+| API | Parameters and behavior |
+| --- | --- |
+| `random_choice(choices, p=None)` | Optional relative weights; finite, nonnegative, matching the branch count, with a finite positive sum. Weights are normalized once for compiled execution. Omitted weights preserve the original uniform sampler and random stream. |
+| `resize(width, height=None, interpolation="bilinear", *, max_size=None)` | Omitting height scales the short edge while preserving aspect ratio. `max_size` caps the long edge and must exceed the requested short edge. Explicit width/height calls retain their original meaning. |
+| `random_crop` | Scalar or per-side padding, `pad_if_needed`, fill and padding modes. Padding precedes random crop sampling. |
+| `random_affine` | Scalar symmetric degrees or an explicit angle interval; explicit shear intervals via `shear_ranges`. The existing two-element `shear` remains symmetric per-axis maxima. |
+| `arbitrary_rotate` / `random_rotation` | Optional `(x, y)` rotation center in image coordinates. |
+| Geometry fill | Scalar or RGB-triplet fills for supported padding and warp operations. Warp triplets require three-channel uint8 images; padding also supports float32. Fill does not change interpolation or axis conventions. |
+| `gaussian_blur` | Scalar or `(sigma_x, sigma_y)` sigma; scalar or `(width, height)` kernel size. Existing sigma-only calls remain supported. |
+| `random_gaussian_blur` | Scalar or rectangular kernel; sigma is a fixed scalar or `[min, max]` sampling range, not a pair of axis sigmas. A sampled sigma is shared by both axes. |
+| `random_erasing` / `random_erasing_with_options` | Scalar/channel fill or `value="random"` for independent standard-normal pixels. Float32 fills retain their values; uint8 conversion truncates and wraps modulo 256, as in the Tensor reference. |
+
+For example:
+
+```python
+from rivet import vision as rv
+
+pipeline = (
+    rv.scan_image_folder("data/train")
+    .decode_image()
+    .resize(256, max_size=384)
+    .random_crop(224, 224, padding=[4, 8, 4, 8], pad_if_needed=True)
+    .random_choice(
+        [rv.Transform().horizontal_flip(), rv.Transform().brightness(0.8)],
+        p=[1, 3],
+    )
+    .random_affine([-10, 15], shear_ranges=[-5, 5, -2, 2])
+    .gaussian_blur([0.8, 1.2], kernel_size=[3, 5])
+    .to_tensor()
+    .random_erasing(value="random")
+    .batch(128)
+)
+```
+
+Random operations remain deterministic for a Rivet seed/epoch across worker
+counts. Their random streams do not match PyTorch's RNG sequence. Existing
+RGB uint8 and layout restrictions still apply to individual operators.
 
 ## Numerical tests and reference generation
 
@@ -145,3 +186,16 @@ train = (
     .batch(128)
 )
 ```
+
+## API completion validation (2026-11-17)
+
+The integrated release extension passed 406 Python tests plus 28 subtests and
+248 `rivet-vision` library tests. Coverage includes parameter errors, PIL/Tensor
+comparisons, custom rotation centers, sequential crop padding, weighted choice,
+and seed/epoch reproducibility across worker counts.
+
+Using the decoded CIFAR benchmark with batch 128, four workers and three epochs,
+three pre-change runs averaged 1,130,686 img/s (population standard deviation
+4,317); five post-change runs averaged 1,123,509 img/s (standard deviation
+5,102), a -0.63% change. These are fresh same-environment measurements; the
+older absolute reference is not substituted for the pre-change comparison.

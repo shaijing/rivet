@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING
 
 from ._rivet import _ImagePipeline
 from ._transforms import Transform
+from ._utils import _normalize_fill
 
 if TYPE_CHECKING:
     from ._loader import DataLoader
@@ -23,10 +24,20 @@ class Pipeline:
         return Pipeline(self._inner.decode_image(), as_numpy=self.as_numpy)
 
     def resize(
-        self, width: int, height: int, interpolation: str = "bilinear"
+        self,
+        width: int,
+        height: int | None = None,
+        interpolation: str = "bilinear",
+        *,
+        max_size: int | None = None,
     ) -> Pipeline:
+        """Resize to explicit width/height, or set the short edge to ``width``.
+
+        With no height, preserve aspect ratio; ``max_size`` optionally caps
+        the long edge and must exceed the requested short edge."""
         return Pipeline(
-            self._inner.resize(width, height, interpolation), as_numpy=self.as_numpy
+            self._inner.resize(width, height, interpolation, max_size),
+            as_numpy=self.as_numpy,
         )
 
     def crop(self, x: int, y: int, width: int, height: int) -> Pipeline:
@@ -36,10 +47,14 @@ class Pipeline:
         return Pipeline(self._inner.center_crop(width, height), as_numpy=self.as_numpy)
 
     def pad(
-        self, padding: int, fill: float = 0.0, padding_mode: str = "constant"
+        self,
+        padding: int,
+        fill: float | Iterable[float] = 0.0,
+        padding_mode: str = "constant",
     ) -> Pipeline:
         return Pipeline(
-            self._inner.pad(padding, fill, padding_mode), as_numpy=self.as_numpy
+            self._inner.pad(padding, _normalize_fill(fill), padding_mode),
+            as_numpy=self.as_numpy,
         )
 
     def pad_with_sides(
@@ -48,11 +63,13 @@ class Pipeline:
         top: int,
         right: int,
         bottom: int,
-        fill: float = 0.0,
+        fill: float | Iterable[float] = 0.0,
         padding_mode: str = "constant",
     ) -> Pipeline:
         return Pipeline(
-            self._inner.pad_with_sides(left, top, right, bottom, fill, padding_mode),
+            self._inner.pad_with_sides(
+                left, top, right, bottom, _normalize_fill(fill), padding_mode
+            ),
             as_numpy=self.as_numpy,
         )
 
@@ -140,9 +157,9 @@ class Pipeline:
         angle: float,
         translate: Iterable[float] | None = None,
         scale: float = 1.0,
-        shear: Iterable[float] | None = None,
+        shear: float | Iterable[float] | None = None,
         interpolation: str = "nearest",
-        fill: int = 0,
+        fill: int | Iterable[int] = 0,
         center: Iterable[float] | None = None,
     ) -> Pipeline:
         return Pipeline(
@@ -150,9 +167,15 @@ class Pipeline:
                 angle,
                 None if translate is None else list(translate),
                 scale,
-                None if shear is None else list(shear),
+                None
+                if shear is None
+                else (
+                    [float(shear), 0.0]
+                    if isinstance(shear, (int, float))
+                    else list(shear)
+                ),
                 interpolation,
-                fill,
+                _normalize_fill(fill),
                 None if center is None else list(center),
             ),
             as_numpy=self.as_numpy,
@@ -193,23 +216,39 @@ class Pipeline:
         degrees: float | Iterable[float],
         interpolation: str = "nearest",
         expand: bool = False,
-        fill: int = 0,
+        fill: int | Iterable[int] = 0,
+        center: Iterable[float] | None = None,
     ) -> Pipeline:
         if isinstance(degrees, (int, float)):
             if degrees < 0:
                 raise ValueError("degrees must be non-negative")
             degrees = [-float(degrees), float(degrees)]
         return Pipeline(
-            self._inner.random_rotation(list(degrees), interpolation, expand, fill),
+            self._inner.random_rotation(
+                list(degrees),
+                interpolation,
+                expand,
+                _normalize_fill(fill),
+                None if center is None else list(center),
+            ),
             as_numpy=self.as_numpy,
         )
 
     def random_gaussian_blur(
-        self, kernel_size: int, sigma: Iterable[float] | None = None
+        self,
+        kernel_size: int | Iterable[int],
+        sigma: float | Iterable[float] | None = None,
     ) -> Pipeline:
+        """Blur with a scalar or (width, height) kernel.
+
+        Sigma is a fixed scalar or [min, max] interval. One sampled sigma
+        is shared by both axes; the pair does not specify axis sigmas."""
         return Pipeline(
             self._inner.random_gaussian_blur(
-                kernel_size, None if sigma is None else list(sigma)
+                kernel_size if isinstance(kernel_size, int) else list(kernel_size),
+                sigma
+                if sigma is None or isinstance(sigma, (int, float))
+                else list(sigma),
             ),
             as_numpy=self.as_numpy,
         )
@@ -260,10 +299,18 @@ class Pipeline:
         self,
         width: int,
         height: int,
-        padding: int = 0,
+        padding: int | Sequence[int] = 0,
+        *,
+        pad_if_needed: bool = False,
+        fill: float | Sequence[float] = 0,
+        padding_mode: str = "constant",
     ) -> Pipeline:
-        """Zero-pad each image by `padding` pixels on every side, then crop
-        a `width`x`height` window at a per-sample random offset.
+        """Pad each image, then sample a ``width`` x ``height`` crop.
+
+        Padding accepts one integer, a horizontal/vertical pair, or four
+        left/top/right/bottom values. ``pad_if_needed`` adds padding after the
+        explicit padding. Modes are constant, edge, reflect, and symmetric;
+        constant fill accepts a scalar or RGB channel sequence.
 
         Stochastic ops are seeded by the pipeline seed: when the pipeline
         shuffles (``.shuffle(seed)``), the same seed reproduces the same
@@ -273,7 +320,9 @@ class Pipeline:
         Requires decoded uint8 HWC input.
         """
         return Pipeline(
-            self._inner.random_crop(width, height, padding),
+            self._inner.random_crop(
+                width, height, padding, pad_if_needed, fill, padding_mode
+            ),
             as_numpy=self.as_numpy,
         )
 
@@ -339,9 +388,18 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
-    def random_choice(self, choices: Iterable[Transform]) -> Pipeline:
+    def random_choice(
+        self, choices: Iterable[Transform], p: Iterable[float] | None = None
+    ) -> Pipeline:
+        """Choose one branch per image; ``p`` contains relative nonnegative weights.
+
+        Omit ``p`` for the existing uniform sampler. Provided weights must have
+        a finite positive sum and are normalized before sampling.
+        """
         return Pipeline(
-            self._inner.random_choice([choice._inner for choice in choices]),
+            self._inner.random_choice(
+                [choice._inner for choice in choices], None if p is None else list(p)
+            ),
             as_numpy=self.as_numpy,
         )
 
@@ -369,9 +427,23 @@ class Pipeline:
     def sharpness(self, amount: float) -> Pipeline:
         return Pipeline(self._inner.sharpness(amount), as_numpy=self.as_numpy)
 
-    def gaussian_blur(self, sigma: float, kernel_size: int | None = None) -> Pipeline:
+    def gaussian_blur(
+        self,
+        sigma: float | Iterable[float],
+        kernel_size: int | Iterable[int] | None = None,
+    ) -> Pipeline:
+        """Blur with scalar or (x, y) sigma and (width, height) kernel size.
+
+        Omitting kernel size retains Rivet's sigma-derived kernel convenience;
+        sigma zero acts as identity on that axis."""
         return Pipeline(
-            self._inner.gaussian_blur(sigma, kernel_size), as_numpy=self.as_numpy
+            self._inner.gaussian_blur(
+                sigma if isinstance(sigma, (int, float)) else list(sigma),
+                kernel_size
+                if kernel_size is None or isinstance(kernel_size, int)
+                else list(kernel_size),
+            ),
+            as_numpy=self.as_numpy,
         )
 
     def hue(self, factor: float) -> Pipeline:
@@ -391,22 +463,33 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
-    def random_erasing(self, probability: float = 0.5) -> Pipeline:
-        return Pipeline(self._inner.random_erasing(probability), as_numpy=self.as_numpy)
+    def random_erasing(
+        self,
+        probability: float = 0.5,
+        *,
+        scale: Iterable[float] | None = None,
+        ratio: Iterable[float] | None = None,
+        value: float | Iterable[float] | str = 0.0,
+    ) -> Pipeline:
+        """Randomly erase a rectangle with scalar, channel, or ``"random"`` fill.
+
+        Random fill uses independent standard-normal values. Float32 preserves
+        fill values; uint8 conversion truncates and wraps modulo 256."""
+        return self.random_erasing_with_options(probability, scale, ratio, value)
 
     def random_erasing_with_options(
         self,
         probability: float = 0.5,
         scale: Iterable[float] | None = None,
         ratio: Iterable[float] | None = None,
-        value: float = 0.0,
+        value: float | Iterable[float] | str = 0.0,
     ) -> Pipeline:
         return Pipeline(
             self._inner.random_erasing_with_options(
                 probability,
                 None if scale is None else list(scale),
                 None if ratio is None else list(ratio),
-                value,
+                value if isinstance(value, (int, float, str)) else list(value),
             ),
             as_numpy=self.as_numpy,
         )
@@ -422,30 +505,54 @@ class Pipeline:
         angle: float,
         interpolation: str = "nearest",
         expand: bool = False,
-        fill: int = 0,
+        fill: int | Iterable[int] = 0,
+        center: Iterable[float] | None = None,
     ) -> Pipeline:
         return Pipeline(
-            self._inner.arbitrary_rotate(angle, interpolation, expand, fill),
+            self._inner.arbitrary_rotate(
+                angle,
+                interpolation,
+                expand,
+                _normalize_fill(fill),
+                None if center is None else list(center),
+            ),
             as_numpy=self.as_numpy,
         )
 
     def random_affine(
         self,
-        degrees: float,
+        degrees: float | Iterable[float],
         translate: Iterable[float] | None = None,
         scale: Iterable[float] | None = None,
-        shear: Iterable[float] | None = None,
+        shear: float | Iterable[float] | None = None,
         interpolation: str = "nearest",
-        fill: int = 0,
+        fill: int | Iterable[int] = 0,
+        shear_ranges: Iterable[float] | None = None,
     ) -> Pipeline:
+        """Sample an affine transform using Rivet's per-image random stream.
+
+        Degrees may be a scalar maximum or a two-bound interval. Scalar shear
+        affects x; a shear pair retains legacy symmetric x/y maxima. Use
+        ``shear_ranges`` for two x bounds or four x/y bounds instead."""
+        if shear is not None and shear_ranges is not None:
+            raise ValueError("pass either shear or shear_ranges, not both")
+        if isinstance(shear, (int, float)) and shear < 0:
+            raise ValueError("shear must be non-negative")
         return Pipeline(
             self._inner.random_affine(
                 degrees,
                 None if translate is None else list(translate),
                 None if scale is None else list(scale),
-                None if shear is None else list(shear),
+                None
+                if shear is None
+                else (
+                    [float(shear), 0.0]
+                    if isinstance(shear, (int, float))
+                    else list(shear)
+                ),
                 interpolation,
-                fill,
+                _normalize_fill(fill),
+                None if shear_ranges is None else list(shear_ranges),
             ),
             as_numpy=self.as_numpy,
         )
@@ -455,14 +562,14 @@ class Pipeline:
         start_points: Iterable[Iterable[float]],
         end_points: Iterable[Iterable[float]],
         interpolation: str = "bilinear",
-        fill: int = 0,
+        fill: int | Iterable[int] = 0,
     ) -> Pipeline:
         return Pipeline(
             self._inner.perspective(
                 [list(point) for point in start_points],
                 [list(point) for point in end_points],
                 interpolation,
-                fill,
+                _normalize_fill(fill),
             ),
             as_numpy=self.as_numpy,
         )
@@ -472,11 +579,11 @@ class Pipeline:
         distortion_scale: float = 0.5,
         probability: float = 0.5,
         interpolation: str = "bilinear",
-        fill: int = 0,
+        fill: int | Iterable[int] = 0,
     ) -> Pipeline:
         return Pipeline(
             self._inner.random_perspective(
-                distortion_scale, probability, interpolation, fill
+                distortion_scale, probability, interpolation, _normalize_fill(fill)
             ),
             as_numpy=self.as_numpy,
         )
@@ -486,10 +593,12 @@ class Pipeline:
         alpha: float,
         sigma: float,
         interpolation: str = "bilinear",
-        fill: int = 0,
+        fill: int | Iterable[int] = 0,
     ) -> Pipeline:
         return Pipeline(
-            self._inner.elastic_transform(alpha, sigma, interpolation, fill),
+            self._inner.elastic_transform(
+                alpha, sigma, interpolation, _normalize_fill(fill)
+            ),
             as_numpy=self.as_numpy,
         )
 

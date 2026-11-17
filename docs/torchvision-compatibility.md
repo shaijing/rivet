@@ -104,8 +104,35 @@ across every quadrilateral. Gaussian blur and elastic sampling may have small
 floating-point differences from PyTorch's CPU/GPU kernels. Reflection blur
 padding must be smaller than image dimensions, as in PyTorch. Geometry supports
 nearest/bilinear/bicubic; elastic sampling supports nearest/bilinear. Lanczos is
-available for resize, not warp sampling. BOX and HAMMING are resize-only too. Zero-sized image configurations and
-per-channel/random-valued erasure are not covered.
+available for resize, not warp sampling. BOX and HAMMING are resize-only too.
+Zero-sized image configurations are not supported.
+
+## Extended parameters
+
+Both `Transform` and `Pipeline` support weighted `random_choice`, short-edge
+resize with a long-edge cap, configurable random-crop padding, rotation centers,
+explicit affine angle/shear intervals, per-channel geometric fill, rectangular
+Gaussian kernels with axis-specific sigma, and per-channel/random erasing.
+See the [API parameter inventory](torchvision-coverage.md#existing-api-parameter-completion)
+for signatures and an example.
+
+The original width-first calling convention remains. In particular,
+`resize(224, 192)` sets width 224 and height 192, while `resize(224)` scales the
+short edge. Gaussian kernel and deterministic sigma pairs are ordered x/y.
+Random blur's sigma pair is a sampling interval instead.
+
+Legacy `random_affine(..., shear=[x, y])` continues to mean symmetric maxima
+for each axis. Use `shear_ranges=[min_x, max_x]` or
+`shear_ranges=[min_x, max_x, min_y, max_y]` for explicit torchvision-style
+intervals. Scalar degrees remain symmetric; a two-element degrees sequence
+specifies its bounds.
+
+`random_choice(..., p=[...])` accepts relative nonnegative weights and
+normalizes them. Omitting `p` retains the previous uniform sampler. Random
+erasing uses independent standard-normal values for `value="random"`;
+uint8 fill conversion truncates and wraps modulo 256, whereas float32 retains
+the sampled or supplied values. Random reproducibility is defined by Rivet's
+seed/epoch contract, not PyTorch's RNG sequence.
 
 ## Validation
 

@@ -150,14 +150,21 @@ fn erase_values<T: rivet_core::WithDType>(
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RandomErasingConfig {
     pub probability: f64,
     pub scale_min: f32,
     pub scale_max: f32,
     pub ratio_min: f32,
     pub ratio_max: f32,
-    pub value: f32,
+    pub value: ErasingValue,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ErasingValue {
+    Constant(f32),
+    Channels(Vec<f32>),
+    Random,
 }
 
 impl RandomErasingConfig {
@@ -168,7 +175,7 @@ impl RandomErasingConfig {
             scale_max: 0.33,
             ratio_min: 0.3,
             ratio_max: 3.3333333,
-            value: 0.0,
+            value: ErasingValue::Constant(0.0),
         }
     }
 
@@ -186,8 +193,18 @@ impl RandomErasingConfig {
         self
     }
 
-    pub const fn with_value(mut self, value: f32) -> Self {
-        self.value = value;
+    pub fn with_value(mut self, value: f32) -> Self {
+        self.value = ErasingValue::Constant(value);
+        self
+    }
+
+    pub fn with_values(mut self, values: Vec<f32>) -> Self {
+        self.value = ErasingValue::Channels(values);
+        self
+    }
+
+    pub fn with_random_value(mut self) -> Self {
+        self.value = ErasingValue::Random;
         self
     }
 
@@ -206,7 +223,8 @@ impl RandomErasingConfig {
             || !self.ratio_max.is_finite()
             || self.ratio_min <= 0.0
             || self.ratio_min > self.ratio_max
-            || !self.value.is_finite()
+            || matches!(&self.value, ErasingValue::Constant(value) if !value.is_finite())
+            || matches!(&self.value, ErasingValue::Channels(values) if values.is_empty() || values.iter().any(|v| !v.is_finite()))
         {
             return Err(invalid_argument(
                 "random_erasing scale/ratio/value parameters are invalid",
@@ -221,8 +239,19 @@ impl RandomErasingConfig {
         height: usize,
         rng: &mut RandomStream,
     ) -> Option<EraseRegion> {
-        let draw = uniform(rng);
-        if draw >= self.probability || width == 0 || height == 0 {
+        if uniform(rng) >= self.probability {
+            return None;
+        }
+        self.sample_region(width, height, rng)
+    }
+
+    fn sample_region(
+        &self,
+        width: usize,
+        height: usize,
+        rng: &mut RandomStream,
+    ) -> Option<EraseRegion> {
+        if width == 0 || height == 0 {
             return None;
         }
         let area = (width * height) as f64;
@@ -279,59 +308,84 @@ impl RandomErasingConfig {
             ImageAxisOrder::Hwc => (dims[0], dims[1], dims[2]),
             ImageAxisOrder::Chw => (dims[1], dims[2], dims[0]),
         };
-        let Some(region) = self.resolve(width, height, rng) else {
+        if uniform(rng) >= self.probability {
+            return Ok(ImageSample::Decoded(sample));
+        }
+        if let ErasingValue::Channels(values) = &self.value {
+            if values.len() != 1 && values.len() != channels {
+                return Err(invalid_argument(format!(
+                    "random_erasing value must be scalar or contain {channels} channel values"
+                )));
+            }
+        }
+        let Some(region) = self.sample_region(width, height, rng) else {
             return Ok(ImageSample::Decoded(sample));
         };
 
         let output = match sample.image.dtype() {
             DType::U8 => {
-                let fill = self.value.trunc().rem_euclid(256.0) as u8;
+                let fills = match &self.value {
+                    ErasingValue::Constant(value) => vec![value.trunc().rem_euclid(256.0) as u8],
+                    ErasingValue::Channels(values) => values
+                        .iter()
+                        .map(|v| v.trunc().rem_euclid(256.0) as u8)
+                        .collect::<Vec<_>>(),
+                    ErasingValue::Random => Vec::new(),
+                };
+                let random = matches!(&self.value, ErasingValue::Random);
                 sample.image.with_cpu_storage(|storage, layout| {
-                    let CpuStorageRef::U8(values) = storage else {
+                    let CpuStorageRef::U8(pixels) = storage else {
                         return Err(rivet_core::Error::UnexpectedDType {
                             expected: DType::U8,
                             actual: sample.image.dtype(),
                         });
                     };
-                    Tensor::from_exact_fn::<u8, _, _>(
-                        dims.clone(),
+                    erase_random_values(
+                        pixels,
+                        layout,
                         sample.image.device(),
-                        |write| {
-                            map_erased(
-                                values,
-                                layout,
-                                axis_order,
-                                (height, width, channels),
-                                region,
-                                fill,
-                                write,
-                            )
+                        &dims,
+                        axis_order,
+                        (height, width, channels),
+                        region,
+                        |c, _, _| {
+                            if random {
+                                normal(rng).trunc().rem_euclid(256.0) as u8
+                            } else {
+                                fills[if fills.len() == 1 { 0 } else { c }]
+                            }
                         },
                     )
                 })?
             }
             DType::F32 => {
-                let fill = self.value;
+                let fills = match &self.value {
+                    ErasingValue::Constant(value) => vec![*value],
+                    ErasingValue::Channels(values) => values.clone(),
+                    ErasingValue::Random => Vec::new(),
+                };
+                let random = matches!(&self.value, ErasingValue::Random);
                 sample.image.with_cpu_storage(|storage, layout| {
-                    let CpuStorageRef::F32(values) = storage else {
+                    let CpuStorageRef::F32(pixels) = storage else {
                         return Err(rivet_core::Error::UnexpectedDType {
                             expected: DType::F32,
                             actual: sample.image.dtype(),
                         });
                     };
-                    Tensor::from_exact_fn::<f32, _, _>(
-                        dims.clone(),
+                    erase_random_values(
+                        pixels,
+                        layout,
                         sample.image.device(),
-                        |write| {
-                            map_erased(
-                                values,
-                                layout,
-                                axis_order,
-                                (height, width, channels),
-                                region,
-                                fill,
-                                write,
-                            )
+                        &dims,
+                        axis_order,
+                        (height, width, channels),
+                        region,
+                        |c, _, _| {
+                            if random {
+                                normal(rng)
+                            } else {
+                                fills[if fills.len() == 1 { 0 } else { c }]
+                            }
                         },
                     )
                 })?
@@ -350,50 +404,71 @@ impl RandomErasingConfig {
     }
 }
 
-fn map_erased<T: Copy>(
+fn erase_random_values<T: rivet_core::WithDType, F: FnMut(usize, usize, usize) -> T>(
     values: &[T],
     layout: &rivet_core::Layout,
+    device: &rivet_core::Device,
+    dims: &[usize],
     axis_order: ImageAxisOrder,
     (height, width, channels): (usize, usize, usize),
     region: EraseRegion,
-    fill: T,
-    write: &mut dyn FnMut(T) -> rivet_core::Result<()>,
-) -> rivet_core::Result<()> {
+    mut fill: F,
+) -> rivet_core::Result<Tensor> {
     let read = |coords: [usize; 3]| {
         values
             .get(logical_offset(layout, &coords)?)
             .copied()
             .ok_or(rivet_core::Error::StorageOutOfBounds)
     };
-    match axis_order {
-        ImageAxisOrder::Hwc => {
-            for y in 0..height {
-                for x in 0..width {
-                    for c in 0..channels {
-                        write(if in_region(x, y, region) {
-                            fill
-                        } else {
-                            read([y, x, c])?
-                        })?;
-                    }
-                }
-            }
-        }
-        ImageAxisOrder::Chw => {
-            for c in 0..channels {
+    Tensor::from_exact_writer::<T, _, _>(dims, device, |out| {
+        match axis_order {
+            ImageAxisOrder::Hwc => {
                 for y in 0..height {
                     for x in 0..width {
-                        write(if in_region(x, y, region) {
-                            fill
+                        if channels == 3 {
+                            if in_region(x, y, region) {
+                                out.write_next(fill(0, y, x))?;
+                                out.write_next(fill(1, y, x))?;
+                                out.write_next(fill(2, y, x))?;
+                            } else {
+                                out.write_next(read([y, x, 0])?)?;
+                                out.write_next(read([y, x, 1])?)?;
+                                out.write_next(read([y, x, 2])?)?;
+                            }
+                        } else if in_region(x, y, region) {
+                            for c in 0..channels {
+                                out.write_next(fill(c, y, x))?;
+                            }
                         } else {
-                            read([c, y, x])?
-                        })?;
+                            for c in 0..channels {
+                                out.write_next(read([y, x, c])?)?;
+                            }
+                        }
+                    }
+                }
+            }
+            ImageAxisOrder::Chw => {
+                for c in 0..channels {
+                    for y in 0..height {
+                        for x in 0..width {
+                            out.write_next(if in_region(x, y, region) {
+                                fill(c, y, x)
+                            } else {
+                                read([c, y, x])?
+                            })?;
+                        }
                     }
                 }
             }
         }
-    }
-    Ok(())
+        Ok(())
+    })
+}
+
+fn normal(rng: &mut RandomStream) -> f32 {
+    let u1 = rng.next_f32().max(f32::MIN_POSITIVE);
+    let u2 = rng.next_f32();
+    (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos()
 }
 
 fn in_region(x: usize, y: usize, region: EraseRegion) -> bool {

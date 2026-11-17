@@ -141,6 +141,62 @@ def test_random_gaussian_fixed_range(source):
     )
 
 
+def test_rectangular_gaussian_blur_axis_sigmas(source):
+    root, image, _ = source
+    kernel_size = (value for value in [3, 5])  # torchvision order: width, height
+    sigma = (value for value in [0.45, 1.2])  # horizontal, vertical
+    actual = output(
+        root,
+        lambda p: p.gaussian_blur(sigma, kernel_size=kernel_size),
+    )
+    expected = F.gaussian_blur(image, [3, 5], [0.45, 1.2])
+    np.testing.assert_allclose(
+        actual.astype(np.int16), np.asarray(expected).astype(np.int16), atol=1, rtol=0
+    )
+
+
+def test_random_erasing_channel_values_and_random_mode(source):
+    root, image, _ = source
+    values = [12.0, 100.0, 225.0]
+    actual = output(
+        root,
+        lambda p: p.random_erasing(
+            probability=1.0,
+            scale=[0.25, 0.25],
+            ratio=[1.0, 1.0],
+            value=values,
+        ),
+    )
+    # The native RNG chooses another rectangle, so verify the channel values
+    # wherever the erase occurred instead of comparing coordinates.
+    erased = np.all(actual == np.asarray(values), axis=-1)
+    assert erased.any()
+
+    float_values = [0.125, 0.5, 0.875]
+    float_actual = output(
+        root,
+        lambda p: p.convert_image_dtype("float32").random_erasing_with_options(
+            probability=1.0,
+            scale=[0.25, 0.25],
+            ratio=[1.0, 1.0],
+            value=float_values,
+        ),
+    )
+    assert np.any(np.all(float_actual == float_values, axis=-1))
+
+    random_actual = output(
+        root,
+        lambda p: p.convert_image_dtype("float32").random_erasing_with_options(
+            probability=1.0,
+            scale=[0.25, 0.25],
+            ratio=[1.0, 1.0],
+            value="random",
+        ),
+    )
+    assert random_actual.shape == np.asarray(image).shape
+    assert np.isfinite(random_actual).all()
+
+
 @pytest.mark.parametrize(
     "name,args,reference",
     [

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from ._rivet import _Transform
+from ._utils import _normalize_fill
 
 
 class Transform:
@@ -20,9 +21,18 @@ class Transform:
         return Transform(self._inner.decode_image())
 
     def resize(
-        self, width: int, height: int, interpolation: str = "bilinear"
+        self,
+        width: int,
+        height: int | None = None,
+        interpolation: str = "bilinear",
+        *,
+        max_size: int | None = None,
     ) -> Transform:
-        return Transform(self._inner.resize(width, height, interpolation))
+        """Resize to explicit width/height, or set the short edge to ``width``.
+
+        With no height, preserve aspect ratio; ``max_size`` optionally caps
+        the long edge and must exceed the requested short edge."""
+        return Transform(self._inner.resize(width, height, interpolation, max_size))
 
     def crop(self, x: int, y: int, width: int, height: int) -> Transform:
         return Transform(self._inner.crop(x, y, width, height))
@@ -31,9 +41,12 @@ class Transform:
         return Transform(self._inner.center_crop(width, height))
 
     def pad(
-        self, padding: int, fill: float = 0.0, padding_mode: str = "constant"
+        self,
+        padding: int,
+        fill: float | Iterable[float] = 0.0,
+        padding_mode: str = "constant",
     ) -> Transform:
-        return Transform(self._inner.pad(padding, fill, padding_mode))
+        return Transform(self._inner.pad(padding, _normalize_fill(fill), padding_mode))
 
     def pad_with_sides(
         self,
@@ -41,11 +54,13 @@ class Transform:
         top: int,
         right: int,
         bottom: int,
-        fill: float = 0.0,
+        fill: float | Iterable[float] = 0.0,
         padding_mode: str = "constant",
     ) -> Transform:
         return Transform(
-            self._inner.pad_with_sides(left, top, right, bottom, fill, padding_mode)
+            self._inner.pad_with_sides(
+                left, top, right, bottom, _normalize_fill(fill), padding_mode
+            )
         )
 
     def auto_augment(
@@ -125,9 +140,9 @@ class Transform:
         angle: float,
         translate: Iterable[float] | None = None,
         scale: float = 1.0,
-        shear: Iterable[float] | None = None,
+        shear: float | Iterable[float] | None = None,
         interpolation: str = "nearest",
-        fill: int = 0,
+        fill: int | Iterable[int] = 0,
         center: Iterable[float] | None = None,
     ) -> Transform:
         return Transform(
@@ -135,9 +150,15 @@ class Transform:
                 angle,
                 None if translate is None else list(translate),
                 scale,
-                None if shear is None else list(shear),
+                None
+                if shear is None
+                else (
+                    [float(shear), 0.0]
+                    if isinstance(shear, (int, float))
+                    else list(shear)
+                ),
                 interpolation,
-                fill,
+                _normalize_fill(fill),
                 None if center is None else list(center),
             )
         )
@@ -174,22 +195,38 @@ class Transform:
         degrees: float | Iterable[float],
         interpolation: str = "nearest",
         expand: bool = False,
-        fill: int = 0,
+        fill: int | Iterable[int] = 0,
+        center: Iterable[float] | None = None,
     ) -> Transform:
         if isinstance(degrees, (int, float)):
             if degrees < 0:
                 raise ValueError("degrees must be non-negative")
             degrees = [-float(degrees), float(degrees)]
         return Transform(
-            self._inner.random_rotation(list(degrees), interpolation, expand, fill)
+            self._inner.random_rotation(
+                list(degrees),
+                interpolation,
+                expand,
+                _normalize_fill(fill),
+                None if center is None else list(center),
+            )
         )
 
     def random_gaussian_blur(
-        self, kernel_size: int, sigma: Iterable[float] | None = None
+        self,
+        kernel_size: int | Iterable[int],
+        sigma: float | Iterable[float] | None = None,
     ) -> Transform:
+        """Blur with a scalar or (width, height) kernel.
+
+        Sigma is a fixed scalar or [min, max] interval. One sampled sigma
+        is shared by both axes; the pair does not specify axis sigmas."""
         return Transform(
             self._inner.random_gaussian_blur(
-                kernel_size, None if sigma is None else list(sigma)
+                kernel_size if isinstance(kernel_size, int) else list(kernel_size),
+                sigma
+                if sigma is None or isinstance(sigma, (int, float))
+                else list(sigma),
             )
         )
 
@@ -222,8 +259,26 @@ class Transform:
     def vertical_flip(self) -> Transform:
         return Transform(self._inner.vertical_flip())
 
-    def random_crop(self, width: int, height: int, padding: int = 0) -> Transform:
-        return Transform(self._inner.random_crop(width, height, padding))
+    def random_crop(
+        self,
+        width: int,
+        height: int,
+        padding: int | Sequence[int] = 0,
+        *,
+        pad_if_needed: bool = False,
+        fill: float | Sequence[float] = 0,
+        padding_mode: str = "constant",
+    ) -> Transform:
+        """Apply explicit padding, optional minimum-size padding, then crop.
+
+        Padding is scalar, horizontal/vertical, or left/top/right/bottom.
+        Fill is scalar or RGB; modes are constant, edge, reflect, symmetric.
+        """
+        return Transform(
+            self._inner.random_crop(
+                width, height, padding, pad_if_needed, fill, padding_mode
+            )
+        )
 
     def random_resized_crop(self, width: int, height: int) -> Transform:
         return Transform(self._inner.random_resized_crop(width, height))
@@ -285,8 +340,23 @@ class Transform:
     def sharpness(self, amount: float) -> Transform:
         return Transform(self._inner.sharpness(amount))
 
-    def gaussian_blur(self, sigma: float, kernel_size: int | None = None) -> Transform:
-        return Transform(self._inner.gaussian_blur(sigma, kernel_size))
+    def gaussian_blur(
+        self,
+        sigma: float | Iterable[float],
+        kernel_size: int | Iterable[int] | None = None,
+    ) -> Transform:
+        """Blur with scalar or (x, y) sigma and (width, height) kernel size.
+
+        Omitting kernel size retains Rivet's sigma-derived kernel convenience;
+        sigma zero acts as identity on that axis."""
+        return Transform(
+            self._inner.gaussian_blur(
+                sigma if isinstance(sigma, (int, float)) else list(sigma),
+                kernel_size
+                if kernel_size is None or isinstance(kernel_size, int)
+                else list(kernel_size),
+            )
+        )
 
     def hue(self, factor: float) -> Transform:
         """Shift HSV hue by a factor in [-0.5, 0.5]."""
@@ -300,22 +370,33 @@ class Transform:
     ) -> Transform:
         return Transform(self._inner.random_grayscale(probability, num_output_channels))
 
-    def random_erasing(self, probability: float = 0.5) -> Transform:
-        return Transform(self._inner.random_erasing(probability))
+    def random_erasing(
+        self,
+        probability: float = 0.5,
+        *,
+        scale: Iterable[float] | None = None,
+        ratio: Iterable[float] | None = None,
+        value: float | Iterable[float] | str = 0.0,
+    ) -> Transform:
+        """Randomly erase a rectangle with scalar, channel, or ``"random"`` fill.
+
+        Random fill uses independent standard-normal values. Float32 preserves
+        fill values; uint8 conversion truncates and wraps modulo 256."""
+        return self.random_erasing_with_options(probability, scale, ratio, value)
 
     def random_erasing_with_options(
         self,
         probability: float = 0.5,
         scale: Iterable[float] | None = None,
         ratio: Iterable[float] | None = None,
-        value: float = 0.0,
+        value: float | Iterable[float] | str = 0.0,
     ) -> Transform:
         return Transform(
             self._inner.random_erasing_with_options(
                 probability,
                 None if scale is None else list(scale),
                 None if ratio is None else list(ratio),
-                value,
+                value if isinstance(value, (int, float, str)) else list(value),
             )
         )
 
@@ -330,29 +411,53 @@ class Transform:
         angle: float,
         interpolation: str = "nearest",
         expand: bool = False,
-        fill: int = 0,
+        fill: int | Iterable[int] = 0,
+        center: Iterable[float] | None = None,
     ) -> Transform:
         return Transform(
-            self._inner.arbitrary_rotate(angle, interpolation, expand, fill)
+            self._inner.arbitrary_rotate(
+                angle,
+                interpolation,
+                expand,
+                _normalize_fill(fill),
+                None if center is None else list(center),
+            )
         )
 
     def random_affine(
         self,
-        degrees: float,
+        degrees: float | Iterable[float],
         translate: Iterable[float] | None = None,
         scale: Iterable[float] | None = None,
-        shear: Iterable[float] | None = None,
+        shear: float | Iterable[float] | None = None,
         interpolation: str = "nearest",
-        fill: int = 0,
+        fill: int | Iterable[int] = 0,
+        shear_ranges: Iterable[float] | None = None,
     ) -> Transform:
+        """Sample an affine transform using Rivet's per-image random stream.
+
+        Degrees may be a scalar maximum or a two-bound interval. Scalar shear
+        affects x; a shear pair retains legacy symmetric x/y maxima. Use
+        ``shear_ranges`` for two x bounds or four x/y bounds instead."""
+        if shear is not None and shear_ranges is not None:
+            raise ValueError("pass either shear or shear_ranges, not both")
+        if isinstance(shear, (int, float)) and shear < 0:
+            raise ValueError("shear must be non-negative")
         return Transform(
             self._inner.random_affine(
                 degrees,
                 None if translate is None else list(translate),
                 None if scale is None else list(scale),
-                None if shear is None else list(shear),
+                None
+                if shear is None
+                else (
+                    [float(shear), 0.0]
+                    if isinstance(shear, (int, float))
+                    else list(shear)
+                ),
                 interpolation,
-                fill,
+                _normalize_fill(fill),
+                None if shear_ranges is None else list(shear_ranges),
             )
         )
 
@@ -361,14 +466,14 @@ class Transform:
         start_points: Iterable[Iterable[float]],
         end_points: Iterable[Iterable[float]],
         interpolation: str = "bilinear",
-        fill: int = 0,
+        fill: int | Iterable[int] = 0,
     ) -> Transform:
         return Transform(
             self._inner.perspective(
                 [list(point) for point in start_points],
                 [list(point) for point in end_points],
                 interpolation,
-                fill,
+                _normalize_fill(fill),
             )
         )
 
@@ -377,11 +482,11 @@ class Transform:
         distortion_scale: float = 0.5,
         probability: float = 0.5,
         interpolation: str = "bilinear",
-        fill: int = 0,
+        fill: int | Iterable[int] = 0,
     ) -> Transform:
         return Transform(
             self._inner.random_perspective(
-                distortion_scale, probability, interpolation, fill
+                distortion_scale, probability, interpolation, _normalize_fill(fill)
             )
         )
 
@@ -390,10 +495,12 @@ class Transform:
         alpha: float,
         sigma: float,
         interpolation: str = "bilinear",
-        fill: int = 0,
+        fill: int | Iterable[int] = 0,
     ) -> Transform:
         return Transform(
-            self._inner.elastic_transform(alpha, sigma, interpolation, fill)
+            self._inner.elastic_transform(
+                alpha, sigma, interpolation, _normalize_fill(fill)
+            )
         )
 
     def normalize(self, mean: list[float], std: list[float]) -> Transform:
@@ -408,9 +515,18 @@ class Transform:
     def random_apply(self, probability: float, nested: Transform) -> Transform:
         return Transform(self._inner.random_apply(probability, nested._inner))
 
-    def random_choice(self, choices: Iterable[Transform]) -> Transform:
+    def random_choice(
+        self, choices: Iterable[Transform], p: Iterable[float] | None = None
+    ) -> Transform:
+        """Choose one branch per image; ``p`` contains relative nonnegative weights.
+
+        Omit ``p`` for the existing uniform sampler. Provided weights must have
+        a finite positive sum and are normalized before sampling.
+        """
         return Transform(
-            self._inner.random_choice([choice._inner for choice in choices])
+            self._inner.random_choice(
+                [choice._inner for choice in choices], None if p is None else list(p)
+            )
         )
 
     def random_order(self, nested: Transform) -> Transform:

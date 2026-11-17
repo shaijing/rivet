@@ -281,7 +281,7 @@ def test_configurable_random_ops_have_torchvision_comparable_degenerate_cases(
         class_dir.parent,
         rivet.scan_image_folder(class_dir.parent)
         .decode_image()
-        .random_erasing_with_options(
+        .random_erasing(
             probability=1.0,
             scale=[1.0, 1.0],
             ratio=[ratio, ratio],
@@ -378,6 +378,46 @@ def test_resize_exact_over_scales(tmp_path, shape, mode):
     np.testing.assert_array_equal(actual, np.asarray(expected))
 
 
+def test_resize_scalar_size_and_max_size_matches_torchvision(tmp_path):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    path = class_dir / "sample.png"
+    pixels = np.fromfunction(
+        lambda y, x, channel: (17 * y + 29 * x + 53 * channel) % 256,
+        (4, 3, 3),
+        dtype=int,
+    ).astype(np.uint8)
+    Image.fromarray(pixels, mode="RGB").save(path)
+    actual = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path).decode_image().resize(8, max_size=9),
+    )
+    expected = functional.resize(Image.open(path).convert("RGB"), 8, max_size=9)
+    assert actual.shape[:2] == (9, 7)
+    np.testing.assert_array_equal(actual, np.asarray(expected))
+
+
+def test_random_crop_padding_options_accept_torchvision_forms(tmp_path):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    _write_test_image(class_dir)
+    actual = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path)
+        .decode_image()
+        .random_crop(
+            19,
+            18,
+            padding=(1, 2, 3, 4),
+            pad_if_needed=True,
+            fill=(10, 20, 30),
+            padding_mode="constant",
+        ),
+    )
+    assert actual.shape == (18, 19, 3)
+    assert np.any(np.all(actual == [10, 20, 30], axis=-1))
+
+
 @pytest.mark.parametrize(
     "name,factor",
     [
@@ -448,6 +488,78 @@ def test_arbitrary_rotate_matches_pillow(tmp_path, angle, expand, mode):
     np.testing.assert_array_equal(actual, np.asarray(expected))
 
 
+def test_channel_fill_and_custom_center_work_on_pipeline_and_compose(tmp_path):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    path, _ = _write_test_image(class_dir)
+    image = Image.open(path).convert("RGB")
+    fill = [11, 73, 201]
+
+    expected_pad = functional.pad(image, [2, 1, 1, 2], fill=fill)
+    direct = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path)
+        .decode_image()
+        .pad_with_sides(2, 1, 1, 2, fill=fill),
+    )
+    composed = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path).compose(
+            rivet.Transform().decode_image().pad_with_sides(2, 1, 1, 2, fill=fill)
+        ),
+    )
+    np.testing.assert_array_equal(direct, np.asarray(expected_pad))
+    np.testing.assert_array_equal(composed, np.asarray(expected_pad))
+
+    expected_rotate = functional.rotate(
+        image, 27.0, expand=True, center=[2.0, 8.0], fill=fill
+    )
+    rotated = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path)
+        .decode_image()
+        .arbitrary_rotate(27.0, expand=True, center=[2.0, 8.0], fill=fill),
+    )
+    np.testing.assert_array_equal(rotated, np.asarray(expected_rotate))
+    random_rotated = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path).compose(
+            rivet.Transform()
+            .decode_image()
+            .random_rotation([27.0, 27.0], expand=True, center=[2.0, 8.0], fill=fill)
+        ),
+    )
+    np.testing.assert_array_equal(random_rotated, np.asarray(expected_rotate))
+
+
+def test_random_affine_explicit_intervals_and_channel_fill_are_accepted(tmp_path):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    _write_test_image(class_dir)
+    pipeline = (
+        rivet.scan_image_folder(tmp_path)
+        .decode_image()
+        .random_affine(
+            (-4.0, 9.0),
+            shear_ranges=[-5.0, 7.0, -2.0, 8.0],
+            fill=[10, 20, 30],
+            interpolation="bilinear",
+        )
+    )
+    actual = _rivet_image(tmp_path, pipeline)
+    assert actual.shape == (11, 13, 3)
+    with pytest.raises(ValueError, match="either shear or shear_ranges"):
+        rivet.scan_image_folder(tmp_path).decode_image().random_affine(
+            5.0, shear=[2.0, 3.0], shear_ranges=[-5.0, 7.0]
+        )
+    assert _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path).decode_image().random_affine(0.0, shear=4.0),
+    ).shape == (11, 13, 3)
+    with pytest.raises(ValueError, match="shear must be non-negative"):
+        rivet.scan_image_folder(tmp_path).decode_image().random_affine(0.0, shear=-1.0)
+
+
 @pytest.mark.parametrize("mode", ["nearest", "bilinear", "bicubic"])
 def test_perspective_nonidentity_matches_pillow(tmp_path, mode):
     class_dir = tmp_path / "class"
@@ -486,6 +598,59 @@ def test_gaussian_blur_matches_torchvision(tmp_path, sigma, kernel):
     np.testing.assert_allclose(
         actual.astype(np.int16), np.asarray(expected).astype(np.int16), atol=1, rtol=0
     )
+
+
+def test_blur_pipeline_accepts_scalar_and_rectangular_parameters(tmp_path):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    path, _ = _write_test_image(class_dir)
+    actual = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path)
+        .decode_image()
+        .gaussian_blur(iter([0.45, 1.2]), kernel_size=iter([3, 5])),
+    )
+    expected = functional.gaussian_blur(
+        Image.open(path).convert("RGB"), [3, 5], [0.45, 1.2]
+    )
+    np.testing.assert_allclose(
+        actual.astype(np.int16), np.asarray(expected).astype(np.int16), atol=1, rtol=0
+    )
+    random_actual = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path)
+        .decode_image()
+        .random_gaussian_blur(iter([3, 5]), sigma=0.45),
+    )
+    random_expected = functional.gaussian_blur(
+        Image.open(path).convert("RGB"), [3, 5], 0.45
+    )
+    np.testing.assert_allclose(
+        random_actual.astype(np.int16),
+        np.asarray(random_expected).astype(np.int16),
+        atol=1,
+        rtol=0,
+    )
+
+
+def test_pipeline_random_erasing_accepts_channel_values(tmp_path):
+    class_dir = tmp_path / "class"
+    class_dir.mkdir()
+    _, pixels = _write_test_image(class_dir)
+    values = iter([12.0, 100.0, 225.0])
+    actual = _rivet_image(
+        tmp_path,
+        rivet.scan_image_folder(tmp_path)
+        .decode_image()
+        .random_erasing(
+            probability=1.0,
+            scale=[0.25, 0.25],
+            ratio=[1.0, 1.0],
+            value=values,
+        ),
+    )
+    assert np.any(np.all(actual == [12, 100, 225], axis=-1))
+    assert actual.shape == pixels.shape
 
 
 @pytest.mark.parametrize("mode", ["constant", "edge", "reflect", "symmetric"])

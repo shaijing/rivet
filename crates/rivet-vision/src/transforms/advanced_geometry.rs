@@ -21,19 +21,29 @@ impl Point2 {
 pub struct ArbitraryRotateConfig {
     /// Positive angles rotate counter-clockwise, as in torchvision rotate.
     pub angle: f32,
+    /// Optional rotation center in image pixel coordinates `(x, y)`.
+    pub center: Option<[f32; 2]>,
     pub expand: bool,
     pub interpolation: InterpolationMode,
     pub fill: u8,
+    pub fill_channels: Option<[u8; 3]>,
 }
 
 impl ArbitraryRotateConfig {
     pub const fn new(angle: f32) -> Self {
         Self {
             angle,
+            center: None,
             expand: false,
             interpolation: InterpolationMode::Nearest,
             fill: 0,
+            fill_channels: None,
         }
+    }
+
+    pub const fn with_center(mut self, x: f32, y: f32) -> Self {
+        self.center = Some([x, y]);
+        self
     }
 
     pub const fn with_options(
@@ -45,12 +55,24 @@ impl ArbitraryRotateConfig {
         self.expand = expand;
         self.interpolation = interpolation;
         self.fill = fill;
+        self.fill_channels = None;
+        self
+    }
+
+    pub const fn with_fill_channels(mut self, fill: [u8; 3]) -> Self {
+        self.fill_channels = Some(fill);
         self
     }
 
     pub fn validate(&self) -> RivetResult<()> {
         if !self.angle.is_finite() {
             return Err(invalid_argument("arbitrary rotation angle must be finite"));
+        }
+        if self
+            .center
+            .is_some_and(|c| c.iter().any(|v| !v.is_finite()))
+        {
+            return Err(invalid_argument("rotation center must be finite"));
         }
         validate_interpolation(self.interpolation, "arbitrary rotation")
     }
@@ -65,7 +87,7 @@ impl ArbitraryRotateConfig {
         let dims = sample.image.dims();
         let (height, width, _) = image_dims(dims, axis_order)?;
         let (matrix, output_width, output_height) =
-            rotation_inverse(width, height, self.angle, self.expand);
+            rotation_inverse(width, height, self.angle, self.expand, self.center);
         warp_decoded::<false, _>(
             sample,
             axis_order,
@@ -73,6 +95,7 @@ impl ArbitraryRotateConfig {
             output_height,
             self.interpolation,
             self.fill,
+            self.fill_channels,
             "arbitrary rotation",
             pillow_affine_map(matrix, output_width, output_height, self.interpolation),
         )
@@ -89,6 +112,7 @@ pub struct AffineConfig {
     pub center: Option<[f64; 2]>,
     pub interpolation: InterpolationMode,
     pub fill: u8,
+    pub fill_channels: Option<[u8; 3]>,
 }
 impl AffineConfig {
     pub const fn new(angle: f64, translate: [f64; 2], scale: f64, shear: [f64; 2]) -> Self {
@@ -100,11 +124,17 @@ impl AffineConfig {
             center: None,
             interpolation: InterpolationMode::Nearest,
             fill: 0,
+            fill_channels: None,
         }
     }
     pub const fn with_options(mut self, interpolation: InterpolationMode, fill: u8) -> Self {
         self.interpolation = interpolation;
         self.fill = fill;
+        self.fill_channels = None;
+        self
+    }
+    pub const fn with_fill_channels(mut self, fill: [u8; 3]) -> Self {
+        self.fill_channels = Some(fill);
         self
     }
     pub const fn with_center(mut self, center: [f64; 2]) -> Self {
@@ -173,6 +203,7 @@ impl AffineConfig {
             height,
             self.interpolation,
             self.fill,
+            self.fill_channels,
             "affine",
             move |x, y| {
                 if !TENSOR {
@@ -193,25 +224,33 @@ impl AffineConfig {
 pub struct RandomAffineConfig {
     /// Maximum absolute rotation angle in degrees.
     pub degrees: f32,
+    /// Optional inclusive degree interval. When set, takes precedence over `degrees`.
+    pub degree_range: Option<[f32; 2]>,
     /// Maximum translation fractions `(x, y)` of the input width/height.
     pub translate: [f32; 2],
     /// Inclusive scale range.
     pub scale: [f32; 2],
     /// Maximum absolute shear angles `(x, y)` in degrees.
     pub shear: [f32; 2],
+    /// Optional inclusive x/y shear intervals. Takes precedence over `shear`.
+    pub shear_ranges: Option<[[f32; 2]; 2]>,
     pub interpolation: InterpolationMode,
     pub fill: u8,
+    pub fill_channels: Option<[u8; 3]>,
 }
 
 impl RandomAffineConfig {
     pub const fn new(degrees: f32) -> Self {
         Self {
             degrees,
+            degree_range: None,
             translate: [0.0, 0.0],
             scale: [1.0, 1.0],
             shear: [0.0, 0.0],
+            shear_ranges: None,
             interpolation: InterpolationMode::Nearest,
             fill: 0,
+            fill_channels: None,
         }
     }
 
@@ -230,16 +269,32 @@ impl RandomAffineConfig {
         self
     }
 
+    pub const fn with_degrees_range(mut self, min: f32, max: f32) -> Self {
+        self.degree_range = Some([min, max]);
+        self
+    }
+
+    pub const fn with_shear_ranges(mut self, x: [f32; 2], y: [f32; 2]) -> Self {
+        self.shear_ranges = Some([x, y]);
+        self
+    }
+
     pub const fn with_options(mut self, interpolation: InterpolationMode, fill: u8) -> Self {
         self.interpolation = interpolation;
         self.fill = fill;
+        self.fill_channels = None;
+        self
+    }
+    pub const fn with_fill_channels(mut self, fill: [u8; 3]) -> Self {
+        self.fill_channels = Some(fill);
         self
     }
 
     pub fn validate(&self) -> RivetResult<()> {
-        if !self.degrees.is_finite() || self.degrees < 0.0 {
+        let degrees = self.degree_range.unwrap_or([-self.degrees, self.degrees]);
+        if degrees.iter().any(|v| !v.is_finite()) || degrees[0] > degrees[1] {
             return Err(invalid_argument(
-                "random affine degrees must be finite and non-negative",
+                "random affine degrees must be finite and form an ordered interval",
             ));
         }
         if self
@@ -260,11 +315,14 @@ impl RandomAffineConfig {
                 "random affine scale must satisfy 0 < min <= max",
             ));
         }
-        if self
-            .shear
-            .iter()
-            .any(|value| !value.is_finite() || value.abs() >= 89.0)
-        {
+        let shear_ranges = self.shear_ranges.unwrap_or([
+            [-self.shear[0], self.shear[0]],
+            [-self.shear[1], self.shear[1]],
+        ]);
+        if shear_ranges.iter().any(|r| {
+            r.iter()
+                .any(|v| !v.is_finite() || v.abs() >= 89.0 || r[0] > r[1])
+        }) {
             return Err(invalid_argument(
                 "random affine shear must be finite and have absolute value below 89 degrees",
             ));
@@ -282,14 +340,19 @@ impl RandomAffineConfig {
         let sample = require_u8_image(sample, "random affine")?;
         let dims = sample.image.dims();
         let (height, width, _) = image_dims(dims, axis_order)?;
-        let angle = f64::from(uniform(rng, -self.degrees, self.degrees)).to_radians();
+        let degrees = self.degree_range.unwrap_or([-self.degrees, self.degrees]);
+        let angle = f64::from(uniform(rng, degrees[0], degrees[1])).to_radians();
         let tx = (f64::from(uniform(rng, -self.translate[0], self.translate[0])) * width as f64)
             .round_ties_even();
         let ty = (f64::from(uniform(rng, -self.translate[1], self.translate[1])) * height as f64)
             .round_ties_even();
         let scale = f64::from(uniform(rng, self.scale[0], self.scale[1]));
-        let sx = f64::from(uniform(rng, -self.shear[0], self.shear[0])).to_radians();
-        let sy = f64::from(uniform(rng, -self.shear[1], self.shear[1])).to_radians();
+        let shear = self.shear_ranges.unwrap_or([
+            [-self.shear[0], self.shear[0]],
+            [-self.shear[1], self.shear[1]],
+        ]);
+        let sx = f64::from(uniform(rng, shear[0][0], shear[0][1])).to_radians();
+        let sy = f64::from(uniform(rng, shear[1][0], shear[1][1])).to_radians();
         // torchvision functional._get_inverse_affine_matrix: R * S * SHy * SHx.
         let a = (angle - sy).cos() / sy.cos();
         let b = -(angle - sy).cos() * sx.tan() / sy.cos() - angle.sin();
@@ -306,6 +369,7 @@ impl RandomAffineConfig {
             height,
             self.interpolation,
             self.fill,
+            self.fill_channels,
             "random affine",
             pillow_affine_map(
                 [m[0], m[1], ox, m[2], m[3], oy],
@@ -326,6 +390,7 @@ pub struct PerspectiveConfig {
     pub end_points: [Point2; 4],
     pub interpolation: InterpolationMode,
     pub fill: u8,
+    pub fill_channels: Option<[u8; 3]>,
 }
 
 impl PerspectiveConfig {
@@ -335,12 +400,18 @@ impl PerspectiveConfig {
             end_points,
             interpolation: InterpolationMode::Bilinear,
             fill: 0,
+            fill_channels: None,
         }
     }
 
     pub const fn with_options(mut self, interpolation: InterpolationMode, fill: u8) -> Self {
         self.interpolation = interpolation;
         self.fill = fill;
+        self.fill_channels = None;
+        self
+    }
+    pub const fn with_fill_channels(mut self, fill: [u8; 3]) -> Self {
+        self.fill_channels = Some(fill);
         self
     }
 
@@ -372,6 +443,7 @@ impl PerspectiveConfig {
             &self.end_points,
             self.interpolation,
             self.fill,
+            self.fill_channels,
             "perspective",
         )
         .map(ImageSample::Decoded)
@@ -384,6 +456,7 @@ pub struct RandomPerspectiveConfig {
     pub probability: f64,
     pub interpolation: InterpolationMode,
     pub fill: u8,
+    pub fill_channels: Option<[u8; 3]>,
 }
 
 impl RandomPerspectiveConfig {
@@ -393,12 +466,18 @@ impl RandomPerspectiveConfig {
             probability,
             interpolation: InterpolationMode::Bilinear,
             fill: 0,
+            fill_channels: None,
         }
     }
 
     pub const fn with_options(mut self, interpolation: InterpolationMode, fill: u8) -> Self {
         self.interpolation = interpolation;
         self.fill = fill;
+        self.fill_channels = None;
+        self
+    }
+    pub const fn with_fill_channels(mut self, fill: [u8; 3]) -> Self {
+        self.fill_channels = Some(fill);
         self
     }
 
@@ -465,6 +544,7 @@ impl RandomPerspectiveConfig {
             &end_points,
             self.interpolation,
             self.fill,
+            self.fill_channels,
             "random perspective",
         )
         .map(ImageSample::Decoded)
@@ -479,6 +559,7 @@ pub struct ElasticTransformConfig {
     pub sigma: f32,
     pub interpolation: InterpolationMode,
     pub fill: u8,
+    pub fill_channels: Option<[u8; 3]>,
 }
 
 impl ElasticTransformConfig {
@@ -488,12 +569,18 @@ impl ElasticTransformConfig {
             sigma,
             interpolation: InterpolationMode::Bilinear,
             fill: 0,
+            fill_channels: None,
         }
     }
 
     pub const fn with_options(mut self, interpolation: InterpolationMode, fill: u8) -> Self {
         self.interpolation = interpolation;
         self.fill = fill;
+        self.fill_channels = None;
+        self
+    }
+    pub const fn with_fill_channels(mut self, fill: [u8; 3]) -> Self {
+        self.fill_channels = Some(fill);
         self
     }
 
@@ -556,6 +643,7 @@ impl ElasticTransformConfig {
             height,
             self.interpolation,
             self.fill,
+            self.fill_channels,
             "elastic transform",
             move |x, y| {
                 let index = y * width + x;
@@ -622,6 +710,7 @@ pub(crate) fn policy_warp<const TENSOR: bool>(
         h,
         interpolation,
         fill,
+        None,
         "policy geometry",
         move |x, y| {
             if TENSOR {
@@ -768,6 +857,7 @@ fn warp_perspective(
     end_points: &[Point2; 4],
     interpolation: InterpolationMode,
     fill: u8,
+    fill_channels: Option<[u8; 3]>,
     op_name: &str,
 ) -> RivetResult<DecodedSample> {
     let inverse = homography(end_points, start_points)
@@ -781,6 +871,7 @@ fn warp_perspective(
         height,
         interpolation,
         fill,
+        fill_channels,
         op_name,
         move |x, y| {
             let p = apply_homography(inverse, [x as f64 + 0.5, y as f64 + 0.5]);
@@ -796,6 +887,7 @@ fn warp_decoded<const TENSOR: bool, F>(
     output_height: usize,
     interpolation: InterpolationMode,
     fill: u8,
+    fill_channels: Option<[u8; 3]>,
     op_name: &str,
     mut map: F,
 ) -> RivetResult<DecodedSample>
@@ -810,6 +902,11 @@ where
     let input = &sample.image;
     let dims = input.dims().to_vec();
     let (height, width, channels) = image_dims(&dims, axis_order)?;
+    if fill_channels.is_some() && channels != 3 {
+        return Err(invalid_argument(format!(
+            "{op_name} per-channel fill requires a 3-channel image, got {channels} channels"
+        )));
+    }
     let values = input.with_cpu_storage(|storage, layout| {
         let CpuStorageRef::U8(values) = storage else {
             return Err(rivet_core::Error::UnexpectedDType {
@@ -828,6 +925,7 @@ where
                 .ok_or(rivet_core::Error::StorageOutOfBounds)
         };
         let sample_pixel = |channel: usize, source: [f64; 2]| {
+            let fill = fill_channels.map_or(fill, |values| values[channel]);
             if TENSOR {
                 return tensor_sample_value(
                     &read,
@@ -1007,13 +1105,16 @@ fn rotation_inverse(
     height: usize,
     angle: f32,
     expand: bool,
+    center: Option<[f32; 2]>,
 ) -> ([f64; 6], usize, usize) {
     // Image.py Image.rotate: reverse transform, rounded trigonometric
     // coefficients, edge-coordinate bounds, then expansion translation.
     let radians = -f64::from(angle.rem_euclid(360.0)).to_radians();
     let round15 = |v: f64| (v * 1e15).round_ties_even() / 1e15;
     let (sin, cos) = (round15(radians.sin()), round15(radians.cos()));
-    let (cx, cy) = (width as f64 * 0.5, height as f64 * 0.5);
+    let (cx, cy) = center
+        .map(|[x, y]| (f64::from(x), f64::from(y)))
+        .unwrap_or((width as f64 * 0.5, height as f64 * 0.5));
     let mut m = [cos, sin, 0.0, -sin, cos, 0.0];
     m[2] = -cos * cx - sin * cy + cx;
     m[5] = sin * cx - cos * cy + cy;
@@ -1161,7 +1262,7 @@ fn smooth_field(field: &[f32], width: usize, height: usize, sigma: f32) -> Vec<f
 #[cfg(test)]
 mod tests {
     use super::{
-        ArbitraryRotateConfig, ElasticTransformConfig, PerspectiveConfig, Point2,
+        AffineConfig, ArbitraryRotateConfig, ElasticTransformConfig, PerspectiveConfig, Point2,
         RandomAffineConfig, RandomPerspectiveConfig,
     };
     use crate::pipeline::op::SampleContext;
@@ -1259,6 +1360,77 @@ mod tests {
             .into_decoded()
             .unwrap();
         assert_eq!(output.image.dims(), [3, 2, 1]);
+    }
+
+    #[test]
+    fn custom_rotation_center_is_validated_and_changes_the_map() {
+        let centered = ArbitraryRotateConfig::new(90.0);
+        let custom = centered.with_center(0.0, 0.0);
+        assert!(custom.validate().is_ok());
+        assert!(centered.with_center(f32::NAN, 0.0).validate().is_err());
+        assert_ne!(
+            super::rotation_inverse(2, 2, 90.0, false, None).0,
+            super::rotation_inverse(2, 2, 90.0, false, Some([0.0, 0.0])).0,
+        );
+        let (_, width, height) = super::rotation_inverse(2, 3, 45.0, true, Some([0.0, 0.0]));
+        assert!(width > 0 && height > 0);
+    }
+
+    #[test]
+    fn random_affine_accepts_explicit_degree_and_shear_intervals() {
+        let config = RandomAffineConfig::new(0.0)
+            .with_degrees_range(-15.0, 25.0)
+            .with_shear_ranges([-4.0, 6.0], [-8.0, 3.0]);
+        assert!(config.validate().is_ok());
+        assert!(
+            RandomAffineConfig::new(0.0)
+                .with_degrees_range(2.0, -2.0)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            RandomAffineConfig::new(0.0)
+                .with_shear_ranges([5.0, -5.0], [0.0, 0.0])
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn affine_per_channel_fill_is_written_in_rgb_order() {
+        let image = Tensor::from_vec(vec![1u8, 2, 3], [1, 1, 3], &Device::Cpu).unwrap();
+        let output = AffineConfig::new(0.0, [2.0, 0.0], 1.0, [0.0, 0.0])
+            .with_fill_channels([10, 20, 30])
+            .apply(
+                ImageSample::Decoded(DecodedSample { image, label: 0 }),
+                ImageAxisOrder::Hwc,
+            )
+            .unwrap()
+            .into_decoded()
+            .unwrap();
+        assert_eq!(output.image.to_vec::<u8>().unwrap(), [10, 20, 30]);
+    }
+
+    #[test]
+    fn perspective_per_channel_fill_is_written_in_rgb_order() {
+        let image = Tensor::from_vec(vec![1u8; 2 * 2 * 3], [2, 2, 3], &Device::Cpu).unwrap();
+        let start = corners();
+        let end = [
+            Point2::new(-100.0, 0.0),
+            Point2::new(-99.0, 0.0),
+            Point2::new(-99.0, 1.0),
+            Point2::new(-100.0, 1.0),
+        ];
+        let output = PerspectiveConfig::new(start, end)
+            .with_fill_channels([11, 22, 33])
+            .apply(
+                ImageSample::Decoded(DecodedSample { image, label: 0 }),
+                ImageAxisOrder::Hwc,
+            )
+            .unwrap()
+            .into_decoded()
+            .unwrap();
+        assert_eq!(output.image.to_vec::<u8>().unwrap(), [11, 22, 33].repeat(4));
     }
 
     #[test]

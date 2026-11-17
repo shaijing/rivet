@@ -121,6 +121,8 @@ fn exact_parameters(op: &ImageOp) -> Option<Vec<u64>> {
         ImageOp::Resize(config) => key.extend([
             u64::from(config.width),
             u64::from(config.height),
+            u64::from(config.short_edge.unwrap_or(0)),
+            u64::from(config.max_size.unwrap_or(0)),
             match config.interpolation {
                 InterpolationMode::Nearest => 0,
                 InterpolationMode::Bilinear => 1,
@@ -139,19 +141,28 @@ fn exact_parameters(op: &ImageOp) -> Option<Vec<u64>> {
         ImageOp::CenterCrop(config) => {
             key.extend([u64::from(config.width), u64::from(config.height)]);
         }
-        ImageOp::Pad(config) => key.extend([
-            u64::from(config.left),
-            u64::from(config.right),
-            u64::from(config.top),
-            u64::from(config.bottom),
-            u64::from(config.value.to_bits()),
-            match config.mode {
-                PaddingMode::Constant => 0,
-                PaddingMode::Edge => 1,
-                PaddingMode::Reflect => 2,
-                PaddingMode::Symmetric => 3,
-            },
-        ]),
+        ImageOp::Pad(config) => {
+            key.extend([
+                u64::from(config.left),
+                u64::from(config.right),
+                u64::from(config.top),
+                u64::from(config.bottom),
+                u64::from(config.value.to_bits()),
+                match config.mode {
+                    PaddingMode::Constant => 0,
+                    PaddingMode::Edge => 1,
+                    PaddingMode::Reflect => 2,
+                    PaddingMode::Symmetric => 3,
+                },
+            ]);
+            match config.fill_channels {
+                Some(fill) => {
+                    key.push(1);
+                    key.extend(fill.map(|value| u64::from(value.to_bits())));
+                }
+                None => key.push(0),
+            }
+        }
         ImageOp::Flip(config) => key.push(match config.direction {
             FlipDirection::Horizontal => 0,
             FlipDirection::Vertical => 1,
@@ -184,7 +195,7 @@ mod tests {
 
     use super::*;
     use crate::transforms::{
-        CropConfig, DecodeImageConfig, LayoutConfig, NormalizeConfig, RandomCropConfig,
+        CropConfig, DecodeImageConfig, LayoutConfig, NormalizeConfig, PadConfig, RandomCropConfig,
         ResizeConfig,
     };
 
@@ -256,6 +267,18 @@ mod tests {
                 ImageOp::Resize(ResizeConfig::new(9, 8)),
             ),
             (
+                ImageOp::Resize(ResizeConfig::short_edge(
+                    8,
+                    Some(12),
+                    InterpolationMode::Bilinear,
+                )),
+                ImageOp::Resize(ResizeConfig::short_edge(
+                    8,
+                    Some(13),
+                    InterpolationMode::Bilinear,
+                )),
+            ),
+            (
                 ImageOp::Resize(ResizeConfig::new(8, 9)),
                 ImageOp::Resize(ResizeConfig::with_interpolation(
                     8,
@@ -266,6 +289,10 @@ mod tests {
             (
                 ImageOp::Crop(CropConfig::new(0, 0, 4, 4)),
                 ImageOp::Crop(CropConfig::new(1, 0, 4, 4)),
+            ),
+            (
+                ImageOp::Pad(PadConfig::new(2).with_fill_channels([1.0, 2.0, 3.0])),
+                ImageOp::Pad(PadConfig::new(2).with_fill_channels([1.0, 2.0, 4.0])),
             ),
             (
                 ImageOp::Layout(LayoutConfig::new(ImageAxisOrder::Hwc)),

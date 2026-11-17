@@ -20,6 +20,84 @@ fn parse_pair<T: Clone + std::fmt::Debug>(
     })
 }
 
+fn parse_f32_scalar_or_pair(value: &Bound<'_, PyAny>, name: &str) -> PyResult<[f32; 2]> {
+    if let Ok(value) = value.extract::<f32>() {
+        return Ok([value.clone(), value]);
+    }
+    let values = value.extract::<Vec<f32>>()?;
+    values.try_into().map_err(|values: Vec<f32>| {
+        PyValueError::new_err(format!(
+            "{name} must be a scalar or contain exactly two values, got {values:?}"
+        ))
+    })
+}
+
+fn parse_f32_sigma_axes(value: &Bound<'_, PyAny>) -> PyResult<[f32; 2]> {
+    if let Ok(value) = value.extract::<f32>() {
+        return Ok([value; 2]);
+    }
+    let values = value.extract::<Vec<f32>>()?;
+    match values.as_slice() {
+        [sigma] => Ok([*sigma; 2]),
+        [horizontal, vertical] => Ok([*horizontal, *vertical]),
+        _ => Err(PyValueError::new_err(format!(
+            "sigma must be a scalar or contain one or two values, got {values:?}"
+        ))),
+    }
+}
+
+fn parse_u32_scalar_or_pair(value: &Bound<'_, PyAny>, name: &str) -> PyResult<[u32; 2]> {
+    if let Ok(value) = value.extract::<u32>() {
+        return Ok([value; 2]);
+    }
+    let values = value.extract::<Vec<u32>>()?;
+    values.try_into().map_err(|values: Vec<u32>| {
+        PyValueError::new_err(format!(
+            "{name} must be a scalar or contain exactly two values, got {values:?}"
+        ))
+    })
+}
+
+fn parse_optional_kernel(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<[u32; 2]>> {
+    value
+        .map(|value| parse_u32_scalar_or_pair(value, "kernel_size"))
+        .transpose()
+}
+
+fn parse_fill_u8(value: Option<&Bound<'_, PyAny>>) -> PyResult<(u8, Option<[u8; 3]>)> {
+    let Some(value) = value else {
+        return Ok((0, None));
+    };
+    if let Ok(value) = value.extract::<u8>() {
+        return Ok((value, None));
+    }
+    let values = value.extract::<Vec<u8>>()?;
+    match values.as_slice() {
+        [value] => Ok((*value, None)),
+        [red, green, blue] => Ok((0, Some([*red, *green, *blue]))),
+        _ => Err(PyValueError::new_err(
+            "fill must be a scalar or a 3-value channel sequence",
+        )),
+    }
+}
+
+fn parse_fill_f32(value: Option<&Bound<'_, PyAny>>) -> PyResult<(f32, Option<[f32; 3]>)> {
+    let Some(value) = value else {
+        return Ok((0.0, None));
+    };
+    if let Ok(value) = value.extract::<f32>() {
+        return Ok((value, None));
+    }
+    let values = value.extract::<Vec<f32>>()?;
+    match values.as_slice() {
+        [value] => Ok((*value, None)),
+        [red, green, blue] => Ok((0.0, Some([*red, *green, *blue]))),
+        _ => Err(PyValueError::new_err(
+            "fill must be a scalar or a 3-value channel sequence",
+        )),
+    }
+}
+
 fn parse_points(values: Vec<Vec<f32>>, name: &str) -> PyResult<[Point2; 4]> {
     if values.len() != 4 || values.iter().any(|point| point.len() != 2) {
         return Err(PyValueError::new_err(format!(
@@ -51,6 +129,34 @@ fn parse_padding_mode(value: &str) -> PyResult<rivet_vision::api::PaddingMode> {
     }
 }
 
+fn parse_crop_padding(value: Option<&Bound<'_, PyAny>>) -> PyResult<(u32, Option<[u32; 4]>)> {
+    let Some(value) = value else {
+        return Ok((0, None));
+    };
+    if let Ok(padding) = value.extract::<u32>() {
+        return Ok((padding, None));
+    }
+    let values = value.extract::<Vec<u32>>()?;
+    match values.as_slice() {
+        [all] => Ok((*all, None)),
+        [horizontal, vertical] => Ok((0, Some([*horizontal, *vertical, *horizontal, *vertical]))),
+        [left, top, right, bottom] => Ok((0, Some([*left, *top, *right, *bottom]))),
+        _ => Err(PyValueError::new_err(
+            "padding must be an integer or a sequence of 1, 2, or 4 integers",
+        )),
+    }
+}
+
+fn parse_crop_fill(value: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<f32>> {
+    let Some(value) = value else {
+        return Ok(vec![0.0]);
+    };
+    if let Ok(fill) = value.extract::<f32>() {
+        return Ok(vec![fill]);
+    }
+    value.extract::<Vec<f32>>()
+}
+
 #[pyclass(name = "_Transform")]
 pub(crate) struct PyTransform {
     pub(crate) inner: TransformSequence,
@@ -77,17 +183,27 @@ impl PyTransform {
         }
     }
 
-    #[pyo3(signature = (width, height, interpolation="bilinear"))]
-    fn resize(&self, width: u32, height: u32, interpolation: &str) -> PyResult<Self> {
+    #[pyo3(signature = (width, height=None, interpolation="bilinear", max_size=None))]
+    fn resize(
+        &self,
+        width: u32,
+        height: Option<u32>,
+        interpolation: &str,
+        max_size: Option<u32>,
+    ) -> PyResult<Self> {
         let interpolation = interpolation
             .parse::<InterpolationMode>()
             .map_err(to_py_err)?;
-        Ok(Self {
-            inner: self
-                .inner
+        let inner = if let Some(height) = height {
+            self.inner
                 .clone()
-                .resize_with_interpolation(width, height, interpolation),
-        })
+                .resize_with_interpolation(width, height, interpolation)
+        } else {
+            self.inner
+                .clone()
+                .resize_short_edge_with_interpolation(width, max_size, interpolation)
+        };
+        Ok(Self { inner })
     }
 
     fn crop(&self, x: u32, y: u32, width: u32, height: u32) -> Self {
@@ -102,29 +218,41 @@ impl PyTransform {
         }
     }
 
-    #[pyo3(signature = (padding, fill=0.0, padding_mode="constant"))]
-    fn pad(&self, padding: u32, fill: f32, padding_mode: &str) -> PyResult<Self> {
-        let config = rivet_vision::api::PadConfig::new(padding)
-            .with_fill(fill)
-            .with_mode(parse_padding_mode(padding_mode)?);
+    #[pyo3(signature = (padding, fill=None, padding_mode="constant"))]
+    fn pad(
+        &self,
+        padding: u32,
+        fill: Option<&Bound<'_, PyAny>>,
+        padding_mode: &str,
+    ) -> PyResult<Self> {
+        let (fill, channels) = parse_fill_f32(fill)?;
+        let mut config = rivet_vision::api::PadConfig::new(padding).with_fill(fill);
+        if let Some(channels) = channels {
+            config = config.with_fill_channels(channels);
+        }
+        let config = config.with_mode(parse_padding_mode(padding_mode)?);
         Ok(Self {
             inner: self.inner.clone().pad_with_config(config),
         })
     }
 
-    #[pyo3(signature = (left, top, right, bottom, fill=0.0, padding_mode="constant"))]
+    #[pyo3(signature = (left, top, right, bottom, fill=None, padding_mode="constant"))]
     fn pad_with_sides(
         &self,
         left: u32,
         top: u32,
         right: u32,
         bottom: u32,
-        fill: f32,
+        fill: Option<&Bound<'_, PyAny>>,
         padding_mode: &str,
     ) -> PyResult<Self> {
-        let config = rivet_vision::api::PadConfig::with_sides(left, top, right, bottom)
-            .with_fill(fill)
-            .with_mode(parse_padding_mode(padding_mode)?);
+        let (fill, channels) = parse_fill_f32(fill)?;
+        let mut config =
+            rivet_vision::api::PadConfig::with_sides(left, top, right, bottom).with_fill(fill);
+        if let Some(channels) = channels {
+            config = config.with_fill_channels(channels);
+        }
+        let config = config.with_mode(parse_padding_mode(padding_mode)?);
         Ok(Self {
             inner: self.inner.clone().pad_with_config(config),
         })
@@ -245,7 +373,7 @@ impl PyTransform {
             inner: self.inner.clone().gamma(gamma, gain),
         }
     }
-    #[pyo3(signature=(angle,translate=None,scale=1.0,shear=None,interpolation="nearest",fill=0,center=None))]
+    #[pyo3(signature=(angle,translate=None,scale=1.0,shear=None,interpolation="nearest",fill=None,center=None))]
     fn affine(
         &self,
         angle: f64,
@@ -253,9 +381,10 @@ impl PyTransform {
         scale: f64,
         shear: Option<Vec<f64>>,
         interpolation: &str,
-        fill: u8,
+        fill: Option<&Bound<'_, PyAny>>,
         center: Option<Vec<f64>>,
     ) -> PyResult<Self> {
+        let (fill, fill_channels) = parse_fill_u8(fill)?;
         let mut config = rivet_vision::api::AffineConfig::new(
             angle,
             parse_pair(translate, "translate", [0.0, 0.0])?,
@@ -263,6 +392,9 @@ impl PyTransform {
             parse_pair(shear, "shear", [0.0, 0.0])?,
         )
         .with_options(parse_interpolation(interpolation)?, fill);
+        if let Some(channels) = fill_channels {
+            config = config.with_fill_channels(channels);
+        }
         if let Some(center) = center {
             config = config.with_center(parse_pair(Some(center), "center", [0.0, 0.0])?);
         }
@@ -292,30 +424,47 @@ impl PyTransform {
                 )),
         }
     }
-    #[pyo3(signature=(degrees,interpolation="nearest",expand=false,fill=0))]
+    #[pyo3(signature=(degrees,interpolation="nearest",expand=false,fill=None,center=None))]
     fn random_rotation(
         &self,
         degrees: Vec<f32>,
         interpolation: &str,
         expand: bool,
-        fill: u8,
+        fill: Option<&Bound<'_, PyAny>>,
+        center: Option<Vec<f32>>,
     ) -> PyResult<Self> {
-        let config = rivet_vision::api::RandomRotationConfig::new(parse_pair(
+        let (fill, fill_channels) = parse_fill_u8(fill)?;
+        let mut config = rivet_vision::api::RandomRotationConfig::new(parse_pair(
             Some(degrees),
             "degrees",
             [0.0, 0.0],
         )?)
         .with_options(parse_interpolation(interpolation)?, expand, fill);
+        if let Some(channels) = fill_channels {
+            config = config.with_fill_channels(channels);
+        }
+        let config = if let Some(center) = center {
+            config.with_center(parse_pair(Some(center), "center", [0.0, 0.0])?)
+        } else {
+            config
+        };
         Ok(Self {
             inner: self.inner.clone().random_rotation(config),
         })
     }
     #[pyo3(signature=(kernel_size,sigma=None))]
-    fn random_gaussian_blur(&self, kernel_size: u32, sigma: Option<Vec<f32>>) -> PyResult<Self> {
-        let config = rivet_vision::api::RandomGaussianBlurConfig::new(
-            kernel_size,
-            parse_pair(sigma, "sigma", [0.1, 2.0])?,
-        );
+    fn random_gaussian_blur(
+        &self,
+        kernel_size: &Bound<'_, PyAny>,
+        sigma: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let dimensions = parse_u32_scalar_or_pair(kernel_size, "kernel_size")?;
+        let sigma = match sigma {
+            Some(value) => parse_f32_scalar_or_pair(value, "sigma")?,
+            None => [0.1, 2.0],
+        };
+        let config = rivet_vision::api::RandomGaussianBlurConfig::new(dimensions[0], sigma)
+            .with_kernel_dimensions(dimensions);
         Ok(Self {
             inner: self.inner.clone().random_gaussian_blur(config),
         })
@@ -401,11 +550,26 @@ impl PyTransform {
         }
     }
 
-    #[pyo3(signature = (width, height, padding=0))]
-    fn random_crop(&self, width: u32, height: u32, padding: u32) -> Self {
-        Self {
-            inner: self.inner.clone().random_crop(width, height, padding),
-        }
+    #[pyo3(signature = (width, height, padding=None, pad_if_needed=false, fill=None, padding_mode="constant"))]
+    fn random_crop(
+        &self,
+        width: u32,
+        height: u32,
+        padding: Option<&Bound<'_, PyAny>>,
+        pad_if_needed: bool,
+        fill: Option<&Bound<'_, PyAny>>,
+        padding_mode: &str,
+    ) -> PyResult<Self> {
+        let (uniform, sides) = parse_crop_padding(padding)?;
+        let config = rivet_vision::api::RandomCropConfig::new(width, height, uniform).with_options(
+            sides,
+            pad_if_needed,
+            parse_crop_fill(fill)?,
+            parse_padding_mode(padding_mode)?,
+        );
+        Ok(Self {
+            inner: self.inner.clone().random_crop_with_config(config),
+        })
     }
 
     fn random_resized_crop(&self, width: u32, height: u32) -> Self {
@@ -500,14 +664,20 @@ impl PyTransform {
     }
 
     #[pyo3(signature = (sigma, kernel_size=None))]
-    fn gaussian_blur(&self, sigma: f32, kernel_size: Option<u32>) -> Self {
-        let mut config = rivet_vision::api::GaussianBlurConfig::new(sigma);
-        if let Some(size) = kernel_size {
-            config = config.with_kernel_size(size);
+    fn gaussian_blur(
+        &self,
+        sigma: &Bound<'_, PyAny>,
+        kernel_size: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let sigmas = parse_f32_sigma_axes(sigma)?;
+        let mut config =
+            rivet_vision::api::GaussianBlurConfig::new(sigmas[0]).with_axis_sigmas(sigmas);
+        if let Some(dimensions) = parse_optional_kernel(kernel_size)? {
+            config = config.with_kernel_dimensions(dimensions);
         }
-        Self {
+        Ok(Self {
             inner: self.inner.clone().gaussian_blur_with_config(config),
-        }
+        })
     }
 
     fn hue(&self, factor: f32) -> Self {
@@ -540,19 +710,32 @@ impl PyTransform {
         }
     }
 
-    #[pyo3(signature = (probability=0.5, scale=None, ratio=None, value=0.0))]
+    #[pyo3(signature = (probability=0.5, scale=None, ratio=None, value=None))]
     fn random_erasing_with_options(
         &self,
         probability: f64,
         scale: Option<Vec<f32>>,
         ratio: Option<Vec<f32>>,
-        value: f32,
+        value: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let scale = parse_pair(scale, "scale", [0.02, 0.33])?;
         let ratio = parse_pair(ratio, "ratio", [0.3, 3.3333333])?;
         let config = rivet_vision::api::RandomErasingConfig::new(probability)
-            .with_params(scale[0], scale[1], ratio[0], ratio[1])
-            .with_value(value);
+            .with_params(scale[0], scale[1], ratio[0], ratio[1]);
+        let config = if let Some(value) = value {
+            if let Ok(value) = value.extract::<String>() {
+                if value != "random" {
+                    return Err(PyValueError::new_err("value string must be 'random'"));
+                }
+                config.with_random_value()
+            } else if let Ok(value) = value.extract::<f32>() {
+                config.with_value(value)
+            } else {
+                config.with_values(value.extract::<Vec<f32>>()?)
+            }
+        } else {
+            config
+        };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
         })
@@ -580,93 +763,154 @@ impl PyTransform {
         })
     }
 
-    #[pyo3(signature = (angle, interpolation="nearest", expand=false, fill=0))]
+    #[pyo3(signature = (angle, interpolation="nearest", expand=false, fill=None, center=None))]
     fn arbitrary_rotate(
         &self,
         angle: f32,
         interpolation: &str,
         expand: bool,
-        fill: u8,
+        fill: Option<&Bound<'_, PyAny>>,
+        center: Option<Vec<f32>>,
     ) -> PyResult<Self> {
+        let (fill, fill_channels) = parse_fill_u8(fill)?;
         let interpolation = parse_interpolation(interpolation)?;
+        let mut config = rivet_vision::api::ArbitraryRotateConfig::new(angle).with_options(
+            expand,
+            interpolation,
+            fill,
+        );
+        if let Some(channels) = fill_channels {
+            config = config.with_fill_channels(channels);
+        }
+        if let Some(center) = center {
+            let center = parse_pair(Some(center), "center", [0.0, 0.0])?;
+            config = config.with_center(center[0], center[1]);
+        }
         Ok(Self {
-            inner: self.inner.clone().arbitrary_rotate_with_options(
-                angle,
-                expand,
-                interpolation,
-                fill,
-            ),
+            inner: self.inner.clone().arbitrary_rotate_with_config(config),
         })
     }
 
-    #[pyo3(signature = (degrees, translate=None, scale=None, shear=None, interpolation="nearest", fill=0))]
+    #[pyo3(signature = (degrees, translate=None, scale=None, shear=None, interpolation="nearest", fill=None, shear_ranges=None))]
     fn random_affine(
         &self,
-        degrees: f32,
+        degrees: &Bound<'_, PyAny>,
         translate: Option<Vec<f32>>,
         scale: Option<Vec<f32>>,
         shear: Option<Vec<f32>>,
         interpolation: &str,
-        fill: u8,
+        fill: Option<&Bound<'_, PyAny>>,
+        shear_ranges: Option<Vec<f32>>,
     ) -> PyResult<Self> {
+        let (fill, fill_channels) = parse_fill_u8(fill)?;
+        let (degrees, degree_range) = if let Ok(value) = degrees.extract::<f32>() {
+            (value, None)
+        } else {
+            let range = parse_pair(Some(degrees.extract::<Vec<f32>>()?), "degrees", [0.0, 0.0])?;
+            (0.0, Some(range))
+        };
         let translate = parse_pair(translate, "translate", [0.0, 0.0])?;
         let scale = parse_pair(scale, "scale", [1.0, 1.0])?;
-        let shear = parse_pair(shear, "shear", [0.0, 0.0])?;
+        if shear.is_some() && shear_ranges.is_some() {
+            return Err(PyValueError::new_err(
+                "pass either shear or shear_ranges, not both",
+            ));
+        }
+        let shear = shear.unwrap_or_else(|| vec![0.0, 0.0]);
         let interpolation = parse_interpolation(interpolation)?;
-        let config = RandomAffineConfig::new(degrees)
+        let mut config = RandomAffineConfig::new(degrees)
             .with_translate(translate[0], translate[1])
-            .with_scale(scale[0], scale[1])
-            .with_shear(shear[0], shear[1])
-            .with_options(interpolation, fill);
+            .with_scale(scale[0], scale[1]);
+        match shear.as_slice() {
+            [max_x, max_y] => config = config.with_shear(*max_x, *max_y),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "shear must contain two symmetric maxima",
+                ));
+            }
+        }
+        if let Some(shear_ranges) = shear_ranges {
+            match shear_ranges.as_slice() {
+                [min_x, max_x] => config = config.with_shear_ranges([*min_x, *max_x], [0.0, 0.0]),
+                [min_x, max_x, min_y, max_y] => {
+                    config = config.with_shear_ranges([*min_x, *max_x], [*min_y, *max_y])
+                }
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "shear_ranges must have two x bounds or four x/y bounds",
+                    ));
+                }
+            }
+        }
+        if let Some(range) = degree_range {
+            config = config.with_degrees_range(range[0], range[1]);
+        }
+        config = config.with_options(interpolation, fill);
+        if let Some(channels) = fill_channels {
+            config = config.with_fill_channels(channels);
+        }
         Ok(Self {
             inner: self.inner.clone().random_affine_with_config(config),
         })
     }
 
-    #[pyo3(signature = (start_points, end_points, interpolation="bilinear", fill=0))]
+    #[pyo3(signature = (start_points, end_points, interpolation="bilinear", fill=None))]
     fn perspective(
         &self,
         start_points: Vec<Vec<f32>>,
         end_points: Vec<Vec<f32>>,
         interpolation: &str,
-        fill: u8,
+        fill: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
+        let (fill, fill_channels) = parse_fill_u8(fill)?;
         let start_points = parse_points(start_points, "start_points")?;
         let end_points = parse_points(end_points, "end_points")?;
         let interpolation = parse_interpolation(interpolation)?;
-        let config =
+        let mut config =
             PerspectiveConfig::new(start_points, end_points).with_options(interpolation, fill);
+        if let Some(channels) = fill_channels {
+            config = config.with_fill_channels(channels);
+        }
         Ok(Self {
             inner: self.inner.clone().perspective_with_config(config),
         })
     }
 
-    #[pyo3(signature = (distortion_scale=0.5, probability=0.5, interpolation="bilinear", fill=0))]
+    #[pyo3(signature = (distortion_scale=0.5, probability=0.5, interpolation="bilinear", fill=None))]
     fn random_perspective(
         &self,
         distortion_scale: f32,
         probability: f64,
         interpolation: &str,
-        fill: u8,
+        fill: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
+        let (fill, fill_channels) = parse_fill_u8(fill)?;
         let interpolation = parse_interpolation(interpolation)?;
-        let config = RandomPerspectiveConfig::new(distortion_scale, probability)
+        let mut config = RandomPerspectiveConfig::new(distortion_scale, probability)
             .with_options(interpolation, fill);
+        if let Some(channels) = fill_channels {
+            config = config.with_fill_channels(channels);
+        }
         Ok(Self {
             inner: self.inner.clone().random_perspective_with_config(config),
         })
     }
 
-    #[pyo3(signature = (alpha, sigma, interpolation="bilinear", fill=0))]
+    #[pyo3(signature = (alpha, sigma, interpolation="bilinear", fill=None))]
     fn elastic_transform(
         &self,
         alpha: f32,
         sigma: f32,
         interpolation: &str,
-        fill: u8,
+        fill: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
+        let (fill, fill_channels) = parse_fill_u8(fill)?;
         let interpolation = parse_interpolation(interpolation)?;
-        let config = ElasticTransformConfig::new(alpha, sigma).with_options(interpolation, fill);
+        let mut config =
+            ElasticTransformConfig::new(alpha, sigma).with_options(interpolation, fill);
+        if let Some(channels) = fill_channels {
+            config = config.with_fill_channels(channels);
+        }
         Ok(Self {
             inner: self.inner.clone().elastic_transform_with_config(config),
         })
@@ -699,15 +943,22 @@ impl PyTransform {
         }
     }
 
-    fn random_choice(&self, choices: Vec<PyRef<'_, Self>>) -> Self {
-        Self {
-            inner: self.inner.clone().random_choice(
-                choices
-                    .into_iter()
-                    .map(|choice| choice.inner.clone())
-                    .collect(),
-            ),
-        }
+    #[pyo3(signature = (choices, p=None))]
+    fn random_choice(&self, choices: Vec<PyRef<'_, Self>>, p: Option<Vec<f64>>) -> PyResult<Self> {
+        validate_choice_weights(choices.len(), p.as_deref())?;
+        let choices = choices
+            .into_iter()
+            .map(|choice| choice.inner.clone())
+            .collect();
+        Ok(Self {
+            inner: match p {
+                Some(weights) => self
+                    .inner
+                    .clone()
+                    .random_choice_with_weights(choices, weights),
+                None => self.inner.clone().random_choice(choices),
+            },
+        })
     }
 
     fn random_order(&self, nested: PyRef<'_, Self>) -> Self {
@@ -730,17 +981,27 @@ impl PyImagePipeline {
         }
     }
 
-    #[pyo3(signature = (width, height, interpolation="bilinear"))]
-    fn resize(&self, width: u32, height: u32, interpolation: &str) -> PyResult<Self> {
+    #[pyo3(signature = (width, height=None, interpolation="bilinear", max_size=None))]
+    fn resize(
+        &self,
+        width: u32,
+        height: Option<u32>,
+        interpolation: &str,
+        max_size: Option<u32>,
+    ) -> PyResult<Self> {
         let interpolation = interpolation
             .parse::<InterpolationMode>()
             .map_err(to_py_err)?;
-        Ok(Self {
-            inner: self
-                .inner
+        let inner = if let Some(height) = height {
+            self.inner
                 .clone()
-                .resize_with_interpolation(width, height, interpolation),
-        })
+                .resize_with_interpolation(width, height, interpolation)
+        } else {
+            self.inner
+                .clone()
+                .resize_short_edge_with_interpolation(width, max_size, interpolation)
+        };
+        Ok(Self { inner })
     }
 
     fn crop(&self, x: u32, y: u32, width: u32, height: u32) -> Self {
@@ -755,29 +1016,41 @@ impl PyImagePipeline {
         }
     }
 
-    #[pyo3(signature = (padding, fill=0.0, padding_mode="constant"))]
-    fn pad(&self, padding: u32, fill: f32, padding_mode: &str) -> PyResult<Self> {
-        let config = rivet_vision::api::PadConfig::new(padding)
-            .with_fill(fill)
-            .with_mode(parse_padding_mode(padding_mode)?);
+    #[pyo3(signature = (padding, fill=None, padding_mode="constant"))]
+    fn pad(
+        &self,
+        padding: u32,
+        fill: Option<&Bound<'_, PyAny>>,
+        padding_mode: &str,
+    ) -> PyResult<Self> {
+        let (fill, channels) = parse_fill_f32(fill)?;
+        let mut config = rivet_vision::api::PadConfig::new(padding).with_fill(fill);
+        if let Some(channels) = channels {
+            config = config.with_fill_channels(channels);
+        }
+        let config = config.with_mode(parse_padding_mode(padding_mode)?);
         Ok(Self {
             inner: self.inner.clone().pad_with_config(config),
         })
     }
 
-    #[pyo3(signature = (left, top, right, bottom, fill=0.0, padding_mode="constant"))]
+    #[pyo3(signature = (left, top, right, bottom, fill=None, padding_mode="constant"))]
     fn pad_with_sides(
         &self,
         left: u32,
         top: u32,
         right: u32,
         bottom: u32,
-        fill: f32,
+        fill: Option<&Bound<'_, PyAny>>,
         padding_mode: &str,
     ) -> PyResult<Self> {
-        let config = rivet_vision::api::PadConfig::with_sides(left, top, right, bottom)
-            .with_fill(fill)
-            .with_mode(parse_padding_mode(padding_mode)?);
+        let (fill, channels) = parse_fill_f32(fill)?;
+        let mut config =
+            rivet_vision::api::PadConfig::with_sides(left, top, right, bottom).with_fill(fill);
+        if let Some(channels) = channels {
+            config = config.with_fill_channels(channels);
+        }
+        let config = config.with_mode(parse_padding_mode(padding_mode)?);
         Ok(Self {
             inner: self.inner.clone().pad_with_config(config),
         })
@@ -898,7 +1171,7 @@ impl PyImagePipeline {
             inner: self.inner.clone().gamma(gamma, gain),
         }
     }
-    #[pyo3(signature=(angle,translate=None,scale=1.0,shear=None,interpolation="nearest",fill=0,center=None))]
+    #[pyo3(signature=(angle,translate=None,scale=1.0,shear=None,interpolation="nearest",fill=None,center=None))]
     fn affine(
         &self,
         angle: f64,
@@ -906,9 +1179,10 @@ impl PyImagePipeline {
         scale: f64,
         shear: Option<Vec<f64>>,
         interpolation: &str,
-        fill: u8,
+        fill: Option<&Bound<'_, PyAny>>,
         center: Option<Vec<f64>>,
     ) -> PyResult<Self> {
+        let (fill, fill_channels) = parse_fill_u8(fill)?;
         let mut config = rivet_vision::api::AffineConfig::new(
             angle,
             parse_pair(translate, "translate", [0.0, 0.0])?,
@@ -916,6 +1190,9 @@ impl PyImagePipeline {
             parse_pair(shear, "shear", [0.0, 0.0])?,
         )
         .with_options(parse_interpolation(interpolation)?, fill);
+        if let Some(channels) = fill_channels {
+            config = config.with_fill_channels(channels);
+        }
         if let Some(center) = center {
             config = config.with_center(parse_pair(Some(center), "center", [0.0, 0.0])?);
         }
@@ -945,30 +1222,47 @@ impl PyImagePipeline {
                 )),
         }
     }
-    #[pyo3(signature=(degrees,interpolation="nearest",expand=false,fill=0))]
+    #[pyo3(signature=(degrees,interpolation="nearest",expand=false,fill=None,center=None))]
     fn random_rotation(
         &self,
         degrees: Vec<f32>,
         interpolation: &str,
         expand: bool,
-        fill: u8,
+        fill: Option<&Bound<'_, PyAny>>,
+        center: Option<Vec<f32>>,
     ) -> PyResult<Self> {
-        let config = rivet_vision::api::RandomRotationConfig::new(parse_pair(
+        let (fill, fill_channels) = parse_fill_u8(fill)?;
+        let mut config = rivet_vision::api::RandomRotationConfig::new(parse_pair(
             Some(degrees),
             "degrees",
             [0.0, 0.0],
         )?)
         .with_options(parse_interpolation(interpolation)?, expand, fill);
+        if let Some(channels) = fill_channels {
+            config = config.with_fill_channels(channels);
+        }
+        let config = if let Some(center) = center {
+            config.with_center(parse_pair(Some(center), "center", [0.0, 0.0])?)
+        } else {
+            config
+        };
         Ok(Self {
             inner: self.inner.clone().random_rotation(config),
         })
     }
     #[pyo3(signature=(kernel_size,sigma=None))]
-    fn random_gaussian_blur(&self, kernel_size: u32, sigma: Option<Vec<f32>>) -> PyResult<Self> {
-        let config = rivet_vision::api::RandomGaussianBlurConfig::new(
-            kernel_size,
-            parse_pair(sigma, "sigma", [0.1, 2.0])?,
-        );
+    fn random_gaussian_blur(
+        &self,
+        kernel_size: &Bound<'_, PyAny>,
+        sigma: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let dimensions = parse_u32_scalar_or_pair(kernel_size, "kernel_size")?;
+        let sigma = match sigma {
+            Some(value) => parse_f32_scalar_or_pair(value, "sigma")?,
+            None => [0.1, 2.0],
+        };
+        let config = rivet_vision::api::RandomGaussianBlurConfig::new(dimensions[0], sigma)
+            .with_kernel_dimensions(dimensions);
         Ok(Self {
             inner: self.inner.clone().random_gaussian_blur(config),
         })
@@ -1054,11 +1348,26 @@ impl PyImagePipeline {
         }
     }
 
-    #[pyo3(signature = (width, height, padding=0))]
-    fn random_crop(&self, width: u32, height: u32, padding: u32) -> Self {
-        Self {
-            inner: self.inner.clone().random_crop(width, height, padding),
-        }
+    #[pyo3(signature = (width, height, padding=None, pad_if_needed=false, fill=None, padding_mode="constant"))]
+    fn random_crop(
+        &self,
+        width: u32,
+        height: u32,
+        padding: Option<&Bound<'_, PyAny>>,
+        pad_if_needed: bool,
+        fill: Option<&Bound<'_, PyAny>>,
+        padding_mode: &str,
+    ) -> PyResult<Self> {
+        let (uniform, sides) = parse_crop_padding(padding)?;
+        let config = rivet_vision::api::RandomCropConfig::new(width, height, uniform).with_options(
+            sides,
+            pad_if_needed,
+            parse_crop_fill(fill)?,
+            parse_padding_mode(padding_mode)?,
+        );
+        Ok(Self {
+            inner: self.inner.clone().random_crop_with_config(config),
+        })
     }
 
     fn random_resized_crop(&self, width: u32, height: u32) -> Self {
@@ -1131,15 +1440,26 @@ impl PyImagePipeline {
         }
     }
 
-    fn random_choice(&self, choices: Vec<PyRef<'_, PyTransform>>) -> Self {
-        Self {
-            inner: self.inner.clone().random_choice(
-                choices
-                    .into_iter()
-                    .map(|choice| choice.inner.clone())
-                    .collect(),
-            ),
-        }
+    #[pyo3(signature = (choices, p=None))]
+    fn random_choice(
+        &self,
+        choices: Vec<PyRef<'_, PyTransform>>,
+        p: Option<Vec<f64>>,
+    ) -> PyResult<Self> {
+        validate_choice_weights(choices.len(), p.as_deref())?;
+        let choices = choices
+            .into_iter()
+            .map(|choice| choice.inner.clone())
+            .collect();
+        Ok(Self {
+            inner: match p {
+                Some(weights) => self
+                    .inner
+                    .clone()
+                    .random_choice_with_weights(choices, weights),
+                None => self.inner.clone().random_choice(choices),
+            },
+        })
     }
 
     fn random_order(&self, sequence: PyRef<'_, PyTransform>) -> Self {
@@ -1185,14 +1505,20 @@ impl PyImagePipeline {
     }
 
     #[pyo3(signature = (sigma, kernel_size=None))]
-    fn gaussian_blur(&self, sigma: f32, kernel_size: Option<u32>) -> Self {
-        let mut config = rivet_vision::api::GaussianBlurConfig::new(sigma);
-        if let Some(size) = kernel_size {
-            config = config.with_kernel_size(size);
+    fn gaussian_blur(
+        &self,
+        sigma: &Bound<'_, PyAny>,
+        kernel_size: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let sigmas = parse_f32_sigma_axes(sigma)?;
+        let mut config =
+            rivet_vision::api::GaussianBlurConfig::new(sigmas[0]).with_axis_sigmas(sigmas);
+        if let Some(dimensions) = parse_optional_kernel(kernel_size)? {
+            config = config.with_kernel_dimensions(dimensions);
         }
-        Self {
+        Ok(Self {
             inner: self.inner.clone().gaussian_blur_with_config(config),
-        }
+        })
     }
 
     fn hue(&self, factor: f32) -> Self {
@@ -1225,19 +1551,32 @@ impl PyImagePipeline {
         }
     }
 
-    #[pyo3(signature = (probability=0.5, scale=None, ratio=None, value=0.0))]
+    #[pyo3(signature = (probability=0.5, scale=None, ratio=None, value=None))]
     fn random_erasing_with_options(
         &self,
         probability: f64,
         scale: Option<Vec<f32>>,
         ratio: Option<Vec<f32>>,
-        value: f32,
+        value: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let scale = parse_pair(scale, "scale", [0.02, 0.33])?;
         let ratio = parse_pair(ratio, "ratio", [0.3, 3.3333333])?;
         let config = rivet_vision::api::RandomErasingConfig::new(probability)
-            .with_params(scale[0], scale[1], ratio[0], ratio[1])
-            .with_value(value);
+            .with_params(scale[0], scale[1], ratio[0], ratio[1]);
+        let config = if let Some(value) = value {
+            if let Ok(value) = value.extract::<String>() {
+                if value != "random" {
+                    return Err(PyValueError::new_err("value string must be 'random'"));
+                }
+                config.with_random_value()
+            } else if let Ok(value) = value.extract::<f32>() {
+                config.with_value(value)
+            } else {
+                config.with_values(value.extract::<Vec<f32>>()?)
+            }
+        } else {
+            config
+        };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
         })
@@ -1265,93 +1604,154 @@ impl PyImagePipeline {
         })
     }
 
-    #[pyo3(signature = (angle, interpolation="nearest", expand=false, fill=0))]
+    #[pyo3(signature = (angle, interpolation="nearest", expand=false, fill=None, center=None))]
     fn arbitrary_rotate(
         &self,
         angle: f32,
         interpolation: &str,
         expand: bool,
-        fill: u8,
+        fill: Option<&Bound<'_, PyAny>>,
+        center: Option<Vec<f32>>,
     ) -> PyResult<Self> {
+        let (fill, fill_channels) = parse_fill_u8(fill)?;
         let interpolation = parse_interpolation(interpolation)?;
+        let mut config = rivet_vision::api::ArbitraryRotateConfig::new(angle).with_options(
+            expand,
+            interpolation,
+            fill,
+        );
+        if let Some(channels) = fill_channels {
+            config = config.with_fill_channels(channels);
+        }
+        if let Some(center) = center {
+            let center = parse_pair(Some(center), "center", [0.0, 0.0])?;
+            config = config.with_center(center[0], center[1]);
+        }
         Ok(Self {
-            inner: self.inner.clone().arbitrary_rotate_with_options(
-                angle,
-                expand,
-                interpolation,
-                fill,
-            ),
+            inner: self.inner.clone().arbitrary_rotate_with_config(config),
         })
     }
 
-    #[pyo3(signature = (degrees, translate=None, scale=None, shear=None, interpolation="nearest", fill=0))]
+    #[pyo3(signature = (degrees, translate=None, scale=None, shear=None, interpolation="nearest", fill=None, shear_ranges=None))]
     fn random_affine(
         &self,
-        degrees: f32,
+        degrees: &Bound<'_, PyAny>,
         translate: Option<Vec<f32>>,
         scale: Option<Vec<f32>>,
         shear: Option<Vec<f32>>,
         interpolation: &str,
-        fill: u8,
+        fill: Option<&Bound<'_, PyAny>>,
+        shear_ranges: Option<Vec<f32>>,
     ) -> PyResult<Self> {
+        let (fill, fill_channels) = parse_fill_u8(fill)?;
+        let (degrees, degree_range) = if let Ok(value) = degrees.extract::<f32>() {
+            (value, None)
+        } else {
+            let range = parse_pair(Some(degrees.extract::<Vec<f32>>()?), "degrees", [0.0, 0.0])?;
+            (0.0, Some(range))
+        };
         let translate = parse_pair(translate, "translate", [0.0, 0.0])?;
         let scale = parse_pair(scale, "scale", [1.0, 1.0])?;
-        let shear = parse_pair(shear, "shear", [0.0, 0.0])?;
+        if shear.is_some() && shear_ranges.is_some() {
+            return Err(PyValueError::new_err(
+                "pass either shear or shear_ranges, not both",
+            ));
+        }
+        let shear = shear.unwrap_or_else(|| vec![0.0, 0.0]);
         let interpolation = parse_interpolation(interpolation)?;
-        let config = RandomAffineConfig::new(degrees)
+        let mut config = RandomAffineConfig::new(degrees)
             .with_translate(translate[0], translate[1])
-            .with_scale(scale[0], scale[1])
-            .with_shear(shear[0], shear[1])
-            .with_options(interpolation, fill);
+            .with_scale(scale[0], scale[1]);
+        match shear.as_slice() {
+            [max_x, max_y] => config = config.with_shear(*max_x, *max_y),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "shear must contain two symmetric maxima",
+                ));
+            }
+        }
+        if let Some(shear_ranges) = shear_ranges {
+            match shear_ranges.as_slice() {
+                [min_x, max_x] => config = config.with_shear_ranges([*min_x, *max_x], [0.0, 0.0]),
+                [min_x, max_x, min_y, max_y] => {
+                    config = config.with_shear_ranges([*min_x, *max_x], [*min_y, *max_y])
+                }
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "shear_ranges must have two x bounds or four x/y bounds",
+                    ));
+                }
+            }
+        }
+        if let Some(range) = degree_range {
+            config = config.with_degrees_range(range[0], range[1]);
+        }
+        config = config.with_options(interpolation, fill);
+        if let Some(channels) = fill_channels {
+            config = config.with_fill_channels(channels);
+        }
         Ok(Self {
             inner: self.inner.clone().random_affine_with_config(config),
         })
     }
 
-    #[pyo3(signature = (start_points, end_points, interpolation="bilinear", fill=0))]
+    #[pyo3(signature = (start_points, end_points, interpolation="bilinear", fill=None))]
     fn perspective(
         &self,
         start_points: Vec<Vec<f32>>,
         end_points: Vec<Vec<f32>>,
         interpolation: &str,
-        fill: u8,
+        fill: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
+        let (fill, fill_channels) = parse_fill_u8(fill)?;
         let start_points = parse_points(start_points, "start_points")?;
         let end_points = parse_points(end_points, "end_points")?;
         let interpolation = parse_interpolation(interpolation)?;
-        let config =
+        let mut config =
             PerspectiveConfig::new(start_points, end_points).with_options(interpolation, fill);
+        if let Some(channels) = fill_channels {
+            config = config.with_fill_channels(channels);
+        }
         Ok(Self {
             inner: self.inner.clone().perspective_with_config(config),
         })
     }
 
-    #[pyo3(signature = (distortion_scale=0.5, probability=0.5, interpolation="bilinear", fill=0))]
+    #[pyo3(signature = (distortion_scale=0.5, probability=0.5, interpolation="bilinear", fill=None))]
     fn random_perspective(
         &self,
         distortion_scale: f32,
         probability: f64,
         interpolation: &str,
-        fill: u8,
+        fill: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
+        let (fill, fill_channels) = parse_fill_u8(fill)?;
         let interpolation = parse_interpolation(interpolation)?;
-        let config = RandomPerspectiveConfig::new(distortion_scale, probability)
+        let mut config = RandomPerspectiveConfig::new(distortion_scale, probability)
             .with_options(interpolation, fill);
+        if let Some(channels) = fill_channels {
+            config = config.with_fill_channels(channels);
+        }
         Ok(Self {
             inner: self.inner.clone().random_perspective_with_config(config),
         })
     }
 
-    #[pyo3(signature = (alpha, sigma, interpolation="bilinear", fill=0))]
+    #[pyo3(signature = (alpha, sigma, interpolation="bilinear", fill=None))]
     fn elastic_transform(
         &self,
         alpha: f32,
         sigma: f32,
         interpolation: &str,
-        fill: u8,
+        fill: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
+        let (fill, fill_channels) = parse_fill_u8(fill)?;
         let interpolation = parse_interpolation(interpolation)?;
-        let config = ElasticTransformConfig::new(alpha, sigma).with_options(interpolation, fill);
+        let mut config =
+            ElasticTransformConfig::new(alpha, sigma).with_options(interpolation, fill);
+        if let Some(channels) = fill_channels {
+            config = config.with_fill_channels(channels);
+        }
         Ok(Self {
             inner: self.inner.clone().elastic_transform_with_config(config),
         })
@@ -1442,4 +1842,34 @@ impl PyImagePipeline {
             .optimization_explain(Default::default())
             .map_err(to_py_err)
     }
+}
+
+fn validate_choice_weights(count: usize, weights: Option<&[f64]>) -> PyResult<()> {
+    if count == 0 {
+        return Err(PyValueError::new_err(
+            "random_choice requires at least one choice",
+        ));
+    }
+    if let Some(weights) = weights {
+        if weights.len() != count {
+            return Err(PyValueError::new_err(
+                "random_choice weights must match the number of choices",
+            ));
+        }
+        if weights
+            .iter()
+            .any(|weight| !weight.is_finite() || *weight < 0.0)
+        {
+            return Err(PyValueError::new_err(
+                "random_choice weights must be finite and non-negative",
+            ));
+        }
+        let total: f64 = weights.iter().sum();
+        if !total.is_finite() || total <= 0.0 {
+            return Err(PyValueError::new_err(
+                "random_choice weights must have a finite positive sum",
+            ));
+        }
+    }
+    Ok(())
 }

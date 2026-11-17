@@ -1,4 +1,4 @@
-use crate::errors::{RivetResult, invalid_argument};
+use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::ImageSample;
 use crate::transforms::with_rgb_pixels;
 use std::str::FromStr;
@@ -39,6 +39,10 @@ pub struct ResizeConfig {
     pub width: u32,
     pub height: u32,
     pub interpolation: InterpolationMode,
+    /// When set, resize the shorter input edge to this length, preserving aspect ratio.
+    pub short_edge: Option<u32>,
+    /// Optional cap for the longer edge, as used by torchvision's scalar-size Resize.
+    pub max_size: Option<u32>,
 }
 
 impl ResizeConfig {
@@ -47,6 +51,8 @@ impl ResizeConfig {
             width,
             height,
             interpolation: InterpolationMode::Bilinear,
+            short_edge: None,
+            max_size: None,
         }
     }
 
@@ -59,18 +65,101 @@ impl ResizeConfig {
             width,
             height,
             interpolation,
+            short_edge: None,
+            max_size: None,
         }
     }
 
+    pub const fn short_edge(
+        size: u32,
+        max_size: Option<u32>,
+        interpolation: InterpolationMode,
+    ) -> Self {
+        Self {
+            width: 0,
+            height: 0,
+            interpolation,
+            short_edge: Some(size),
+            max_size,
+        }
+    }
+
+    pub fn validate(&self) -> RivetResult<()> {
+        if self.short_edge.is_none() && (self.width == 0 || self.height == 0) {
+            return Err(invalid_argument(
+                "resize width and height must be greater than 0",
+            ));
+        }
+        if self.short_edge == Some(0) || self.max_size == Some(0) {
+            return Err(invalid_argument(
+                "resize size and max_size must be greater than 0",
+            ));
+        }
+        if let (Some(size), Some(maximum)) = (self.short_edge, self.max_size) {
+            if maximum <= size {
+                return Err(invalid_argument(
+                    "resize max_size must be greater than the requested short edge",
+                ));
+            }
+        }
+        if self.short_edge.is_none() && self.max_size.is_some() {
+            return Err(invalid_argument(
+                "resize max_size is only supported with a scalar short-edge size",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn output_dimensions(&self, width: u32, height: u32) -> RivetResult<(u32, u32)> {
+        self.validate()?;
+        if width == 0 || height == 0 {
+            return Err(invalid_shape("resize requires a non-empty input image"));
+        }
+        let Some(size) = self.short_edge else {
+            return Ok((self.width, self.height));
+        };
+        let (short, long, landscape) = if width <= height {
+            (width, height, false)
+        } else {
+            (height, width, true)
+        };
+        let mut new_short = u64::from(size);
+        let mut new_long = new_short * u64::from(long) / u64::from(short);
+        if let Some(maximum) = self.max_size.map(u64::from) {
+            if new_long > maximum {
+                new_short = maximum * new_short / new_long;
+                new_long = maximum;
+            }
+        }
+        let (out_width, out_height) = if landscape {
+            (new_long, new_short)
+        } else {
+            (new_short, new_long)
+        };
+        if out_width == 0 || out_height == 0 {
+            return Err(invalid_shape("resize produced an empty output shape"));
+        }
+        Ok((
+            u32::try_from(out_width).map_err(|_| invalid_shape("resized width exceeds u32"))?,
+            u32::try_from(out_height).map_err(|_| invalid_shape("resized height exceeds u32"))?,
+        ))
+    }
+
     pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
+        self.validate()?;
         let sample = sample.into_decoded()?;
         let image = with_rgb_pixels(&sample.image, "resize", |pixels, width, height| {
+            let width_u32 = u32::try_from(width)
+                .map_err(|_| invalid_shape("resize input width exceeds u32"))?;
+            let height_u32 = u32::try_from(height)
+                .map_err(|_| invalid_shape("resize input height exceeds u32"))?;
+            let (target_width, target_height) = self.output_dimensions(width_u32, height_u32)?;
             resize_rgb(
                 pixels,
                 width,
                 height,
-                self.width,
-                self.height,
+                target_width,
+                target_height,
                 self.interpolation,
             )
         })?;
@@ -288,6 +377,31 @@ mod tests {
             ResizeConfig::new(32, 24).interpolation,
             InterpolationMode::Bilinear
         );
+    }
+
+    #[test]
+    fn scalar_resize_caps_using_rounded_long_edge() {
+        let image = Tensor::from_vec(vec![1u8; 3 * 4 * 3], [4, 3, 3], &Device::Cpu).unwrap();
+        let out = ResizeConfig::short_edge(8, Some(9), InterpolationMode::Nearest)
+            .apply(ImageSample::Decoded(DecodedSample { image, label: 0 }))
+            .unwrap()
+            .into_decoded()
+            .unwrap();
+        // torchvision first rounds 8 * 4 / 3 to 10, then caps to
+        // (int(9 * 8 / 10), 9) = (7, 9).
+        assert_eq!(out.image.dims(), &[9, 7, 3]);
+    }
+
+    #[test]
+    fn scalar_resize_rejects_invalid_max_size() {
+        assert!(
+            ResizeConfig::short_edge(8, Some(8), InterpolationMode::Bilinear)
+                .validate()
+                .is_err()
+        );
+        let mut explicit = ResizeConfig::new(8, 10);
+        explicit.max_size = Some(12);
+        assert!(explicit.validate().is_err());
     }
 
     #[test]

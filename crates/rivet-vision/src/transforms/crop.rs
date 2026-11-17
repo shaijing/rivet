@@ -1,7 +1,7 @@
-use crate::errors::{RivetResult, invalid_shape};
+use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::sample::image::{ImageAxisOrder, ImageSample};
 use crate::transforms::with_rgb_pixels;
-use rivet_core::{ExactOutput, Tensor};
+use rivet_core::{DType, ExactOutput, Tensor};
 use rivet_data::random::RandomStream;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,37 +123,94 @@ impl CenterCropConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RandomCropConfig {
     pub width: u32,
     pub height: u32,
     /// Zero-padding applied on every side before the crop window is drawn.
     pub padding: u32,
+    pub padding_sides: Option<[u32; 4]>,
+    pub pad_if_needed: bool,
+    pub fill: Vec<f32>,
+    pub padding_mode: super::PaddingMode,
 }
 
 impl RandomCropConfig {
-    pub const fn new(width: u32, height: u32, padding: u32) -> Self {
+    pub fn new(width: u32, height: u32, padding: u32) -> Self {
         Self {
             width,
             height,
             padding,
+            padding_sides: None,
+            pad_if_needed: false,
+            fill: vec![0.0],
+            padding_mode: super::PaddingMode::Constant,
         }
     }
 
-    /// Zero-pad the image by `padding` on each side, then crop a
-    /// `width`x`height` window whose offset is drawn uniformly per sample
-    /// from the pipeline RNG stream (two draws: y then x).
+    pub fn with_options(
+        mut self,
+        padding_sides: Option<[u32; 4]>,
+        pad_if_needed: bool,
+        fill: Vec<f32>,
+        padding_mode: super::PaddingMode,
+    ) -> Self {
+        self.padding_sides = padding_sides;
+        self.pad_if_needed = pad_if_needed;
+        self.fill = fill;
+        self.padding_mode = padding_mode;
+        self
+    }
+
+    pub fn validate(&self) -> RivetResult<()> {
+        if self.width == 0 || self.height == 0 {
+            return Err(invalid_argument(
+                "random_crop width and height must be greater than 0",
+            ));
+        }
+        if self.fill.is_empty()
+            || (self.fill.len() != 1 && self.fill.len() != 3)
+            || self.fill.iter().any(|v| !v.is_finite())
+        {
+            return Err(invalid_argument(
+                "random_crop fill must be a finite number or a 3-value RGB sequence",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Apply explicit padding and optional minimum-size padding, then crop a
+    /// `width`x`height` window with a per-sample random offset (y then x).
+    /// Default options retain the direct zero-padding and crop writer.
     pub fn apply(
         &self,
         sample: ImageSample,
         rng: &mut RandomStream,
         layout: ImageAxisOrder,
     ) -> RivetResult<ImageSample> {
+        self.validate()?;
         let sample = sample.into_decoded()?;
         if layout != ImageAxisOrder::Hwc {
             return Err(crate::errors::invalid_argument(
                 "random_crop currently requires uint8 HWC input",
             ));
+        }
+        if sample.image.dtype() != DType::U8
+            || sample.image.rank() != 3
+            || sample.image.dims()[2] != 3
+        {
+            return Err(crate::errors::invalid_argument(format!(
+                "random_crop requires uint8 HWC RGB input, got dtype {:?} shape {:?}",
+                sample.image.dtype(),
+                sample.image.dims()
+            )));
+        }
+        if self.padding_sides.is_some()
+            || self.pad_if_needed
+            || self.fill != [0.0]
+            || self.padding_mode != super::PaddingMode::Constant
+        {
+            return self.apply_with_padding_options(sample, rng);
         }
         let image = with_rgb_pixels(&sample.image, "random_crop", |source, width, height| {
             let pad = u64::from(self.padding);
@@ -214,6 +271,82 @@ impl RandomCropConfig {
             label: sample.label,
         }))
     }
+
+    fn apply_with_padding_options(
+        &self,
+        mut sample: crate::sample::image::DecodedSample,
+        rng: &mut RandomStream,
+    ) -> RivetResult<ImageSample> {
+        let label = sample.label.clone();
+        let [left, top, right, bottom] = self.padding_sides.unwrap_or([self.padding; 4]);
+        // torchvision applies the requested padding first. It then pads a
+        // second time on the axis that is still smaller than the crop.
+        sample = apply_crop_padding_stage(
+            sample,
+            [left, top, right, bottom],
+            &self.fill,
+            self.padding_mode,
+        )?;
+        if self.pad_if_needed {
+            let width = sample.image.dims()[1];
+            if width < self.width as usize {
+                let deficit = self.width - width as u32;
+                sample = apply_crop_padding_stage(
+                    sample,
+                    [deficit, 0, deficit, 0],
+                    &self.fill,
+                    self.padding_mode,
+                )?;
+            }
+            let height = sample.image.dims()[0];
+            if height < self.height as usize {
+                let deficit = self.height - height as u32;
+                sample = apply_crop_padding_stage(
+                    sample,
+                    [0, deficit, 0, deficit],
+                    &self.fill,
+                    self.padding_mode,
+                )?;
+            }
+        }
+        let height = sample.image.dims()[0] as usize;
+        let width = sample.image.dims()[1] as usize;
+        if self.width as usize > width || self.height as usize > height {
+            return Err(invalid_shape(format!(
+                "random_crop size {}x{} exceeds padded image {}x{}",
+                self.width, self.height, width, height
+            )));
+        }
+        let y = rng.gen_range_usize(0..height - self.height as usize + 1)?;
+        let x = rng.gen_range_usize(0..width - self.width as usize + 1)?;
+        Ok(ImageSample::Decoded(crate::sample::image::DecodedSample {
+            image: super::CropConfig::new(x as u32, y as u32, self.width, self.height)
+                .apply(ImageSample::Decoded(sample), ImageAxisOrder::Hwc)?
+                .into_decoded()?
+                .image,
+            label,
+        }))
+    }
+}
+
+fn apply_crop_padding_stage(
+    sample: crate::sample::image::DecodedSample,
+    sides: [u32; 4],
+    fill: &[f32],
+    mode: super::PaddingMode,
+) -> RivetResult<crate::sample::image::DecodedSample> {
+    if sides == [0; 4] {
+        return Ok(sample);
+    }
+    let mut pad =
+        super::PadConfig::with_sides(sides[0], sides[1], sides[2], sides[3]).with_mode(mode);
+    if fill.len() == 3 {
+        pad = pad.with_fill_channels([fill[0], fill[1], fill[2]]);
+    } else {
+        pad = pad.with_fill(fill.first().copied().unwrap_or(0.0));
+    }
+    pad.apply(ImageSample::Decoded(sample), ImageAxisOrder::Hwc)?
+        .into_decoded()
 }
 
 #[inline]
@@ -323,6 +456,70 @@ mod tests {
     fn random_crop_reproduces_same_seed_and_sample() {
         assert_eq!(crop_with(42, 0), crop_with(42, 0));
         assert_eq!(crop_with(42, 5), crop_with(42, 5));
+    }
+
+    #[test]
+    fn random_crop_pad_if_needed_supports_side_fill() {
+        let config = RandomCropConfig::new(7, 6, 0).with_options(
+            Some([1, 2, 3, 4]),
+            true,
+            vec![11.0, 22.0, 33.0],
+            crate::transforms::PaddingMode::Constant,
+        );
+        let mut rng = RandomContext::new(17).stream(
+            rivet_data::random::SampleKey::from_index(0),
+            OpKey::from_parts("RandomCrop", 0),
+        );
+        let out = config
+            .apply(Decoded(unique_image()), &mut rng, ImageAxisOrder::Hwc)
+            .unwrap()
+            .into_decoded()
+            .unwrap();
+        assert_eq!(out.image.dims(), &[6, 7, 3]);
+        assert_eq!(out.label, 7);
+        assert!(
+            out.image
+                .to_vec::<u8>()
+                .unwrap()
+                .chunks_exact(3)
+                .any(|pixel| pixel == [11, 22, 33])
+        );
+    }
+
+    #[test]
+    fn random_crop_exposes_nonconstant_padding_modes() {
+        for mode in [
+            crate::transforms::PaddingMode::Edge,
+            crate::transforms::PaddingMode::Reflect,
+            crate::transforms::PaddingMode::Symmetric,
+        ] {
+            let sample = unique_image();
+            let expected = crate::transforms::PadConfig::with_sides(1, 1, 1, 1)
+                .with_mode(mode)
+                .apply(Decoded(sample.clone()), ImageAxisOrder::Hwc)
+                .unwrap()
+                .into_decoded()
+                .unwrap();
+            let config = RandomCropConfig::new(6, 6, 0).with_options(
+                Some([1, 1, 1, 1]),
+                false,
+                vec![0.0],
+                mode,
+            );
+            let mut rng = RandomContext::new(8).stream(
+                rivet_data::random::SampleKey::from_index(0),
+                OpKey::from_parts("RandomCrop", 0),
+            );
+            let actual = config
+                .apply(Decoded(sample), &mut rng, ImageAxisOrder::Hwc)
+                .unwrap()
+                .into_decoded()
+                .unwrap();
+            assert_eq!(
+                actual.image.to_vec::<u8>().unwrap(),
+                expected.image.to_vec::<u8>().unwrap()
+            );
+        }
     }
 
     #[test]

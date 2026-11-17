@@ -283,11 +283,31 @@ pub(crate) fn infer_image_op(
         },
         ImageOp::Resize(config) => {
             require_u8_hwc(input_state, "Resize")?;
-            set_spatial_shape(
-                &mut output,
-                ShapeDim::Known(config.height as usize),
-                ShapeDim::Known(config.width as usize),
-            );
+            if config.short_edge.is_some() {
+                let (ih, iw) = spatial_dims(input)?;
+                if let (ShapeDim::Known(ih), ShapeDim::Known(iw)) = (ih, iw) {
+                    let iw = u32::try_from(iw).map_err(|_| {
+                        crate::errors::invalid_shape("resize input width exceeds u32")
+                    })?;
+                    let ih = u32::try_from(ih).map_err(|_| {
+                        crate::errors::invalid_shape("resize input height exceeds u32")
+                    })?;
+                    let (ow, oh) = config.output_dimensions(iw, ih)?;
+                    set_spatial_shape(
+                        &mut output,
+                        ShapeDim::Known(oh as usize),
+                        ShapeDim::Known(ow as usize),
+                    );
+                } else {
+                    set_spatial_shape(&mut output, ShapeDim::Dynamic, ShapeDim::Dynamic);
+                }
+            } else {
+                set_spatial_shape(
+                    &mut output,
+                    ShapeDim::Known(config.height as usize),
+                    ShapeDim::Known(config.width as usize),
+                );
+            }
             output.contiguity = Some(Contiguity::Contiguous);
         }
         ImageOp::Crop(config) => {
@@ -335,7 +355,7 @@ pub(crate) fn infer_image_op(
         }
         ImageOp::RandomCrop(config) => {
             require_u8_hwc(input_state, "RandomCrop")?;
-            validate_random_crop_fit(input, config.width, config.height, config.padding)?;
+            validate_random_crop_fit(input, config)?;
             output.shape = Some(ValueShape(vec![
                 ShapeDim::Known(config.height as usize),
                 ShapeDim::Known(config.width as usize),
@@ -463,7 +483,8 @@ pub(crate) fn infer_image_op(
             output = merge_optional_shape(input, &branch);
             output.contiguity = merge_contiguity(input.contiguity, branch.contiguity);
         }
-        ImageOp::RandomChoice { choices } => {
+        ImageOp::RandomChoice { choices, weights } => {
+            super::op::choice_cumulative_weights(choices.len(), weights.as_deref())?;
             let mut choices_iter = choices.iter();
             let first_ops = choices_iter.next().ok_or_else(|| {
                 crate::errors::invalid_argument("random_choice requires at least one choice")
@@ -721,37 +742,39 @@ fn validate_rank(properties: &ValueProperties, op: &str) -> RivetResult<()> {
 
 fn validate_random_crop_fit(
     input: &ValueProperties,
-    width: u32,
-    height: u32,
-    padding: u32,
+    config: &crate::transforms::RandomCropConfig,
 ) -> RivetResult<()> {
+    if config.pad_if_needed {
+        return Ok(());
+    }
     let (image_height, image_width) = spatial_dims(input)?;
     let (ShapeDim::Known(image_height), ShapeDim::Known(image_width)) = (image_height, image_width)
     else {
         return Ok(());
     };
-    let pad = u64::from(padding);
+    let [left, top, right, bottom] = config.padding_sides.unwrap_or([config.padding; 4]);
     let padded_width = u64::try_from(image_width)
         .ok()
-        .and_then(|width| width.checked_add(2 * pad));
+        .and_then(|width| width.checked_add(u64::from(left) + u64::from(right)));
     let padded_height = u64::try_from(image_height)
         .ok()
-        .and_then(|height| height.checked_add(2 * pad));
+        .and_then(|height| height.checked_add(u64::from(top) + u64::from(bottom)));
     let (Some(padded_width), Some(padded_height)) = (padded_width, padded_height) else {
         return Err(crate::errors::invalid_shape(format!(
-            "random_crop padding {padding} makes image {image_width}x{image_height} too large"
+            "random_crop padding makes image {image_width}x{image_height} too large"
         )));
     };
     let (Ok(padded_width), Ok(padded_height)) =
         (u32::try_from(padded_width), u32::try_from(padded_height))
     else {
         return Err(crate::errors::invalid_shape(format!(
-            "random_crop padding {padding} makes image {image_width}x{image_height} too large"
+            "random_crop padding makes image {image_width}x{image_height} too large"
         )));
     };
-    if width > padded_width || height > padded_height {
+    if config.width > padded_width || config.height > padded_height {
         return Err(crate::errors::invalid_shape(format!(
-            "random_crop size {width}x{height} exceeds padded image {padded_width}x{padded_height}"
+            "random_crop size {}x{} exceeds padded image {padded_width}x{padded_height}",
+            config.width, config.height
         )));
     }
     Ok(())
@@ -984,6 +1007,52 @@ mod tests {
             ]),
             Contiguity::Contiguous,
         )
+    }
+
+    #[test]
+    fn short_edge_resize_propagates_known_invalid_shapes() {
+        let op =
+            ImageOp::resize_short_edge(1, Some(2), crate::transforms::InterpolationMode::Bilinear);
+        for (height, width) in [(0, 8), (1, u32::MAX as usize), (8, u32::MAX as usize + 1)] {
+            let mut input = decoded_properties(DataType::U8);
+            input.shape = Some(ValueShape(vec![
+                ShapeDim::Known(height),
+                ShapeDim::Known(width),
+                ShapeDim::Known(3),
+            ]));
+            assert!(infer_image_op(&op, &input).is_err());
+        }
+    }
+
+    #[test]
+    fn short_edge_resize_inference_matches_runtime_dimensions() {
+        let input = image_properties(
+            DataType::U8,
+            ImageAxisOrder::Hwc,
+            ValueShape(vec![
+                ShapeDim::Known(4),
+                ShapeDim::Known(3),
+                ShapeDim::Known(3),
+            ]),
+            Contiguity::Contiguous,
+        );
+        let op =
+            ImageOp::resize_short_edge(8, Some(9), crate::transforms::InterpolationMode::Bilinear);
+        let inferred = infer_image_op(&op, &input).unwrap();
+        assert_eq!(
+            inferred.shape.unwrap().dims(),
+            [ShapeDim::Known(9), ShapeDim::Known(7), ShapeDim::Known(3)]
+        );
+        assert_eq!(
+            crate::transforms::ResizeConfig::short_edge(
+                8,
+                Some(9),
+                crate::transforms::InterpolationMode::Bilinear
+            )
+            .output_dimensions(3, 4)
+            .unwrap(),
+            (7, 9)
+        );
     }
 
     #[test]

@@ -67,6 +67,7 @@ pub(crate) enum SampleKernel {
     RandomChoice {
         key: OpKey,
         branches: Vec<CompiledProgram>,
+        cumulative_weights: Option<Vec<f64>>,
     },
     RandomOrder {
         key: OpKey,
@@ -148,10 +149,18 @@ impl CompiledSampleOp {
                     Ok(sample)
                 }
             }
-            SampleKernel::RandomChoice { key, branches } => {
+            SampleKernel::RandomChoice {
+                key,
+                branches,
+                cumulative_weights,
+            } => {
                 debug_assert!(!branches.is_empty(), "RandomChoice must have branches");
                 let mut rng = ctx.stream(*key);
-                let branch = rng.gen_range_usize(0..branches.len())?;
+                let branch = super::image::choose_branch(
+                    &mut rng,
+                    branches.len(),
+                    cumulative_weights.as_deref(),
+                )?;
                 branches[branch].execute(sample, ctx)
             }
             SampleKernel::RandomOrder { key, ops } => {

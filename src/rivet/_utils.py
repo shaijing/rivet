@@ -11,6 +11,10 @@ def _normalize_arrow_files(arrow_files: Iterable[str | Path]) -> list[str]:
     return [str(Path(path)) for path in arrow_files]
 
 
+def _normalize_fill(fill: float | Iterable[float]) -> float | list[float]:
+    return fill if isinstance(fill, (int, float)) else list(fill)
+
+
 def _validate_hf_dataset(dataset: Any) -> None:
     if getattr(dataset, "_indices", None) is not None:
         raise ValueError(

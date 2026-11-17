@@ -47,7 +47,7 @@ pub use color::{
     EqualizeConfig, GammaConfig, GrayscaleConfig, HueConfig, InvertConfig, PosterizeConfig,
     RandomGrayscaleConfig, SaturationConfig, SharpnessConfig, SolarizeConfig,
 };
-pub use erase::{EraseConfig, EraseRegion, RandomErasingConfig};
+pub use erase::{EraseConfig, EraseRegion, ErasingValue, RandomErasingConfig};
 pub use geometry::{
     CenterCropConfig, CropConfig, CropRegion, FiveCropConfig, FlipConfig, FlipDirection,
     InterpolationMode, LayoutConfig, PadConfig, RandomCropConfig, RandomHorizontalFlipConfig,
