@@ -38,7 +38,9 @@ jobs:
 
       - name: Install wheel repair tools
         run: |
-          uv pip install "patchelf==0.19.3" "auditwheel==6.8.2"
+          # maturin-action also invokes python -m pip internally.
+          uv pip install pip "patchelf==0.19.3" "auditwheel==6.8.2"
+          python -m pip --version
           patchelf --version
 
       - name: Check Protobuf toolchain
