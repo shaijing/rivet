@@ -13,8 +13,6 @@ jobs:
     timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: "2"
-      # Use Zig's linker instead of the repository's local mold override.
-      RUSTFLAGS: ""
       PROTOC: /usr/bin/protoc
       PROTOC_INCLUDE: /usr/include
 
@@ -31,7 +29,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build pkg-config \
+            build-essential cmake mold ninja-build pkg-config \
             protobuf-compiler libprotobuf-dev
 
       - name: Check Protobuf toolchain
