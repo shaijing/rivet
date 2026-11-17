@@ -1,0 +1,41 @@
+name: Check BLAS build environment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    name: Ubuntu 22.04 / OpenBLAS pthread
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install inspection and BLAS dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential binutils pkg-config libopenblas-pthread-dev
+
+      - name: Inspect environment and run BLAS probe
+        run: |
+          mkdir -p blas-environment
+          set -o pipefail
+          python3 .github/scripts/check_blas_environment.py 2>&1 | tee blas-environment/report.txt
+          {
+            echo '### Ubuntu OpenBLAS environment'
+            echo '```text'
+            cat blas-environment/report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload environment report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-22.04-blas-environment
+          path: blas-environment/report.txt
+          if-no-files-found: warn
