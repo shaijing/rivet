@@ -116,6 +116,25 @@ impl CompiledProgram {
 
 #[allow(dead_code)]
 impl CompiledSampleOp {
+    pub(crate) fn output_multiplier(&self) -> usize {
+        match &self.kernel {
+            SampleKernel::Semantic(op) => op.output_multiplier(),
+            _ => 1,
+        }
+    }
+
+    pub(crate) fn expand(&self, sample: ImageSample) -> RivetResult<Vec<ImageSample>> {
+        let layout = match self.input_state {
+            PipelineImageState::Decoded { axis_order, .. } => axis_order,
+            _ => return Err(invalid_pipeline("multi-view crop requires decoded input")),
+        };
+        match &self.kernel {
+            SampleKernel::Semantic(ImageOp::FiveCrop(config)) => config.apply(sample, layout),
+            SampleKernel::Semantic(ImageOp::TenCrop(config)) => config.apply(sample, layout),
+            _ => Err(invalid_pipeline("operator is not a multi-view crop")),
+        }
+    }
+
     pub(crate) fn is_decode(&self) -> bool {
         matches!(self.kernel, SampleKernel::Semantic(ImageOp::Decode(_)))
     }

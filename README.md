@@ -435,6 +435,16 @@ silently copying.
 new image code should use `rivet.vision`. No placeholder namespace is added
 for modalities that do not yet have a public implementation.
 
+For multi-view evaluation, use `.five_crop(width, height)` or
+`.ten_crop(width, height, vertical_flip=False)` after decoding and before
+batching. Both are also available on `vision.Transform` for composition.
+`batch(8)` produces 40 or 80 images with repeated labels; each source's views
+remain consecutive. `batch["views_per_sample"]` and
+`batch["source_batch_size"]` describe the groups. Subsequent transforms run
+per view; `drop_last` counts source samples. Put `skip`/`take`/`shuffle` before
+the crop. See the [multi-view guide](docs/torchvision-coverage.md#multi-view-pipelines)
+for crop order, layouts, random streams and grouping examples.
+
 Lance support is enabled by default and uses the native image schema (`image` plus
 `label`) or the supported Hugging Face-compatible image struct.
 

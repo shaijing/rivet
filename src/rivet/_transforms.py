@@ -37,6 +37,21 @@ class Transform:
     def crop(self, x: int, y: int, width: int, height: int) -> Transform:
         return Transform(self._inner.crop(x, y, width, height))
 
+    def five_crop(self, width: int, height: int) -> Transform:
+        """Expand each image into top-left, top-right, bottom-left, bottom-right,
+        and center crops. ``batch(B)`` yields ``B * 5`` views and repeated labels.
+        """
+        return Transform(self._inner.five_crop(width, height))
+
+    def ten_crop(
+        self, width: int, height: int, *, vertical_flip: bool = False
+    ) -> Transform:
+        """Emit five original crops followed by five crops of the flipped image.
+
+        The flip is horizontal by default. ``batch(B)`` yields ``B * 10`` views.
+        """
+        return Transform(self._inner.ten_crop(width, height, vertical_flip))
+
     def center_crop(self, width: int, height: int) -> Transform:
         return Transform(self._inner.center_crop(width, height))
 

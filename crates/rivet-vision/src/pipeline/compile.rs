@@ -327,6 +327,14 @@ fn compile_graph(
             .node(id)
             .map_err(|error| invalid_pipeline(error.to_string()))?;
         if node.kind() == NodeKind::Index && !prefix_nodes.contains(&id) {
+            if annotations
+                .get(id)
+                .is_some_and(|properties| super::inference::views_per_source(properties) > 1)
+            {
+                return Err(invalid_pipeline(
+                    "skip/take/shuffle after multi-view crops is not supported; place source sampling before five_crop/ten_crop",
+                ));
+            }
             return Err(invalid_pipeline(format!(
                 "index operation at node %{} remains outside the shared source prefix: branch-local or post-barrier index execution is not implemented; the optimizer retained its declared position",
                 id.index()
@@ -598,6 +606,7 @@ fn compile_graph(
     // an unlifted batch kernel must execute in place through the graph executor.
     let mut saw_batch = false;
     let linear = linear_topology
+        && !sample_ops.iter().any(|op| op.output_multiplier() != 1)
         && physical_order.iter().all(|id| {
             let node = physical.node(*id).expect("validated execution order");
             match node.kind {
@@ -653,6 +662,9 @@ fn compile_graph(
         .unwrap_or(source.state());
     let info = ImageGraphInfo {
         input_state: source.state(),
+        views_per_sample: super::inference::views_per_source(
+            annotations.get(root).expect("inferred root"),
+        ),
         pre_batch_state,
         output_state,
         sample_count: sample_ops.len(),

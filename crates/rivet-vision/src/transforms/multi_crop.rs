@@ -2,6 +2,7 @@ use crate::errors::RivetResult;
 use crate::sample::image::{ImageAxisOrder, ImageSample};
 use crate::transforms::crop::CropConfig;
 use crate::transforms::flip::FlipConfig;
+use rivet_core::DType;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FiveCropConfig {
@@ -75,11 +76,21 @@ impl FiveCropConfig {
 pub struct TenCropConfig {
     pub width: u32,
     pub height: u32,
+    pub vertical_flip: bool,
 }
 
 impl TenCropConfig {
     pub const fn new(width: u32, height: u32) -> Self {
-        Self { width, height }
+        Self {
+            width,
+            height,
+            vertical_flip: false,
+        }
+    }
+
+    pub const fn with_vertical_flip(mut self, vertical_flip: bool) -> Self {
+        self.vertical_flip = vertical_flip;
+        self
     }
 
     pub fn validate(&self) -> RivetResult<()> {
@@ -95,8 +106,24 @@ impl TenCropConfig {
         let decoded = sample.into_decoded()?;
         let five = FiveCropConfig::new(self.width, self.height);
         let mut output = five.apply(ImageSample::Decoded(decoded.clone()), axis_order)?;
-        let flipped = FlipConfig::horizontal()
-            .apply_with_axis_order(ImageSample::Decoded(decoded), axis_order)?;
+        let flipped = if decoded.image.dtype() == DType::U8 {
+            let flip = if self.vertical_flip {
+                FlipConfig::vertical()
+            } else {
+                FlipConfig::horizontal()
+            };
+            flip.apply_with_axis_order(ImageSample::Decoded(decoded), axis_order)?
+        } else {
+            let axis = match (axis_order, self.vertical_flip) {
+                (ImageAxisOrder::Hwc, false) | (ImageAxisOrder::Chw, true) => 1,
+                (ImageAxisOrder::Hwc, true) => 0,
+                (ImageAxisOrder::Chw, false) => 2,
+            };
+            ImageSample::Decoded(crate::sample::image::DecodedSample {
+                image: decoded.image.flip(&[axis])?,
+                label: decoded.label,
+            })
+        };
         output.extend(five.apply(flipped, axis_order)?);
         Ok(output)
     }

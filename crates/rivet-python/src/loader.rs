@@ -39,13 +39,23 @@ impl PyDataLoader {
         // no python objects are touched on worker threads.
         let batch = py.detach(|| self.inner.next_batch()).map_err(to_py_err)?;
 
-        batch.map(|batch| image_batch_to_py(py, batch)).transpose()
+        batch
+            .map(|batch| {
+                let count = self.inner.info.views_per_sample;
+                let source_count = batch.images.dims()[0] / count;
+                annotate_views(py, image_batch_to_py(py, batch)?, count, source_count)
+            })
+            .transpose()
     }
 
     fn next_dlpack(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
         let batch = py.detach(|| self.inner.next_batch()).map_err(to_py_err)?;
         batch
-            .map(|batch| image_batch_to_dlpack(py, batch))
+            .map(|batch| {
+                let count = self.inner.info.views_per_sample;
+                let source_count = batch.images.dims()[0] / count;
+                annotate_views(py, image_batch_to_dlpack(py, batch)?, count, source_count)
+            })
             .transpose()
     }
 }
@@ -122,4 +132,17 @@ fn image_batch_to_dlpack(py: Python<'_>, batch: ImageBatch) -> PyResult<Py<PyDic
     out.set_item("dtype", dtype_name)?;
     out.set_item("layout", axis_order.batch_as_str())?;
     Ok(out.into())
+}
+
+fn annotate_views(
+    py: Python<'_>,
+    batch: Py<PyDict>,
+    views: usize,
+    sources: usize,
+) -> PyResult<Py<PyDict>> {
+    if views > 1 {
+        batch.bind(py).set_item("views_per_sample", views)?;
+        batch.bind(py).set_item("source_batch_size", sources)?;
+    }
+    Ok(batch)
 }

@@ -363,6 +363,42 @@ mod tests {
     }
 
     #[test]
+    fn multiview_expansion_fetches_each_source_batch_once() {
+        for workers in [0, 2] {
+            for views in [5, 10] {
+                let calls = Arc::new(AtomicUsize::new(0));
+                let source = Arc::new(CountingDataset {
+                    len: 3,
+                    calls: Arc::clone(&calls),
+                });
+                let pipeline = ImagePipeline::new(source).decode_image().workers(workers);
+                let pipeline = if views == 5 {
+                    pipeline.five_crop(1, 1)
+                } else {
+                    pipeline.ten_crop(1, 1, false)
+                };
+                let mut loader = pipeline.batch(2, false).compile().unwrap();
+                assert_eq!(loader.info.views_per_sample, views);
+                assert!(
+                    loader
+                        .physical_explain()
+                        .unwrap()
+                        .contains("DAG morsel executor")
+                );
+                let batches = drain(&mut loader);
+                assert_eq!(calls.load(Ordering::Relaxed), 2);
+                assert_eq!(batches.len(), 2);
+                assert_eq!(batches[0].images.dims(), &[2 * views, 1, 1, 3]);
+                assert_eq!(
+                    labels(&batches[0]),
+                    [vec![0; views], vec![1; views]].concat()
+                );
+                assert_eq!(labels(&batches[1]), vec![2; views]);
+            }
+        }
+    }
+
+    #[test]
     fn source_fetch_scales_with_logical_batches() {
         for workers in [0, 3] {
             let calls = Arc::new(AtomicUsize::new(0));

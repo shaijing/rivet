@@ -6,7 +6,7 @@ use super::op::{
 use crate::errors::{RivetResult, invalid_pipeline};
 use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageBatch, ImageSample};
 use rivet_core::Tensor;
-use rivet_data::random::RandomContext;
+use rivet_data::random::{OpKey, RandomContext, SampleKey};
 use rivet_exec::physical::{ExecutableGraph, ExecutionValue, Morsel, PhysicalOperator};
 use rivet_exec::runtime::{RuntimeError, RuntimeResult};
 use rivet_plan::ValueGranularity;
@@ -16,6 +16,8 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct ImageGraphInfo {
     pub input_state: PipelineImageState,
+    /// Number of flattened output views per source sample (one without crops).
+    pub views_per_sample: usize,
     /// State entering the first physical batch barrier (also for DAGs).
     pub pre_batch_state: PipelineImageState,
     pub output_state: PipelineImageState,
@@ -60,6 +62,19 @@ impl SampleNode {
         self.op
             .execute(sample, &SampleContext::with_random(index, self.random))
     }
+    fn execute_with_key(
+        &self,
+        sample: ImageSample,
+        sample_key: SampleKey,
+    ) -> RivetResult<ImageSample> {
+        self.op.execute(
+            sample,
+            &SampleContext {
+                sample_key,
+                random: self.random,
+            },
+        )
+    }
 }
 pub(crate) struct BatchNode {
     pub(crate) op: BatchKernel,
@@ -83,9 +98,28 @@ pub(crate) enum ImageKernel {
     Identity,
 }
 
+/// View identities travel with the samples, separately from real source indices.
+/// Ordinary single-view DAG envelopes do not allocate a key vector.
+#[derive(Clone)]
+struct ImageSamples {
+    values: Vec<ImageSample>,
+    keys: Option<Vec<SampleKey>>,
+}
+impl From<Vec<ImageSample>> for ImageSamples {
+    fn from(values: Vec<ImageSample>) -> Self {
+        Self { values, keys: None }
+    }
+}
+impl std::ops::Deref for ImageSamples {
+    type Target = [ImageSample];
+    fn deref(&self) -> &Self::Target {
+        &self.values
+    }
+}
+
 #[derive(Clone)]
 enum ImageValues {
-    Samples(Vec<ImageSample>),
+    Samples(ImageSamples),
     Batch(ImageBatch),
 }
 
@@ -115,6 +149,11 @@ fn put_values(morsel: &mut Morsel, values: ImageValues) {
                     ImageSample::Decoded(s) => s.image.logical_bytes(),
                 })
                 .sum();
+            if let Some(keys) = &samples.keys {
+                morsel.bytes = morsel
+                    .bytes
+                    .saturating_add(keys.len().saturating_mul(std::mem::size_of::<SampleKey>()));
+            }
             morsel.granularity = ValueGranularity::Sample;
             morsel.shape = None;
             morsel.dtype = None;
@@ -168,7 +207,7 @@ impl PhysicalOperator for ImageKernel {
                         "source sample count does not match requested indices",
                     ));
                 }
-                ImageValues::Samples(samples)
+                ImageValues::Samples(samples.into())
             }
             Self::Identity => return Ok(morsel),
             Self::Sample(node) => {
@@ -178,18 +217,60 @@ impl PhysicalOperator for ImageKernel {
                 if samples.len() != morsel.source_indices.len() {
                     return Err(runtime_error("sample count does not match source indices"));
                 }
-                ImageValues::Samples(
-                    samples
-                        .into_iter()
-                        .zip(&morsel.source_indices)
-                        .map(|(sample, index)| node.execute(sample, *index))
-                        .collect::<RivetResult<Vec<_>>>()
-                        .map_err(runtime_error)?,
-                )
+                let multiplier = node.op.output_multiplier();
+                if multiplier == 1 {
+                    let mut output = Vec::with_capacity(samples.len());
+                    for (position, sample) in samples.values.into_iter().enumerate() {
+                        let key = samples.keys.as_ref().map_or_else(
+                            || SampleKey::from_index(morsel.source_indices[position]),
+                            |keys| keys[position],
+                        );
+                        output.push(node.execute_with_key(sample, key).map_err(runtime_error)?);
+                    }
+                    ImageValues::Samples(ImageSamples {
+                        values: output,
+                        keys: samples.keys,
+                    })
+                } else {
+                    let count = samples
+                        .len()
+                        .checked_mul(multiplier)
+                        .ok_or_else(|| runtime_error("multi-view sample count overflow"))?;
+                    let mut output = Vec::with_capacity(count);
+                    let mut indices = Vec::with_capacity(count);
+                    let mut keys = Vec::with_capacity(count);
+                    for (position, sample) in samples.values.into_iter().enumerate() {
+                        let index = morsel.source_indices[position];
+                        let parent = samples
+                            .keys
+                            .as_ref()
+                            .map_or_else(|| SampleKey::from_index(index), |keys| keys[position]);
+                        for (view, sample) in node
+                            .op
+                            .expand(sample)
+                            .map_err(runtime_error)?
+                            .into_iter()
+                            .enumerate()
+                        {
+                            output.push(sample);
+                            indices.push(index);
+                            keys.push(SampleKey::from_u64(
+                                OpKey::from_u64(parent.as_u64())
+                                    .derive(OpKey::from_parts(node.op.name(), view as u32))
+                                    .as_u64(),
+                            ));
+                        }
+                    }
+                    morsel.source_indices = indices;
+                    ImageValues::Samples(ImageSamples {
+                        values: output,
+                        keys: Some(keys),
+                    })
+                }
             }
             Self::Batch { axis_order } => match take_values(&mut morsel)? {
                 ImageValues::Samples(samples) => {
-                    let mut batch = stack(samples).map_err(runtime_error)?;
+                    let mut batch = stack(samples.values).map_err(runtime_error)?;
                     batch.axis_order = *axis_order;
                     ImageValues::Batch(batch)
                 }
@@ -204,14 +285,17 @@ impl PhysicalOperator for ImageKernel {
                         // A DAG may share this value before its explicit batch
                         // barrier. Preserve sample granularity on that edge.
                         let mut output = Vec::with_capacity(samples.len());
-                        for sample in samples {
+                        for sample in samples.values {
                             let mut sample = sample.into_decoded().map_err(runtime_error)?;
                             let mut images = sample.image.unsqueeze(0).map_err(runtime_error)?;
                             images = node.op.execute(images).map_err(runtime_error)?;
                             sample.image = images.squeeze(0).map_err(runtime_error)?;
                             output.push(ImageSample::Decoded(sample));
                         }
-                        ImageValues::Samples(output)
+                        ImageValues::Samples(ImageSamples {
+                            values: output,
+                            keys: samples.keys,
+                        })
                     }
                 }
             }
@@ -280,7 +364,10 @@ impl PhysicalOperator for ImageKernel {
                         label: branches[0].label,
                     }));
                 }
-                ImageValues::Samples(output)
+                ImageValues::Samples(ImageSamples {
+                    values: output,
+                    keys: samples.keys.clone(),
+                })
             }
             ImageValues::Batch(first_batch) => {
                 let labels = first_batch.labels.to_vec::<i64>().map_err(runtime_error)?;

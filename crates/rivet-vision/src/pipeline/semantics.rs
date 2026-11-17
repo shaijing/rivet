@@ -46,6 +46,14 @@ pub(crate) fn image_semantics(op: &ImageOp) -> OperatorSemantics {
     // Exhaustively list built-ins. Adding a new variant requires reviewing its
     // effects rather than silently treating every image payload as pure.
     match op {
+        ImageOp::FiveCrop(_) | ImageOp::TenCrop(_) => OperatorSemantics {
+            one_to_one: false,
+            preserves_order: true,
+            sample_independent: true,
+            has_side_effects: false,
+            randomness: Randomness::None,
+            may_error: true,
+        },
         ImageOp::Decode(_)
         | ImageOp::LinearTransformation(_)
         | ImageOp::AutoAugment(_)

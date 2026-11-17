@@ -258,6 +258,18 @@ impl ImagePipeline {
         self
     }
 
+    /// Expand each source image into the four corner crops and center crop.
+    pub fn five_crop(mut self, width: u32, height: u32) -> Self {
+        self.push_image(ImageOp::five_crop(width, height));
+        self
+    }
+
+    /// Five crops of the original image followed by five of its flipped image.
+    pub fn ten_crop(mut self, width: u32, height: u32, vertical_flip: bool) -> Self {
+        self.push_image(ImageOp::ten_crop(width, height, vertical_flip));
+        self
+    }
+
     pub fn center_crop(mut self, width: u32, height: u32) -> Self {
         self.push_image(ImageOp::center_crop(width, height));
         self

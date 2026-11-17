@@ -43,6 +43,23 @@ class Pipeline:
     def crop(self, x: int, y: int, width: int, height: int) -> Pipeline:
         return Pipeline(self._inner.crop(x, y, width, height), as_numpy=self.as_numpy)
 
+    def five_crop(self, width: int, height: int) -> Pipeline:
+        """Expand each image into top-left, top-right, bottom-left, bottom-right,
+        and center crops. ``batch(B)`` yields ``B * 5`` views and repeated labels.
+        """
+        return Pipeline(self._inner.five_crop(width, height), as_numpy=self.as_numpy)
+
+    def ten_crop(
+        self, width: int, height: int, *, vertical_flip: bool = False
+    ) -> Pipeline:
+        """Emit five original crops followed by five crops of the flipped image.
+
+        The flip is horizontal by default. ``batch(B)`` yields ``B * 10`` views.
+        """
+        return Pipeline(
+            self._inner.ten_crop(width, height, vertical_flip), as_numpy=self.as_numpy
+        )
+
     def center_crop(self, width: int, height: int) -> Pipeline:
         return Pipeline(self._inner.center_crop(width, height), as_numpy=self.as_numpy)
 
@@ -618,6 +635,10 @@ class Pipeline:
         return Pipeline(self._inner.take(count), as_numpy=self.as_numpy)
 
     def batch(self, size: int, *, drop_last: bool = False) -> Pipeline:
+        """Group source samples; multi-view crops yield ``size * V`` images.
+
+        ``drop_last`` drops incomplete source batches, keeping whole view groups.
+        """
         return Pipeline(
             self._inner.batch(size, drop_last),
             as_numpy=self.as_numpy,

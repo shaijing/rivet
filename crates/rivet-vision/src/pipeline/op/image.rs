@@ -9,9 +9,9 @@ use crate::transforms::color::{
     SharpnessConfig, SolarizeConfig,
 };
 use crate::transforms::geometry::{
-    CenterCropConfig, CropConfig, FlipConfig, InterpolationMode, LayoutConfig, PadConfig,
-    RandomCropConfig, RandomHorizontalFlipConfig, RandomResizedCropConfig, ResizeConfig,
-    RotateConfig, RotationAngle,
+    CenterCropConfig, CropConfig, FiveCropConfig, FlipConfig, InterpolationMode, LayoutConfig,
+    PadConfig, RandomCropConfig, RandomHorizontalFlipConfig, RandomResizedCropConfig, ResizeConfig,
+    RotateConfig, RotationAngle, TenCropConfig,
 };
 use crate::transforms::representation::{
     ConvertImageDtypeConfig, DecodeImageConfig, NormalizeConfig,
@@ -95,6 +95,8 @@ pub enum ImageOp {
     Rotate(RotateConfig),
     Normalize(NormalizeConfig),
     Layout(LayoutConfig),
+    FiveCrop(FiveCropConfig),
+    TenCrop(TenCropConfig),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,6 +154,8 @@ impl ImageOp {
             | Self::Resize(_)
             | Self::Crop(_)
             | Self::CenterCrop(_)
+            | Self::FiveCrop(_)
+            | Self::TenCrop(_)
             | Self::Pad(_)
             | Self::Flip(_)
             | Self::RandomCrop(_)
@@ -200,6 +204,8 @@ impl ImageOp {
             Self::Resize(_) => "Resize",
             Self::Crop(_) => "Crop",
             Self::CenterCrop(_) => "CenterCrop",
+            Self::FiveCrop(_) => "FiveCrop",
+            Self::TenCrop(_) => "TenCrop",
             Self::Pad(_) => "Pad",
             Self::Flip(_) => "Flip",
             Self::RandomCrop(_) => "RandomCrop",
@@ -249,6 +255,8 @@ impl ImageOp {
             Self::TrivialAugmentWide(_) => 44,
             Self::AugMix(_) => 45,
             Self::LinearTransformation(_) => 46,
+            Self::FiveCrop(_) => 47,
+            Self::TenCrop(_) => 48,
             Self::Decode(_) => 1,
             Self::Resize(_) => 2,
             Self::Crop(_) => 3,
@@ -352,6 +360,9 @@ impl ImageOp {
             Self::Resize(op) => op.apply(sample),
             Self::Crop(op) => op.apply(sample, input_layout),
             Self::CenterCrop(op) => op.apply(sample, input_layout),
+            Self::FiveCrop(_) | Self::TenCrop(_) => Err(invalid_pipeline(
+                "multi-view crops require the expanding pipeline executor",
+            )),
             Self::Pad(op) => op.apply(sample, input_layout),
             Self::Flip(op) => op.apply_with_axis_order(sample, input_layout),
             Self::RandomCrop(op) => op.apply(
@@ -548,6 +559,23 @@ impl ImageOp {
 
     pub fn crop(x: u32, y: u32, width: u32, height: u32) -> Self {
         Self::Crop(CropConfig::new(x, y, width, height))
+    }
+
+    pub fn five_crop(width: u32, height: u32) -> Self {
+        Self::FiveCrop(FiveCropConfig::new(width, height))
+    }
+
+    pub fn ten_crop(width: u32, height: u32, vertical_flip: bool) -> Self {
+        Self::TenCrop(TenCropConfig::new(width, height).with_vertical_flip(vertical_flip))
+    }
+
+    /// Number of output views per input image for this operator.
+    pub fn output_multiplier(&self) -> usize {
+        match self {
+            Self::FiveCrop(_) => 5,
+            Self::TenCrop(_) => 10,
+            _ => 1,
+        }
     }
 
     pub fn center_crop(width: u32, height: u32) -> Self {
@@ -789,6 +817,8 @@ impl ImageOp {
                 }
                 Ok(())
             }
+            Self::FiveCrop(op) => op.validate(),
+            Self::TenCrop(op) => op.validate(),
             Self::Pad(op) => op.validate(),
             Self::RandomCrop(op) => op.validate(),
             Self::RandomResizedCrop(op) => op.validate(),

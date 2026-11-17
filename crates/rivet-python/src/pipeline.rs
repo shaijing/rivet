@@ -212,6 +212,19 @@ impl PyTransform {
         }
     }
 
+    fn five_crop(&self, width: u32, height: u32) -> Self {
+        Self {
+            inner: self.inner.clone().five_crop(width, height),
+        }
+    }
+
+    #[pyo3(signature = (width, height, vertical_flip=false))]
+    fn ten_crop(&self, width: u32, height: u32, vertical_flip: bool) -> Self {
+        Self {
+            inner: self.inner.clone().ten_crop(width, height, vertical_flip),
+        }
+    }
+
     fn center_crop(&self, width: u32, height: u32) -> Self {
         Self {
             inner: self.inner.clone().center_crop(width, height),
@@ -1007,6 +1020,19 @@ impl PyImagePipeline {
     fn crop(&self, x: u32, y: u32, width: u32, height: u32) -> Self {
         Self {
             inner: self.inner.clone().crop(x, y, width, height),
+        }
+    }
+
+    fn five_crop(&self, width: u32, height: u32) -> Self {
+        Self {
+            inner: self.inner.clone().five_crop(width, height),
+        }
+    }
+
+    #[pyo3(signature = (width, height, vertical_flip=false))]
+    fn ten_crop(&self, width: u32, height: u32, vertical_flip: bool) -> Self {
+        Self {
+            inner: self.inner.clone().ten_crop(width, height, vertical_flip),
         }
     }
 

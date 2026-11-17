@@ -28,6 +28,7 @@ enum VisionRepresentation {
 struct VisionProperties {
     representation: VisionRepresentation,
     axis_order: Option<ImageAxisOrder>,
+    views_per_source: usize,
 }
 
 impl VisionPropertyInference {
@@ -309,6 +310,28 @@ pub(crate) fn infer_image_op(
                 );
             }
             output.contiguity = Some(Contiguity::Contiguous);
+        }
+        ImageOp::FiveCrop(_) | ImageOp::TenCrop(_) => {
+            require_u8_or_f32_decoded(input_state, op.name())?;
+            let (width, height) = match op {
+                ImageOp::FiveCrop(config) => (config.width, config.height),
+                ImageOp::TenCrop(config) => (config.width, config.height),
+                _ => unreachable!(),
+            };
+            let (ih, iw) = spatial_dims(input)?;
+            if matches!(ih, ShapeDim::Known(ih) if ih < height as usize)
+                || matches!(iw, ShapeDim::Known(iw) if iw < width as usize)
+            {
+                return Err(invalid_pipeline(
+                    "multi-view crop size exceeds image dimensions",
+                ));
+            }
+            set_spatial_shape(
+                &mut output,
+                ShapeDim::Known(height as usize),
+                ShapeDim::Known(width as usize),
+            );
+            output.contiguity = Some(Contiguity::Strided);
         }
         ImageOp::Crop(config) => {
             require_u8_decoded(input_state, "Crop")?;
@@ -611,12 +634,20 @@ pub(crate) fn infer_image_op(
                 || op.execution_kind() == super::op::ExecutionKind::Sample,
         }
     });
-    Ok(attach_vision_properties(output))
+    let views = views_per_source(input)
+        .checked_mul(op.output_multiplier())
+        .ok_or_else(|| invalid_pipeline("multi-view count overflows usize"))?;
+    Ok(attach_vision_properties_with_views(output, views))
 }
 
 fn infer_sequence(ops: &[ImageOp], input: &ValueProperties) -> RivetResult<ValueProperties> {
     let mut properties = input.clone();
     for op in ops {
+        if op.output_multiplier() != 1 {
+            return Err(invalid_pipeline(
+                "multi-view crops cannot be nested in random_apply, random_choice or random_order; use compose instead",
+            ));
+        }
         if op.execution_kind() != super::op::ExecutionKind::Sample {
             return Err(invalid_pipeline(format!(
                 "{} nested transforms must be sample-stage operations",
@@ -651,7 +682,12 @@ fn infer_batch(config: &BatchConfig, input: &ValueProperties) -> RivetResult<Val
         .as_ref()
         .ok_or_else(|| invalid_pipeline("batch input shape is unknown"))?;
     let batch_dim = if config.drop_last {
-        ShapeDim::Known(config.size)
+        ShapeDim::Known(
+            config
+                .size
+                .checked_mul(views_per_source(input))
+                .ok_or_else(|| invalid_pipeline("multi-view batch size overflows usize"))?,
+        )
     } else {
         ShapeDim::Dynamic
     };
@@ -815,7 +851,21 @@ fn image_properties(
     }
 }
 
-fn attach_vision_properties(mut properties: ValueProperties) -> ValueProperties {
+pub(crate) fn views_per_source(properties: &ValueProperties) -> usize {
+    properties
+        .domain_as::<DomainPropertiesValue<VisionProperties>>()
+        .map_or(1, |domain| domain.value().views_per_source)
+}
+
+fn attach_vision_properties(properties: ValueProperties) -> ValueProperties {
+    let views = views_per_source(&properties);
+    attach_vision_properties_with_views(properties, views)
+}
+
+fn attach_vision_properties_with_views(
+    mut properties: ValueProperties,
+    views_per_source: usize,
+) -> ValueProperties {
     let representation = match properties.representation {
         Some(Representation::EncodedImage) => VisionRepresentation::EncodedImage,
         _ => VisionRepresentation::Image,
@@ -826,6 +876,7 @@ fn attach_vision_properties(mut properties: ValueProperties) -> ValueProperties 
         VisionProperties {
             representation,
             axis_order,
+            views_per_source,
         },
     )));
     properties
@@ -1007,6 +1058,47 @@ mod tests {
             ]),
             Contiguity::Contiguous,
         )
+    }
+
+    #[test]
+    fn multiview_batch_shape_and_factor_survive_representation_changes() {
+        let input = decoded_properties(DataType::U8);
+        let cropped = infer_image_op(&ImageOp::five_crop(2, 2), &input).unwrap();
+        let normalized =
+            infer_image_op(&ImageOp::normalize(vec![0.0; 3], vec![1.0; 3]), &cropped).unwrap();
+        let chw = infer_image_op(&ImageOp::hwc_to_chw(), &normalized).unwrap();
+        let output = infer_batch(&BatchConfig::new(4, true), &chw).unwrap();
+        assert_eq!(views_per_source(&output), 5);
+        assert_eq!(
+            output.shape.unwrap().dims(),
+            [
+                ShapeDim::Known(20),
+                ShapeDim::Known(3),
+                ShapeDim::Known(2),
+                ShapeDim::Known(2)
+            ]
+        );
+        assert_eq!(output.dtype, Some(DataType::F32));
+    }
+
+    #[test]
+    fn concat_rejects_different_multiview_cardinalities() {
+        let input = decoded_properties(DataType::U8);
+        let cropped = infer_image_op(&ImageOp::five_crop(2, 2), &input).unwrap();
+        let single = infer_image_op(&ImageOp::crop(0, 0, 2, 2), &input).unwrap();
+        let err = rivet_plan::DomainOp::infer_properties(
+            &super::super::ImageConcat { axis: 2 },
+            &[cropped, single],
+        )
+        .unwrap_err();
+        assert!(err.contains("matching view counts"));
+    }
+
+    #[test]
+    fn multiview_batch_extent_overflow_is_rejected() {
+        let cropped =
+            infer_image_op(&ImageOp::five_crop(2, 2), &decoded_properties(DataType::U8)).unwrap();
+        assert!(infer_batch(&BatchConfig::new(usize::MAX, true), &cropped).is_err());
     }
 
     #[test]

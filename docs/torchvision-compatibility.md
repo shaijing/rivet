@@ -163,3 +163,14 @@ throughput measurements are documented in
 See the [torchvision API coverage inventory](torchvision-coverage.md) for the
 subsequent migration of missing operators, policy algorithms, native Tensor
 conversion equivalents, and remaining v2/data-model gaps.
+
+
+## Multi-view evaluation
+
+`five_crop` and `ten_crop` match torchvision's view order and half-to-even
+center positioning for supported uint8/float32 HWC/CHW images. TenCrop defaults
+to horizontal flipping and also supports `vertical_flip=True`. Rivet flattens
+views into the image batch and repeats labels; it does not return Python tuples
+of images. `batch(B)` counts source samples and `drop_last` preserves whole
+view groups. See the [multi-view guide](torchvision-coverage.md#multi-view-pipelines)
+for grouping metadata, random streams and current composition restrictions.

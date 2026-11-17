@@ -60,7 +60,7 @@ resolved parameters need the new saturation/order fields; prefer constructors.
 | Color | Brightness, Contrast, Hue, Grayscale, RandomGrayscale, Sharpness, Invert, Posterize, Solarize, Autocontrast, Equalize |
 | Representation | DecodeImage, Normalize, uint8↔float32 ConvertImageDtype, HWC↔CHW |
 | Erasing/filtering | RandomErasing, deterministic GaussianBlur |
-| Multi-view | FiveCropConfig and TenCropConfig return multiple samples in Rust; they are not Python pipeline methods because that pipeline currently yields one image per source sample |
+| Multi-view | `five_crop(width, height)` and `ten_crop(width, height, vertical_flip=False)` on both Python APIs and native pipelines; flattened view batches with repeated labels |
 | Metadata | Shape/dtype/layout are available from native Tensor and plan properties; this is not a separate pixel transform |
 
 ## Remaining gaps
@@ -88,6 +88,67 @@ configurations, but this is not a full clone of torchvision's Python API.
   need structured annotation support. UniformTemporalSubsample is a video
   operation. Those are separate data-model extensions, not silently applied
   to RGB images alone.
+
+## Multi-view pipelines
+
+`Transform` and `Pipeline` expose `five_crop(width, height)` and
+`ten_crop(width, height, vertical_flip=False)`. Dimensions stay width-first.
+They accept decoded uint8 or float32 images in HWC or CHW layout. The crop
+must fit the image; oversized crops fail instead of padding.
+
+FiveCrop emits top-left, top-right, bottom-left, bottom-right, then center.
+TenCrop emits those five crops of the original image followed by five of the
+flipped image. The default flip is horizontal; `vertical_flip=True` selects
+vertical flipping. Center coordinates use torchvision's half-to-even rounding.
+FiveCrop retains shared tensor views; TenCrop materializes one flipped image
+and shares its crop views. Batching stacks these views into the final batch.
+
+`batch(B)` counts **source samples**. With V views per source, the returned
+image shape is `(B * V, H, W, C)` or `(B * V, C, H, W)` and labels have shape
+`(B * V,)`. Each source's views are contiguous and its label is repeated V
+times. The batch includes `views_per_sample` and `source_batch_size` metadata
+through NumPy, bytes, DLPack and Torch handoff. Ordinary single-view batches
+keep their existing schema. Repeated multi-view crops multiply V, in parent
+view then child view order.
+
+`drop_last=True` drops an incomplete **source** batch, retaining whole view
+groups. Without it, the final batch contains all views of the remaining source
+samples. An empty source yields no batches, and exhaustion remains sticky.
+
+```python
+from rivet import vision as rv
+
+loader = (
+    rv.scan_image_folder("data/validation")
+    .take(1000)  # source sampling comes before multi-view expansion
+    .decode_image()
+    .resize(256)
+    .compose(rv.Transform().ten_crop(224, 224))
+    .to_tensor()
+    .normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    .workers(4)
+    .batch(8)
+    .execute()
+)
+
+for batch in loader:
+    n, v = batch["source_batch_size"], batch["views_per_sample"]
+    images = batch["images"].reshape(n, v, 3, 224, 224)
+    labels = batch["labels"].reshape(n, v)[:, 0]
+```
+
+Transforms after the crop run on each view. Random operators derive distinct
+streams from the source identity and view path, preserving seed/epoch results
+across worker counts and batch sizes. Random transforms before cropping are
+shared by that source's views.
+
+Multi-view pipelines use the existing bounded DAG morsel executor. Single-view
+pipelines retain their typed linear execution path and specialized kernels.
+Place `skip`, `take`, and `shuffle` before the multi-view crop; post-expansion
+index operations are rejected. Use `compose` for multi-view transform sequences:
+putting a crop inside `random_apply`, `random_choice`, or `random_order` is
+currently rejected, as those control operators require single-image branches.
+Crops after an explicit batch barrier are also rejected.
 
 ## Existing API parameter completion
 
@@ -199,3 +260,19 @@ three pre-change runs averaged 1,130,686 img/s (population standard deviation
 4,317); five post-change runs averaged 1,123,509 img/s (standard deviation
 5,102), a -0.63% change. These are fresh same-environment measurements; the
 older absolute reference is not substituted for the pre-change comparison.
+
+## Multi-view validation (2026-11-17)
+
+The release extension passed 467 Python tests plus 28 subtests and 252
+`rivet-vision` library tests. The 61 multi-view Python cases cover pixel/order
+parity, both Python APIs, uint8/float32 and HWC/CHW, repeated crops, source
+sampling, view-specific randomness, tail/drop-last batches, lazy explanation,
+invalid plans, sticky exhaustion and NumPy/bytes/DLPack/Torch delivery.
+
+The standard decoded CIFAR regression command (batch 128, four workers, three
+epochs) averaged 1,126,419 img/s across three pre-change runs (population
+standard deviation 1,210), and 1,141,387 img/s across five final runs (standard
+deviation 5,080), a +1.33% difference. This measures the ordinary single-view
+pipeline, not the cost of enabling multiple crops. Explicit inlining keeps
+its static RGB normalize writers and NHWC-to-NCHW writer optimized as the
+operator implementation grows.

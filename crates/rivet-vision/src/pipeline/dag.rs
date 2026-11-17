@@ -43,6 +43,11 @@ impl DomainOp for ImageConcat {
         let batch = output.granularity == Some(rivet_plan::ValueGranularity::Batch);
         let axis = self.axis + usize::from(batch);
         for input in &inputs[1..] {
+            if super::inference::views_per_source(input)
+                != super::inference::views_per_source(&output)
+            {
+                return Err("ImageConcat inputs must have matching view counts".to_owned());
+            }
             if input.representation != output.representation
                 || input.dtype != output.dtype
                 || input.axis_order != output.axis_order

@@ -25,6 +25,10 @@ class DataLoader:
     :meth:`next_dlpack` for a zero-copy framework handoff or
     :meth:`next_torch` for a Torch tensor batch.
 
+    Multi-view pipelines flatten each source's views consecutively and repeat
+    its label. Their batches include ``views_per_sample`` and
+    ``source_batch_size``; the first image dimension is their product.
+
     ``iter(loader)`` returns the loader itself and exhaustion is sticky
     (StopIteration). Loading always happens inside Rust on the pipeline's
     persistent worker pool (``pipeline.workers(n)``) with the GIL released
