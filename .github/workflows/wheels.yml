@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   linux:
-    name: CPython 3.13 / manylinux_2_28 x86_64
+    name: CPython 3.13 / manylinux_2_35 x86_64
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     env:
@@ -22,9 +22,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v10
         with:
           python-version: "3.13"
+          activate-environment: true
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -33,7 +34,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake mold ninja-build pkg-config \
-            protobuf-compiler libprotobuf-dev
+            protobuf-compiler libprotobuf-dev libopenblas-pthread-dev
+
+      - name: Install wheel repair tools
+        run: |
+          uv pip install "patchelf==0.19.3" "auditwheel==6.8.2"
+          patchelf --version
 
       - name: Check Protobuf toolchain
         run: |
@@ -43,7 +49,7 @@ jobs:
             --descriptor_set_out="$RUNNER_TEMP/protobuf-empty.pb" \
             google/protobuf/empty.proto
 
-      - name: Build wheel with Zig
+      - name: Build and repair wheel with Zig and maturin
         uses: PyO3/maturin-action@v1
         with:
           maturin-version: v1.15.0
@@ -51,21 +57,49 @@ jobs:
           container: "off"
           command: build
           args: >-
-            --release --locked --zig --manylinux 2_28
-            --no-default-features --features lance
+            --release --locked --zig --manylinux 2_35 --auditwheel repair
+            --no-default-features --features lance,blas
             --interpreter python3.13 --out dist
+
+      - name: Inspect repaired wheel
+        run: |
+          auditwheel show dist/*.whl
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheel, = Path("dist").glob("*.whl")
+          assert "manylinux_2_35_x86_64" in wheel.name, wheel.name
+          with ZipFile(wheel) as archive:
+              libraries = [Path(name).name for name in archive.namelist() if ".so" in name]
+              for dependency in ("libopenblas", "libgfortran", "libquadmath"):
+                  assert any(name.startswith(dependency) for name in libraries), (dependency, libraries)
+          PY
 
       - name: Check installed wheel
         run: |
-          python -m pip install numpy
-          python -m pip install --no-deps dist/*.whl
+          uv pip install numpy
+          uv pip install --no-deps dist/*.whl
           cd "$RUNNER_TEMP"
           python -c 'import rivet; from rivet._rivet import _LanceDataset; assert rivet.vision.Pipeline is rivet.Pipeline'
+          python - <<'PY'
+          from pathlib import Path
+          import numpy
+          import rivet._rivet
+
+          # Importing the extension must resolve BLAS through the bundled libraries.
+          mappings = Path("/proc/self/maps").read_text().splitlines()
+          site_packages = Path(rivet._rivet.__file__).resolve().parent.parent
+          for dependency in ("libopenblas", "libgfortran", "libquadmath"):
+              loaded = {line.split()[-1] for line in mappings if dependency in line}
+              assert loaded, dependency
+              assert any(Path(path).is_relative_to(site_packages) for path in loaded), loaded
+          PY
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-cp313-manylinux_2_28-x86_64
+          name: wheels-cp313-manylinux_2_35-x86_64
           path: dist/*.whl
           if-no-files-found: error
           compression-level: 0
