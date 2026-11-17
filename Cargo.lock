@@ -4873,9 +4873,9 @@ dependencies = [
 
 [[package]]
 name = "rivet-blas-sys"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e7ee032abdcb58d8e454f1c75087a465207881393fe5b1be698c6ee3c22fb4a"
+checksum = "c64795de381216eeeae334883a5628a1d3786ca6234796b8fd6f8331c2576168"
 dependencies = [
  "pkg-config",
  "vcpkg",
