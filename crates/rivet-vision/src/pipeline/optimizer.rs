@@ -798,14 +798,17 @@ impl FusionRule for NormalizeLayoutFusion {
                     "requires U8 HWC input and CHW output; inferred properties do not satisfy the rule"
                         .to_owned()
                 };
-                candidates.push(FusionCandidate {
-                    revision: plan.revision(),
-                    rule: self.name(),
-                    nodes: vec![normalize_id, id],
-                    name: "NormalizeToChw".to_owned(),
-                    legal,
-                    reason,
-                });
+                let mut candidate = FusionCandidate::new(
+                    plan,
+                    annotations,
+                    self.name(),
+                    "NormalizeToChw",
+                    vec![normalize_id, id],
+                    vec![id],
+                )?;
+                candidate.legal = legal;
+                candidate.reason = reason;
+                candidates.push(candidate);
             }
 
             // Crop followed by resize cannot be reordered unchanged: crop
@@ -818,14 +821,17 @@ impl FusionRule for NormalizeLayoutFusion {
                         crop.payload_as::<ImageOp>(),
                         Some(ImageOp::Crop(_) | ImageOp::CenterCrop(_))
                     ) {
-                        candidates.push(FusionCandidate {
-                    revision: plan.revision(),
-                            rule: self.name(),
-                            nodes: vec![crop_id, id],
-                            name: "CropResize".to_owned(),
-                            legal: false,
-                            reason: "not safe to reorder without transforming the crop rectangle and preserving interpolation/border semantics; no crop-resize fused kernel is registered".to_owned(),
-                        });
+                        let mut candidate = FusionCandidate::new(
+                            plan,
+                            annotations,
+                            self.name(),
+                            "CropResize",
+                            vec![crop_id, id],
+                            vec![id],
+                        )?;
+                        candidate.legal = false;
+                        candidate.reason = "not safe to reorder without transforming the crop rectangle and preserving interpolation/border semantics; no crop-resize fused kernel is registered".to_owned();
+                        candidates.push(candidate);
                     }
                 }
             }
@@ -843,23 +849,49 @@ impl FusionRule for NormalizeLayoutFusion {
                             p.dtype == Some(rivet_plan::DataType::U8)
                                 && axis_order(p) == Some(ImageAxisOrder::Hwc)
                         });
-                        candidates.push(FusionCandidate {
-                    revision: plan.revision(),
-                            rule: self.name(),
-                            nodes: vec![flip_id, id],
-                            name: "FlipNormalize".to_owned(),
-                            legal: false,
-                            reason: if semantic_commute {
-                                "spatial flip commutes with per-channel affine normalization for U8 HWC values, but sample-to-batch stage movement changes worker execution and no cross-stage fused kernel is registered".to_owned()
-                            } else {
-                                "requires known U8 HWC input to establish commutation; properties are insufficient".to_owned()
-                            },
-                        });
+                        let mut candidate = FusionCandidate::new(
+                            plan,
+                            annotations,
+                            self.name(),
+                            "FlipNormalize",
+                            vec![flip_id, id],
+                            vec![id],
+                        )?;
+                        candidate.legal = false;
+                        candidate.reason = if semantic_commute {
+                            "spatial flip commutes with per-channel affine normalization for U8 HWC values, but sample-to-batch stage movement changes worker execution and no cross-stage fused kernel is registered".to_owned()
+                        } else {
+                            "requires known U8 HWC input to establish commutation; properties are insufficient".to_owned()
+                        };
+                        candidates.push(candidate);
                     }
                 }
             }
         }
         Ok(candidates)
+    }
+
+    fn priority(&self) -> i32 {
+        100
+    }
+
+    fn validate(
+        &self,
+        plan: &LogicalPlan,
+        candidate: &FusionCandidate,
+        annotations: &PropertyAnnotations,
+    ) -> Result<(), String> {
+        if candidate.name != "NormalizeToChw"
+            || !self.discover(plan, annotations)?.iter().any(|fresh| {
+                fresh.legal
+                    && fresh.name == candidate.name
+                    && fresh.nodes == candidate.nodes
+                    && fresh.outputs == candidate.outputs
+            })
+        {
+            return Err("NormalizeToChw no longer satisfies dtype, layout, adjacency or exclusive-use prerequisites".into());
+        }
+        Ok(())
     }
 
     fn apply(
@@ -868,9 +900,8 @@ impl FusionRule for NormalizeLayoutFusion {
         candidate: &FusionCandidate,
         context: &mut OptimizerContext,
     ) -> Result<PassResult, String> {
-        if candidate.name != "NormalizeToChw" {
-            return Ok(PassResult::unchanged());
-        }
+        candidate.validate(plan, context.annotations())?;
+        self.validate(plan, candidate, context.annotations())?;
         let [normalize_id, layout_id] = candidate.nodes.as_slice() else {
             return Err("NormalizeToChw fusion requires two node ids".to_owned());
         };

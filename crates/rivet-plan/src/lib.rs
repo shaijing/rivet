@@ -30,8 +30,8 @@ mod placement;
 mod properties;
 
 pub use optimizer::{
-    Diagnostic, FusionCandidate, FusionRule, OptimizationReport, OptimizerContext, OptimizerError,
-    OptimizerOptions, OptimizerPass, OptimizerStage, PassResult, PhysicalCandidate,
+    Diagnostic, FusionCandidate, FusionRule, FusionSharing, OptimizationReport, OptimizerContext,
+    OptimizerError, OptimizerOptions, OptimizerPass, OptimizerStage, PassResult, PhysicalCandidate,
     PhysicalCandidateProvider, PlanPlugin, PlanRegistry, optimize, optimize_with_context,
     optimize_with_options, run_fixed_point,
 };
@@ -309,6 +309,17 @@ impl LogicalNode {
         self
     }
 
+    pub(crate) fn same_definition(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.inputs == other.inputs
+            && self.semantic_identity == other.semantic_identity
+            && match (&self.payload, &other.payload) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            }
+    }
+
     pub fn kind(&self) -> NodeKind {
         self.kind
     }
@@ -409,19 +420,7 @@ impl LogicalPlan {
     }
 
     pub fn replace_node(&mut self, id: NodeId, node: LogicalNode) -> Result<(), PlanError> {
-        let old = self.arena.get(id)?;
-        // Erased payloads have no general semantic equality. Reusing the same
-        // immutable Arc proves identity; a fresh payload conservatively changes IR.
-        let same_payload = match (&old.payload, &node.payload) {
-            (None, None) => true,
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-            _ => false,
-        };
-        if old.kind == node.kind
-            && old.inputs == node.inputs
-            && old.semantic_identity == node.semantic_identity
-            && same_payload
-        {
+        if self.arena.get(id)?.same_definition(&node) {
             return Ok(());
         }
         self.arena.replace(id, node)?;

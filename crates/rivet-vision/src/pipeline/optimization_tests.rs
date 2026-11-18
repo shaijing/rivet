@@ -241,3 +241,47 @@ fn optimizing_twice_keeps_structure_and_values_stable() {
         &drain(ImagePipeline::compile_logical_plan(plan, 0).unwrap()),
     );
 }
+
+#[test]
+fn fusion_preserves_seeded_augmentations_indices_and_epoch_streams() {
+    for workers in [0, 3] {
+        for epoch in [0, 7] {
+            let builder = pipeline(workers)
+                .epoch(epoch)
+                .shuffle(19)
+                .random_crop(3, 2, 1)
+                .random_horizontal_flip(0.5)
+                .normalize(vec![0.13; 3], vec![0.37; 3])
+                .hwc_to_chw()
+                .batch(3, false);
+            let original = builder.to_logical_plan();
+            let random_identities = original
+                .nodes()
+                .filter_map(|(_, node)| {
+                    node.payload_as::<super::op::ImageOp>()
+                        .filter(|op| op.random_key_kind().is_some())
+                        .map(|_| node.semantic_identity())
+                })
+                .collect::<Vec<_>>();
+            let mut optimized = original.clone();
+            super::optimizer::optimize_vision_plan_with_options(
+                &mut optimized,
+                workers,
+                Default::default(),
+            )
+            .unwrap();
+            let optimized_identities = optimized
+                .nodes()
+                .filter_map(|(_, node)| {
+                    node.payload_as::<super::op::ImageOp>()
+                        .filter(|op| op.random_key_kind().is_some())
+                        .map(|_| node.semantic_identity())
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(random_identities, optimized_identities);
+            let actual = drain(builder.clone().compile().unwrap());
+            let expected = drain(builder.compile_unoptimized_for_test(0).unwrap());
+            same_f32(&actual, &expected);
+        }
+    }
+}

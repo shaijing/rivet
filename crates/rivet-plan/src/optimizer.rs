@@ -22,6 +22,20 @@
 //!   clear annotations when changing provider configuration.
 //! - Full snapshots are opt-in; nonconvergence retains only the latest changing
 //!   pass and a bounded graph summary by default.
+//!
+//! Fusion protocol:
+//! - Capture ordered input ports and required properties with FusionCandidate::new.
+//! - Higher priority wins; unique rule names, matched IDs and candidate names
+//!   break ties. Rule registration order never decides a competing match.
+//! - Validate revision, snapshots, sharing policy and domain semantics before
+//!   applying. Reject invalid/no-op candidates with diagnostics.
+//! - Apply one candidate on cloned IR/context, validate graph and write boundary,
+//!   and infer properties before committing. Rediscover all rules after a commit.
+//! - Shared intermediate nodes are exclusive unless PreserveShared is explicit;
+//!   even then, their original values and external consumer ports must survive.
+//! - Rules must preserve numerical, random identity and batch-lift contracts.
+//!   Transactions cannot undo mutable payloads or external effects; both are
+//!   forbidden. Compaction belongs in a separate pass after fusion.
 
 use std::sync::Arc;
 
@@ -95,7 +109,7 @@ pub enum OptimizerError {
 
 /// Shared state is deliberately supplied to every pass so passes can inspect
 /// and update inferred properties without coupling the core IR to a domain.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct OptimizerContext {
     annotations: PropertyAnnotations,
     placement: Option<crate::PlacementPlan>,
@@ -232,6 +246,13 @@ pub trait PlanPlugin: Send + Sync {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FusionCandidate {
+    /// Exact input-port snapshots for the nodes participating in the match.
+    pub inputs: Vec<(NodeId, Vec<NodeId>)>,
+    /// Facts used by the match, including its immediate boundary inputs.
+    pub properties: Vec<(NodeId, crate::ValueProperties)>,
+    /// Only these outputs may be redirected to the fused implementation.
+    pub outputs: Vec<NodeId>,
+    pub sharing: FusionSharing,
     pub revision: PlanRevision,
     pub rule: &'static str,
     pub nodes: Vec<NodeId>,
@@ -240,13 +261,157 @@ pub struct FusionCandidate {
     pub reason: String,
 }
 
+/// Shared intermediate values are exclusive by default. PreserveShared permits
+/// crossing them only if their definitions and external consumers survive intact.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FusionSharing {
+    #[default]
+    Exclusive,
+    PreserveShared,
+}
+
+impl FusionCandidate {
+    /// Capture the complete match boundary using current, immutable analysis.
+    pub fn new(
+        plan: &LogicalPlan,
+        annotations: &PropertyAnnotations,
+        rule: &'static str,
+        name: &str,
+        nodes: Vec<NodeId>,
+        outputs: Vec<NodeId>,
+    ) -> Result<Self, String> {
+        if !annotations.is_valid_for(plan) {
+            return Err("fusion discovery requires current properties".into());
+        }
+        let inputs = nodes
+            .iter()
+            .map(|&id| {
+                Ok((
+                    id,
+                    plan.node(id)
+                        .map_err(|e| e.to_string())?
+                        .inputs()
+                        .iter()
+                        .collect::<Vec<_>>(),
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let mut dependencies = nodes.clone();
+        dependencies.extend(inputs.iter().flat_map(|(_, inputs)| inputs.iter().copied()));
+        dependencies.sort_unstable();
+        dependencies.dedup();
+        let properties = dependencies
+            .into_iter()
+            .map(|id| {
+                annotations
+                    .get(id)
+                    .cloned()
+                    .map(|properties| (id, properties))
+                    .ok_or_else(|| format!("fusion match lacks properties for %{}", id.index()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            revision: plan.revision(),
+            rule,
+            name: name.to_owned(),
+            nodes,
+            inputs,
+            properties,
+            outputs,
+            sharing: FusionSharing::Exclusive,
+            legal: true,
+            reason: String::new(),
+        })
+    }
+
+    /// Structural/property preconditions are checked again immediately before apply.
+    pub fn validate(
+        &self,
+        plan: &LogicalPlan,
+        annotations: &PropertyAnnotations,
+    ) -> Result<(), String> {
+        if self.revision != plan.revision() || !annotations.is_valid_for(plan) {
+            return Err("candidate or properties belong to a stale plan revision".into());
+        }
+        let mut nodes = self.nodes.clone();
+        nodes.sort_unstable();
+        nodes.dedup();
+        if nodes.is_empty()
+            || nodes.len() != self.nodes.len()
+            || self.outputs.is_empty()
+            || self.outputs.iter().any(|id| !nodes.contains(id))
+        {
+            return Err(
+                "fusion requires distinct matched nodes and declared outputs within the match"
+                    .into(),
+            );
+        }
+        let current = Self::new(
+            plan,
+            annotations,
+            self.rule,
+            &self.name,
+            self.nodes.clone(),
+            self.outputs.clone(),
+        )?;
+        if self.inputs != current.inputs {
+            return Err("candidate input edges changed".into());
+        }
+        if self.properties != current.properties {
+            return Err("candidate property prerequisites changed".into());
+        }
+        let order = plan.topological_order().map_err(|e| e.to_string())?;
+        if self.nodes.iter().any(|id| !order.contains(id)) {
+            return Err("candidate contains unreachable nodes".into());
+        }
+        if self.sharing == FusionSharing::Exclusive {
+            for &id in &self.nodes {
+                if self.outputs.contains(&id) {
+                    continue;
+                }
+                if plan.root().ok() == Some(id)
+                    || order.iter().any(|consumer| {
+                        !self.nodes.contains(consumer)
+                            && plan
+                                .node(*consumer)
+                                .is_ok_and(|node| node.inputs().iter().any(|input| input == id))
+                    })
+                {
+                    return Err(format!(
+                        "shared intermediate %{} has consumers outside the fusion",
+                        id.index()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 pub trait FusionRule: Send + Sync {
     fn name(&self) -> &'static str;
+    /// Higher priority wins; ties use unique rule names, then matched node IDs.
+    fn priority(&self) -> i32 {
+        0
+    }
+    /// Domain-specific semantic validation. Err rejects this candidate without
+    /// modifying the plan. Check numerical/random identity and barrier contracts.
+    fn validate(
+        &self,
+        _plan: &LogicalPlan,
+        _candidate: &FusionCandidate,
+        _annotations: &PropertyAnnotations,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     fn discover(
         &self,
         plan: &LogicalPlan,
         annotations: &PropertyAnnotations,
     ) -> Result<Vec<FusionCandidate>, String>;
+    /// Runs on cloned plan/context. Errors or invalid graph/write-set results
+    /// never commit. Payload semantics must remain immutable; external effects
+    /// and interior mutation cannot be rolled back and are forbidden here.
     fn apply(
         &self,
         _plan: &mut LogicalPlan,
@@ -453,19 +618,29 @@ fn ensure_properties(
     pass_name: &str,
 ) -> Result<(), OptimizerError> {
     if !context.annotations().is_valid_for(plan) {
-        struct RegistryInference<'a>(&'a PlanRegistry);
+        struct RegistryInference<'a>(&'a PlanRegistry, Option<DomainId>);
         impl PropertyInference for RegistryInference<'_> {
             fn infer_node(
                 &self,
                 node: &LogicalNode,
                 inputs: &[crate::ValueProperties],
             ) -> Result<crate::ValueProperties, String> {
+                // Core boundaries (Sink/DeviceCut) inherit the plan's domain.
+                let domain = node
+                    .payload()
+                    .and_then(|p| p.domain_id())
+                    .filter(|id| *id != DomainId::new(0))
+                    .or(self.1);
                 let provider = self
                     .0
                     .inferences()
-                    .find_map(|(domain, provider)| {
-                        (domain.is_none() || domain == node.payload().and_then(|p| p.domain_id()))
-                            .then_some(provider)
+                    .find_map(|(registered, provider)| {
+                        (registered == domain && registered.is_some()).then_some(provider)
+                    })
+                    .or_else(|| {
+                        self.0.inferences().find_map(|(registered, provider)| {
+                            registered.is_none().then_some(provider)
+                        })
                     })
                     .ok_or_else(|| {
                         "pass requires properties but no matching inference provider is registered"
@@ -475,7 +650,10 @@ fn ensure_properties(
             }
         }
         let properties = plan
-            .infer_properties(&RegistryInference(registry))
+            .infer_properties(&RegistryInference(
+                registry,
+                plan.context.as_ref().and_then(|p| p.domain_id()),
+            ))
             .map_err(|e| OptimizerError::Pass {
                 pass: pass_name.into(),
                 message: e.to_string(),
@@ -483,6 +661,230 @@ fn ensure_properties(
         context.set_annotations(properties);
     }
     Ok(())
+}
+
+/// Validate the write boundary before committing. Compaction is a separate pass:
+/// transaction checks deliberately retain the original NodeId mapping.
+fn validate_fusion_edit(
+    before: &LogicalPlan,
+    after: &LogicalPlan,
+    candidate: &FusionCandidate,
+) -> Result<(), String> {
+    after.validate().map_err(|e| e.to_string())?;
+    if before.node_id_revision != after.node_id_revision {
+        return Err("fusion must defer compaction to a separate pass".into());
+    }
+    if !match (&before.context, &after.context) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        _ => false,
+    } {
+        return Err("fusion changed plan context".into());
+    }
+    let reachable = after.topological_order().map_err(|e| e.to_string())?;
+    let original_order = before.topological_order().map_err(|e| e.to_string())?;
+    for (id, _) in before.nodes() {
+        if candidate.nodes.contains(&id) {
+            // A shared intermediate may be read across a match boundary, but
+            // must remain available with its original definition and identity.
+            if !candidate.outputs.contains(&id)
+                && before
+                    .children(id)
+                    .map_err(|e| e.to_string())?
+                    .iter()
+                    .any(|consumer| {
+                        original_order.contains(consumer) && !candidate.nodes.contains(consumer)
+                    })
+            {
+                if !reachable.contains(&id)
+                    || !before
+                        .node(id)
+                        .unwrap()
+                        .same_definition(after.node(id).map_err(|e| e.to_string())?)
+                {
+                    return Err(format!(
+                        "fusion changed shared intermediate %{}",
+                        id.index()
+                    ));
+                }
+            }
+            continue;
+        }
+        let original = before.node(id).map_err(|e| e.to_string())?;
+        let edited = after.node(id).map_err(|e| e.to_string())?;
+        let original_inputs = original.inputs().iter().collect::<Vec<_>>();
+        let edited_inputs = edited.inputs().iter().collect::<Vec<_>>();
+        // Replacing output uses is allowed; all other ports and all outside
+        // payloads (including random semantic identities) remain immutable.
+        if !original
+            .clone()
+            .with_inputs(edited_inputs.clone())
+            .same_definition(edited)
+            || original_inputs.len() != edited_inputs.len()
+            || original_inputs
+                .iter()
+                .zip(&edited_inputs)
+                .any(|(old, new)| old != new && !candidate.outputs.contains(old))
+            || (original_order.contains(&id) && !reachable.contains(&id))
+        {
+            return Err(format!(
+                "fusion changed undeclared boundary node %{}",
+                id.index()
+            ));
+        }
+    }
+    if before.root().map_err(|e| e.to_string())? != after.root().map_err(|e| e.to_string())?
+        && !candidate.outputs.contains(&before.root().unwrap())
+    {
+        return Err("fusion changed an undeclared root output".into());
+    }
+    Ok(())
+}
+
+fn run_fusion_rules(
+    plan: &mut LogicalPlan,
+    registry: &PlanRegistry,
+    context: &mut OptimizerContext,
+    report: &mut OptimizationReport,
+    snapshots: &mut String,
+    options: OptimizerOptions,
+) -> Result<PassResult, OptimizerError> {
+    let mut rules = registry.fusion_rules().iter().collect::<Vec<_>>();
+    rules.sort_by(|a, b| {
+        b.priority()
+            .cmp(&a.priority())
+            .then_with(|| a.name().cmp(b.name()))
+    });
+    let mut names = std::collections::HashSet::new();
+    for rule in &rules {
+        if !names.insert(rule.name()) {
+            return Err(OptimizerError::Pass {
+                pass: rule.name().into(),
+                message: "fusion rule names must be unique".into(),
+            });
+        }
+    }
+    let mut result = PassResult::unchanged();
+    if rules.is_empty() {
+        return Ok(result);
+    }
+    const MAX_FUSION_REWRITES: usize = 1024;
+    for iteration in 0..=MAX_FUSION_REWRITES {
+        ensure_properties(plan, registry, context, "fusion-discovery")?;
+        let mut candidates = Vec::new();
+        for rule in &rules {
+            let discovered = rule
+                .discover(plan, context.annotations())
+                .map_err(|message| OptimizerError::Pass {
+                    pass: rule.name().into(),
+                    message,
+                })?;
+            for candidate in discovered {
+                candidates.push((*rule, candidate));
+            }
+        }
+        candidates.sort_by(|(a, ca), (b, cb)| {
+            b.priority()
+                .cmp(&a.priority())
+                .then_with(|| a.name().cmp(b.name()))
+                .then_with(|| ca.nodes.cmp(&cb.nodes))
+                .then_with(|| ca.name.cmp(&cb.name))
+        });
+        let mut committed = false;
+        for (rule, candidate) in candidates {
+            let reject = |context: &mut OptimizerContext, code, reason: String| {
+                context.diagnostics.push(Diagnostic {
+                    code,
+                    message: format!("{}: {} ({reason})", rule.name(), candidate.name),
+                })
+            };
+            if candidate.revision != plan.revision() {
+                reject(
+                    context,
+                    "fusion.stale-revision",
+                    "candidate revision changed".into(),
+                );
+                continue;
+            }
+            if candidate.rule != rule.name() {
+                reject(
+                    context,
+                    "fusion.rejected",
+                    "candidate belongs to a different rule".into(),
+                );
+                continue;
+            }
+            if options.record_snapshots {
+                snapshots.push_str(&format!(
+                    "  FusionCandidate {} {:?} {}: {} ({})\n",
+                    candidate.rule,
+                    candidate.nodes,
+                    candidate.name,
+                    if candidate.legal { "legal" } else { "illegal" },
+                    candidate.reason
+                ));
+            }
+            report.fusion_candidates.push(candidate.clone());
+            reject(
+                context,
+                if candidate.legal {
+                    "fusion.legal"
+                } else {
+                    "fusion.illegal"
+                },
+                candidate.reason.clone(),
+            );
+            if !candidate.legal {
+                continue;
+            }
+            if let Err(reason) = candidate
+                .validate(plan, context.annotations())
+                .and_then(|()| rule.validate(plan, &candidate, context.annotations()))
+            {
+                reject(context, "fusion.rejected", reason);
+                continue;
+            }
+            let mut trial = plan.clone();
+            let mut trial_context = context.clone();
+            let before = trial.revision();
+            let mut applied = rule
+                .apply(&mut trial, &candidate, &mut trial_context)
+                .map_err(|message| OptimizerError::Pass {
+                    pass: rule.name().into(),
+                    message,
+                })?;
+            if let Err(reason) = validate_fusion_edit(plan, &trial, &candidate) {
+                reject(context, "fusion.rejected", reason);
+                continue;
+            }
+            if trial.revision() == before {
+                reject(context, "fusion.unchanged", "rule made no IR change".into());
+                continue;
+            }
+            if iteration == MAX_FUSION_REWRITES {
+                return Err(non_convergent(plan, context, MAX_FUSION_REWRITES));
+            }
+            trial_context.finish_change(&trial, before, &mut applied, rule.name());
+            // Semantic inference must succeed before publishing the edit too.
+            ensure_properties(&trial, registry, &mut trial_context, rule.name())?;
+            trial_context.diagnostics.extend(applied.diagnostics);
+            *plan = trial;
+            *context = trial_context;
+            result.changed = true;
+            result.replan |= applied.replan;
+            committed = true;
+            // No candidate survives a commit: refresh facts and rediscover all
+            // competing rules against the new graph, including overlaps.
+            break;
+        }
+        report
+            .fusion_candidates
+            .retain(|c| c.revision == plan.revision());
+        if !committed || result.replan {
+            return Ok(result);
+        }
+    }
+    unreachable!()
 }
 
 fn run_optimizer_pass(
@@ -508,65 +910,16 @@ fn run_optimizer_pass(
     context.finish_change(plan, before, &mut result, pass.name());
     let mut fusion_snapshot = String::new();
     if pass.is_fusion_discovery() {
-        for rule in registry.fusion_rules() {
-            ensure_properties(plan, registry, context, rule.name())?;
-            let candidates = rule
-                .discover(plan, context.annotations())
-                .map_err(|message| OptimizerError::Pass {
-                    pass: rule.name().into(),
-                    message,
-                })?;
-            for candidate in &candidates {
-                if candidate.revision != plan.revision() {
-                    context.diagnostics.push(Diagnostic {
-                        code: "fusion.stale-revision",
-                        message: format!(
-                            "{}: skipped candidate from {:?}; current {:?}",
-                            candidate.rule,
-                            candidate.revision,
-                            plan.revision()
-                        ),
-                    });
-                    continue;
-                }
-                if options.record_snapshots {
-                    fusion_snapshot.push_str(&format!(
-                        "  FusionCandidate {} {:?} {}: {} ({})\n",
-                        candidate.rule,
-                        candidate.nodes,
-                        candidate.name,
-                        if candidate.legal { "legal" } else { "illegal" },
-                        candidate.reason,
-                    ));
-                }
-                context.diagnostics.push(Diagnostic {
-                    code: if candidate.legal {
-                        "fusion.legal"
-                    } else {
-                        "fusion.illegal"
-                    },
-                    message: format!(
-                        "{}: {} ({})",
-                        candidate.rule, candidate.name, candidate.reason
-                    ),
-                });
-                report.fusion_candidates.push(candidate.clone());
-                if candidate.legal {
-                    let before = plan.revision();
-                    let mut applied = rule.apply(plan, candidate, context).map_err(|message| {
-                        context.synchronize(plan);
-                        OptimizerError::Pass {
-                            pass: rule.name().into(),
-                            message,
-                        }
-                    })?;
-                    context.finish_change(plan, before, &mut applied, rule.name());
-                    result.changed |= applied.changed;
-                    result.replan |= applied.replan;
-                    context.diagnostics.extend(applied.diagnostics);
-                }
-            }
-        }
+        let applied = run_fusion_rules(
+            plan,
+            registry,
+            context,
+            report,
+            &mut fusion_snapshot,
+            options,
+        )?;
+        result.changed |= applied.changed;
+        result.replan |= applied.replan;
     }
     plan.validate().map_err(|error| OptimizerError::Pass {
         pass: pass.name().into(),
@@ -1130,6 +1483,10 @@ mod tests {
                 _annotations: &PropertyAnnotations,
             ) -> Result<Vec<FusionCandidate>, String> {
                 Ok(vec![FusionCandidate {
+                    inputs: vec![],
+                    properties: vec![],
+                    outputs: vec![],
+                    sharing: FusionSharing::Exclusive,
                     revision: PlanRevision::default(),
                     rule: "stale",
                     nodes: vec![plan.root().unwrap()],
@@ -1190,3 +1547,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "fusion_tests.rs"]
+mod fusion_tests;
