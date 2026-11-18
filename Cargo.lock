@@ -5287,6 +5287,7 @@ dependencies = [
  "arrow-array",
  "arrow-ipc",
  "rivet-core",
+ "rivet-data",
  "rivet-plan",
  "thiserror 2.0.21",
  "tokenizers",

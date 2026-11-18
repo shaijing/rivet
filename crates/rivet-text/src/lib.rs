@@ -1,5 +1,27 @@
-//! Text-domain operations and planning hooks for Rivet.
-//!
-//! This crate will own semantic operations such as tokenization, truncation,
-//! padding, packing, and masking. Shared logical planning lives in
-//! `rivet-plan`, while tensor types and backend kernels come from `rivet-core`.
+#![doc = include_str!("../docs/text-pipeline.md")]
+
+//! Text preprocessing backed by tokenizers 1.0: immutable tokenizer loading,
+//! ordered encoding, truncation, padding and CPU tensor collation.
+
+mod batch;
+pub mod errors;
+mod sample;
+mod tokenizer;
+
+pub use batch::{LabelMode, TextBatch};
+pub use errors::{TextError, TextResult};
+pub use sample::{TextEncoding, TextSample};
+pub use tokenizer::{
+    EncodeOptions, Override, PaddingDirection, PaddingParams, PaddingStrategy, TextTokenizer,
+    TruncationDirection, TruncationParams, TruncationStrategy,
+};
+
+mod dataset;
+mod packing;
+mod pipeline;
+mod planning;
+
+pub use dataset::{ArrowTextDataset, TextColumns};
+pub use packing::{PackingOptions, pack_encodings};
+pub use pipeline::{TextDataLoader, TextPipeline};
+pub use planning::{TEXT_DOMAIN_ID, TextPlanOp, TextPropertyInference};
