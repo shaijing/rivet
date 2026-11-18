@@ -265,6 +265,15 @@ fn compile_graph(
             None,
         )
     };
+    if !annotations.is_valid_for(&logical)
+        || placement
+            .as_ref()
+            .is_some_and(|p| !p.is_valid_for(&logical))
+    {
+        return Err(invalid_pipeline(
+            "compile requires properties and execution selection for the current plan revision",
+        ));
+    }
     let order = logical
         .topological_order()
         .map_err(|error| invalid_pipeline(error.to_string()))?;

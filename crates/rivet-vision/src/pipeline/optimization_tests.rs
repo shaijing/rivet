@@ -163,7 +163,13 @@ fn snapshots_and_incremental_properties_do_not_change_optimized_graph() {
             )
             .unwrap();
         assert_eq!(normal.explain().unwrap(), traced.explain().unwrap());
-        assert_eq!(normal_placement, traced_placement);
+        assert!(normal_placement.is_valid_for(&normal));
+        assert!(traced_placement.is_valid_for(&traced));
+        assert_eq!(normal_placement.candidates, traced_placement.candidates);
+        assert_eq!(
+            normal_placement.transfer_boundaries,
+            traced_placement.transfer_boundaries
+        );
         assert!(normal_context.snapshots.is_empty());
         assert!(!traced_context.snapshots.is_empty());
         assert_eq!(
@@ -212,4 +218,26 @@ fn identity_dtype_is_not_needed_as_a_worker_scheduling_barrier() {
                 .contains("rewrite.identity-dtype")
         );
     }
+}
+
+#[test]
+fn optimizing_twice_keeps_structure_and_values_stable() {
+    let mut plan = pipeline(3)
+        .horizontal_flip()
+        .take(8)
+        .normalize(vec![0.5; 3], vec![0.5; 3])
+        .hwc_to_chw()
+        .batch(3, false)
+        .to_logical_plan();
+    super::optimizer::optimize_vision_plan_with_options(&mut plan, 3, Default::default()).unwrap();
+    let structure = plan.explain().unwrap();
+    let revision = plan.revision();
+    let first = plan.clone();
+    super::optimizer::optimize_vision_plan_with_options(&mut plan, 3, Default::default()).unwrap();
+    assert_eq!(structure, plan.explain().unwrap());
+    assert_eq!(revision, plan.revision());
+    same_f32(
+        &drain(ImagePipeline::compile_logical_plan(first, 0).unwrap()),
+        &drain(ImagePipeline::compile_logical_plan(plan, 0).unwrap()),
+    );
 }

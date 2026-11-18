@@ -17,6 +17,9 @@ pub(crate) struct CanonicalizeSelectionsLayouts {
 }
 
 impl OptimizerPass for CanonicalizeSelectionsLayouts {
+    fn requires_properties(&self) -> bool {
+        true
+    }
     fn name(&self) -> &'static str {
         "canonicalize-selections-layouts"
     }

@@ -276,9 +276,38 @@ pub trait PropertyInference: Send + Sync {
 #[derive(Clone, Debug, Default)]
 pub struct PropertyAnnotations {
     pub(crate) values: HashMap<NodeId, ValueProperties>,
+    pub(crate) revision: Option<crate::PlanRevision>,
+    pub(crate) node_id_revision: Option<crate::PlanRevision>,
 }
 
 impl PropertyAnnotations {
+    pub fn revision(&self) -> Option<crate::PlanRevision> {
+        self.revision
+    }
+
+    pub fn is_valid_for(&self, plan: &crate::LogicalPlan) -> bool {
+        self.revision == Some(plan.revision())
+    }
+
+    /// Explicit proof obligation for a pass that updated all affected facts.
+    /// Returns false and clears facts after compaction or for incomplete results.
+    /// Compaction requires full inference; do not certify old NodeId mappings.
+    pub fn certify_preserved(&mut self, plan: &crate::LogicalPlan) -> bool {
+        if self
+            .node_id_revision
+            .is_some_and(|revision| revision != plan.node_id_revision)
+            || plan.topological_order().map_or(true, |order| {
+                order.iter().any(|id| !self.values.contains_key(id))
+            })
+        {
+            *self = Self::default();
+            return false;
+        }
+        self.node_id_revision = Some(plan.node_id_revision);
+        self.revision = Some(plan.revision());
+        true
+    }
+
     pub fn get(&self, id: NodeId) -> Option<&ValueProperties> {
         self.values.get(&id)
     }
@@ -288,10 +317,12 @@ impl PropertyAnnotations {
     }
 
     pub fn insert(&mut self, id: NodeId, properties: ValueProperties) -> Option<ValueProperties> {
+        self.revision = None;
         self.values.insert(id, properties)
     }
 
     pub fn remove(&mut self, id: NodeId) -> Option<ValueProperties> {
+        self.revision = None;
         self.values.remove(&id)
     }
 }

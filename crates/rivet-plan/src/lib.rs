@@ -7,6 +7,21 @@
 use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Globally unique mutation token, including across independently edited clones.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct PlanRevision(u64);
+
+impl PlanRevision {
+    fn fresh() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(
+            NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+                .expect("plan revision exhausted"),
+        )
+    }
+}
 
 use thiserror::Error;
 
@@ -16,8 +31,9 @@ mod properties;
 
 pub use optimizer::{
     Diagnostic, FusionCandidate, FusionRule, OptimizationReport, OptimizerContext, OptimizerError,
-    OptimizerOptions, OptimizerPass, PassResult, PhysicalCandidate, PhysicalCandidateProvider,
-    PlanPlugin, PlanRegistry, optimize, optimize_with_options, run_fixed_point,
+    OptimizerOptions, OptimizerPass, OptimizerStage, PassResult, PhysicalCandidate,
+    PhysicalCandidateProvider, PlanPlugin, PlanRegistry, optimize, optimize_with_context,
+    optimize_with_options, run_fixed_point,
 };
 pub use placement::{
     CostEstimate, DeviceDescriptor, DeviceLocation, KernelCapabilities, KernelCapability,
@@ -114,6 +130,8 @@ impl PlanPayload for DeviceCut {
 }
 
 /// Type-erased semantic value carried by a logical node or plan context.
+/// Payload semantics must remain immutable after insertion. Replace the node
+/// or context to change semantics; interior mutation bypasses revision tracking.
 pub trait PlanPayload: Any + Send + Sync {
     fn domain(&self) -> &'static str;
     fn name(&self) -> &'static str;
@@ -350,12 +368,6 @@ impl PlanArena {
         self.nodes.get(id.0).ok_or(PlanError::InvalidNodeId(id.0))
     }
 
-    pub fn get_mut(&mut self, id: NodeId) -> Result<&mut LogicalNode, PlanError> {
-        self.nodes
-            .get_mut(id.0)
-            .ok_or(PlanError::InvalidNodeId(id.0))
-    }
-
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
@@ -378,6 +390,8 @@ pub struct LogicalPlan {
     root: Option<NodeId>,
     arena: PlanArena,
     context: Option<Arc<dyn PlanPayload>>,
+    revision: PlanRevision,
+    node_id_revision: PlanRevision,
 }
 
 impl LogicalPlan {
@@ -385,18 +399,41 @@ impl LogicalPlan {
         Self::default()
     }
 
+    pub fn revision(&self) -> PlanRevision {
+        self.revision
+    }
+
     pub fn add_node(&mut self, node: LogicalNode) -> NodeId {
+        self.revision = PlanRevision::fresh();
         self.arena.add(node)
     }
 
     pub fn replace_node(&mut self, id: NodeId, node: LogicalNode) -> Result<(), PlanError> {
-        self.arena.replace(id, node)
+        let old = self.arena.get(id)?;
+        // Erased payloads have no general semantic equality. Reusing the same
+        // immutable Arc proves identity; a fresh payload conservatively changes IR.
+        let same_payload = match (&old.payload, &node.payload) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        };
+        if old.kind == node.kind
+            && old.inputs == node.inputs
+            && old.semantic_identity == node.semantic_identity
+            && same_payload
+        {
+            return Ok(());
+        }
+        self.arena.replace(id, node)?;
+        self.revision = PlanRevision::fresh();
+        Ok(())
     }
 
     /// Replace all edges to `old` with `new` and update the root if necessary.
     pub fn redirect_uses(&mut self, old: NodeId, new: NodeId) -> Result<(), PlanError> {
         self.arena.get(old)?;
         self.arena.get(new)?;
+        let mut changed = false;
         for node in &mut self.arena.nodes {
             let positions = node
                 .inputs
@@ -405,11 +442,16 @@ impl LogicalPlan {
                 .filter_map(|(index, input)| (input == old).then_some(index))
                 .collect::<Vec<_>>();
             for index in positions {
+                changed |= old != new;
                 node.inputs.replace_input(index, new);
             }
         }
         if self.root == Some(old) {
+            changed |= old != new;
             self.root = Some(new);
+        }
+        if changed {
+            self.revision = PlanRevision::fresh();
         }
         Ok(())
     }
@@ -432,6 +474,11 @@ impl LogicalPlan {
         for (new, old) in reachable.iter().enumerate() {
             remap[old.index()] = Some(NodeId(new));
         }
+        if reachable.len() == self.arena.len() {
+            return Ok(remap);
+        }
+        self.revision = PlanRevision::fresh();
+        self.node_id_revision = self.revision;
         let old_nodes = std::mem::take(&mut self.arena.nodes);
         self.arena.nodes = reachable
             .iter()
@@ -467,7 +514,10 @@ impl LogicalPlan {
 
     pub fn set_root(&mut self, root: NodeId) -> Result<(), PlanError> {
         self.arena.get(root)?;
-        self.root = Some(root);
+        if self.root != Some(root) {
+            self.root = Some(root);
+            self.revision = PlanRevision::fresh();
+        }
         Ok(())
     }
 
@@ -476,7 +526,14 @@ impl LogicalPlan {
     }
 
     pub fn set_context(&mut self, context: Arc<dyn PlanPayload>) {
-        self.context = Some(context);
+        if self
+            .context
+            .as_ref()
+            .is_none_or(|old| !Arc::ptr_eq(old, &context))
+        {
+            self.context = Some(context);
+            self.revision = PlanRevision::fresh();
+        }
     }
 
     pub fn context_as<T: Any>(&self) -> Option<&T> {
@@ -672,6 +729,8 @@ impl LogicalPlan {
             &mut annotations,
             &mut active,
         )?;
+        annotations.revision = Some(self.revision());
+        annotations.node_id_revision = Some(self.node_id_revision);
         Ok(annotations)
     }
 }

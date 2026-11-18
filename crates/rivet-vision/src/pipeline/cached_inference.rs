@@ -1,8 +1,4 @@
-//! Reuse validated vision properties until a domain rewrite invalidates them.
-//!
-//! This is intentionally domain-local: vision rewrites either clear their
-//! annotations or update affected properties after proving downstream facts
-//! unchanged. Generic optimizer plugins need not honor that convention.
+//! Reuse properties only when certified for the current plan revision.
 
 use std::sync::Arc;
 
@@ -20,12 +16,8 @@ impl OptimizerPass for CachedInferProperties {
         plan: &mut LogicalPlan,
         context: &mut OptimizerContext,
     ) -> Result<PassResult, String> {
-        // Check the whole arena, not just annotation count: newly appended
-        // nodes may otherwise accidentally match a stale annotation's count.
-        if plan
-            .nodes()
-            .all(|(id, _)| context.annotations().get(id).is_some())
-        {
+        context.synchronize(plan);
+        if context.annotations().is_valid_for(plan) {
             return Ok(PassResult::unchanged());
         }
         let properties = plan
@@ -84,7 +76,10 @@ mod tests {
         let mut context = OptimizerContext::default();
         pass.run(&mut plan, &mut context).unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), plan.nodes().len());
-        context.set_placement(rivet_plan::PlacementPlan::default());
+        context.set_placement(rivet_plan::PlacementPlan {
+            revision: Some(plan.revision()),
+            ..Default::default()
+        });
         pass.run(&mut plan, &mut context).unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), plan.nodes().len());
         assert!(context.placement().is_some());
@@ -142,7 +137,6 @@ mod tests {
             ),
         )
         .unwrap();
-        context.clear_annotations();
         pass.run(&mut plan, &mut context).unwrap();
         assert_eq!(
             calls.load(Ordering::Relaxed),

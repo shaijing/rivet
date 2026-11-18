@@ -290,6 +290,7 @@ pub struct PlacementCandidate {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlacementPlan {
+    pub revision: Option<crate::PlanRevision>,
     pub candidates: Vec<PlacementCandidate>,
     pub transfer_boundaries: Vec<TransferBoundary>,
 }
@@ -316,11 +317,18 @@ pub struct TransferBoundary {
 }
 
 impl PlacementPlan {
+    pub fn is_valid_for(&self, plan: &LogicalPlan) -> bool {
+        self.revision == Some(plan.revision())
+    }
+
     pub fn explain(
         &self,
         plan: &LogicalPlan,
         annotations: &PropertyAnnotations,
     ) -> Result<String, PlacementError> {
+        if !self.is_valid_for(plan) || !annotations.is_valid_for(plan) {
+            return Err(PlacementError::StaleAnalysis);
+        }
         let mut out = String::from("PlacementPlan\n");
         for selected in &self.candidates {
             let node = plan.node(selected.node)?;
@@ -358,6 +366,10 @@ impl PlacementPlan {
 
 #[derive(Debug, Error)]
 pub enum PlacementError {
+    #[error(
+        "planning analysis belongs to a different plan revision; recompute properties and placement"
+    )]
+    StaleAnalysis,
     #[error("invalid logical plan: {0}")]
     Plan(#[from] crate::PlanError),
     #[error("no registered compatible kernel for node %{node}: {reason}")]
@@ -382,6 +394,9 @@ pub fn place(
     machine: &MachineProfile,
 ) -> Result<PlacementPlan, PlacementError> {
     plan.validate()?;
+    if !annotations.is_valid_for(plan) {
+        return Err(PlacementError::StaleAnalysis);
+    }
     let ids = match linear_pipeline_order(plan) {
         Ok(ids) => ids,
         Err(PlacementError::NonLinearInputs { .. } | PlacementError::NonLinearConsumers { .. }) => {
@@ -494,7 +509,10 @@ pub fn place(
             .expect("every non-source candidate has a predecessor");
     }
 
-    let mut output = PlacementPlan::default();
+    let mut output = PlacementPlan {
+        revision: Some(plan.revision()),
+        ..PlacementPlan::default()
+    };
     for position in 0..ids.len() {
         let id = ids[position];
         let selected = candidate_rows[position][selected_indices[position]];
@@ -588,7 +606,10 @@ fn place_dag(
     capabilities: &KernelCapabilities,
     machine: &MachineProfile,
 ) -> Result<PlacementPlan, PlacementError> {
-    let mut result = PlacementPlan::default();
+    let mut result = PlacementPlan {
+        revision: Some(plan.revision()),
+        ..PlacementPlan::default()
+    };
     let mut selected_devices = HashMap::<NodeId, DeviceClass>::new();
     for id in plan.topological_order()? {
         let node = plan.node(id)?;
@@ -1171,6 +1192,7 @@ mod tests {
                     parallel: false,
                 });
             }
+            props.certify_preserved(&plan);
             let placement = place(&plan, &props, &caps, &MachineProfile::default()).unwrap();
             assert!(
                 placement
@@ -1185,6 +1207,7 @@ mod tests {
                     ..ValueProperties::default()
                 },
             );
+            props.certify_preserved(&plan);
             assert!(matches!(
                 place(&plan, &props, &caps, &MachineProfile::default()),
                 Err(PlacementError::NoKernel { .. })
@@ -1211,6 +1234,7 @@ mod tests {
             },
         );
         let mut caps = KernelCapabilities::default();
+        props.certify_preserved(&plan);
         assert!(matches!(
             place(&plan, &props, &caps, &MachineProfile::default()),
             Err(PlacementError::NoKernel { .. })
@@ -1230,6 +1254,7 @@ mod tests {
             in_place: true,
             parallel: false,
         });
+        props.certify_preserved(&plan);
         let placement = place(&plan, &props, &caps, &MachineProfile::default()).unwrap();
         assert!(
             placement
@@ -1292,6 +1317,7 @@ mod tests {
             available_devices: vec![DeviceClass::Cpu, DeviceClass::Metal],
             ..MachineProfile::default()
         };
+        props.certify_preserved(&plan);
         let selected = place(&plan, &props, &caps, &machine).unwrap();
         assert_eq!(selected.candidates.len(), 2);
         assert_eq!(selected.transfer_boundaries.len(), 2);
@@ -1325,6 +1351,7 @@ mod tests {
             ),
         )
         .unwrap();
+        props.certify_preserved(&plan);
         assert!(
             matches!(place(&plan, &props, &caps, &machine), Err(PlacementError::NoKernel { node, .. }) if node == join.index())
         );

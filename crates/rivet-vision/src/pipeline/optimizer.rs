@@ -177,7 +177,9 @@ impl super::builder::ImagePipeline {
             .map(|diagnostic| diagnostic.message.clone())
             .ok_or_else(|| invalid_pipeline("optimizer did not produce placement explanation"))?;
         for (id, node) in plan.nodes() {
-            for candidate in registry.physical_candidates_for(node, context.annotations().get(id)) {
+            for candidate in
+                registry.physical_candidates_for(&plan, node, context.annotations().get(id))
+            {
                 explanation.push_str(&format!(
                     "  physical candidate %{}: {} backend={}\n",
                     id.index(),
@@ -306,6 +308,9 @@ struct SemanticRewrite {
     allow_float_reassociation: bool,
 }
 impl OptimizerPass for SemanticRewrite {
+    fn requires_properties(&self) -> bool {
+        true
+    }
     fn name(&self) -> &'static str {
         "semantic-rewrite"
     }
@@ -415,6 +420,9 @@ impl OptimizerPass for SemanticRewrite {
 
 struct Canonicalize;
 impl OptimizerPass for Canonicalize {
+    fn stage(&self) -> rivet_plan::OptimizerStage {
+        rivet_plan::OptimizerStage::Canonicalization
+    }
     fn name(&self) -> &'static str {
         "canonicalization"
     }
@@ -442,6 +450,9 @@ impl OptimizerPass for Canonicalize {
 
 struct EliminateIdentityLayout;
 impl OptimizerPass for EliminateIdentityLayout {
+    fn requires_properties(&self) -> bool {
+        true
+    }
     fn name(&self) -> &'static str {
         "simplify-identity-layout"
     }
@@ -490,6 +501,9 @@ struct IndexSourcePushdown {
     workers: usize,
 }
 impl OptimizerPass for IndexSourcePushdown {
+    fn requires_properties(&self) -> bool {
+        true
+    }
     fn name(&self) -> &'static str {
         "source-index-pushdown"
     }
@@ -628,6 +642,7 @@ impl OptimizerPass for IndexSourcePushdown {
                     // nodes need updating. Fall back if a domain fact changes.
                     context.annotations_mut().insert(id, selected);
                     context.annotations_mut().insert(input_id, image);
+                    context.annotations_mut().certify_preserved(plan);
                 } else {
                     let annotations = plan
                         .infer_properties(&inference)
@@ -706,6 +721,9 @@ fn is_identity_crop(op: &ImageOp, properties: &ValueProperties) -> bool {
 /// rules are invoked by rivet-plan immediately after this pass.
 struct FusionDiscovery;
 impl OptimizerPass for FusionDiscovery {
+    fn requires_properties(&self) -> bool {
+        true
+    }
     fn name(&self) -> &'static str {
         "fusion-discovery"
     }
@@ -781,6 +799,7 @@ impl FusionRule for NormalizeLayoutFusion {
                         .to_owned()
                 };
                 candidates.push(FusionCandidate {
+                    revision: plan.revision(),
                     rule: self.name(),
                     nodes: vec![normalize_id, id],
                     name: "NormalizeToChw".to_owned(),
@@ -800,6 +819,7 @@ impl FusionRule for NormalizeLayoutFusion {
                         Some(ImageOp::Crop(_) | ImageOp::CenterCrop(_))
                     ) {
                         candidates.push(FusionCandidate {
+                    revision: plan.revision(),
                             rule: self.name(),
                             nodes: vec![crop_id, id],
                             name: "CropResize".to_owned(),
@@ -824,6 +844,7 @@ impl FusionRule for NormalizeLayoutFusion {
                                 && axis_order(p) == Some(ImageAxisOrder::Hwc)
                         });
                         candidates.push(FusionCandidate {
+                    revision: plan.revision(),
                             rule: self.name(),
                             nodes: vec![flip_id, id],
                             name: "FlipNormalize".to_owned(),
@@ -938,6 +959,12 @@ struct PrepareExecution {
     workers: usize,
 }
 impl OptimizerPass for PrepareExecution {
+    fn stage(&self) -> rivet_plan::OptimizerStage {
+        rivet_plan::OptimizerStage::ExecutionPreparation
+    }
+    fn requires_properties(&self) -> bool {
+        true
+    }
     fn name(&self) -> &'static str {
         "prepare-vision-execution"
     }
@@ -967,6 +994,9 @@ struct PlacementBoundary {
 }
 
 impl OptimizerPass for PlacementBoundary {
+    fn requires_properties(&self) -> bool {
+        true
+    }
     fn name(&self) -> &'static str {
         "placement-boundary"
     }
@@ -1028,6 +1058,7 @@ impl PhysicalCandidateProvider for VisionPhysicalCandidates {
         let Some(payload) = node.payload() else {
             if node.kind() == NodeKind::Sink {
                 return vec![PhysicalCandidate {
+                    revision: None,
                     name: "vision-output-sink".to_owned(),
                     backend: "cpu".to_owned(),
                 }];
@@ -1065,6 +1096,7 @@ impl PhysicalCandidateProvider for VisionPhysicalCandidates {
             _ => return Vec::new(),
         };
         let candidates = vec![PhysicalCandidate {
+            revision: None,
             name,
             backend: "cpu".to_owned(),
         }];
