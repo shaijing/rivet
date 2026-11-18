@@ -7,10 +7,16 @@ use super::{RuntimeResult, runtime_error};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StageQueueLimits {
     pub max_items: usize,
+    /// Legacy name: maximum sum of producer-reported payload weights on ONE
+    /// queue. Not backing allocation bytes, execution memory, or RSS.
     pub max_bytes: usize,
 }
 
 impl StageQueueLimits {
+    pub fn max_queued_payload_bytes(&self) -> usize {
+        self.max_bytes
+    }
+
     pub fn validate(self) -> RuntimeResult<Self> {
         if self.max_items == 0 {
             return Err(runtime_error(
@@ -33,6 +39,8 @@ pub struct StageMessage<T> {
     pub value: T,
 }
 
+/// Queue-local producer-reported payload weights. Dequeued/executing/reordered
+/// values are excluded, and shared buffers are not allocation-deduplicated here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StageQueueSnapshot {
     pub queued_items: usize,
@@ -69,7 +77,9 @@ struct QueueInner<T> {
 /// A FIFO edge between persistent execution stages.
 ///
 /// Both limits are enforced before an item is retained. An item larger than
-/// `max_bytes` is rejected so the configured byte bound remains strict.
+/// `max_bytes` is rejected so the bound on reported queue weights is strict.
+/// Producer weights may be estimates or unreported zero; no allocation or RSS
+/// bound follows from this queue. Values are already allocated before send.
 pub struct BoundedStageQueue<T> {
     inner: Arc<QueueInner<T>>,
 }
@@ -123,7 +133,7 @@ impl<T> BoundedStageQueue<T> {
     pub fn send(&self, sequence_id: u64, value: T, bytes: usize) -> RuntimeResult<Duration> {
         if bytes > self.inner.limits.max_bytes {
             return Err(runtime_error(format!(
-                "stage item {sequence_id} is {bytes} bytes, exceeding queue max_bytes {}",
+                "stage item {sequence_id} is {bytes} bytes, exceeding queue max_bytes {} (producer-reported payload weights; queued only)",
                 self.inner.limits.max_bytes
             )));
         }

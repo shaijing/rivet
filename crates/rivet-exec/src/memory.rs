@@ -3,6 +3,12 @@
 //! This module produces an allocation plan; device-specific pools and actual
 //! allocation remain owned by the execution backend.
 
+mod accounting;
+pub use accounting::{
+    GraphMemoryLimits, GraphMemoryProfile, LiveMemorySnapshot, MemoryAccountingError,
+    observe_live_morsels,
+};
+
 use std::collections::HashMap;
 
 use rivet_core::DType;
@@ -97,7 +103,8 @@ pub struct BufferSlot {
 pub struct MemoryPlan {
     pub allocations: Vec<PlannedAllocation>,
     pub slots: Vec<BufferSlot>,
-    /// Sum of capacities the backend would need for the reusable pool.
+    /// Planned sum of slot capacities; not an observed live peak, a reservation,
+    /// or an enforced execution budget. Scratch and unplanned allocations are excluded.
     pub pool_bytes: usize,
 }
 

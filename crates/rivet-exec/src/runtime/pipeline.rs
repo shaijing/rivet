@@ -49,14 +49,18 @@ pub trait PhysicalPipelineAdapter: Send + Sync + 'static {
     ) -> Result<Self::Output, Self::Error>;
     fn worker_panic_error(&self, worker_id: usize, sample_index: usize) -> Self::Error;
 
+    /// Legacy reported logical payload weight. Default zero means unreported,
+    /// not proof of a zero-byte allocation. These weights feed queue counters.
     fn sample_bytes(&self, _sample: &Self::Sample) -> usize {
         0
     }
 
+    /// Reported logical payload weight; default zero is unreported.
     fn output_bytes(&self, _output: &Self::Output) -> usize {
         0
     }
 
+    /// Reported logical payload weight; default zero is unreported.
     fn batch_bytes(&self, _batch: &Self::Batch) -> usize {
         0
     }
@@ -474,7 +478,7 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
             explanation.push_str(&stages.queue_explain());
         } else {
             explanation.push_str(
-                "Runtime path: fused CPU pull executor (source, sample, and batch; optional decode)\n",
+                "Runtime path: fused CPU pull executor (source, sample, and batch; optional decode)\nMemory limits: stage_queue_bytes=not_applicable managed_executor_budget=unavailable; profiling_bytes=reported_logical_payload\n",
             );
         }
         Ok(explanation)

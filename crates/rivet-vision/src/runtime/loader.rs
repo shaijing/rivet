@@ -170,7 +170,9 @@ impl ImageDataLoader {
                     graph.batch.drop_last,
                     config.num_workers,
                     config.prefetch_batches,
-                    config.stage_queue_max_bytes,
+                    config
+                        .dag_max_value_logical_bytes
+                        .unwrap_or(config.stage_queue_max_bytes),
                     config.profiling_enabled,
                 )
                 .map_err(|error| RivetError::Worker(error.to_string()))?,
@@ -242,9 +244,10 @@ impl ImageDataLoader {
             ImageExecutor::Linear(executor) => executor
                 .physical_explain()
                 .map_err(|error| RivetError::Worker(error.to_string())),
-            ImageExecutor::Dag(_) => Ok(format!(
-                "{}Runtime path: DAG morsel executor\n",
-                self.graph.explanation
+            ImageExecutor::Dag(executor) => Ok(format!(
+                "{}Runtime path: DAG morsel executor\n{}",
+                self.graph.explanation,
+                executor.memory_explain()
             )),
         }
     }

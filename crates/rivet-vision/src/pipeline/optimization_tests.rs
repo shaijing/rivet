@@ -285,3 +285,15 @@ fn fusion_preserves_seeded_augmentations_indices_and_epoch_streams() {
         }
     }
 }
+
+#[test]
+fn dag_value_limit_is_independent_of_queue_weight_limit() {
+    let builder = pipeline(0)
+        .stage_queue_max_bytes(1)
+        .dag_max_value_logical_bytes(4096);
+    assert_eq!(builder.runtime.stage_queue_max_bytes, 1);
+    assert_eq!(builder.runtime.dag_max_value_logical_bytes, Some(4096));
+    let legacy = pipeline(0).stage_queue_max_bytes(17);
+    assert_eq!(legacy.runtime.dag_max_value_logical_bytes, None);
+    assert_eq!(legacy.runtime.stage_queue_max_bytes, 17);
+}

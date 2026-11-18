@@ -14,25 +14,52 @@ pub struct DagPipelineExecutor {
     batch_size: usize,
     drop_last: bool,
     capacity: usize,
-    max_bytes: usize,
+    memory_limits: crate::memory::GraphMemoryLimits,
     submitted: u64,
     delivered: u64,
     exhausted: bool,
     failed: bool,
 }
 impl DagPipelineExecutor {
+    /// Compatibility constructor: the legacy byte argument limits ONE
+    /// producer-reported logical output, not queues or total executor memory.
     pub fn new(
         graph: Arc<ExecutableGraph>,
         batch_size: usize,
         drop_last: bool,
         num_workers: usize,
         prefetch_batches: usize,
-        max_bytes: usize,
+        max_value_logical_bytes: usize,
         profiling: bool,
     ) -> RuntimeResult<Self> {
-        if batch_size == 0 || max_bytes == 0 {
+        Self::with_memory_limits(
+            graph,
+            batch_size,
+            drop_last,
+            num_workers,
+            prefetch_batches,
+            crate::memory::GraphMemoryLimits {
+                max_value_logical_bytes,
+                ..Default::default()
+            },
+            profiling,
+        )
+    }
+
+    /// Observed-live limits apply independently to each graph invocation;
+    /// reorder buffers, other workers and caller outputs are outside this scope.
+    pub fn with_memory_limits(
+        graph: Arc<ExecutableGraph>,
+        batch_size: usize,
+        drop_last: bool,
+        num_workers: usize,
+        prefetch_batches: usize,
+        memory_limits: crate::memory::GraphMemoryLimits,
+        profiling: bool,
+    ) -> RuntimeResult<Self> {
+        if batch_size == 0 || memory_limits.max_value_logical_bytes == 0 {
             return Err(runtime_error(
-                "DAG batch size and byte limit must be positive",
+                "DAG batch size and single-value logical byte limit must be positive",
             ));
         }
         let capacity = prefetch_batches
@@ -53,7 +80,7 @@ impl DagPipelineExecutor {
                 capacity,
                 move |input, _| {
                     graph
-                        .execute_with_limit(input, &profiler, max_bytes)
+                        .execute_with_memory_limits(input, &profiler, memory_limits)
                         .map_err(|error| runtime_error(error.to_string()))
                 },
                 |worker, index| {
@@ -71,12 +98,22 @@ impl DagPipelineExecutor {
             batch_size,
             drop_last,
             capacity,
-            max_bytes,
+            memory_limits,
             submitted: 0,
             delivered: 0,
             exhausted: false,
             failed: false,
         })
+    }
+    pub fn memory_limits(&self) -> crate::memory::GraphMemoryLimits {
+        self.memory_limits
+    }
+    pub fn memory_explain(&self) -> String {
+        format!(
+            "DAG memory limits: max_value_logical_bytes={} max_observed_live_backing_bytes={:?}; checks=post_allocation node_boundaries=per_invocation managed_executor_budget=unavailable; reorder_and_caller_outputs=excluded\n",
+            self.memory_limits.max_value_logical_bytes,
+            self.memory_limits.max_observed_live_backing_bytes
+        )
     }
     pub fn profiler(&self) -> PhysicalProfiler {
         self.profiler.clone()
@@ -103,7 +140,7 @@ impl DagPipelineExecutor {
             };
             let output = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.graph
-                    .execute_with_limit(input, &self.profiler, self.max_bytes)
+                    .execute_with_memory_limits(input, &self.profiler, self.memory_limits)
             }))
             .map_err(|_| runtime_error("DAG inline operator panicked"))?
             .map_err(|error| runtime_error(error.to_string()))?;
@@ -245,6 +282,42 @@ mod tests {
                 assert!(executor.next_morsel(&mut sampler).is_err());
                 assert!(executor.next_morsel(&mut sampler).unwrap().is_none());
             }
+        }
+    }
+    #[test]
+    fn observed_limit_is_per_invocation_and_unknown_values_fail_terminally() {
+        for workers in [0, 2] {
+            let original = executor(workers, false, 128, None);
+            let limits = crate::memory::GraphMemoryLimits {
+                max_value_logical_bytes: 128,
+                max_observed_live_backing_bytes: Some(1024),
+            };
+            let mut executor = DagPipelineExecutor::with_memory_limits(
+                Arc::clone(&original.graph),
+                2,
+                false,
+                workers,
+                2,
+                limits,
+                true,
+            )
+            .unwrap();
+            assert_eq!(executor.memory_limits(), limits);
+            assert!(executor.memory_explain().contains("per_invocation"));
+            assert!(
+                executor
+                    .memory_explain()
+                    .contains("managed_executor_budget=unavailable")
+            );
+            let mut sampler = IndexSampler::new(SamplerPlan::Sequential { start: 0, end: 5 }, 0);
+            assert!(
+                executor
+                    .next_morsel(&mut sampler)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unknown backing capacity")
+            );
+            assert!(executor.next_morsel(&mut sampler).unwrap().is_none());
         }
     }
 }

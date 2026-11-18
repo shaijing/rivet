@@ -119,6 +119,8 @@ pub struct Morsel {
     pub sequence_id: u64,
     pub source_indices: Vec<usize>,
     pub values: Vec<ExecutionValue>,
+    /// Legacy producer-reported logical payload weight. Zero may mean unreported;
+    /// never interpret this field as backing allocation capacity or RSS.
     pub bytes: usize,
     pub shape: Option<Vec<usize>>,
     pub dtype: Option<DType>,
@@ -290,6 +292,20 @@ impl fmt::Debug for PhysicalNode {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PhysicalGraphError {
+    #[error(
+        "node p{node} reported logical output bytes exceed single-value limit after allocation: {bytes} > {limit}; not a queue limit or managed executor budget"
+    )]
+    ValueLogicalLimit {
+        node: usize,
+        bytes: usize,
+        limit: usize,
+    },
+    #[error("node p{node}: {source}")]
+    MemoryAccounting {
+        node: usize,
+        #[source]
+        source: crate::memory::MemoryAccountingError,
+    },
     #[error(transparent)]
     Logical(#[from] PlanError),
     #[error("physical graph has no root")]
@@ -838,7 +854,10 @@ pub struct NodeProfile {
     /// Time spent blocked on adjacent bounded stage queues.
     pub wait_elapsed: Duration,
     pub wait_events: u64,
+    /// Cumulative producer-reported logical bytes per execution/port.
+    /// Shared values may be counted repeatedly; zero may be unreported.
     pub input_bytes: u64,
+    /// Cumulative reported logical output bytes, not live backing capacity.
     pub output_bytes: u64,
 }
 
@@ -852,12 +871,62 @@ struct AtomicNodeProfile {
     output_bytes: AtomicU64,
 }
 
+#[derive(Default)]
+struct AtomicMemoryProfile {
+    boundary_observations: AtomicU64,
+    peak_backing: AtomicU64,
+    peak_unknown: AtomicU64,
+    incomplete: AtomicU64,
+    value_failures: AtomicU64,
+    live_failures: AtomicU64,
+}
+
 #[derive(Clone)]
 pub struct PhysicalProfiler {
     nodes: Option<Arc<[AtomicNodeProfile]>>,
+    memory: Option<Arc<AtomicMemoryProfile>>,
 }
 
 impl PhysicalProfiler {
+    /// Graph boundary observations only; stage queues retain their own reported
+    /// payload counters. Managed executor budgeting and kernel scratch are absent.
+    pub fn memory_snapshot(&self) -> Option<crate::memory::GraphMemoryProfile> {
+        let memory = self.memory.as_ref()?;
+        Some(crate::memory::GraphMemoryProfile {
+            boundary_observations: memory.boundary_observations.load(Ordering::Relaxed),
+            peak_known_backing_bytes_per_invocation: memory.peak_backing.load(Ordering::Relaxed),
+            peak_unknown_values_per_invocation: memory.peak_unknown.load(Ordering::Relaxed),
+            incomplete_observations: memory.incomplete.load(Ordering::Relaxed),
+            value_logical_limit_failures: memory.value_failures.load(Ordering::Relaxed),
+            observed_live_limit_failures: memory.live_failures.load(Ordering::Relaxed),
+        })
+    }
+    fn record_memory(&self, snapshot: crate::memory::LiveMemorySnapshot) {
+        let Some(memory) = &self.memory else {
+            return;
+        };
+        memory.boundary_observations.fetch_add(1, Ordering::Relaxed);
+        memory
+            .peak_backing
+            .fetch_max(snapshot.known_backing_bytes as u64, Ordering::Relaxed);
+        memory
+            .peak_unknown
+            .fetch_max(snapshot.unknown_values as u64, Ordering::Relaxed);
+        if !snapshot.is_complete() {
+            memory.incomplete.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    fn record_memory_failure(&self, live: bool) {
+        if let Some(memory) = &self.memory {
+            let counter = if live {
+                &memory.live_failures
+            } else {
+                &memory.value_failures
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     /// Create an enabled profiler with one dense counter slot per physical node.
     /// Profiling is opt-in because even atomic accounting perturbs short kernels.
     pub fn enabled(node_count: usize) -> Self {
@@ -865,7 +934,10 @@ impl PhysicalProfiler {
             .map(|_| AtomicNodeProfile::default())
             .collect::<Vec<_>>()
             .into();
-        Self { nodes: Some(nodes) }
+        Self {
+            nodes: Some(nodes),
+            memory: Some(Arc::new(AtomicMemoryProfile::default())),
+        }
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -928,7 +1000,10 @@ impl PhysicalProfiler {
 
 impl Default for PhysicalProfiler {
     fn default() -> Self {
-        Self { nodes: None }
+        Self {
+            nodes: None,
+            memory: None,
+        }
     }
 }
 
@@ -953,9 +1028,27 @@ impl ExecutableGraph {
         &self,
         morsel: Morsel,
         profiler: &PhysicalProfiler,
-        max_bytes: usize,
+        max_value_logical_bytes: usize,
     ) -> Result<Morsel, PhysicalGraphError> {
-        execute_graph(&self.graph, &self.order, morsel, profiler, max_bytes)
+        self.execute_with_memory_limits(
+            morsel,
+            profiler,
+            crate::memory::GraphMemoryLimits {
+                max_value_logical_bytes,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Explicit per-value and observed per-invocation limits. Checks happen at
+    /// node boundaries AFTER allocation; this is not shared budget admission.
+    pub fn execute_with_memory_limits(
+        &self,
+        morsel: Morsel,
+        profiler: &PhysicalProfiler,
+        limits: crate::memory::GraphMemoryLimits,
+    ) -> Result<Morsel, PhysicalGraphError> {
+        execute_graph(&self.graph, &self.order, morsel, profiler, limits)
     }
 
     pub fn graph(&self) -> &PhysicalGraph {
@@ -967,7 +1060,13 @@ impl ExecutableGraph {
         morsel: Morsel,
         profiler: &PhysicalProfiler,
     ) -> Result<Morsel, PhysicalGraphError> {
-        execute_graph(&self.graph, &self.order, morsel, profiler, usize::MAX)
+        execute_graph(
+            &self.graph,
+            &self.order,
+            morsel,
+            profiler,
+            crate::memory::GraphMemoryLimits::default(),
+        )
     }
 }
 
@@ -985,7 +1084,7 @@ impl GraphExecutor {
             &graph.execution_order()?,
             morsel,
             profiler,
-            usize::MAX,
+            crate::memory::GraphMemoryLimits::default(),
         )
     }
 }
@@ -995,7 +1094,7 @@ fn execute_graph(
     order: &[PhysNodeId],
     morsel: Morsel,
     profiler: &PhysicalProfiler,
-    max_bytes: usize,
+    limits: crate::memory::GraphMemoryLimits,
 ) -> Result<Morsel, PhysicalGraphError> {
     let mut remaining_uses = graph
         .nodes
@@ -1025,7 +1124,21 @@ fn execute_graph(
         if inputs.is_empty() {
             inputs.push(morsel.clone());
         }
-        let input_bytes = inputs.iter().map(|input| input.bytes).sum();
+        if profiler.is_enabled() || limits.max_observed_live_backing_bytes.is_some() {
+            observe_graph_memory(
+                outputs
+                    .iter()
+                    .filter_map(Option::as_ref)
+                    .chain(inputs.iter())
+                    .chain(std::iter::once(&morsel)),
+                profiler,
+                limits,
+                id,
+            )?;
+        }
+        let input_bytes = inputs
+            .iter()
+            .fold(0usize, |sum, input| sum.saturating_add(input.bytes));
         let started = profiler.is_enabled().then(Instant::now);
         let value = if let Some(operator) = &node.operator {
             operator
@@ -1042,19 +1155,51 @@ fn execute_graph(
         if let Some(started) = started {
             profiler.record(id, started.elapsed(), input_bytes, value.bytes);
         }
-        if value.bytes > max_bytes {
-            return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
-                "node p{} output exceeds DAG edge byte limit: {} > {}",
-                id.index(),
-                value.bytes,
-                max_bytes
-            )));
+        if value.bytes > limits.max_value_logical_bytes {
+            profiler.record_memory_failure(false);
+            return Err(PhysicalGraphError::ValueLogicalLimit {
+                node: id.index(),
+                bytes: value.bytes,
+                limit: limits.max_value_logical_bytes,
+            });
+        }
+        if profiler.is_enabled() || limits.max_observed_live_backing_bytes.is_some() {
+            observe_graph_memory(
+                outputs
+                    .iter()
+                    .filter_map(Option::as_ref)
+                    .chain(std::iter::once(&value))
+                    .chain(std::iter::once(&morsel)),
+                profiler,
+                limits,
+                id,
+            )?;
         }
         outputs[id.index()] = Some(value);
     }
     outputs[root.index()]
         .take()
         .ok_or(PhysicalGraphError::MissingRoot)
+}
+
+fn observe_graph_memory<'a>(
+    morsels: impl IntoIterator<Item = &'a Morsel>,
+    profiler: &PhysicalProfiler,
+    limits: crate::memory::GraphMemoryLimits,
+    node: PhysNodeId,
+) -> Result<(), PhysicalGraphError> {
+    let snapshot = crate::memory::observe_live_morsels(morsels);
+    profiler.record_memory(snapshot);
+    if let Some(limit) = limits.max_observed_live_backing_bytes {
+        snapshot.check_observed_limit(limit).map_err(|source| {
+            profiler.record_memory_failure(true);
+            PhysicalGraphError::MemoryAccounting {
+                node: node.index(),
+                source,
+            }
+        })?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

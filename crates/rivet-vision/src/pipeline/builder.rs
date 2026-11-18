@@ -669,9 +669,17 @@ impl ImagePipeline {
         self
     }
 
-    /// Bound the retained payload size of each persistent stage queue.
-    /// Defaults to 512 MiB. An individual encoded image or batch larger than
-    /// this limit returns a runtime error instead of exceeding the budget.
+    /// Set the DAG single-output reported logical byte limit independently of
+    /// persistent queue weights. Checked after kernel allocation, not admission.
+    pub fn dag_max_value_logical_bytes(mut self, bytes: usize) -> Self {
+        self.runtime.dag_max_value_logical_bytes = Some(bytes);
+        self
+    }
+
+    /// Bound the producer-reported payload weight on each persistent queue.
+    /// Defaults to 512 MiB; dequeued/active values are excluded and the CPU pull
+    /// path has no queues. Legacy DAG fallback supplies its single-value limit
+    /// unless dag_max_value_logical_bytes was explicitly set. Not a total budget.
     pub fn stage_queue_max_bytes(mut self, max_bytes: usize) -> Self {
         self.runtime.stage_queue_max_bytes = max_bytes;
         self

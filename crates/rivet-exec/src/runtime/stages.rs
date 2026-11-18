@@ -309,7 +309,9 @@ impl<P: PhysicalPipelineAdapter> PersistentStageGraph<P> {
             }
             (false, false) => rows.push(("CPU->Sink", self.channels.sink.snapshot())),
         }
-        let mut output = String::from("Runtime stage queues:\n");
+        let mut output = String::from(
+            "Runtime stage queues:\n  accounting=producer_reported_payload queued_only=true backing_dedup=false managed_executor_budget=unavailable\n",
+        );
         for (name, stats) in rows {
             output.push_str(&format!(
                 "  {name}: max_items={} max_bytes={} queued_items={} queued_bytes={} peak_items={} peak_bytes={} sends={} receives={} producer_wait={:?} consumer_wait={:?}\n",
