@@ -34,4 +34,5 @@ rivet-exec = { path = "crates/rivet-exec" }
 rivet-text = { path = "crates/rivet-text" }
 rivet-vision = { path = "crates/rivet-vision", default-features = false }
 thiserror = "2.0.21"
+tokenizers = "1.0.0-rc.4"
 tokio = { version = "1.54.1", features = ["full"] }

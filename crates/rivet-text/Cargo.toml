@@ -13,6 +13,7 @@ arrow-ipc.workspace = true
 rivet-core.workspace = true
 rivet-plan.workspace = true
 thiserror.workspace = true
+tokenizers.workspace = true
 
 [[example]]
 name = "inspect_sst5_arrowtext"
