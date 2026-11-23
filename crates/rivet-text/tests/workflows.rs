@@ -1132,3 +1132,122 @@ fn text_file_applies_error_policy_to_ascii_and_utf16() {
         .is_err()
     );
 }
+
+#[test]
+fn record_datasets_load_json_csv_tsv_excel_and_tar_into_the_text_pipeline() {
+    use std::io::Write;
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory =
+        std::env::temp_dir().join(format!("rivet-records-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let scratch = Scratch(directory);
+    let write_file = |name, bytes: &[u8]| {
+        let path = scratch.0.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    };
+    let json = write_file(
+        "reviews.json",
+        br#"[{"body":"hello","pair":"world","class":3}]"#,
+    );
+    let jsonl = write_file(
+        "reviews.jsonl",
+        b"{\"body\":\"world\",\"pair\":\"hello\",\"class\":4}\n",
+    );
+    let csv = write_file(
+        "reviews.csv",
+        b"pair,class,body\r\nworld,5,\"hello,\nworld\"\r\n",
+    );
+    let tsv = write_file("reviews.tsv", b"body\tpair\tclass\nworld\thello\t6\n");
+    let excel = write_file("reviews.xlsx", include_bytes!("fixtures/records.xlsx"));
+    let options = TextRecordsOptions {
+        columns: TextColumns {
+            text: "body".into(),
+            text_pair: Some("pair".into()),
+            label: Some("class".into()),
+        },
+        ..Default::default()
+    };
+    let default_sheet = TextRecordsDataset::open(&excel, options.clone()).unwrap();
+    assert_eq!(
+        default_sheet.get_many(&[0]).unwrap(),
+        [TextSample::pair("hello", "文").with_label(1)]
+    );
+    let bad = write_file(
+        "bad.jsonl",
+        br#"{"body":"hello","pair":"world","class":null}"#,
+    );
+    assert!(
+        TextRecordsDataset::open(&bad, options.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("column \"class\": expected an int64")
+    );
+    let mut options = options;
+    options.sheet = Some("Reviews".into());
+
+    let mut archive = tar::Builder::new(Vec::new());
+    for (name, data) in [
+        ("nested/raw.txt", &b"hello\r\nworld\n"[..]),
+        (
+            "nested/rows.jsonl",
+            &b"{\"body\":\"hello\",\"pair\":\"world\",\"class\":7}\n"[..],
+        ),
+        ("ignore.bin", &b"ignored"[..]),
+    ] {
+        let mut header = tar::Header::new_gnu();
+        header.set_mode(0o644);
+        header.set_size(data.len() as u64);
+        archive.append_data(&mut header, name, data).unwrap();
+    }
+    let archive = archive.into_inner().unwrap();
+    let tar = write_file("data.tar", &archive);
+    let mut compressed = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    compressed.write_all(&archive).unwrap();
+    let mut compressed = compressed.finish().unwrap();
+    let tgz = write_file("data.tar.gz", &compressed);
+    let checksum = compressed.len() - 8;
+    compressed[checksum] ^= 1;
+    let corrupt = write_file("corrupt.tgz", &compressed);
+    assert!(TextRecordsDataset::open(corrupt, options.clone()).is_err());
+    let tar_rows = TextRecordsDataset::open(tar, options.clone()).unwrap();
+    let gzip_rows = TextRecordsDataset::open(tgz, options.clone()).unwrap();
+    let expected = [
+        sample("hello"),
+        sample("world"),
+        TextSample::pair("hello", "world").with_label(7),
+    ];
+    assert_eq!(tar_rows.get_many(&[0, 1, 2]).unwrap(), expected);
+    assert_eq!(gzip_rows.get_many(&[0, 1, 2]).unwrap(), expected);
+
+    let structured =
+        TextRecordsDataset::open_files([json, jsonl, csv, tsv, excel], options).unwrap();
+    assert_eq!(
+        structured.get_many(&[4, 2, 4]).unwrap(),
+        [
+            TextSample::pair("world", "文").with_label(2),
+            TextSample::pair("hello,\nworld", "world").with_label(5),
+            TextSample::pair("world", "文").with_label(2),
+        ]
+    );
+    let batch = TextPipeline::new(Arc::new(structured), tokenizer())
+        .indices(vec![1, 0])
+        .batch(2, false)
+        .compile()
+        .unwrap()
+        .next_batch()
+        .unwrap()
+        .unwrap();
+    assert_eq!(batch.source_indices, [1, 0]);
+    assert_eq!(batch.labels.unwrap().to_vec::<i64>().unwrap(), [4, 3]);
+}

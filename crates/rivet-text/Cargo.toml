@@ -10,9 +10,14 @@ description = "Text operations and planning hooks for Rivet"
 arrow.workspace = true
 arrow-array.workspace = true
 arrow-ipc.workspace = true
+calamine = "0.38"
+csv = "1.4"
+flate2 = "1.1"
 rivet-core.workspace = true
 rivet-data.workspace = true
 rivet-plan.workspace = true
+serde_json = "1.0.154"
+tar = "0.4"
 thiserror.workspace = true
 tokenizers.workspace = true
 

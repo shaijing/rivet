@@ -111,6 +111,43 @@ Malformed input raises an error by default. Select `TextEncodingErrors::Replace`
 or `Ignore` to substitute U+FFFD or drop malformed sequences. This eager source
 stores the decoded documents in memory and copies text for requested rows.
 
+## JSON, CSV, spreadsheets and TAR
+
+```rust,no_run
+use std::sync::Arc;
+use rivet_text::{TextColumns, TextPipeline, TextRecordsDataset, TextRecordsOptions, TextTokenizer};
+
+let source = TextRecordsDataset::open_files(
+    ["reviews.jsonl", "extra.csv", "reviews.xlsx"],
+    TextRecordsOptions {
+        columns: TextColumns {
+            text: "review".into(),
+            label: Some("class_id".into()),
+            ..Default::default()
+        },
+        ..Default::default()
+    },
+)?;
+let tokenizer = TextTokenizer::from_file("tokenizer.json")?;
+let loader = TextPipeline::new(Arc::new(source), tokenizer).compile()?;
+# Ok::<(), rivet_text::TextError>(())
+```
+
+The loader projects the same `TextColumns` as the Arrow source. It selects the
+format from the filename and keeps local file and record order.
+
+| Input | Row semantics |
+| --- | --- |
+| JSON, JSONL, NDJSON | An object, an array of row objects, or a sequence of row objects. Selected text fields must be strings and labels must be int64 numbers. |
+| CSV, TSV | A UTF-8 header names the columns. Standard quoting permits separators and newlines within text fields. Labels are parsed as int64 strings. |
+| XLS, XLSX, XLSM, XLSB, ODS | The first populated row supplies column headers. Select a worksheet with `sheet` or use the first worksheet. Text columns use text cells; blank text cells become empty strings. Labels accept integers, integral cells within the int64 range, or int64 strings. |
+| TAR, TAR.GZ, TGZ | Read supported regular members in archive order, including `.txt` members. Members are read directly from the archive. |
+| TXT | Uses the sampling and decoding settings in `TextRecordsOptions::text`. |
+
+Rows are materialized in memory. TAR members with unsupported extensions are
+skipped. Plain-text rows carry no class label. For mixed labeled and unlabeled
+sources, use `LabelMode::None` when labels are unnecessary.
+
 ## Arrow IPC streams
 
 ```rust,no_run

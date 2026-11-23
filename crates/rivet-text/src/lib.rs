@@ -6,6 +6,7 @@
 mod batch;
 pub mod errors;
 mod noise;
+mod records;
 mod sample;
 mod text_file;
 mod tokenizer;
@@ -13,6 +14,7 @@ mod tokenizer;
 pub use batch::{LabelMode, TextBatch};
 pub use errors::{TextError, TextResult};
 pub use noise::{TextNoise, TextNoiseKind};
+pub use records::{TextRecordsDataset, TextRecordsOptions};
 pub use sample::{TextEncoding, TextSample};
 pub use text_file::{
     TextEncodingErrors, TextFileDataset, TextFileEncoding, TextFileOptions, TextSampleBy,

@@ -113,6 +113,11 @@ impl TextFileDataset {
             data: Arc::new(data),
         })
     }
+
+    pub(crate) fn sample_at(&self, index: usize) -> TextSample {
+        let (document, range) = &self.data.rows[index];
+        TextSample::new(&self.data.documents[*document][range.clone()])
+    }
 }
 
 impl TextFileRows {
@@ -284,12 +289,6 @@ impl Dataset for TextFileDataset {
 
     fn get_many(&self, indices: &[usize]) -> DataResult<Vec<TextSample>> {
         validate_indices(indices, self.len())?;
-        Ok(indices
-            .iter()
-            .map(|&index| {
-                let (document, range) = &self.data.rows[index];
-                TextSample::new(&self.data.documents[*document][range.clone()])
-            })
-            .collect())
+        Ok(indices.iter().map(|&index| self.sample_at(index)).collect())
     }
 }
