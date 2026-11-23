@@ -81,6 +81,36 @@ Batch size and sampler order can change independently of that stream. Python's
 The pipeline perturbs the primary text field. For standalone use,
 `TextNoise::apply` takes a string and an explicit Rivet random stream.
 
+## Plain-text files
+
+```rust,no_run
+use std::sync::Arc;
+use rivet_text::{TextFileDataset, TextFileOptions, TextPipeline, TextSampleBy, TextTokenizer};
+
+let source = TextFileDataset::open_files(["first.txt", "second.txt"], TextFileOptions {
+    sample_by: TextSampleBy::Paragraph,
+    ..Default::default()
+})?;
+let tokenizer = TextTokenizer::from_file("tokenizer.json")?;
+let loader = TextPipeline::new(Arc::new(source), tokenizer).compile()?;
+# Ok::<(), rivet_text::TextError>(())
+```
+
+`TextFileDataset` reads local files in caller order or accepts a single
+byte reader with `from_reader`. It normalizes CRLF and CR to LF before sampling.
+Line mode is the default and includes blank lines. Set `keep_linebreaks` to keep
+line terminators. Paragraph mode splits on pairs of LF and skips empty
+segments. Document mode produces one row per input file, including empty files.
+
+Set `TextFileOptions::encoding` to choose the input encoding. It defaults to
+UTF-8. Supported alternatives are UTF-8-SIG, BOM-selected UTF-16, explicit
+UTF-16LE and UTF-16BE, ASCII, and ISO-8859-1. Names such as `"utf-16-le"` can be
+parsed into `TextFileEncoding`. Enable UTF-8-SIG to consume a leading UTF-8 BOM.
+
+Malformed input raises an error by default. Select `TextEncodingErrors::Replace`
+or `Ignore` to substitute U+FFFD or drop malformed sequences. This eager source
+stores the decoded documents in memory and copies text for requested rows.
+
 ## Arrow IPC streams
 
 ```rust,no_run

@@ -910,3 +910,225 @@ fn text_pipeline_applies_noise_before_tokenization_and_keys_it_by_source_index()
         [second.as_slice(), first.as_slice(), second.as_slice()].concat()
     );
 }
+
+#[test]
+fn text_file_samples_lines_paragraphs_and_documents() {
+    let raw = "甲\r\n\r\nbeta\rgamma\n\n\n\nlast\r\n";
+    for (sample_by, keep_linebreaks, expected) in [
+        (
+            TextSampleBy::Line,
+            false,
+            vec!["甲", "", "beta", "gamma", "", "", "", "last"],
+        ),
+        (
+            TextSampleBy::Line,
+            true,
+            vec![
+                "甲\n", "\n", "beta\n", "gamma\n", "\n", "\n", "\n", "last\n",
+            ],
+        ),
+        (
+            TextSampleBy::Paragraph,
+            false,
+            vec!["甲", "beta\ngamma", "last\n"],
+        ),
+        (
+            TextSampleBy::Document,
+            false,
+            vec!["甲\n\nbeta\ngamma\n\n\n\nlast\n"],
+        ),
+    ] {
+        let source = TextFileDataset::from_reader(
+            raw.as_bytes(),
+            TextFileOptions {
+                sample_by,
+                keep_linebreaks,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let expected: Vec<_> = expected.into_iter().map(sample).collect();
+        assert_eq!(source.len(), expected.len());
+        let indices: Vec<_> = (0..source.len()).collect();
+        assert_eq!(source.get_many(&indices).unwrap(), expected);
+        let last = source.len() - 1;
+        assert_eq!(
+            source.get_many(&[last, 0, last]).unwrap(),
+            [
+                expected[last].clone(),
+                expected[0].clone(),
+                expected[last].clone()
+            ]
+        );
+        assert!(source.get_many(&[source.len()]).is_err());
+    }
+}
+
+#[test]
+fn text_file_handles_empty_input_and_utf8_errors() {
+    for (sample_by, expected_len) in [
+        (TextSampleBy::Line, 0),
+        (TextSampleBy::Paragraph, 0),
+        (TextSampleBy::Document, 1),
+    ] {
+        let source = TextFileDataset::from_reader(
+            &[][..],
+            TextFileOptions {
+                sample_by,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(source.len(), expected_len);
+    }
+
+    let bytes: &[u8] = b"hello\xff\r\nworld\xe2\x82";
+    assert!(matches!(
+        TextFileDataset::from_reader(bytes, TextFileOptions::default()),
+        Err(TextError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidData
+    ));
+    for (encoding_errors, expected) in [
+        (TextEncodingErrors::Replace, ["hello�", "world�"]),
+        (TextEncodingErrors::Ignore, ["hello", "world"]),
+    ] {
+        let source = TextFileDataset::from_reader(
+            bytes,
+            TextFileOptions {
+                encoding_errors,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(source.get_many(&[0, 1]).unwrap(), expected.map(sample));
+    }
+}
+
+#[test]
+fn text_files_preserve_file_boundaries_and_feed_the_tokenizer() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!("rivet-text-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let first = directory.join("first.txt");
+    let second = directory.join("second.txt");
+    std::fs::write(&first, "hello").unwrap();
+    std::fs::write(&second, "world\r\nhello\r").unwrap();
+    let source = TextFileDataset::open_files([&first, &second], TextFileOptions::default());
+    std::fs::remove_dir_all(directory).unwrap();
+
+    let batch = TextPipeline::new(Arc::new(source.unwrap()), tokenizer())
+        .indices(vec![2, 1, 0])
+        .batch(3, false)
+        .compile()
+        .unwrap()
+        .next_batch()
+        .unwrap()
+        .unwrap();
+    assert_eq!(batch.source_indices, [2, 1, 0]);
+    assert_eq!(
+        batch.input_ids.to_vec::<i64>().unwrap(),
+        [2, 4, 3, 2, 5, 3, 2, 4, 3]
+    );
+}
+
+#[test]
+fn text_file_decodes_before_normalizing_and_sampling() {
+    let utf16 = |encode: fn(u16) -> [u8; 2]| {
+        "é\r\n中🙂\r"
+            .encode_utf16()
+            .flat_map(encode)
+            .collect::<Vec<_>>()
+    };
+    let le = utf16(u16::to_le_bytes);
+    let be = utf16(u16::to_be_bytes);
+    for (encoding, bytes) in [
+        ("utf-8-sig", "\u{feff}é\r\n中🙂\r".as_bytes().to_vec()),
+        ("UTF_16", [&[0xff, 0xfe], le.as_slice()].concat()),
+        ("utf-16", [&[0xfe, 0xff], be.as_slice()].concat()),
+        ("utf-16-le", le),
+        ("utf-16-be", be),
+    ] {
+        let source = TextFileDataset::from_reader(
+            bytes.as_slice(),
+            TextFileOptions {
+                encoding: encoding.parse().unwrap(),
+                keep_linebreaks: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(source.len(), 2);
+        assert_eq!(
+            source.get_many(&[0, 1]).unwrap(),
+            ["é\n", "中🙂\n"].map(sample)
+        );
+    }
+
+    let latin1 = TextFileDataset::from_reader(
+        &b"caf\xe9\r\n"[..],
+        TextFileOptions {
+            encoding: "iso-8859-1".parse().unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(latin1.get_many(&[0]).unwrap(), [sample("café")]);
+    let utf8 = TextFileDataset::from_reader("\u{feff}first".as_bytes(), TextFileOptions::default())
+        .unwrap();
+    assert_eq!(utf8.get_many(&[0]).unwrap(), [sample("\u{feff}first")]);
+    assert!("unknown-encoding".parse::<TextFileEncoding>().is_err());
+}
+
+#[test]
+fn text_file_applies_error_policy_to_ascii_and_utf16() {
+    use TextFileEncoding::*;
+
+    for (encoding, bytes, replaced, ignored) in [
+        (Ascii, &b"a\xff\x80b"[..], "a��b", "ab"),
+        (Utf16Le, &b"a\0\0\xd8b"[..], "a�", "a"),
+        (Utf16Be, &b"\xdc\0\0b!"[..], "�b�", "b"),
+    ] {
+        let read = |encoding_errors| {
+            TextFileDataset::from_reader(
+                bytes,
+                TextFileOptions {
+                    sample_by: TextSampleBy::Document,
+                    encoding,
+                    encoding_errors,
+                    ..Default::default()
+                },
+            )
+        };
+        assert!(matches!(
+            read(TextEncodingErrors::Strict),
+            Err(TextError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert_eq!(
+            read(TextEncodingErrors::Replace)
+                .unwrap()
+                .get_many(&[0])
+                .unwrap(),
+            [sample(replaced)]
+        );
+        assert_eq!(
+            read(TextEncodingErrors::Ignore)
+                .unwrap()
+                .get_many(&[0])
+                .unwrap(),
+            [sample(ignored)]
+        );
+    }
+    assert!(
+        TextFileDataset::from_reader(
+            &b"a\0"[..],
+            TextFileOptions {
+                encoding: Utf16,
+                encoding_errors: TextEncodingErrors::Ignore,
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+}

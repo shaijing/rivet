@@ -7,12 +7,16 @@ mod batch;
 pub mod errors;
 mod noise;
 mod sample;
+mod text_file;
 mod tokenizer;
 
 pub use batch::{LabelMode, TextBatch};
 pub use errors::{TextError, TextResult};
 pub use noise::{TextNoise, TextNoiseKind};
 pub use sample::{TextEncoding, TextSample};
+pub use text_file::{
+    TextEncodingErrors, TextFileDataset, TextFileEncoding, TextFileOptions, TextSampleBy,
+};
 pub use tokenizer::{
     EncodeOptions, Override, PaddingDirection, PaddingParams, PaddingStrategy, TextTokenizer,
     TruncationDirection, TruncationParams, TruncationStrategy,
