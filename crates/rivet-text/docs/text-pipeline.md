@@ -4,8 +4,8 @@
 reference checkout uses newer type names; this implementation uses the actual
 RC APIs (`PipelineTokenizer`, `EncodeOptions`, and `EncodeHandle::wait`).
 Normalization, pre-tokenization, model tokenization and special-token processing
-come from the selected tokenizer JSON. Input strings are not manually split or
-lowercased by Rivet.
+come from the selected tokenizer JSON. An optional raw-text noise stage runs
+before these tokenizer steps.
 
 ## Classification and paired inputs
 
@@ -51,6 +51,35 @@ Truncation is delegated before adding special tokens and supports left/right,
 longest-first and pair-only strategies. Max length must fit the selected special
 frame. Nonzero stride is rejected: the current upstream inference API does not
 return overflow windows. Token offsets are likewise not supplied by this API.
+
+## Text robustness perturbations
+
+```rust,no_run
+use rivet_text::{TextNoise, TextNoiseKind, TextPipeline, TextSample, TextTokenizer};
+
+let tokenizer = TextTokenizer::from_file("tokenizer.json")?;
+let noise = TextNoise::new("char_substitute".parse::<TextNoiseKind>()?, 0.1)?;
+let loader = TextPipeline::from_samples(vec![TextSample::new("a review")], tokenizer)
+    .noise(noise, 42)
+    .compile()?;
+# Ok::<(), rivet_text::TextError>(())
+```
+
+The named conditions are `clean`, `char_delete`, `char_insert`, `char_swap`,
+`char_substitute`, `word_delete`, `word_swap`, `word_insert`, `truncate_50`,
+`truncate_80`, `pad_noise`, `uppercase`, `lowercase`, and `spelling`.
+Character operations use Unicode scalar values. Word operations use
+whitespace-delimited text. `pad_noise` inserts literal markers into the raw
+text before tokenization. `truncate_80` keeps the first fifth of the words,
+with at least one retained when the input contains words.
+
+The ratio must be in `[0, 1]`. Count-based edits use a minimum of one edit when
+applicable, including at ratio zero. Use `clean` for an identity condition.
+Each source index uses a Rivet stream keyed by the operation, seed and epoch.
+Batch size and sampler order can change independently of that stream. Python's
+`random.Random` produces a different sequence for the same numeric seed.
+The pipeline perturbs the primary text field. For standalone use,
+`TextNoise::apply` takes a string and an explicit Rivet random stream.
 
 ## Arrow IPC streams
 

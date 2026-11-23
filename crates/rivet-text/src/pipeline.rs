@@ -1,11 +1,12 @@
 use crate::errors::invalid;
 use crate::{
-    EncodeOptions, LabelMode, Override, PaddingParams, TextBatch, TextError, TextPropertyInference,
-    TextResult, TextSample, TextTokenizer, TruncationParams,
+    EncodeOptions, LabelMode, Override, PaddingParams, TextBatch, TextError, TextNoise,
+    TextPropertyInference, TextResult, TextSample, TextTokenizer, TruncationParams,
 };
 use rivet_data::dataset::Dataset;
 use rivet_data::dataset::memory::MemoryDataset;
 use rivet_data::dataset::source::validate_indices;
+use rivet_data::random::{OpKey, RandomContext, SampleKey};
 use rivet_data::sampler::{IndexSampler, SamplerPlan, permute};
 use std::sync::Arc;
 
@@ -24,6 +25,7 @@ pub struct TextPipeline {
     pub(crate) shuffle_seed: Option<u64>,
     pub(crate) epoch: u64,
     pub(crate) label_mode: LabelMode,
+    pub(crate) noise: Option<(TextNoise, u64)>,
 }
 impl TextPipeline {
     pub fn new(source: Arc<dyn Dataset<Item = TextSample>>, tokenizer: TextTokenizer) -> Self {
@@ -38,6 +40,7 @@ impl TextPipeline {
             shuffle_seed: None,
             epoch: 0,
             label_mode: LabelMode::Sample,
+            noise: None,
         }
     }
     pub fn from_samples(samples: Vec<TextSample>, tokenizer: TextTokenizer) -> Self {
@@ -96,6 +99,12 @@ impl TextPipeline {
         self.label_mode = mode;
         self
     }
+    /// Set a raw-text perturbation, applied to the primary text before tokenization.
+    /// The seed, epoch, source index and operation identify each sample's stream.
+    pub fn noise(mut self, noise: TextNoise, seed: u64) -> Self {
+        self.noise = Some((noise, seed));
+        self
+    }
     pub fn compile(self) -> TextResult<TextDataLoader> {
         if self.batch_size == 0 {
             return Err(invalid("batch size must be positive"));
@@ -139,6 +148,13 @@ impl TextPipeline {
             batch_size: self.batch_size,
             drop_last: self.drop_last,
             label_mode: self.label_mode,
+            noise: self.noise.map(|(noise, seed)| {
+                (
+                    noise,
+                    RandomContext::new(seed).with_epoch(self.epoch),
+                    OpKey::from_parts(noise.name(), 0),
+                )
+            }),
             finished: false,
         })
     }
@@ -152,6 +168,7 @@ pub struct TextDataLoader {
     batch_size: usize,
     drop_last: bool,
     label_mode: LabelMode,
+    noise: Option<(TextNoise, RandomContext, OpKey)>,
     finished: bool,
 }
 impl TextDataLoader {
@@ -170,13 +187,19 @@ impl TextDataLoader {
             return Ok(None);
         }
         let result = (|| {
-            let samples = self.source.get_many(&indices)?;
+            let mut samples = self.source.get_many(&indices)?;
             if samples.len() != indices.len() {
                 return Err(invalid(format!(
                     "source returned {} rows for {} indices",
                     samples.len(),
                     indices.len()
                 )));
+            }
+            if let Some((noise, context, op)) = self.noise {
+                for (sample, &index) in samples.iter_mut().zip(&indices) {
+                    let mut rng = context.stream(SampleKey::from_index(index), op);
+                    sample.text = noise.apply(&sample.text, &mut rng)?;
+                }
             }
             let encodings = self.tokenizer.encode_batch(&samples, &self.options)?;
             let labels = samples

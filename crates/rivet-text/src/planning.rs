@@ -1,7 +1,9 @@
 //! Text plan payloads contain only semantic metadata, never tokenizer handles
 //! or dataset buffers. The initial compiler validates this fixed CPU chain.
 use crate::errors::{TextError, TextResult};
-use crate::{EncodeOptions, LabelMode, Override, PaddingParams, PaddingStrategy, TextPipeline};
+use crate::{
+    EncodeOptions, LabelMode, Override, PaddingParams, PaddingStrategy, TextNoise, TextPipeline,
+};
 use rivet_plan::{
     Contiguity, DataType, DomainId, LogicalNode, LogicalPlan, Mutability, NodeKind,
     OperatorProperties, OperatorStage, PlanPayload, PropertyInference, Representation, Residency,
@@ -18,6 +20,10 @@ pub enum TextPlanOp {
         indices: Option<Vec<usize>>,
         shuffle_seed: Option<u64>,
         epoch: u64,
+    },
+    Noise {
+        noise: TextNoise,
+        seed: u64,
     },
     Tokenize {
         tokenizer_identity: u64,
@@ -38,6 +44,7 @@ impl PlanPayload for TextPlanOp {
     fn name(&self) -> &'static str {
         match self {
             Self::Source { .. } => "TextSource",
+            Self::Noise { .. } => "TextNoise",
             Self::Tokenize { .. } => "Tokenize",
             Self::Collate { .. } => "Collate",
             Self::Sink => "TextSink",
@@ -85,6 +92,18 @@ impl PropertyInference for TextPropertyInference {
         };
         let mut output = input.clone();
         match op {
+            TextPlanOp::Noise { .. } => {
+                if input.granularity != Some(ValueGranularity::Sample)
+                    || node.kind() != NodeKind::Op
+                    || input.representation != Some(Representation::Other(Arc::from("text")))
+                {
+                    return Err("TextNoise requires raw text".into());
+                }
+                output.operator = Some(OperatorProperties {
+                    stage: OperatorStage::Sample,
+                    sample_stage_has_work: true,
+                });
+            }
             TextPlanOp::Tokenize { .. } => {
                 if input.granularity != Some(ValueGranularity::Sample)
                     || node.kind() != NodeKind::Op
@@ -176,9 +195,18 @@ impl TextPipeline {
                 epoch: self.epoch,
             })),
         ));
+        let raw_text = if let Some((noise, seed)) = self.noise {
+            plan.add_node(LogicalNode::new(
+                NodeKind::Op,
+                [source],
+                Some(Arc::new(TextPlanOp::Noise { noise, seed })),
+            ))
+        } else {
+            source
+        };
         let tokenize = plan.add_node(LogicalNode::new(
             NodeKind::Op,
-            [source],
+            [raw_text],
             Some(Arc::new(TextPlanOp::Tokenize {
                 tokenizer_identity: self.tokenizer.identity(),
                 options: token_options,

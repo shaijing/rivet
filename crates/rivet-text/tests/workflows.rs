@@ -811,3 +811,102 @@ fn packed_blocks_collate_into_continuous_causal_targets() {
     assert_eq!(batch.input_ids.to_vec::<i64>().unwrap(), [4, 5, 3, 6]);
     assert_eq!(batch.labels.unwrap().to_vec::<i64>().unwrap(), [4, 5, 3, 6]);
 }
+
+#[test]
+fn text_noise_covers_robustness_modes_and_edge_cases() {
+    use rivet_data::random::RandomStream;
+
+    let apply = |name: &str, ratio, input: &str| {
+        TextNoise::new(name.parse().unwrap(), ratio)
+            .unwrap()
+            .apply(input, &mut RandomStream::from_seed(42))
+            .unwrap()
+    };
+    assert_eq!(apply("clean", 0.0, " A\tB "), " A\tB ");
+    assert_eq!(apply("char_delete", 1.0, "é中🦀"), "");
+    assert_eq!(apply("char_delete", 0.0, "é"), "");
+    assert_eq!(apply("char_swap", 0.0, "é中"), "中é");
+    let inserted = apply("char_insert", 0.0, "");
+    assert_eq!(inserted.len(), 1);
+    assert!(inserted.as_bytes()[0].is_ascii_lowercase());
+    let substituted = apply("char_substitute", 1.0, "A🙂");
+    assert!(substituted.starts_with(['q', 's', 'z']));
+    assert!(substituted.ends_with('🙂'));
+
+    assert_eq!(apply("word_delete", 1.0, "  only  "), "  only  ");
+    assert_eq!(
+        apply("word_delete", 1.0, "one two three")
+            .split_whitespace()
+            .count(),
+        1
+    );
+    assert_eq!(apply("word_swap", 0.0, "one\t two"), "two one");
+    assert!(
+        [
+            "the", "a", "is", "it", "and", "to", "of", "in", "for", "with"
+        ]
+        .contains(&apply("word_insert", 0.0, "").as_str())
+    );
+    assert!(["[PAD]", "[UNK]", "[MASK]"].contains(&apply("pad_noise", 0.0, "").as_str()));
+
+    assert_eq!(
+        apply("truncate_50", 0.0, "one two three four five"),
+        "one two"
+    );
+    assert_eq!(apply("truncate_80", 0.0, "one two three four five"), "one");
+    assert_eq!(apply("truncate_80", 1.0, "   "), "");
+    assert_eq!(apply("uppercase", 1.0, "Straße"), "STRASSE");
+    assert_eq!(apply("lowercase", 0.0, "ΟΣ"), "ος");
+    assert_eq!(apply("spelling", 1.0, "THE\tlike good!"), "teh lik e good!");
+    assert_eq!(apply("spelling", 0.0, "THE\tlike"), "THE like");
+    assert!("unknown".parse::<TextNoiseKind>().is_err());
+    for ratio in [-0.1, 1.1, f64::NAN] {
+        assert!(TextNoise::new(TextNoiseKind::CharInsert, ratio).is_err());
+    }
+}
+
+#[test]
+fn text_pipeline_applies_noise_before_tokenization_and_keys_it_by_source_index() {
+    let source = vec![
+        TextSample::pair("hello world", "world").with_label(7),
+        TextSample::pair("world hello", "hello").with_label(8),
+    ];
+    let pipeline = TextPipeline::from_samples(source, tokenizer())
+        .noise(TextNoise::new(TextNoiseKind::WordSwap, 0.1).unwrap(), 42);
+    let plan = pipeline.explain().unwrap();
+    assert!(plan.find("TextNoise").unwrap() < plan.find("Tokenize").unwrap());
+    let batch = pipeline
+        .clone()
+        .indices(vec![1, 0, 1])
+        .batch(3, false)
+        .compile()
+        .unwrap()
+        .next_batch()
+        .unwrap()
+        .unwrap();
+    assert_eq!(batch.source_indices, [1, 0, 1]);
+    assert_eq!(
+        batch.input_ids.to_vec::<i64>().unwrap(),
+        [2, 4, 5, 3, 4, 3, 2, 5, 4, 3, 5, 3, 2, 4, 5, 3, 4, 3]
+    );
+    assert_eq!(batch.labels.unwrap().to_vec::<i64>().unwrap(), [8, 7, 8]);
+
+    let noise = TextNoise::new(TextNoiseKind::WordInsert, 0.5).unwrap();
+    let pipeline = pipeline.noise(noise, 42);
+    let rows = |indices, size| {
+        pipeline
+            .clone()
+            .indices(indices)
+            .batch(size, false)
+            .compile()
+            .unwrap()
+            .flat_map(|batch| batch.unwrap().input_ids.to_vec::<i64>().unwrap())
+            .collect::<Vec<_>>()
+    };
+    let first = rows(vec![0], 1);
+    let second = rows(vec![1], 1);
+    assert_eq!(
+        rows(vec![1, 0, 1], 3),
+        [second.as_slice(), first.as_slice(), second.as_slice()].concat()
+    );
+}
