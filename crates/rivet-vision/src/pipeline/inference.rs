@@ -330,6 +330,17 @@ pub(crate) fn infer_image_op(
                 V2Config::ToDtype { dtype, .. } => {
                     output.dtype = Some(core_dtype(*dtype));
                 }
+                V2Config::ShotNoise { .. } => {
+                    if !matches!(
+                        input_state,
+                        Decoded {
+                            dtype: CoreDType::F32,
+                            ..
+                        }
+                    ) {
+                        return Err(invalid_pipeline("ShotNoise requires float32 input"));
+                    }
+                }
                 V2Config::GaussianNoise { .. } | V2Config::RandomChannelPermutation { .. } => {}
             }
             output.contiguity = Some(Contiguity::Unknown);

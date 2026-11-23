@@ -882,6 +882,16 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (intensity=0.2))]
+    fn shot_noise(&self, intensity: f32) -> PyResult<Self> {
+        V2Config::ShotNoise { intensity }
+            .validate()
+            .map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().shot_noise(intensity),
+        })
+    }
+
     fn jpeg(&self, quality: Vec<u8>) -> PyResult<Self> {
         let range = parse_pair(Some(quality), "quality", [1, 100])?;
         let config = V2Config::Jpeg {
@@ -1896,6 +1906,16 @@ impl PyImagePipeline {
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (intensity=0.2))]
+    fn shot_noise(&self, intensity: f32) -> PyResult<Self> {
+        V2Config::ShotNoise { intensity }
+            .validate()
+            .map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().shot_noise(intensity),
         })
     }
 

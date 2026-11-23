@@ -40,6 +40,9 @@ pub enum V2Config {
         sigma: f64,
         clip: bool,
     },
+    ShotNoise {
+        intensity: f32,
+    },
     Jpeg {
         quality: (u8, u8),
     },
@@ -60,6 +63,7 @@ impl V2Config {
             Self::ScaleJitter { .. } => "ScaleJitter",
             Self::RandomZoomOut { .. } => "RandomZoomOut",
             Self::GaussianNoise { .. } => "GaussianNoise",
+            Self::ShotNoise { .. } => "ShotNoise",
             Self::Jpeg { .. } => "JPEG",
             Self::Rgb => "RGB",
             Self::ToDtype { .. } => "ToDtype",
@@ -75,6 +79,7 @@ impl V2Config {
             Self::ScaleJitter { .. } => 54,
             Self::RandomZoomOut { .. } => 55,
             Self::GaussianNoise { .. } => 56,
+            Self::ShotNoise { .. } => 60,
             Self::Jpeg { .. } => 57,
             Self::Rgb => 58,
             Self::ToDtype { .. } => 59,
@@ -149,8 +154,9 @@ impl V2Config {
                     && fill.iter().all(|x| x.is_finite())
             }
             Self::GaussianNoise { mean, sigma, .. } => {
-                mean.is_finite() && sigma.is_finite() && *sigma >= 0.0
+                return super::noise::validate_gaussian_noise(*mean, *sigma);
             }
+            Self::ShotNoise { intensity } => return super::noise::validate_shot_noise(*intensity),
             Self::Jpeg { quality: (a, b) } => *a >= 1 && b >= a && *b <= 100,
             Self::ToDtype { dtype, .. } => matches!(dtype, DType::U8 | DType::F32),
             _ => true,
@@ -349,7 +355,10 @@ impl V2Config {
                     .apply(ImageSample::Decoded(s));
             }
             Self::GaussianNoise { mean, sigma, clip } => {
-                s.image = super::v2_numeric::gaussian_noise(&s.image, *mean, *sigma, *clip, rng)?;
+                s.image = super::gaussian_noise(&s.image, *mean, *sigma, *clip, rng)?;
+            }
+            Self::ShotNoise { intensity } => {
+                s.image = super::shot_noise(&s.image, *intensity, rng)?;
             }
             Self::Jpeg {
                 quality: (low, high),

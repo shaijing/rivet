@@ -499,6 +499,13 @@ class Transform:
         """
         return Transform(self._inner.gaussian_noise(mean, sigma, clip))
 
+    def shot_noise(self, intensity: float = 0.2) -> Transform:
+        """Add Gaussian noise scaled by intensity * sqrt(max(pixel, 0) + 0.5).
+
+        Call after scaling pixels to float32 [0, 1]. Output is clipped to [0, 1].
+        """
+        return Transform(self._inner.shot_noise(intensity))
+
     def jpeg(self, quality: int | Iterable[int]) -> Transform:
         """JPEG encode/decode uint8 gray/RGB pixels; quality bounds are inclusive.
 

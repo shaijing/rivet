@@ -118,6 +118,27 @@ def test_gaussian_noise_fixed_shift_and_clip(source, transform):
 
 
 @pytest.mark.parametrize("transform", [False, True])
+def test_shot_noise_float_pipeline_and_seed(source, transform):
+    root, _ = source
+
+    def build(p):
+        return p.to_tensor().shot_noise()
+
+    single_worker = output(root, build, transform=transform)
+    multi_worker = output(root, build, transform=transform, workers=3)
+    np.testing.assert_array_equal(single_worker, multi_worker)
+    assert single_worker[0].dtype == np.float32
+    assert np.all((np.asarray(single_worker) >= 0) & (np.asarray(single_worker) <= 1))
+    zero = output(root, lambda p: p.to_tensor().shot_noise(0.0), transform=transform)
+    np.testing.assert_array_equal(zero, output(root, lambda p: p.to_tensor()))
+    assert not np.array_equal(single_worker[0], zero[0])
+    with pytest.raises(ValueError, match="ShotNoise intensity"):
+        output(root, lambda p: p.shot_noise(-0.1), transform=transform)
+    with pytest.raises(ValueError, match="ShotNoise requires float32 input"):
+        output(root, lambda p: p.shot_noise(), transform=transform)
+
+
+@pytest.mark.parametrize("transform", [False, True])
 def test_jpeg_quality_and_dtype(source, transform):
     root, pixels = source
     low = output(root, lambda p: p.jpeg(10), transform=transform)[0]

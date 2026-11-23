@@ -21,6 +21,7 @@ mod erase;
 mod flip;
 mod layout;
 mod multi_crop;
+mod noise;
 mod normalize;
 mod pad;
 mod resize;
@@ -53,6 +54,7 @@ pub use geometry::{
     InterpolationMode, LayoutConfig, PadConfig, RandomCropConfig, RandomHorizontalFlipConfig,
     RandomResizedCropConfig, ResizeConfig, RotateConfig, RotationAngle, TenCropConfig,
 };
+pub use noise::{gaussian_noise, shot_noise};
 pub use representation::{ConvertImageDtypeConfig, DecodeImageConfig, NormalizeConfig};
 
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};

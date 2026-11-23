@@ -67,7 +67,7 @@ pub fn empty_image_batch() -> VisionResult<ImageBatch> {
     ImageBatchBuilder::with_capacity(0).finish()
 }
 
-pub use crate::transforms::V2Config;
+pub use crate::transforms::{V2Config, gaussian_noise, shot_noise};
 
 pub use crate::batch::BatchMixConfig;
 

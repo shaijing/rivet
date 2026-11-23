@@ -48,6 +48,16 @@ impl TransformSequence {
         self
     }
 
+    /// Add Gaussian noise with mean and standard deviation in normalized units.
+    pub fn gaussian_noise(self, mean: f64, sigma: f64, clip: bool) -> Self {
+        self.v2(crate::transforms::V2Config::GaussianNoise { mean, sigma, clip })
+    }
+
+    /// Add signal-dependent Gaussian noise to a normalized float32 image.
+    pub fn shot_noise(self, intensity: f32) -> Self {
+        self.v2(crate::transforms::V2Config::ShotNoise { intensity })
+    }
+
     pub fn auto_augment(mut self, config: crate::transforms::AutoAugmentConfig) -> Self {
         self.ops.push(ImageOp::AutoAugment(config));
         self

@@ -608,6 +608,13 @@ class Pipeline:
             self._inner.gaussian_noise(mean, sigma, clip), as_numpy=self.as_numpy
         )
 
+    def shot_noise(self, intensity: float = 0.2) -> Pipeline:
+        """Add Gaussian noise scaled by intensity * sqrt(max(pixel, 0) + 0.5).
+
+        Call after scaling pixels to float32 [0, 1]. Output is clipped to [0, 1].
+        """
+        return Pipeline(self._inner.shot_noise(intensity), as_numpy=self.as_numpy)
+
     def jpeg(self, quality: int | Iterable[int]) -> Pipeline:
         """JPEG encode/decode uint8 gray/RGB pixels; quality bounds are inclusive.
 

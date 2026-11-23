@@ -133,6 +133,19 @@ mod tests {
     }
 
     #[test]
+    fn gaussian_noise_builders_run_in_a_decoded_pipeline() {
+        let mut loader = decoded_stub()
+            .gaussian_noise(0.25, 0.0, false)
+            .compose(TransformSequence::new().gaussian_noise(-0.125, 0.0, true))
+            .batch(1, false)
+            .compile()
+            .unwrap();
+        let batch = loader.next_batch().unwrap().unwrap();
+        assert_eq!(batch.images.to_vec::<u8>().unwrap(), [31, 32, 32]);
+        assert_eq!(batch.labels.to_vec::<i64>().unwrap(), [7]);
+    }
+
+    #[test]
     fn resize_before_decode_rejected_at_compile() {
         let err = compile_err(stub(10).resize(8, 8).batch(4, false));
         assert!(
