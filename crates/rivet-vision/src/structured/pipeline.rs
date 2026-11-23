@@ -13,6 +13,8 @@ pub enum StructuredOp {
     Image(ImageOp),
     ConvertBoxes(BoxFormat),
     ClampBoxes,
+    ClampKeypoints,
+    SanitizeKeypoints,
     Sanitize { min_size: f32, min_area: f32 },
     RandomIoUCrop(RandomIoUCropConfig),
 }
@@ -22,6 +24,8 @@ impl StructuredOp {
             Self::Image(op) => op.name(),
             Self::ConvertBoxes(_) => "ConvertBoundingBoxFormat",
             Self::ClampBoxes => "ClampBoundingBoxes",
+            Self::ClampKeypoints => "ClampKeyPoints",
+            Self::SanitizeKeypoints => "SanitizeKeyPoints",
             Self::Sanitize { .. } => "SanitizeBoundingBoxes",
             Self::RandomIoUCrop(_) => "RandomIoUCrop",
         }
@@ -156,6 +160,8 @@ impl StructuredPipeline {
                 StructuredOp::Image(op) => super::geometry::apply(sample, op, &mut rng, &ctx, key)?,
                 StructuredOp::ConvertBoxes(format) => sample.convert_boxes(*format)?,
                 StructuredOp::ClampBoxes => sample.clamp_boxes()?,
+                StructuredOp::ClampKeypoints => sample.clamp_keypoints()?,
+                StructuredOp::SanitizeKeypoints => sample.sanitize_keypoints()?,
                 StructuredOp::Sanitize { min_size, min_area } => {
                     sample.sanitize(*min_size, *min_area)?
                 }

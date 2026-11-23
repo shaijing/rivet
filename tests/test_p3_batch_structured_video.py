@@ -382,6 +382,40 @@ def test_sanitize_filters_all_instance_fields(annotated):
     assert empty["labels"].shape == (0,)
 
 
+@pytest.mark.parametrize("semantic_mask", [False, True])
+def test_keypoint_maintenance_matches_torchvision(semantic_mask):
+    torch = pytest.importorskip("torch")
+    from torchvision.transforms.v2 import functional as F
+
+    image = np.zeros((3, 5, 3), dtype=np.uint8)
+    points = np.array(
+        [[[0, 0], [4.5, 2.5]], [[1, 1], [5, 2]], [[-0.5, 2], [2, 3]]],
+        dtype=np.float32,
+    )
+    boxes = np.array([[0, 0, 5, 3], [1, 1, 4, 3], [0, 1, 3, 3]], dtype=np.float32)
+    labels = np.array([10, 20, 30], dtype=np.int64)
+    masks = np.arange(45, dtype=np.uint8).reshape(3, 3, 5)
+    if semantic_mask:
+        masks = masks[0]
+    sample = rivet.AnnotatedSample(
+        image, keypoints=points, boxes=boxes, labels=labels, masks=masks
+    )
+    pipeline = rivet.StructuredPipeline([sample])
+    reference = torch.from_numpy(points)
+    expected_clamped = F.clamp_keypoints(reference, canvas_size=(3, 5)).numpy()
+    clamped = next(pipeline.clamp_keypoints().execute())["targets"][0]
+    np.testing.assert_array_equal(clamped["keypoints"], expected_clamped)
+    np.testing.assert_array_equal(clamped["labels"], labels)
+
+    expected_points, keep = F.sanitize_keypoints(reference, canvas_size=(3, 5))
+    keep = keep.numpy()
+    sanitized = next(pipeline.sanitize_keypoints().execute())["targets"][0]
+    np.testing.assert_array_equal(sanitized["keypoints"], expected_points.numpy())
+    np.testing.assert_array_equal(sanitized["labels"], labels[keep])
+    np.testing.assert_array_equal(sanitized["boxes"], boxes[keep])
+    np.testing.assert_array_equal(sanitized["masks"], masks if semantic_mask else masks[keep])
+
+
 @pytest.mark.parametrize("options", [[1.0], [0.0], [0.5], [0.99]])
 def test_iou_crop_bounded_valid_and_sanitize(annotated, options):
     p = (

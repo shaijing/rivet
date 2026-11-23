@@ -161,6 +161,16 @@ impl PyStructuredPipeline {
             inner: self.inner.clone().push(StructuredOp::ClampBoxes),
         }
     }
+    fn clamp_keypoints(&self) -> Self {
+        Self {
+            inner: self.inner.clone().push(StructuredOp::ClampKeypoints),
+        }
+    }
+    fn sanitize_keypoints(&self) -> Self {
+        Self {
+            inner: self.inner.clone().push(StructuredOp::SanitizeKeypoints),
+        }
+    }
     #[pyo3(signature=(min_size=1.0,min_area=1.0))]
     fn sanitize_bounding_boxes(&self, min_size: f32, min_area: f32) -> PyResult<Self> {
         let op = StructuredOp::Sanitize { min_size, min_area };

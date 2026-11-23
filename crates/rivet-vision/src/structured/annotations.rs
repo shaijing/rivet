@@ -153,7 +153,55 @@ impl StructuredSample {
         }
         Ok(self)
     }
-    pub fn sanitize(mut self, min_size: f32, min_area: f32) -> RivetResult<Self> {
+    /// Clamp keypoints to valid pixel centers on the current image canvas.
+    pub fn clamp_keypoints(mut self) -> RivetResult<Self> {
+        if let Some(points) = &self.keypoints {
+            let (h, w) = self.size()?;
+            if h == 0 || w == 0 {
+                return Err(invalid_shape(
+                    "keypoint clamping requires a nonempty canvas",
+                ));
+            }
+            let mut values = points.to_vec::<f32>()?;
+            for point in values.chunks_exact_mut(2) {
+                point[0] = point[0].clamp(0.0, (w - 1) as f32);
+                point[1] = point[1].clamp(0.0, (h - 1) as f32);
+            }
+            self.keypoints = Some(Tensor::from_vec(values, points.dims(), points.device())?);
+        }
+        Ok(self)
+    }
+
+    /// Remove instances with any keypoint outside the current image canvas.
+    pub fn sanitize_keypoints(self) -> RivetResult<Self> {
+        let (h, w) = self.size()?;
+        let points = self
+            .keypoints
+            .as_ref()
+            .ok_or_else(|| invalid_argument("sanitize_keypoints requires keypoints"))?;
+        let &[instances, count, 2] = points.dims() else {
+            return Err(invalid_shape("keypoints require shape [N,K,2]"));
+        };
+        if instances == 0 || count == 0 {
+            return Ok(self);
+        }
+        let values = points.to_vec::<f32>()?;
+        let keep: Vec<usize> = values
+            .chunks_exact(count * 2)
+            .enumerate()
+            .filter_map(|(i, group)| {
+                group
+                    .chunks_exact(2)
+                    .all(|point| {
+                        (0.0..w as f32).contains(&point[0]) && (0.0..h as f32).contains(&point[1])
+                    })
+                    .then_some(i)
+            })
+            .collect();
+        self.retain_instances(&keep)
+    }
+
+    pub fn sanitize(self, min_size: f32, min_area: f32) -> RivetResult<Self> {
         if !min_size.is_finite() || min_size < 1.0 || !min_area.is_finite() || min_area < 1.0 {
             return Err(invalid_argument(
                 "sanitize min_size and min_area must be finite and >=1",
@@ -180,13 +228,14 @@ impl StructuredSample {
                     .then_some(i)
             })
             .collect();
-        self.boxes = self
-            .boxes
-            .map(|t| select_instances(&t, &keep))
-            .transpose()?;
+        self.retain_instances(&keep)
+    }
+
+    fn retain_instances(mut self, keep: &[usize]) -> RivetResult<Self> {
+        self.boxes = self.boxes.map(|t| select_instances(&t, keep)).transpose()?;
         self.labels = self
             .labels
-            .map(|t| select_instances(&t, &keep))
+            .map(|t| select_instances(&t, keep))
             .transpose()?;
         self.masks = self
             .masks
@@ -194,13 +243,13 @@ impl StructuredSample {
                 if t.rank() == 2 {
                     Ok(t)
                 } else {
-                    select_instances(&t, &keep)
+                    select_instances(&t, keep)
                 }
             })
             .transpose()?;
         self.keypoints = self
             .keypoints
-            .map(|t| select_instances(&t, &keep))
+            .map(|t| select_instances(&t, keep))
             .transpose()?;
         Ok(self)
     }

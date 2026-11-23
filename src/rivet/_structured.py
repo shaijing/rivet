@@ -193,6 +193,14 @@ class StructuredPipeline:
     def clamp_bounding_boxes(self) -> StructuredPipeline:
         return self._from_inner(self._inner.clamp_bounding_boxes())
 
+    def clamp_keypoints(self) -> StructuredPipeline:
+        """Clamp keypoints to the first and last pixel centers on each axis."""
+        return self._from_inner(self._inner.clamp_keypoints())
+
+    def sanitize_keypoints(self) -> StructuredPipeline:
+        """Drop instances with any out-of-canvas keypoint and their aligned fields."""
+        return self._from_inner(self._inner.sanitize_keypoints())
+
     def sanitize_bounding_boxes(
         self,
         min_size: float = 1.0,

@@ -201,6 +201,14 @@ Empty boxes retain the source sample. `max_attempts` bounds option retries and
 returns the source unchanged on exhaustion; this intentional difference from
 torchvision's unbounded outer loop makes impossible configurations terminate.
 
+## Keypoint maintenance
+
+Call `StructuredPipeline.clamp_keypoints()` after geometry to clamp coordinates
+to pixel centers in `[0, W-1]` and `[0, H-1]`. To remove out-of-canvas points
+instead, call `sanitize_keypoints()`. It retains an instance only if all its
+keypoints are in `[0, W)` and `[0, H)`. Boxes, labels and instance masks follow
+the retained rows. Semantic masks keep their original contents.
+
 ## Decoded video and temporal subsampling
 
 ```python
