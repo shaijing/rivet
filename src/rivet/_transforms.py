@@ -537,6 +537,10 @@ class Transform:
             )
         )
 
+    def transpose(self) -> Transform:
+        """Exchange height and width in HWC or CHW images and aligned targets."""
+        return Transform(self._inner.transpose())
+
     def channel_swap(self, channel_order: Iterable[int] = (2, 1, 0)) -> Transform:
         """Apply a fixed channel order. The default swaps red and blue.
 

@@ -176,6 +176,11 @@ impl ImagePipeline {
         ))
     }
 
+    /// Exchange the spatial axes while preserving channel placement.
+    pub fn transpose(self) -> Self {
+        self.v2(crate::transforms::V2Config::Transpose)
+    }
+
     /// Reorder channels using a complete permutation of the input indices.
     pub fn channel_swap(self, channel_order: Vec<usize>) -> Self {
         self.v2(crate::transforms::V2Config::PermuteChannels(channel_order))

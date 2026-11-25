@@ -266,6 +266,7 @@ pub enum V2Config {
         dtype: DType,
         scale: bool,
     },
+    Transpose,
     GridMask(std::sync::Arc<GridMaskConfig>),
     RandomSizedCrop(RandomSizedCropConfig),
     CropAndPad(std::sync::Arc<CropAndPadConfig>),
@@ -328,6 +329,7 @@ impl V2Config {
             Self::LetterBox(_) => "LetterBox",
             Self::Defocus { .. } => "Defocus",
             Self::ChannelDropout(_) => "ChannelDropout",
+            Self::Transpose => "Transpose",
             Self::GridMask(_) => "GridMask",
             Self::XyMasking(_) => "XYMasking",
             Self::PixelDropout(_) => "PixelDropout",
@@ -402,6 +404,7 @@ impl V2Config {
             Self::LetterBox(_) => 66,
             Self::Defocus { .. } => 67,
             Self::ChannelDropout(_) => 111,
+            Self::Transpose => 120,
             Self::GridMask(_) => 113,
             Self::XyMasking(_) => 112,
             Self::PixelDropout(_) => 110,
@@ -437,6 +440,7 @@ impl V2Config {
                 | Self::UnsharpMask { .. }
                 | Self::LetterBox(_)
                 | Self::ToSepia { .. }
+                | Self::Transpose
                 | Self::MedianBlur
                 | Self::Clahe { .. }
         )
@@ -1468,6 +1472,13 @@ impl V2Config {
             }
             Self::ChannelDropout(config) => {
                 s.image = config.apply(&s.image, axis, rng)?;
+            }
+            Self::Transpose => {
+                let order = match axis {
+                    ImageAxisOrder::Hwc => [1, 0, 2],
+                    ImageAxisOrder::Chw => [0, 2, 1],
+                };
+                s.image = s.image.permute(&order)?;
             }
             Self::GridMask(config) => {
                 s.image = config.apply(&s.image, axis, config.sample(h, w, rng)?)?;

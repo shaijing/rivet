@@ -2347,3 +2347,15 @@ def test_crop_and_pad_mixed_sides_layout_and_seed(source):
     np.testing.assert_array_equal(one, pixels[-1:, -1:])
     with pytest.raises(ValueError):
         rivet.Transform().crop_and_pad(px=1, percent=0.1)
+
+
+def test_transpose_rectangular_layout_and_composition(source):
+    root, pixels = source
+    serial = output(root, lambda p: p.transpose())
+    parallel = output(root, lambda p: p.transpose(), transform=True, workers=3)
+    np.testing.assert_array_equal(serial, parallel)
+    np.testing.assert_array_equal(serial[0], pixels.transpose(1, 0, 2))
+    planar = output(root, lambda p: p.to_dtype("float32", True).hwc_to_chw().transpose())[0]
+    assert planar.dtype == np.float32
+    np.testing.assert_allclose(planar, pixels.transpose(2, 1, 0) / 255, atol=1e-7)
+    np.testing.assert_array_equal(output(root, lambda p: p.transpose().transpose())[0], pixels)

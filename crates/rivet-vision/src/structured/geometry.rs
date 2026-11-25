@@ -664,6 +664,22 @@ pub(super) fn apply(
             }
             Ok(s)
         }
+        ImageOp::V2(V2Config::Transpose) => {
+            let order = match s.axis_order {
+                ImageAxisOrder::Hwc => [1, 0, 2],
+                ImageAxisOrder::Chw => [0, 2, 1],
+            };
+            s.image = s.image.permute(&order)?;
+            if let Some(mask) = &s.masks {
+                s.masks = Some(if mask.rank() == 2 {
+                    mask.permute(&[1, 0])?
+                } else {
+                    mask.permute(&[0, 2, 1])?
+                });
+            }
+            let swap = [[0., 1., 0.], [1., 0., 0.], [0., 0., 1.]];
+            targets(s, swap, swap, false)
+        }
         ImageOp::V2(V2Config::GridMask(config)) => {
             let mask = config.sample(h, w, rng)?;
             s.image = config.apply(&s.image, s.axis_order, mask)?;

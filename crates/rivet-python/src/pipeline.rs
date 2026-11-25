@@ -936,6 +936,12 @@ impl PyTransform {
         })
     }
 
+    fn transpose(&self) -> Self {
+        Self {
+            inner: self.inner.clone().transpose(),
+        }
+    }
+
     fn permute_channels(&self, permutation: Vec<usize>) -> PyResult<Self> {
         let config = V2Config::PermuteChannels(permutation);
         config.validate().map_err(to_py_err)?;
@@ -3152,6 +3158,12 @@ impl PyImagePipeline {
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
         })
+    }
+
+    fn transpose(&self) -> Self {
+        Self {
+            inner: self.inner.clone().transpose(),
+        }
     }
 
     fn permute_channels(&self, permutation: Vec<usize>) -> PyResult<Self> {

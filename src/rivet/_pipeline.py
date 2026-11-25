@@ -633,6 +633,10 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def transpose(self) -> Pipeline:
+        """Exchange height and width in HWC or CHW images and aligned targets."""
+        return Pipeline(self._inner.transpose(), as_numpy=self.as_numpy)
+
     def channel_swap(self, channel_order: Iterable[int] = (2, 1, 0)) -> Pipeline:
         """Apply a fixed channel order. The default swaps red and blue.
 

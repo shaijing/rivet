@@ -1157,3 +1157,13 @@ def test_crop_and_pad_synchronizes_structured_annotations(annotated):
         result["masks"], np.pad(original["masks"][1:, 2:, 5:], ((0, 0), (0, 1), (0, 3)), constant_values=7)
     )
     assert result["image"].shape == (9, 10, 3)
+
+
+def test_transpose_swaps_all_spatial_targets(annotated):
+    original = annotated.to_dict()
+    result = annotated.apply(rivet.Transform().transpose()).to_dict()
+    np.testing.assert_array_equal(result["image"], original["image"].transpose(1, 0, 2))
+    np.testing.assert_array_equal(result["boxes"], original["boxes"][:, [1, 0, 3, 2]])
+    np.testing.assert_array_equal(result["keypoints"], original["keypoints"][..., ::-1])
+    np.testing.assert_array_equal(result["masks"], original["masks"].transpose(0, 2, 1))
+    np.testing.assert_array_equal(result["labels"], original["labels"])
