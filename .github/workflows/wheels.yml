@@ -116,6 +116,20 @@ jobs:
       contents: write
 
     steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --current --use-branch-tags --strip header
+        env:
+          OUTPUT: CHANGES.md
+          GITHUB_REPO: ${{ github.repository }}
+
       - name: Download wheels
         uses: actions/download-artifact@v4
         with:
@@ -133,5 +147,5 @@ jobs:
             gh release upload "$TAG" dist/*.whl --clobber
           else
             gh release create "$TAG" dist/*.whl \
-              --verify-tag --title "$TAG" --generate-notes
+              --verify-tag --title "$TAG" --notes-file CHANGES.md
           fi
