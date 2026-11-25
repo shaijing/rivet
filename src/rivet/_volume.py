@@ -147,5 +147,13 @@ class VolumeSample:
         result._inner = self._inner.cubic_symmetry(element, seed)
         return result
 
+    def grid_shuffle3d(
+        self, grid_zyx: tuple[int, int, int] = (2, 2, 2), *, seed: int = 0
+    ) -> VolumeSample:
+        """Shuffle equal-sized DHW cells and move their XYZ keypoints."""
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.grid_shuffle3d(grid_zyx, seed)
+        return result
+
     def to_dict(self) -> dict[str, Any]:
         return self._inner.to_dict()

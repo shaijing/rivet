@@ -215,6 +215,16 @@ impl PyVolumeSample {
         Ok(Self { inner })
     }
 
+    fn grid_shuffle3d(&self, grid_zyx: [usize; 3], seed: u64) -> PyResult<Self> {
+        let mut rng = rivet_vision::RandomStream::from_seed(seed);
+        let inner = self
+            .inner
+            .clone()
+            .grid_shuffle(grid_zyx, &mut rng)
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
         out.set_item("volume", tensor_to_numpy(py, self.inner.volume.clone())?)?;

@@ -601,3 +601,118 @@ pub fn volume_axis_mask(axes: &[usize]) -> RivetResult<u8> {
     }
     Ok(mask)
 }
+
+impl VolumeSample {
+    pub fn grid_shuffle(
+        mut self,
+        grid: [usize; 3],
+        rng: &mut rivet_data::random::RandomStream,
+    ) -> RivetResult<Self> {
+        self.validate()?;
+        let shape = self.spatial_shape()?;
+        if (0..3).any(|i| grid[i] == 0 || grid[i] > shape[i]) {
+            return Err(invalid_shape("GridShuffle3D grid must fit the DHW volume"));
+        }
+        let bounds: [Vec<usize>; 3] = std::array::from_fn(|i| {
+            let count = grid[i];
+            let (width, extra) = (shape[i] / count, shape[i] % count);
+            (0..=count).map(|j| j * width + j.min(extra)).collect()
+        });
+        let mut origins = Vec::new();
+        let mut groups = [const { Vec::new() }; 8];
+        for z in 0..grid[0] {
+            for y in 0..grid[1] {
+                for x in 0..grid[2] {
+                    let cell = [z, y, x];
+                    let class = (0..3).fold(0, |bits, i| {
+                        bits | (usize::from(cell[i] < shape[i] % grid[i]) << i)
+                    });
+                    groups[class].push(origins.len());
+                    origins.push(std::array::from_fn(|i| bounds[i][cell[i]]));
+                }
+            }
+        }
+        let mut sources: Vec<_> = (0..origins.len()).collect();
+        for group in &groups {
+            for i in (1..group.len()).rev() {
+                let j = rng.gen_range_usize(0..i + 1)?;
+                sources.swap(group[i], group[j]);
+            }
+        }
+        if sources.iter().copied().eq(0..origins.len()) {
+            return Ok(self);
+        }
+        let shuffle = |t: &Tensor| shuffle_volume(t, &bounds, grid, &origins, &sources);
+        self.volume = shuffle(&self.volume)?;
+        self.mask = self.mask.as_ref().map(shuffle).transpose()?;
+        if let Some(points) = &self.keypoints {
+            let mut destination = vec![0; sources.len()];
+            for (dest, &source) in sources.iter().enumerate() {
+                destination[source] = dest;
+            }
+            let mut coords = points.to_vec::<f32>()?;
+            for point in coords.chunks_exact_mut(3) {
+                let zyx = [point[2], point[1], point[0]];
+                if (0..3).all(|i| zyx[i] >= 0.0 && f64::from(zyx[i]) < shape[i] as f64) {
+                    let [z, y, x]: [usize; 3] = std::array::from_fn(|i| {
+                        bounds[i].partition_point(|&bound| bound <= zyx[i] as usize) - 1
+                    });
+                    let source = (z * grid[1] + y) * grid[2] + x;
+                    let dest = destination[source];
+                    for i in 0..3 {
+                        point[2 - i] = (f64::from(zyx[i]) + origins[dest][i] as f64
+                            - origins[source][i] as f64)
+                            as f32;
+                    }
+                }
+            }
+            self.keypoints = Some(Tensor::from_vec(coords, points.dims(), points.device())?);
+        }
+        Ok(self)
+    }
+}
+
+fn shuffle_volume(
+    tensor: &Tensor,
+    bounds: &[Vec<usize>; 3],
+    grid: [usize; 3],
+    origins: &[[usize; 3]],
+    sources: &[usize],
+) -> RivetResult<Tensor> {
+    let input = tensor.contiguous()?;
+    let channels = input.dims().get(3).copied().unwrap_or(1);
+    let height = input.dims()[1];
+    let width = input.dims()[2];
+    Ok(input.with_cpu_storage(|storage, layout| {
+        macro_rules! copy_rows {
+            ($values:expr) => {
+                Tensor::from_exact_writer(input.dims(), input.device(), |out| {
+                    for z in 0..grid[0] {
+                        for dz in 0..bounds[0][z + 1] - bounds[0][z] {
+                            for y in 0..grid[1] {
+                                for dy in 0..bounds[1][y + 1] - bounds[1][y] {
+                                    let first_cell = (z * grid[1] + y) * grid[2];
+                                    for x in 0..grid[2] {
+                                        let [sz, sy, sx] = origins[sources[first_cell + x]];
+                                        let first = layout.start_offset()
+                                            + (((sz + dz) * height + sy + dy) * width + sx)
+                                                * channels;
+                                        let len = (bounds[2][x + 1] - bounds[2][x]) * channels;
+                                        out.extend_from_slice(&$values[first..first + len])?;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(())
+                })
+            };
+        }
+        match storage {
+            CpuStorageRef::U8(v) => copy_rows!(v),
+            CpuStorageRef::F32(v) => copy_rows!(v),
+            CpuStorageRef::I64(v) => copy_rows!(v),
+            _ => unreachable!("validated volume grid dtype"),
+        }
+    })?)
+}

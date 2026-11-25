@@ -159,3 +159,42 @@ def test_all_cubic_symmetries_and_seeded_reorientation():
         for seed, results in enumerate(pool.map(apply, range(12))):
             for parallel, serial in zip(results, apply(seed), strict=True):
                 np.testing.assert_array_equal(parallel, serial)
+
+
+def test_grid_shuffle3d_uneven_cells_and_seed():
+    from concurrent.futures import ThreadPoolExecutor
+
+    z, y, x = np.indices((5, 6, 7))
+    mask = (z * 42 + y * 7 + x).astype(np.int64) + 2**53
+    volume = np.stack([mask - 2**53, 255 - (mask - 2**53)], axis=-1).astype(np.uint8)
+    points = np.stack([x.ravel(), y.ravel(), z.ravel()], axis=1).astype(np.float32)
+    points += 0.25
+    points = np.concatenate([points, [[-1, 3, 2]]])
+    sample = VolumeSample(volume, mask=mask, keypoints=points, label=37)
+
+    def shuffle(seed):
+        return sample.grid_shuffle3d((2, 3, 3), seed=seed).to_dict()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        outputs = list(pool.map(shuffle, range(4)))
+    changed = False
+    for seed, out in enumerate(outputs):
+        xv, yv, zv = out["keypoints"][:-1].astype(int).T
+        np.testing.assert_array_equal(out["mask"][zv, yv, xv], mask.ravel())
+        np.testing.assert_array_equal(out["volume"][zv, yv, xv], volume.reshape(-1, 2))
+        np.testing.assert_array_equal(out["keypoints"][:-1] % 1, points[:-1] % 1)
+        np.testing.assert_array_equal(out["keypoints"][-1], points[-1])
+        np.testing.assert_array_equal(out["volume"], shuffle(seed)["volume"])
+        assert out["label"] == 37
+        changed |= not np.array_equal(out["volume"], volume)
+        # Every X-run in a cell is transplanted intact, including the short cells.
+        for start, stop in ((0, 3), (3, 5), (5, 7)):
+            np.testing.assert_array_equal(np.diff(out["mask"][..., start:stop], axis=2), 1)
+    assert changed
+    gray = VolumeSample(volume[..., 0].astype(np.float32))
+    np.testing.assert_array_equal(
+        gray.grid_shuffle3d((1, 1, 1)).to_dict()["volume"], volume[..., 0]
+    )
+    for grid in ((0, 2, 2), (6, 2, 2)):
+        with pytest.raises(ValueError):
+            sample.grid_shuffle3d(grid)
