@@ -176,6 +176,11 @@ impl ImagePipeline {
         ))
     }
 
+    /// Reorder channels using a complete permutation of the input indices.
+    pub fn channel_swap(self, channel_order: Vec<usize>) -> Self {
+        self.v2(crate::transforms::V2Config::PermuteChannels(channel_order))
+    }
+
     /// Replace a seeded subset of eligible channels.
     pub fn channel_dropout(self, config: crate::transforms::ChannelDropoutConfig) -> Self {
         self.v2(crate::transforms::V2Config::ChannelDropout(

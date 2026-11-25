@@ -417,6 +417,13 @@ class Transform:
             )
         )
 
+    def channel_swap(self, channel_order: Iterable[int] = (2, 1, 0)) -> Transform:
+        """Apply a fixed channel order. The default swaps red and blue.
+
+        The order must contain each input channel index exactly once.
+        """
+        return self.permute_channels(channel_order)
+
     def permute_channels(self, permutation: Iterable[int]) -> Transform:
         """Reorder channels with a permutation containing each channel once."""
         return Transform(self._inner.permute_channels(list(permutation)))

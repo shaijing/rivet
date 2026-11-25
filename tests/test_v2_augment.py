@@ -2162,3 +2162,22 @@ def test_xy_masking_axis_units_and_layout(tmp_path):
     )[0]
     assert floats.dtype == np.float32
     np.testing.assert_array_equal(floats, 0.25)
+
+
+def test_channel_swap_fixed_order_and_layout(source):
+    root, pixels = source
+    np.testing.assert_array_equal(output(root, lambda p: p.channel_swap())[0], pixels[..., ::-1])
+    order = (1, 2, 0)
+    serial = output(root, lambda p: p.channel_swap(order))
+    np.testing.assert_array_equal(
+        serial, output(root, lambda p: p.channel_swap(order), transform=True, workers=3)
+    )
+    floats = output(
+        root, lambda p: p.to_dtype("float32", True).hwc_to_chw().channel_swap(order)
+    )[0]
+    assert floats.dtype == np.float32 and floats.shape == (3, *pixels.shape[:2])
+    np.testing.assert_allclose(floats, pixels[..., list(order)].transpose(2, 0, 1) / 255, atol=1e-7)
+    with pytest.raises(ValueError):
+        output(root, lambda p: p.channel_swap((0, 0, 1)))
+    with pytest.raises(ValueError):
+        output(root, lambda p: p.channel_swap((0, 1)))
