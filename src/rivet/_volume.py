@@ -176,5 +176,24 @@ class VolumeSample:
         )
         return result
 
+    def anisotropy3d(
+        self,
+        axes: tuple[int, ...] = (0, 1, 2),
+        *,
+        num_axes_range: tuple[int, int] = (1, 1),
+        downscale_factor_range: tuple[float, float] = (1.5, 4.0),
+        antialias: bool = True,
+        seed: int = 0,
+    ) -> VolumeSample:
+        """Degrade selected DHW axes and restore the grid with trilinear interpolation.
+
+        Area averaging antialiases the reduction. Annotations retain their coordinates.
+        """
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.anisotropy3d(
+            axes, num_axes_range, downscale_factor_range, antialias, seed,
+        )
+        return result
+
     def to_dict(self) -> dict[str, Any]:
         return self._inner.to_dict()

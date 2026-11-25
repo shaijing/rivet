@@ -1,8 +1,8 @@
 use crate::{error::to_py_err, numpy::tensor_to_numpy, structured::tensor_from_numpy};
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 use rivet_vision::volume::{
-    CoarseDropout3DConfig, Crop3DConfig, Pad3DConfig, PadIfNeeded3DConfig, Resize3DConfig,
-    VolumeInterpolation, VolumeSample, volume_axis_mask,
+    Anisotropy3DConfig, CoarseDropout3DConfig, Crop3DConfig, Pad3DConfig, PadIfNeeded3DConfig,
+    Resize3DConfig, VolumeInterpolation, VolumeSample, volume_axis_mask,
 };
 
 #[pyclass(name = "_VolumeSample")]
@@ -247,6 +247,29 @@ impl PyVolumeSample {
             .inner
             .clone()
             .coarse_dropout(&config, &mut rng)
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
+    fn anisotropy3d(
+        &self,
+        axes: Vec<usize>,
+        num_axes_range: [usize; 2],
+        downscale_factor_range: [f64; 2],
+        antialias: bool,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let mut rng = rivet_vision::RandomStream::from_seed(seed);
+        let config = Anisotropy3DConfig {
+            axes,
+            num_axes_range,
+            downscale_factor_range,
+            antialias,
+        };
+        let inner = self
+            .inner
+            .clone()
+            .anisotropy(&config, &mut rng)
             .map_err(to_py_err)?;
         Ok(Self { inner })
     }

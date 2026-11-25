@@ -880,3 +880,112 @@ fn erase_volume(
         }
     })?)
 }
+
+#[derive(Clone, Debug)]
+pub struct Anisotropy3DConfig {
+    pub axes: Vec<usize>,
+    pub num_axes_range: [usize; 2],
+    pub downscale_factor_range: [f64; 2],
+    pub antialias: bool,
+}
+
+impl VolumeSample {
+    /// Simulate reduced acquisition resolution while preserving the label grid.
+    pub fn anisotropy(
+        mut self,
+        config: &Anisotropy3DConfig,
+        rng: &mut rivet_data::random::RandomStream,
+    ) -> RivetResult<Self> {
+        self.validate()?;
+        volume_axis_mask(&config.axes)?;
+        let [min, max] = config.num_axes_range;
+        let [low, high] = config.downscale_factor_range;
+        if min == 0
+            || min > max
+            || max > config.axes.len()
+            || !low.is_finite()
+            || !high.is_finite()
+            || low <= 1.0
+            || high < low
+        {
+            return Err(invalid_argument(
+                "invalid Anisotropy3D axis count or downscale factor range",
+            ));
+        }
+        let shape = self.spatial_shape()?;
+        let count = rng.gen_range_usize(min..max + 1)?;
+        let mut reduced = shape;
+        let mut axes = config.axes.clone();
+        for index in 0..count {
+            let selected = rng.gen_range_usize(index..axes.len())?;
+            axes.swap(index, selected);
+            let axis = axes[index];
+            let factor = low + (high - low) * rng.next_f64();
+            reduced[axis] = ((shape[axis] as f64 / factor).round() as usize).max(1);
+        }
+        if reduced != shape {
+            let down = if config.antialias {
+                area_downsample(&self.volume, shape, reduced)?
+            } else {
+                resample(&self.volume, shape, reduced, VolumeInterpolation::Linear)?
+            };
+            self.volume = resample(&down, reduced, shape, VolumeInterpolation::Linear)?;
+        }
+        Ok(self)
+    }
+}
+
+fn area_downsample(input: &Tensor, old: [usize; 3], new: [usize; 3]) -> RivetResult<Tensor> {
+    let weights: [Vec<Vec<(usize, f64)>>; 3] = std::array::from_fn(|axis| {
+        let ratio = old[axis] as f64 / new[axis] as f64;
+        (0..new[axis])
+            .map(|i| {
+                let left = i as f64 * ratio;
+                let right = (i + 1) as f64 * ratio;
+                (left.floor() as usize..(right.ceil() as usize).min(old[axis]))
+                    .map(|j| (j, (right.min((j + 1) as f64) - left.max(j as f64)) / ratio))
+                    .collect()
+            })
+            .collect()
+    });
+    let mut dims = input.dims().to_vec();
+    dims[..3].copy_from_slice(&new);
+    let channels = dims.get(3).copied().unwrap_or(1);
+    let input = input.contiguous()?;
+    Ok(input.with_cpu_storage(|storage, layout| {
+        macro_rules! sample {
+            ($data:expr, $cast:expr) => {
+                Tensor::from_exact_writer(dims.as_slice(), input.device(), |out| {
+                    for zs in &weights[0] {
+                        for ys in &weights[1] {
+                            for xs in &weights[2] {
+                                for c in 0..channels {
+                                    let mut sum = 0.0;
+                                    for &(z, wz) in zs {
+                                        for &(y, wy) in ys {
+                                            let row = layout.start_offset()
+                                                + (z * old[1] + y) * old[2] * channels;
+                                            let wyz = wy * wz;
+                                            for &(x, wx) in xs {
+                                                sum += f64::from($data[row + x * channels + c])
+                                                    * wx
+                                                    * wyz;
+                                            }
+                                        }
+                                    }
+                                    out.write_next($cast(sum))?;
+                                }
+                            }
+                        }
+                    }
+                    Ok(())
+                })
+            };
+        }
+        match storage {
+            CpuStorageRef::U8(v) => sample!(v, |v: f64| v.round() as u8),
+            CpuStorageRef::F32(v) => sample!(v, |v: f64| v as f32),
+            _ => unreachable!("validated volume dtype"),
+        }
+    })?)
+}

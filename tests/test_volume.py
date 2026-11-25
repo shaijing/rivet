@@ -242,3 +242,41 @@ def test_coarse_dropout3d_full_empty_and_invalid():
         sample.coarse_dropout3d(hole_depth_range=(0.5, 0.1))
     with pytest.raises(ValueError):
         sample.coarse_dropout3d(fill=(1, 2))
+
+
+def test_anisotropy3d_filters_only_selected_axis_and_keeps_annotations():
+    signal = np.array([0, 0, 9, 0, 0, 0], dtype=np.float32)
+    image = np.broadcast_to(signal[:, None, None, None], (6, 2, 3, 2)).copy()
+    image[..., 1] += 12
+    mask = np.arange(36, dtype=np.int64).reshape(6, 2, 3) + 2**53
+    sample = VolumeSample(image, mask=mask, keypoints=[[1, 1, 4]], label=47)
+    args = dict(axes=(0,), downscale_factor_range=(3, 3))
+    out = sample.anisotropy3d(**args).to_dict()
+    expected = np.array([3, 3, 2, 1, 0, 0], dtype=np.float32)[:, None, None, None]
+    np.testing.assert_allclose(out["volume"], np.broadcast_to(expected + [0, 12], image.shape))
+    np.testing.assert_array_equal(out["mask"], mask)
+    np.testing.assert_array_equal(out["keypoints"], [[1, 1, 4]])
+    assert out["volume"].dtype == np.float32 and out["label"] == 47
+    no_filter = sample.anisotropy3d(**args, antialias=False).to_dict()
+    np.testing.assert_array_equal(no_filter["volume"][..., 0], 0)
+
+
+def test_anisotropy3d_seeded_axes_on_uint8():
+    from concurrent.futures import ThreadPoolExecutor
+
+    rng = np.random.default_rng(22)
+    volume = rng.integers(0, 256, (5, 7, 9), dtype=np.uint8)
+    sample = VolumeSample(volume)
+
+    def run(seed):
+        return sample.anisotropy3d(num_axes_range=(1, 3), seed=seed).to_dict()["volume"]
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        outputs = list(pool.map(run, range(8)))
+    assert len({out.tobytes() for out in outputs}) > 1
+    for seed, out in enumerate(outputs):
+        assert out.dtype == volume.dtype and out.shape == volume.shape
+        np.testing.assert_array_equal(out, run(seed))
+    for kwargs in ({"axes": (0, 0)}, {"axes": (1,), "num_axes_range": (1, 2)}, {"downscale_factor_range": (1, 2)}):
+        with pytest.raises(ValueError):
+            sample.anisotropy3d(**kwargs)
