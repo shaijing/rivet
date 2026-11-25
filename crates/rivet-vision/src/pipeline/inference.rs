@@ -271,6 +271,18 @@ pub(crate) fn infer_image_op(
             use crate::transforms::V2Config;
             require_u8_or_f32_decoded(input_state, op.name())?;
             match config {
+                V2Config::RandomSizedCrop(config) => {
+                    require_u8_hwc(input_state, op.name())?;
+                    if matches!(channel_dim(input), ShapeDim::Known(c) if c != 3) {
+                        return Err(invalid_pipeline("RandomSizedCrop requires RGB input"));
+                    }
+                    set_spatial_shape(
+                        &mut output,
+                        ShapeDim::Known(config.height as usize),
+                        ShapeDim::Known(config.width as usize),
+                    );
+                    output.contiguity = Some(Contiguity::Contiguous);
+                }
                 V2Config::RandomResize { .. }
                 | V2Config::RandomShortestSize { .. }
                 | V2Config::RandomScale { .. }

@@ -47,6 +47,8 @@ pub use pixel_mask::{
 mod resize;
 mod resized_crop;
 mod rotate;
+mod sized_crop;
+pub use sized_crop::RandomSizedCropConfig;
 mod u8_color;
 mod weather;
 pub use fog::{AtmosphericFogConfig, FogDepthMode, RandomFogConfig};

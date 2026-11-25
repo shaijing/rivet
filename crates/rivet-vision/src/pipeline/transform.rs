@@ -780,6 +780,11 @@ impl TransformSequence {
         self
     }
 
+    /// Crop a random window at a fixed aspect ratio and resize to an exact size.
+    pub fn random_sized_crop(self, config: crate::transforms::RandomSizedCropConfig) -> Self {
+        self.v2(crate::transforms::V2Config::RandomSizedCrop(config))
+    }
+
     pub fn random_resized_crop(mut self, width: u32, height: u32) -> Self {
         self.ops.push(ImageOp::random_resized_crop(width, height));
         self

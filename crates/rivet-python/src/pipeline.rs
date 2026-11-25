@@ -343,6 +343,28 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (min_max_height, size, w2h_ratio=1.0, interpolation="bilinear"))]
+    fn random_sized_crop(
+        &self,
+        min_max_height: (u32, u32),
+        size: (u32, u32),
+        w2h_ratio: f64,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        let (height, width) = size;
+        let config = V2Config::RandomSizedCrop(rivet_vision::transforms::RandomSizedCropConfig {
+            width,
+            height,
+            min_max_height,
+            w2h_ratio,
+            interpolation: parse_interpolation(interpolation)?,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     fn center_crop(&self, width: u32, height: u32) -> Self {
         Self {
             inner: self.inner.clone().center_crop(width, height),
@@ -2448,6 +2470,28 @@ impl PyImagePipeline {
         let config = V2Config::RandomCropFromBorders {
             fractions: [crop_left, crop_right, crop_top, crop_bottom],
         };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (min_max_height, size, w2h_ratio=1.0, interpolation="bilinear"))]
+    fn random_sized_crop(
+        &self,
+        min_max_height: (u32, u32),
+        size: (u32, u32),
+        w2h_ratio: f64,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        let (height, width) = size;
+        let config = V2Config::RandomSizedCrop(rivet_vision::transforms::RandomSizedCropConfig {
+            width,
+            height,
+            min_max_height,
+            w2h_ratio,
+            interpolation: parse_interpolation(interpolation)?,
+        });
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

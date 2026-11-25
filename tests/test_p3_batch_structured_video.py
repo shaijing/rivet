@@ -1130,3 +1130,16 @@ def test_random_crop_from_borders_aligns_structured_targets():
         np.testing.assert_array_equal(target["keypoints"], [[[9-left, 7-top]]])
         np.testing.assert_array_equal(target["labels"], [3])
         assert target["masks"].shape == (1, *out.shape[:2])
+
+
+def test_random_sized_crop_resizes_structured_fields(annotated):
+    original = annotated.to_dict()
+    transform = rivet.Transform().random_sized_crop((10, 10), (5, 6), 1.2, "nearest")
+    pipeline = rivet.StructuredPipeline([annotated] * 3).compose(transform).seed(33).batch(3)
+    result = next(iter(pipeline.workers(3).execute()))
+    assert result["images"].shape == (3, 5, 6, 3)
+    target = result["targets"][0]
+    np.testing.assert_array_equal(target["boxes"], original["boxes"] / 2)
+    np.testing.assert_array_equal(target["labels"], original["labels"])
+    np.testing.assert_array_equal(target["keypoints"], original["keypoints"] / 2)
+    np.testing.assert_array_equal(target["masks"], original["masks"][:, ::2, ::2])

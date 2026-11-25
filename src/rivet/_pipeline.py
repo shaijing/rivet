@@ -417,6 +417,23 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def random_sized_crop(
+        self,
+        min_max_height: tuple[int, int],
+        size: tuple[int, int],
+        w2h_ratio: float = 1.0,
+        interpolation: str = "bilinear",
+    ) -> Pipeline:
+        """Sample a fitting crop height and resize to (height, width).
+
+        The width is floor(height * w2h_ratio), with a minimum of one.
+        The crop height range is inclusive. Image input is uint8 HWC RGB.
+        Structured composition also supports CHW and resizes masks with
+        nearest-neighbor sampling.
+        """
+        inner = self._inner.random_sized_crop(min_max_height, size, w2h_ratio, interpolation)
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def random_resized_crop(self, width: int, height: int) -> Pipeline:
         return Pipeline(
             self._inner.random_resized_crop(width, height), as_numpy=self.as_numpy

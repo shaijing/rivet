@@ -2307,3 +2307,19 @@ def test_random_crop_from_borders_layout_seed_and_bounds(source):
         np.testing.assert_array_equal(image, base)
     with pytest.raises(ValueError):
         rivet.Transform().random_crop_from_borders(1.1)
+
+
+def test_random_sized_crop_samples_fitting_windows(source):
+    root, _ = source
+
+    def augment(p):
+        return p.random_sized_crop((4, 15), (5, 7), w2h_ratio=2, interpolation="nearest")
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(root, augment, epoch=1))
+    assert all(image.shape == (5, 7, 3) and image.dtype == np.uint8 for image in serial)
+    with pytest.raises(ValueError, match="RandomSizedCrop"):
+        output(root, lambda p: p.random_sized_crop((10, 12), (5, 7), w2h_ratio=2))
+    with pytest.raises(ValueError, match="RandomSizedCrop"):
+        output(root, lambda p: p.to_dtype("float32", True).random_sized_crop((4, 6), (5, 7)))

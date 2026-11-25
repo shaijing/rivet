@@ -267,6 +267,7 @@ pub enum V2Config {
         scale: bool,
     },
     GridMask(std::sync::Arc<GridMaskConfig>),
+    RandomSizedCrop(RandomSizedCropConfig),
 }
 impl V2Config {
     pub fn name(&self) -> &'static str {
@@ -275,6 +276,7 @@ impl V2Config {
             Self::RandomChannelPermutation { .. } => "RandomChannelPermutation",
             Self::RandomPhotometricDistort { .. } => "RandomPhotometricDistort",
             Self::RandomCropFromBorders { .. } => "RandomCropFromBorders",
+            Self::RandomSizedCrop(_) => "RandomSizedCrop",
             Self::RandomResize { .. } => "RandomResize",
             Self::RandomShortestSize { .. } => "RandomShortestSize",
             Self::ScaleJitter { .. } => "ScaleJitter",
@@ -347,6 +349,7 @@ impl V2Config {
             Self::RandomChannelPermutation { .. } => 50,
             Self::RandomPhotometricDistort { .. } => 51,
             Self::RandomCropFromBorders { .. } => 114,
+            Self::RandomSizedCrop(_) => 115,
             Self::RandomResize { .. } => 52,
             Self::RandomShortestSize { .. } => 53,
             Self::ScaleJitter { .. } => 54,
@@ -448,6 +451,7 @@ impl V2Config {
             Self::RandomCropFromBorders { fractions } => {
                 fractions.iter().all(|v| (0.0..=1.0).contains(v))
             }
+            Self::RandomSizedCrop(config) => config.valid(),
             Self::XyMasking(config) => config.valid(),
             Self::ChannelDropout(config) => config.valid(),
             Self::PixelDropout(config) => config.valid(),
@@ -918,6 +922,17 @@ impl V2Config {
             Self::RandomCropFromBorders { fractions } => {
                 let [x, y, w, h] = super::sample_border_crop(h, w, *fractions, rng)?;
                 return CropConfig::new(x, y, w, h).apply(ImageSample::Decoded(s), axis);
+            }
+            Self::RandomSizedCrop(config) => {
+                s = require_u8_hwc(s, self.name())?;
+                let [x, y, w, h] = config.sample(h, w, rng)?;
+                let cropped = CropConfig::new(x, y, w, h).apply(ImageSample::Decoded(s), axis)?;
+                return ResizeConfig::with_interpolation(
+                    config.width,
+                    config.height,
+                    config.interpolation,
+                )
+                .apply(cropped);
             }
             Self::RandomResize {
                 min_size,
