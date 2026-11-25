@@ -108,6 +108,7 @@ pub enum V2Config {
         elementwise: bool,
     },
     RandomSunFlare(std::sync::Arc<RandomSunFlareConfig>),
+    Spatter(std::sync::Arc<SpatterConfig>),
     RandomGravel(RandomGravelConfig),
     RandomSnow(RandomSnowConfig),
     RandomRain(std::sync::Arc<RandomRainConfig>),
@@ -229,6 +230,7 @@ impl V2Config {
             Self::AdditiveNoise(_) => "AdditiveNoise",
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::RandomSunFlare(_) => "RandomSunFlare",
+            Self::Spatter(_) => "Spatter",
             Self::RandomGravel(_) => "RandomGravel",
             Self::RandomSnow(_) => "RandomSnow",
             Self::RandomRain(_) => "RandomRain",
@@ -277,6 +279,7 @@ impl V2Config {
             Self::AdditiveNoise(_) => 83,
             Self::MultiplicativeNoise { .. } => 82,
             Self::RandomSunFlare(_) => 88,
+            Self::Spatter(_) => 93,
             Self::RandomGravel(_) => 92,
             Self::RandomSnow(_) => 91,
             Self::RandomRain(_) => 90,
@@ -323,6 +326,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::Spatter(config) => config.valid(),
             Self::RandomGravel(config) => config.valid(),
             Self::RandomSnow(config) => config.valid(),
             Self::RandomRain(config) => config.valid(),
@@ -795,6 +799,7 @@ impl V2Config {
             | Self::AdditiveNoise(_)
             | Self::MultiplicativeNoise { .. }
             | Self::RandomSunFlare(_)
+            | Self::Spatter(_)
             | Self::RandomGravel(_)
             | Self::RandomSnow(_)
             | Self::RandomRain(_)
@@ -993,6 +998,9 @@ impl V2Config {
             }
             Self::RandomRain(config) => {
                 s.image = super::weather::random_rain(&s.image, config, rng)?;
+            }
+            Self::Spatter(config) => {
+                s.image = super::weather::spatter(&s.image, config, rng)?;
             }
             Self::RandomGravel(config) => {
                 s.image = super::weather::random_gravel(&s.image, config, rng)?;

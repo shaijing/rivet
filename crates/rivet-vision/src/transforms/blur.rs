@@ -337,7 +337,7 @@ pub(super) fn median_blur_3x3(input: &rivet_core::Tensor) -> RivetResult<rivet_c
     })?)
 }
 
-fn reflect101(index: i64, len: usize) -> usize {
+pub(super) fn reflect101(index: i64, len: usize) -> usize {
     let len = len as i64;
     if (0..len).contains(&index) {
         return index as usize;

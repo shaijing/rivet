@@ -715,6 +715,24 @@ class Pipeline:
         inner = self._inner.lens_flare(flare_roi, num_ghosts_range, intensity_range, num_rays_range, bloom_range)
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def spatter(
+        self,
+        mean_range: tuple[float, float] = (0.65, 0.65),
+        std_range: tuple[float, float] = (0.3, 0.3),
+        gauss_sigma_range: tuple[float, float] = (2.0, 3.0),
+        cutout_threshold_range: tuple[float, float] = (0.68, 0.68),
+        intensity_range: tuple[float, float] = (0.6, 0.6),
+        mode: str = "rain",
+        color: tuple[int, int, int] | None = None,
+    ) -> Pipeline:
+        """Add seeded rain highlights or mud occlusion to uint8 or float32 HWC RGB.
+
+        Threshold controls drop coverage, sigma controls edge softness, and
+        intensity scales the overlay. Color, when supplied, is uint8 RGB.
+        """
+        inner = self._inner.spatter(mean_range, std_range, gauss_sigma_range, cutout_threshold_range, intensity_range, mode, color)
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def random_gravel(
         self,
         gravel_roi: tuple[float, float, float, float] = (0.1, 0.4, 0.9, 0.9),

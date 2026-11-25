@@ -100,6 +100,13 @@ impl TransformSequence {
         )))
     }
 
+    /// Overlay seeded rain or mud on the lens.
+    pub fn spatter(self, config: crate::transforms::SpatterConfig) -> Self {
+        self.v2(crate::transforms::V2Config::Spatter(std::sync::Arc::new(
+            config,
+        )))
+    }
+
     /// Scatter seeded gravel particles in a normalized region.
     pub fn random_gravel(self, config: crate::transforms::RandomGravelConfig) -> Self {
         self.v2(crate::transforms::V2Config::RandomGravel(config))

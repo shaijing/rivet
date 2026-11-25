@@ -1039,6 +1039,39 @@ impl PyTransform {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (mean_range=(0.65, 0.65), std_range=(0.3, 0.3), gauss_sigma_range=(2.0, 3.0), cutout_threshold_range=(0.68, 0.68), intensity_range=(0.6, 0.6), mode="rain", color=None))]
+    fn spatter(
+        &self,
+        mean_range: (f64, f64),
+        std_range: (f64, f64),
+        gauss_sigma_range: (f64, f64),
+        cutout_threshold_range: (f64, f64),
+        intensity_range: (f64, f64),
+        mode: &str,
+        color: Option<(u8, u8, u8)>,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{SpatterConfig, SpatterMode};
+        let mode = match mode {
+            "rain" => SpatterMode::Rain,
+            "mud" => SpatterMode::Mud,
+            _ => return Err(PyValueError::new_err("mode must be rain or mud")),
+        };
+        let config = V2Config::Spatter(std::sync::Arc::new(SpatterConfig {
+            mean_range,
+            std_range,
+            gauss_sigma_range,
+            cutout_threshold_range,
+            intensity_range,
+            mode,
+            color: color.map(|(r, g, b)| [r, g, b]),
+        }));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (gravel_roi=(0.1, 0.4, 0.9, 0.9), number_of_patches=2))]
     fn random_gravel(
         &self,
@@ -2671,6 +2704,39 @@ impl PyImagePipeline {
                 bloom_range,
             },
         ));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (mean_range=(0.65, 0.65), std_range=(0.3, 0.3), gauss_sigma_range=(2.0, 3.0), cutout_threshold_range=(0.68, 0.68), intensity_range=(0.6, 0.6), mode="rain", color=None))]
+    fn spatter(
+        &self,
+        mean_range: (f64, f64),
+        std_range: (f64, f64),
+        gauss_sigma_range: (f64, f64),
+        cutout_threshold_range: (f64, f64),
+        intensity_range: (f64, f64),
+        mode: &str,
+        color: Option<(u8, u8, u8)>,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{SpatterConfig, SpatterMode};
+        let mode = match mode {
+            "rain" => SpatterMode::Rain,
+            "mud" => SpatterMode::Mud,
+            _ => return Err(PyValueError::new_err("mode must be rain or mud")),
+        };
+        let config = V2Config::Spatter(std::sync::Arc::new(SpatterConfig {
+            mean_range,
+            std_range,
+            gauss_sigma_range,
+            cutout_threshold_range,
+            intensity_range,
+            mode,
+            color: color.map(|(r, g, b)| [r, g, b]),
+        }));
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

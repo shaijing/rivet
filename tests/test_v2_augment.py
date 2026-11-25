@@ -1539,3 +1539,40 @@ def test_random_gravel_roi_seed_and_dtype(tmp_path):
         output(tmp_path, lambda p: p.grayscale().random_gravel())
     with pytest.raises(ValueError):
         rivet.Transform().random_gravel((0, 1, 1, 0))
+
+
+@pytest.mark.parametrize("mode", ["rain", "mud"])
+def test_spatter_seed_range_and_identity(source, mode):
+    root, pixels = source
+
+    def augment(p):
+        return p.to_dtype("float32", True).spatter(mode=mode)
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(root, augment, epoch=1))
+    assert serial[0].dtype == np.float32 and serial[0].shape == pixels.shape
+    assert 0 <= np.min(serial) <= np.max(serial) <= 1
+    assert not np.allclose(serial[0], pixels / 255)
+    unchanged = output(root, lambda p: p.spatter(mode=mode, intensity_range=(0, 0)))
+    np.testing.assert_array_equal(unchanged[0], pixels)
+    with pytest.raises(ValueError, match="Spatter"):
+        output(root, lambda p: p.hwc_to_chw().spatter(mode=mode))
+
+
+def test_spatter_mud_full_and_empty_coverage(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.full((1, 1, 3), 64, dtype=np.uint8)
+    Image.fromarray(pixels).save(folder / "image.png")
+
+    def augment(p, threshold):
+        return p.spatter(
+            (1, 1), (0, 0), (2, 2), (threshold, threshold), (1, 1),
+            mode="mud", color=(20, 30, 40),
+        )
+
+    full = output(tmp_path, lambda p: augment(p, 0.5), transform=True)[0]
+    assert full.dtype == np.uint8 and full.shape == pixels.shape
+    np.testing.assert_array_equal(full[0, 0], [20, 30, 40])
+    np.testing.assert_array_equal(output(tmp_path, lambda p: augment(p, 1))[0], pixels)

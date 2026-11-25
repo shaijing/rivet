@@ -303,3 +303,128 @@ pub(super) fn random_gravel(
         rgb.map(|v| v * (1.0 - f64::from(alpha)) + f64::from(shade))
     })
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpatterMode {
+    Rain,
+    Mud,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpatterConfig {
+    pub mean_range: (f64, f64),
+    pub std_range: (f64, f64),
+    pub gauss_sigma_range: (f64, f64),
+    pub cutout_threshold_range: (f64, f64),
+    pub intensity_range: (f64, f64),
+    pub mode: SpatterMode,
+    pub color: Option<[u8; 3]>,
+}
+
+impl SpatterConfig {
+    pub(super) fn valid(&self) -> bool {
+        [
+            self.mean_range,
+            self.std_range,
+            self.cutout_threshold_range,
+            self.intensity_range,
+        ]
+        .into_iter()
+        .all(|(lo, hi)| lo >= 0.0 && lo <= hi && hi <= 1.0)
+            && self.gauss_sigma_range.0 >= 0.0
+            && self.gauss_sigma_range.0 <= self.gauss_sigma_range.1
+            && self.gauss_sigma_range.1 <= 10.0
+    }
+}
+
+pub(super) fn spatter(
+    input: &Tensor,
+    config: &SpatterConfig,
+    rng: &mut RandomStream,
+) -> RivetResult<Tensor> {
+    let [height, width, 3] = *input.dims() else {
+        return Err(invalid_argument("Spatter requires HWC RGB input"));
+    };
+    if height == 0 || width == 0 || !matches!(input.dtype(), DType::U8 | DType::F32) {
+        return Err(invalid_argument(
+            "Spatter requires nonempty uint8 or float32 HWC RGB input",
+        ));
+    }
+    let mut sample = |(lo, hi)| lo + rng.next_f64() * (hi - lo);
+    let intensity = sample(config.intensity_range);
+    if intensity == 0.0 {
+        return Ok(input.clone());
+    }
+    let mean = sample(config.mean_range);
+    let std = sample(config.std_range);
+    let threshold = sample(config.cutout_threshold_range);
+    let sigma = sample(config.gauss_sigma_range);
+    let mut mask: Vec<_> = (0..height * width)
+        .map(|_| {
+            let liquid = (mean + std * super::noise::normal_pair(rng).0).clamp(0.0, 1.0);
+            if liquid > threshold { 1.0f32 } else { 0.0 }
+        })
+        .collect();
+    if sigma > 0.0 {
+        smooth_spatter_mask(&mut mask, width, height, sigma);
+    }
+    let color = config
+        .color
+        .unwrap_or(match config.mode {
+            SpatterMode::Rain => [238, 238, 175],
+            SpatterMode::Mud => [63, 42, 20],
+        })
+        .map(|v| f64::from(v) / 255.0);
+    write_weather_rgb(input, |x, y, rgb| {
+        let amount = f64::from(mask[y * width + x]).clamp(0.0, 1.0);
+        match config.mode {
+            SpatterMode::Mud => {
+                std::array::from_fn(|c| rgb[c] + intensity * amount * (color[c] - rgb[c]))
+            }
+            SpatterMode::Rain => {
+                let east = mask[y * width + (x + 1).min(width - 1)];
+                let south = mask[(y + 1).min(height - 1) * width + x];
+                let rim = f64::from(
+                    (mask[y * width + x] - east).abs() + (mask[y * width + x] - south).abs(),
+                );
+                let light = intensity * (0.35 * amount + 0.65 * rim.min(1.0));
+                std::array::from_fn(|c| rgb[c] + light * color[c] * (1.0 - rgb[c]))
+            }
+        }
+    })
+}
+
+fn smooth_spatter_mask(mask: &mut [f32], width: usize, height: usize, sigma: f64) {
+    let radius = (3.0 * sigma).ceil() as i64;
+    let mut kernel: Vec<_> = (-radius..=radius)
+        .map(|i| (-0.5 * (i as f64 / sigma).powi(2)).exp())
+        .collect();
+    let total = kernel.iter().sum::<f64>();
+    for v in &mut kernel {
+        *v /= total;
+    }
+    let reflect = super::blur::reflect101;
+    let mut rows = vec![0.0_f32; mask.len()];
+    for y in 0..height {
+        for x in 0..width {
+            rows[y * width + x] = kernel
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| {
+                    v * f64::from(mask[y * width + reflect(x as i64 + i as i64 - radius, width)])
+                })
+                .sum::<f64>() as f32;
+        }
+    }
+    for y in 0..height {
+        for x in 0..width {
+            mask[y * width + x] = kernel
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| {
+                    v * f64::from(rows[reflect(y as i64 + i as i64 - radius, height) * width + x])
+                })
+                .sum::<f64>() as f32;
+        }
+    }
+}
