@@ -267,6 +267,7 @@ pub enum V2Config {
         scale: bool,
     },
     SquareSymmetry(Option<SquareSymmetry>),
+    HistogramMatching(std::sync::Arc<HistogramMatchingConfig>),
     WaterRefraction(WaterRefractionConfig),
     RandomGridShuffle(RandomGridShuffleConfig),
     PixelSpread(PixelSpreadConfig),
@@ -343,6 +344,7 @@ impl V2Config {
             Self::Defocus { .. } => "Defocus",
             Self::ChannelDropout(_) => "ChannelDropout",
             Self::SquareSymmetry(_) => "SquareSymmetry",
+            Self::HistogramMatching(_) => "HistogramMatching",
             Self::WaterRefraction(_) => "WaterRefraction",
             Self::RandomGridShuffle(_) => "RandomGridShuffle",
             Self::PixelSpread(_) => "PixelSpread",
@@ -431,6 +433,7 @@ impl V2Config {
             Self::Defocus { .. } => 67,
             Self::ChannelDropout(_) => 111,
             Self::SquareSymmetry(_) => 122,
+            Self::HistogramMatching(_) => 135,
             Self::WaterRefraction(_) => 133,
             Self::RandomGridShuffle(_) => 132,
             Self::PixelSpread(_) => 131,
@@ -488,6 +491,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::HistogramMatching(config) => config.valid(),
             Self::WaterRefraction(config) => config.valid(),
             Self::RandomGridShuffle(config) => config.valid(),
             Self::PixelSpread(config) => config.valid(),
@@ -1535,6 +1539,12 @@ impl V2Config {
                     s.image = s.image.permute(&order)?;
                 }
                 s.image = super::quarter_turn(&s.image, axis, turns)?;
+            }
+            Self::HistogramMatching(config) => {
+                if axis != ImageAxisOrder::Hwc {
+                    return Err(invalid_argument("HistogramMatching requires HWC input"));
+                }
+                s.image = config.apply(&s.image, rng)?;
             }
             Self::WaterRefraction(config) => {
                 use super::remap::SpatialRemap;

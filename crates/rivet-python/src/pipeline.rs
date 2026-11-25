@@ -936,6 +936,24 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (references,blend_range=(0.5,1.0)))]
+    fn histogram_matching(
+        &self,
+        references: Vec<Bound<'_, PyAny>>,
+        blend_range: (f64, f64),
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{HistogramMatchingConfig, ReferenceImages};
+        let tensors = references
+            .iter()
+            .map(crate::structured::tensor_from_numpy)
+            .collect::<PyResult<_>>()?;
+        let references = ReferenceImages::new(tensors).map_err(to_py_err)?;
+        let config = HistogramMatchingConfig::new(references, blend_range).map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().histogram_matching(config),
+        })
+    }
+
     #[pyo3(signature = (amplitude_range=(0.01,0.05),wavelength_range=(0.05,0.2),num_waves_range=(3,7),*,interpolation="bilinear",fill=0,fill_mask=0))]
     fn water_refraction(
         &self,
@@ -3424,6 +3442,24 @@ impl PyImagePipeline {
         };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (references,blend_range=(0.5,1.0)))]
+    fn histogram_matching(
+        &self,
+        references: Vec<Bound<'_, PyAny>>,
+        blend_range: (f64, f64),
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{HistogramMatchingConfig, ReferenceImages};
+        let tensors = references
+            .iter()
+            .map(crate::structured::tensor_from_numpy)
+            .collect::<PyResult<_>>()?;
+        let references = ReferenceImages::new(tensors).map_err(to_py_err)?;
+        let config = HistogramMatchingConfig::new(references, blend_range).map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().histogram_matching(config),
         })
     }
 

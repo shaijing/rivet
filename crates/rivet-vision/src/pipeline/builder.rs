@@ -176,6 +176,13 @@ impl ImagePipeline {
         ))
     }
 
+    /// Match image channel histograms to a seeded reference.
+    pub fn histogram_matching(self, config: crate::transforms::HistogramMatchingConfig) -> Self {
+        self.v2(crate::transforms::V2Config::HistogramMatching(
+            std::sync::Arc::new(config),
+        ))
+    }
+
     /// Apply seeded, overlapping sinusoidal refraction waves.
     pub fn water_refraction(self, config: crate::transforms::WaterRefractionConfig) -> Self {
         self.v2(crate::transforms::V2Config::WaterRefraction(config))

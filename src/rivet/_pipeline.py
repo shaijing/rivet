@@ -12,6 +12,8 @@ from ._transforms import Transform
 from ._utils import _crop_pad_side_ranges, _normalize_fill, _normalize_jpeg_quality
 
 if TYPE_CHECKING:
+    from numpy.typing import NDArray
+
     from ._loader import DataLoader
 
 
@@ -632,6 +634,17 @@ class Pipeline:
             ),
             as_numpy=self.as_numpy,
         )
+
+    def histogram_matching(
+        self, references: Iterable[NDArray], blend_range: tuple[float, float] = (0.5, 1.0)
+    ) -> Pipeline:
+        """Match channel histograms to a seeded choice of decoded NumPy references.
+
+        References are HW or HWC uint8 or normalized float32 arrays. Their
+        channel counts must match the HWC input. A blend of zero is identity.
+        Float32 histogram matching uses 1024 intensity bins.
+        """
+        return Pipeline(self._inner.histogram_matching(list(references), blend_range), as_numpy=self.as_numpy)
 
     def water_refraction(
         self,

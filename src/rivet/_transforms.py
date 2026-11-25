@@ -5,9 +5,14 @@ from __future__ import annotations
 import math
 
 from collections.abc import Iterable, Sequence
+from typing import TYPE_CHECKING
 
 from ._rivet import _Transform
 from ._utils import _crop_pad_side_ranges, _normalize_fill, _normalize_jpeg_quality
+
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 
 class Transform:
@@ -536,6 +541,17 @@ class Transform:
                 value if isinstance(value, (int, float, str)) else list(value),
             )
         )
+
+    def histogram_matching(
+        self, references: Iterable[NDArray], blend_range: tuple[float, float] = (0.5, 1.0)
+    ) -> Transform:
+        """Match channel histograms to a seeded choice of decoded NumPy references.
+
+        References are HW or HWC uint8 or normalized float32 arrays. Their
+        channel counts must match the HWC input. A blend of zero is identity.
+        Float32 histogram matching uses 1024 intensity bins.
+        """
+        return Transform(self._inner.histogram_matching(list(references), blend_range))
 
     def water_refraction(
         self,

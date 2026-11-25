@@ -2559,3 +2559,39 @@ def test_water_refraction_seed_layout_and_zero_amplitude(source):
     np.testing.assert_array_equal(chw, serial[0].transpose(2, 0, 1))
     with pytest.raises(ValueError):
         rivet.Transform().water_refraction(wavelength_range=(0, 0.1))
+
+
+def test_histogram_matching_maps_empirical_quantiles(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.array([[10, 20], [50, 200]], dtype=np.uint8)
+    Image.fromarray(np.repeat(pixels[..., None], 3, axis=-1)).save(folder / "image.png")
+    reference = np.array([[30, 60], [90, 100]], dtype=np.uint8)
+    image = output(
+        tmp_path, lambda p: p.grayscale().histogram_matching([reference], (1, 1)), transform=True
+    )[0]
+    np.testing.assert_array_equal(image[..., 0], reference)
+    floats = output(
+        tmp_path, lambda p: p.grayscale().to_dtype("float32", True).histogram_matching([reference], (1, 1))
+    )[0]
+    assert floats.dtype == np.float32
+    np.testing.assert_allclose(floats[..., 0], reference / 255, atol=1e-7)
+
+
+def test_histogram_matching_seeded_reference_selection(source):
+    root, pixels = source
+    refs = [np.full((2, 3, 3), value, dtype=np.uint8) for value in [32, 83, 144, 201]]
+
+    def augment(p):
+        return p.histogram_matching(refs, (1, 1))
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(root, augment, epoch=1))
+    assert set(np.unique(serial)) <= {32, 83, 144, 201}
+    identity = output(root, lambda p: p.histogram_matching(refs, (0, 0)))[0]
+    np.testing.assert_array_equal(identity, pixels)
+    with pytest.raises(ValueError, match="channel"):
+        output(root, lambda p: p.histogram_matching([np.zeros((1, 1), np.uint8)]))
+    with pytest.raises(ValueError):
+        rivet.Transform().histogram_matching([])
