@@ -72,7 +72,7 @@ pub enum PaddingMode {
 
 pub use advanced_geometry::{
     AffineConfig, ArbitraryRotateConfig, ElasticTransformConfig, PerspectiveConfig, Point2,
-    RandomAffineConfig, RandomPerspectiveConfig,
+    RandomAffineConfig, RandomPerspectiveConfig, SafeRotateConfig,
 };
 pub use blur::{EnhanceMode, GaussianBlurConfig};
 pub use color::{
@@ -307,6 +307,6 @@ pub use v2::{
 mod v2_jpeg;
 mod v2_numeric;
 
-pub(crate) use advanced_geometry::{homography, rotation_inverse};
+pub(crate) use advanced_geometry::{homography, pillow_affine_map, rotation_inverse};
 
 pub use letterbox::LetterBoxConfig;

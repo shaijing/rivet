@@ -2387,3 +2387,17 @@ def test_square_symmetry_sampling_and_dtype(source):
     np.testing.assert_allclose(planar[0], hwc[0].transpose(2, 0, 1) / 255, atol=1e-7)
     with pytest.raises(ValueError):
         rivet.Transform().d4("invalid")
+
+
+def test_safe_rotate_keeps_extent_and_layout(source):
+    root, pixels = source
+    np.testing.assert_array_equal(output(root, lambda p: p.safe_rotate((0, 0)))[0], pixels)
+    serial = output(root, lambda p: p.safe_rotate())
+    parallel = output(root, lambda p: p.safe_rotate(), transform=True, workers=3)
+    np.testing.assert_array_equal(serial, parallel)
+    assert not np.array_equal(serial[0], pixels)
+    assert all(image.shape == pixels.shape and image.dtype == np.uint8 for image in serial)
+    planar = output(root, lambda p: p.hwc_to_chw().safe_rotate())[0]
+    np.testing.assert_array_equal(planar, serial[0].transpose(2, 0, 1))
+    with pytest.raises(ValueError, match="SafeRotate"):
+        output(root, lambda p: p.to_dtype("float32", True).safe_rotate())

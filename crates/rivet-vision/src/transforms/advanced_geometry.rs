@@ -736,7 +736,7 @@ pub(crate) fn policy_warp<const TENSOR: bool>(
     .map(ImageSample::Decoded)
 }
 
-fn pillow_affine_map(
+pub(crate) fn pillow_affine_map(
     matrix: [f64; 6],
     width: usize,
     height: usize,
@@ -1541,5 +1541,63 @@ mod tests {
                 .validate()
                 .is_err()
         );
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SafeRotateConfig {
+    pub angle_range: (f32, f32),
+    pub interpolation: InterpolationMode,
+    pub fill: u8,
+    pub fill_channels: Option<[u8; 3]>,
+    pub fill_mask: i64,
+}
+
+impl SafeRotateConfig {
+    pub(super) fn validate(&self) -> RivetResult<()> {
+        let (lo, hi) = self.angle_range;
+        if !lo.is_finite() || !hi.is_finite() || lo > hi {
+            return Err(invalid_argument(
+                "SafeRotate requires finite ordered angles",
+            ));
+        }
+        validate_interpolation(self.interpolation, "SafeRotate")
+    }
+
+    pub(crate) fn sample(&self, w: usize, h: usize, rng: &mut RandomStream) -> [f64; 6] {
+        let (lo, hi) = (f64::from(self.angle_range.0), f64::from(self.angle_range.1));
+        let angle = (lo + rng.next_f64() * (hi - lo)) as f32;
+        let (mut m, ow, oh) = rotation_inverse(w, h, angle, true, None);
+        let (sx, sy) = (ow as f64 / w as f64, oh as f64 / h as f64);
+        m[0] *= sx;
+        m[3] *= sx;
+        m[1] *= sy;
+        m[4] *= sy;
+        m
+    }
+
+    pub(crate) fn apply(
+        &self,
+        sample: ImageSample,
+        axis: ImageAxisOrder,
+        matrix: [f64; 6],
+    ) -> RivetResult<ImageSample> {
+        let sample = require_u8_image(sample, "SafeRotate")?;
+        let (h, w, _) = image_dims(sample.image.dims(), axis)?;
+        if matrix == [1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            return Ok(ImageSample::Decoded(sample));
+        }
+        warp_decoded::<false, _>(
+            sample,
+            axis,
+            w,
+            h,
+            self.interpolation,
+            self.fill,
+            self.fill_channels,
+            "SafeRotate",
+            pillow_affine_map(matrix, w, h, self.interpolation),
+        )
+        .map(ImageSample::Decoded)
     }
 }

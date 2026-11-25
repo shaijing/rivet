@@ -1216,3 +1216,21 @@ def test_square_symmetry_fixed_elements_and_annotations(annotated, element):
     recovered = annotated.apply(transform.square_symmetry(reverse)).to_dict()
     for key in ("image", "boxes", "keypoints", "masks", "labels"):
         np.testing.assert_array_equal(recovered[key], original[key])
+
+
+def test_safe_rotate_aligns_constant_fill_and_targets():
+    y, x = np.indices((8, 12), dtype=np.uint8)
+    mask = x + 12 * y + 1
+    image = np.repeat(mask[..., None], 3, axis=-1)
+    sample = rivet.AnnotatedSample(
+        image, masks=mask, boxes=[[0, 0, 12, 8]], keypoints=[[[5.5, 3.5]]], labels=[4]
+    )
+    transform = rivet.Transform().safe_rotate((30, 30), interpolation="nearest", fill=99, fill_mask=99)
+    transformed = sample.apply(transform).to_dict()
+    assert transformed["image"].shape == image.shape
+    np.testing.assert_array_equal(transformed["image"][..., 0], transformed["masks"])
+    assert np.any(transformed["masks"] == 99)
+    np.testing.assert_array_equal(transformed["labels"], [4])
+    np.testing.assert_allclose(transformed["keypoints"], [[[5.5, 3.5]]], atol=1e-6)
+    l, t, r, b = transformed["boxes"][0]
+    assert 0 <= l < r <= 12 and 0 <= t < b <= 8

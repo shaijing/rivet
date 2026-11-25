@@ -267,6 +267,7 @@ pub enum V2Config {
         scale: bool,
     },
     SquareSymmetry(Option<SquareSymmetry>),
+    SafeRotate(SafeRotateConfig),
     RandomRotate90,
     Transpose,
     GridMask(std::sync::Arc<GridMaskConfig>),
@@ -332,6 +333,7 @@ impl V2Config {
             Self::Defocus { .. } => "Defocus",
             Self::ChannelDropout(_) => "ChannelDropout",
             Self::SquareSymmetry(_) => "SquareSymmetry",
+            Self::SafeRotate(_) => "SafeRotate",
             Self::RandomRotate90 => "RandomRotate90",
             Self::Transpose => "Transpose",
             Self::GridMask(_) => "GridMask",
@@ -409,6 +411,7 @@ impl V2Config {
             Self::Defocus { .. } => 67,
             Self::ChannelDropout(_) => 111,
             Self::SquareSymmetry(_) => 122,
+            Self::SafeRotate(_) => 123,
             Self::RandomRotate90 => 121,
             Self::Transpose => 120,
             Self::GridMask(_) => 113,
@@ -454,6 +457,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::SafeRotate(config) => return config.validate(),
             Self::RandomScale { range, y, .. } => {
                 let valid = |(a, b): (f64, f64)| a > -1.0 && a <= b && b.is_finite();
                 valid(*range) && y.is_none_or(valid)
@@ -1490,6 +1494,13 @@ impl V2Config {
                     s.image = s.image.permute(&order)?;
                 }
                 s.image = super::quarter_turn(&s.image, axis, turns)?;
+            }
+            Self::SafeRotate(config) => {
+                if h == 0 || w == 0 {
+                    return Err(invalid_argument("SafeRotate requires a nonempty image"));
+                }
+                let matrix = config.sample(w, h, rng);
+                return config.apply(ImageSample::Decoded(s), axis, matrix);
             }
             Self::RandomRotate90 => {
                 let turns = rng.gen_range_usize(0..4)?;

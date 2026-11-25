@@ -176,6 +176,11 @@ impl ImagePipeline {
         ))
     }
 
+    /// Rotate while fitting the complete source in the original frame.
+    pub fn safe_rotate(self, config: crate::transforms::SafeRotateConfig) -> Self {
+        self.v2(crate::transforms::V2Config::SafeRotate(config))
+    }
+
     /// Apply a fixed or uniformly sampled square symmetry.
     pub fn square_symmetry(self, element: Option<crate::transforms::SquareSymmetry>) -> Self {
         self.v2(crate::transforms::V2Config::SquareSymmetry(element))

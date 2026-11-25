@@ -537,6 +537,24 @@ class Transform:
             )
         )
 
+    def safe_rotate(
+        self,
+        angle_range: tuple[float, float] = (-90, 90),
+        *,
+        interpolation: str = "bilinear",
+        fill: int | Iterable[int] = 0,
+        fill_mask: int = 0,
+    ) -> Transform:
+        """Rotate uint8 images counterclockwise and fit their full extent.
+
+        Output keeps its original dimensions. Areas outside the rotated
+        image use constant fill. Structured masks use nearest sampling.
+        """
+        inner = self._inner.safe_rotate(
+            angle_range, interpolation=interpolation, fill=_normalize_fill(fill), fill_mask=fill_mask
+        )
+        return Transform(inner)
+
     def square_symmetry(self, group_element: str | None = None) -> Transform:
         """Apply one of the eight square symmetries to the image and targets.
 

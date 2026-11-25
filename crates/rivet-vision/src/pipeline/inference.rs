@@ -284,6 +284,14 @@ pub(crate) fn infer_image_op(
                     }
                     output.contiguity = Some(Contiguity::Unknown);
                 }
+                V2Config::SafeRotate(config) => {
+                    require_u8_decoded(input_state, op.name())?;
+                    if config.fill_channels.is_some()
+                        && matches!(channel_dim(input), ShapeDim::Known(c) if c != 3)
+                    {
+                        return Err(invalid_pipeline("SafeRotate per-channel fill requires RGB"));
+                    }
+                }
                 V2Config::RandomRotate90 => {
                     let (h, w) = spatial_dims(input)?;
                     if h != w {

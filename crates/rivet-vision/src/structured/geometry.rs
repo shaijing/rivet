@@ -664,6 +664,34 @@ pub(super) fn apply(
             }
             Ok(s)
         }
+        ImageOp::V2(V2Config::SafeRotate(config)) => {
+            let matrix = config.sample(w, h, rng);
+            if s.image.dtype() != rivet_core::DType::U8 {
+                return Err(invalid_argument("SafeRotate requires uint8 input"));
+            }
+            if matrix == [1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+                return Ok(s);
+            }
+            validate_occlusion_fill(&s, Some(config.fill_mask))?;
+            s.image = config
+                .apply(image(&s), s.axis_order, matrix)?
+                .into_decoded()?
+                .image;
+            if let Some(mask) = &s.masks {
+                let map =
+                    crate::transforms::pillow_affine_map(matrix, w, h, InterpolationMode::Nearest);
+                s.masks = Some(masks_map_fill(mask, h, w, config.fill_mask, |y, x| {
+                    let [sx, sy] = map(x, y);
+                    (sx >= 0.0 && sy >= 0.0).then_some((sy as usize, sx as usize))
+                })?);
+            }
+            let m = inverse(affine_matrix(matrix))?;
+            let mut keypoints = m;
+            for row in keypoints.iter_mut().take(2) {
+                row[2] += (row[0] + row[1]) * 0.5 - 0.5;
+            }
+            targets(s, m, keypoints, true)
+        }
         ImageOp::V2(V2Config::SquareSymmetry(element)) => {
             let (reflect, turns) =
                 crate::transforms::SquareSymmetry::sample(*element, rng)?.components();

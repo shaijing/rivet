@@ -936,6 +936,28 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (angle_range=(-90.0,90.0), *, interpolation="bilinear", fill=None, fill_mask=0))]
+    fn safe_rotate(
+        &self,
+        angle_range: (f32, f32),
+        interpolation: &str,
+        fill: Option<&Bound<'_, PyAny>>,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        let (fill, fill_channels) = parse_fill_u8(fill)?;
+        let config = V2Config::SafeRotate(rivet_vision::transforms::SafeRotateConfig {
+            angle_range,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+            fill_channels,
+            fill_mask,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (group_element=None))]
     fn square_symmetry(&self, group_element: Option<&str>) -> PyResult<Self> {
         use rivet_vision::transforms::SquareSymmetry;
@@ -3187,6 +3209,28 @@ impl PyImagePipeline {
         };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (angle_range=(-90.0,90.0), *, interpolation="bilinear", fill=None, fill_mask=0))]
+    fn safe_rotate(
+        &self,
+        angle_range: (f32, f32),
+        interpolation: &str,
+        fill: Option<&Bound<'_, PyAny>>,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        let (fill, fill_channels) = parse_fill_u8(fill)?;
+        let config = V2Config::SafeRotate(rivet_vision::transforms::SafeRotateConfig {
+            angle_range,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+            fill_channels,
+            fill_mask,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 
