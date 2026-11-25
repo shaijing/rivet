@@ -107,6 +107,29 @@ impl ImagePipeline {
     }
 
     /// Add signal-dependent Gaussian noise to a normalized float32 image.
+    pub fn letterbox(self, config: crate::transforms::LetterBoxConfig) -> Self {
+        self.v2(crate::transforms::V2Config::LetterBox(config))
+    }
+
+    pub fn defocus(self, radius_range: (u32, u32)) -> Self {
+        self.v2(crate::transforms::V2Config::Defocus { radius_range })
+    }
+
+    pub fn coarse_dropout(
+        self,
+        holes: (u32, u32),
+        hole_height: (u32, u32),
+        hole_width: (u32, u32),
+        fill: f32,
+    ) -> Self {
+        self.v2(crate::transforms::V2Config::CoarseDropout {
+            holes,
+            hole_height,
+            hole_width,
+            fill,
+        })
+    }
+
     pub fn motion_blur(self, length_range: (u32, u32), angle_range: (f64, f64)) -> Self {
         self.v2(crate::transforms::V2Config::MotionBlur {
             length_range,

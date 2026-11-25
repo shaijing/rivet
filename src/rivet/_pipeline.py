@@ -608,6 +608,59 @@ class Pipeline:
             self._inner.gaussian_noise(mean, sigma, clip), as_numpy=self.as_numpy
         )
 
+    def letterbox(
+        self,
+        width: int,
+        height: int,
+        *,
+        interpolation: str = "bilinear",
+        fill: float = 0.0,
+        mask_fill: int = 0,
+    ) -> Pipeline:
+        """Fit uint8 RGB inside a fixed canvas and center it.
+
+        When applied to annotated samples, masks use nearest-neighbor resizing
+        and their own padding value. Odd padding goes on the right or bottom.
+        """
+        return Pipeline(
+            self._inner.letterbox(
+                width,
+                height,
+                interpolation=interpolation,
+                fill=fill,
+                mask_fill=mask_fill,
+            ),
+            as_numpy=self.as_numpy,
+        )
+
+    def defocus(self, radius_range: tuple[int, int] = (1, 3)) -> Pipeline:
+        """Blur uint8 HWC RGB with a uniform disk and reflected borders.
+
+        Sample one integer radius from the inclusive bounds for each image.
+        Radius zero is an identity.
+        """
+        return Pipeline(self._inner.defocus(radius_range), as_numpy=self.as_numpy)
+
+    def coarse_dropout(
+        self,
+        holes: tuple[int, int] = (1, 4),
+        *,
+        hole_height: tuple[int, int] = (4, 8),
+        hole_width: tuple[int, int] = (4, 8),
+        fill: float = 0.0,
+    ) -> Pipeline:
+        """Fill random rectangles using inclusive count and pixel size ranges.
+
+        Rectangles can overlap and are clipped in size to fit the image.
+        Only image pixels are modified.
+        """
+        return Pipeline(
+            self._inner.coarse_dropout(
+                holes, hole_height=hole_height, hole_width=hole_width, fill=fill
+            ),
+            as_numpy=self.as_numpy,
+        )
+
     def motion_blur(
         self,
         length_range: tuple[int, int] = (3, 7),

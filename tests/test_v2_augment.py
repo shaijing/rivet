@@ -604,3 +604,66 @@ def test_unsharp_mask_matches_thresholded_gaussian_residual(source, transform):
 def test_new_filters_validate_parameters(build):
     with pytest.raises(ValueError):
         build(rivet.Transform())
+
+
+@pytest.mark.parametrize("transform", [False, True])
+def test_defocus_uses_reflected_disk(source, transform):
+    root, pixels = source
+    padded = np.pad(pixels.astype(np.uint16), ((1, 1), (1, 1), (0, 0)), mode="reflect")
+    expected = (
+        padded[1:-1, 1:-1]
+        + padded[:-2, 1:-1]
+        + padded[2:, 1:-1]
+        + padded[1:-1, :-2]
+        + padded[1:-1, 2:]
+        + 2
+    ) // 5
+    actual = output(root, lambda p: p.defocus((1, 1)), transform=transform)[0]
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(
+        output(root, lambda p: p.defocus((0, 0)), transform=transform)[0], pixels
+    )
+
+
+@pytest.mark.parametrize("transform", [False, True])
+def test_letterbox_restores_fixed_canvas(source, transform):
+    root, _ = source
+    actual = output(
+        root,
+        lambda p: p.letterbox(9, 9, interpolation="nearest", fill=173),
+        transform=transform,
+    )[0]
+    reduced = output(root, lambda p: p.resize(9, 6, "nearest"))[0]
+    assert actual.shape == (9, 9, 3)
+    np.testing.assert_array_equal(actual[1:7], reduced)
+    assert np.all(actual[:1] == 173)
+    assert np.all(actual[7:] == 173)
+
+
+def test_coarse_dropout_layout_overlap_and_reproducibility(source):
+    root, pixels = source
+
+    def augment(p):
+        return p.coarse_dropout((2, 2), hole_height=(2, 2), hole_width=(3, 3), fill=-1)
+
+    hwc = output(root, lambda p: augment(p.to_dtype("float32", True)), workers=2)
+    chw = output(
+        root,
+        lambda p: augment(p.to_dtype("float32", True).hwc_to_chw()),
+        transform=True,
+    )
+    for index, (image, reference) in enumerate(zip(hwc, chw, strict=True)):
+        np.testing.assert_array_equal(image, reference.transpose(1, 2, 0))
+        mask = image[..., 0] == -1
+        assert 6 <= mask.sum() <= 12
+        assert np.all(image[mask] == -1)
+        np.testing.assert_allclose(
+            image[~mask], np.roll(pixels, index, axis=0)[~mask] / 255, rtol=1e-7
+        )
+    unchanged = output(root, lambda p: p.coarse_dropout((0, 0)))[0]
+    np.testing.assert_array_equal(unchanged, pixels)
+    covered = output(
+        root,
+        lambda p: p.coarse_dropout((1, 1), hole_height=(99, 99), hole_width=(99, 99)),
+    )[0]
+    assert np.all(covered == 0)

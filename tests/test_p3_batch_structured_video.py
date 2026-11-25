@@ -813,3 +813,36 @@ def test_at_least_one_bbox_crop_falls_back_without_boxes():
         next(iter(source.at_least_one_bbox_random_crop(9, 4).execute()))
     with pytest.raises(ValueError):
         source.at_least_one_bbox_random_crop(4, 4, erosion_factor=1.1)
+
+
+@pytest.mark.parametrize("layout", ["HWC", "CHW"])
+@pytest.mark.parametrize("mask_dtype,mask_fill", [(np.uint8, 255), (np.int64, -1)])
+def test_letterbox_maps_structured_targets(layout, mask_dtype, mask_fill):
+    image = np.full((3, 5, 3), 20, dtype=np.uint8)
+    mask = np.arange(15, dtype=mask_dtype).reshape(1, 3, 5)
+    sample = rivet.AnnotatedSample(
+        image if layout == "HWC" else image.transpose(2, 0, 1),
+        boxes=[[1, 1, 4, 3]],
+        keypoints=[[[2, 1]]],
+        labels=[7],
+        masks=mask,
+        layout=layout,
+    )
+    result = sample.apply(
+        rivet.Transform().letterbox(
+            10, 9, interpolation="nearest", fill=31, mask_fill=mask_fill
+        )
+    ).to_dict()
+    pixels = result["image"] if layout == "HWC" else result["image"].transpose(1, 2, 0)
+    assert pixels.shape == (9, 10, 3)
+    assert np.all(pixels[1:7] == 20)
+    assert np.all(pixels[:1] == 31) and np.all(pixels[7:] == 31)
+    assert result["masks"].dtype == mask_dtype
+    np.testing.assert_array_equal(
+        result["masks"][:, 1:7], mask.repeat(2, axis=1).repeat(2, axis=2)
+    )
+    assert np.all(result["masks"][:, :1] == mask_fill)
+    assert np.all(result["masks"][:, 7:] == mask_fill)
+    np.testing.assert_array_equal(result["boxes"], [[2, 3, 8, 7]])
+    np.testing.assert_array_equal(result["keypoints"], [[[4, 3]]])
+    np.testing.assert_array_equal(result["labels"], [7])

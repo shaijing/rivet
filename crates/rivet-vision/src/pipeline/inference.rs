@@ -295,7 +295,19 @@ pub(crate) fn infer_image_op(
                 V2Config::RandomPhotometricDistort { .. } => {
                     require_u8_hwc(input_state, op.name())?;
                 }
+                V2Config::LetterBox(config) => {
+                    require_u8_hwc(input_state, op.name())?;
+                    if matches!(channel_dim(input), ShapeDim::Known(c) if c != 3) {
+                        return Err(invalid_pipeline("LetterBox requires three channels"));
+                    }
+                    set_spatial_shape(
+                        &mut output,
+                        ShapeDim::Known(config.height as usize),
+                        ShapeDim::Known(config.width as usize),
+                    );
+                }
                 V2Config::Downscale { .. }
+                | V2Config::Defocus { .. }
                 | V2Config::MotionBlur { .. }
                 | V2Config::UnsharpMask { .. } => {
                     require_u8_hwc(input_state, op.name())?;
@@ -306,7 +318,9 @@ pub(crate) fn infer_image_op(
                         )));
                     }
                 }
-                V2Config::SaltAndPepper { .. } | V2Config::GridDropout { .. } => {
+                V2Config::SaltAndPepper { .. }
+                | V2Config::GridDropout { .. }
+                | V2Config::CoarseDropout { .. } => {
                     if !matches!(
                         input_state,
                         Decoded {

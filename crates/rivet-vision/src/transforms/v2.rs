@@ -43,6 +43,16 @@ pub enum V2Config {
     ShotNoise {
         intensity: f32,
     },
+    LetterBox(LetterBoxConfig),
+    Defocus {
+        radius_range: (u32, u32),
+    },
+    CoarseDropout {
+        holes: (u32, u32),
+        hole_height: (u32, u32),
+        hole_width: (u32, u32),
+        fill: f32,
+    },
     MotionBlur {
         length_range: (u32, u32),
         angle_range: (f64, f64),
@@ -87,6 +97,9 @@ impl V2Config {
             Self::RandomZoomOut { .. } => "RandomZoomOut",
             Self::GaussianNoise { .. } => "GaussianNoise",
             Self::ShotNoise { .. } => "ShotNoise",
+            Self::LetterBox(_) => "LetterBox",
+            Self::Defocus { .. } => "Defocus",
+            Self::CoarseDropout { .. } => "CoarseDropout",
             Self::MotionBlur { .. } => "MotionBlur",
             Self::UnsharpMask { .. } => "UnsharpMask",
             Self::Downscale { .. } => "Downscale",
@@ -108,6 +121,9 @@ impl V2Config {
             Self::RandomZoomOut { .. } => 55,
             Self::GaussianNoise { .. } => 56,
             Self::ShotNoise { .. } => 60,
+            Self::LetterBox(_) => 66,
+            Self::Defocus { .. } => 67,
+            Self::CoarseDropout { .. } => 68,
             Self::MotionBlur { .. } => 64,
             Self::UnsharpMask { .. } => 65,
             Self::Downscale { .. } => 61,
@@ -121,7 +137,11 @@ impl V2Config {
     pub fn is_random(&self) -> bool {
         !matches!(
             self,
-            Self::PermuteChannels(_) | Self::Rgb | Self::ToDtype { .. } | Self::UnsharpMask { .. }
+            Self::PermuteChannels(_)
+                | Self::Rgb
+                | Self::ToDtype { .. }
+                | Self::UnsharpMask { .. }
+                | Self::LetterBox(_)
         )
     }
     pub fn validate(&self) -> RivetResult<()> {
@@ -190,6 +210,23 @@ impl V2Config {
                 return super::noise::validate_gaussian_noise(*mean, *sigma);
             }
             Self::ShotNoise { intensity } => return super::noise::validate_shot_noise(*intensity),
+            Self::LetterBox(config) => return config.validate(),
+            Self::Defocus {
+                radius_range: (low, high),
+            } => low <= high && *high <= 127,
+            Self::CoarseDropout {
+                holes,
+                hole_height,
+                hole_width,
+                fill,
+            } => {
+                holes.0 <= holes.1
+                    && hole_height.0 > 0
+                    && hole_width.0 > 0
+                    && hole_height.0 <= hole_height.1
+                    && hole_width.0 <= hole_width.1
+                    && fill.is_finite()
+            }
             Self::MotionBlur {
                 length_range: (low, high),
                 angle_range: (start, end),
@@ -421,6 +458,42 @@ impl V2Config {
             }
             Self::ShotNoise { intensity } => {
                 s.image = super::shot_noise(&s.image, *intensity, rng)?;
+            }
+            Self::LetterBox(config) => {
+                if axis != ImageAxisOrder::Hwc {
+                    return Err(invalid_argument("LetterBox requires uint8 HWC RGB input"));
+                }
+                let (resize, pad) = config.resolve(w, h)?;
+                let resized = resize.apply(ImageSample::Decoded(s))?;
+                return pad.apply(resized, axis);
+            }
+            Self::Defocus {
+                radius_range: (low, high),
+            } => {
+                if axis != ImageAxisOrder::Hwc || h == 0 || w == 0 {
+                    return Err(invalid_argument(
+                        "Defocus requires nonempty uint8 HWC RGB input",
+                    ));
+                }
+                let radius = rng.gen_range_usize(*low as usize..*high as usize + 1)? as u32;
+                s.image = super::blur::defocus(&s.image, radius)?;
+            }
+            Self::CoarseDropout {
+                holes,
+                hole_height,
+                hole_width,
+                fill,
+            } => {
+                s.image = super::pixel_mask::coarse_dropout(
+                    &s.image,
+                    axis,
+                    (h, w),
+                    *holes,
+                    *hole_height,
+                    *hole_width,
+                    *fill,
+                    rng,
+                )?;
             }
             Self::MotionBlur {
                 length_range: (low, high),

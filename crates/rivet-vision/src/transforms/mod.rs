@@ -20,6 +20,7 @@ mod dtype;
 mod erase;
 mod flip;
 mod layout;
+mod letterbox;
 mod multi_crop;
 mod noise;
 mod normalize;
@@ -272,3 +273,5 @@ mod v2_jpeg;
 mod v2_numeric;
 
 pub(crate) use advanced_geometry::{homography, rotation_inverse};
+
+pub use letterbox::LetterBoxConfig;

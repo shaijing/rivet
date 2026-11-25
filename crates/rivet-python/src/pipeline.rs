@@ -3,8 +3,9 @@ use crate::loader::PyDataLoader;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rivet_vision::api::{
-    DType, ElasticTransformConfig, ImagePipeline, InterpolationMode, PerspectiveConfig, Point2,
-    RandomAffineConfig, RandomPerspectiveConfig, RotationAngle, TransformSequence, V2Config,
+    DType, ElasticTransformConfig, ImagePipeline, InterpolationMode, LetterBoxConfig,
+    PerspectiveConfig, Point2, RandomAffineConfig, RandomPerspectiveConfig, RotationAngle,
+    TransformSequence, V2Config,
 };
 
 fn parse_pair<T: Clone + std::fmt::Debug>(
@@ -876,6 +877,57 @@ impl PyTransform {
     #[pyo3(signature = (mean=0.0, sigma=0.1, clip=true))]
     fn gaussian_noise(&self, mean: f64, sigma: f64, clip: bool) -> PyResult<Self> {
         let config = V2Config::GaussianNoise { mean, sigma, clip };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (width, height, *, interpolation="bilinear", fill=0.0, mask_fill=0))]
+    fn letterbox(
+        &self,
+        width: u32,
+        height: u32,
+        interpolation: &str,
+        fill: f32,
+        mask_fill: i64,
+    ) -> PyResult<Self> {
+        let config = LetterBoxConfig {
+            width,
+            height,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+            mask_fill,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().letterbox(config),
+        })
+    }
+
+    #[pyo3(signature = (radius_range=(1, 3)))]
+    fn defocus(&self, radius_range: (u32, u32)) -> PyResult<Self> {
+        let config = V2Config::Defocus { radius_range };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (holes=(1, 4), *, hole_height=(4, 8), hole_width=(4, 8), fill=0.0))]
+    fn coarse_dropout(
+        &self,
+        holes: (u32, u32),
+        hole_height: (u32, u32),
+        hole_width: (u32, u32),
+        fill: f32,
+    ) -> PyResult<Self> {
+        let config = V2Config::CoarseDropout {
+            holes,
+            hole_height,
+            hole_width,
+            fill,
+        };
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),
@@ -1968,6 +2020,57 @@ impl PyImagePipeline {
     #[pyo3(signature = (mean=0.0, sigma=0.1, clip=true))]
     fn gaussian_noise(&self, mean: f64, sigma: f64, clip: bool) -> PyResult<Self> {
         let config = V2Config::GaussianNoise { mean, sigma, clip };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (width, height, *, interpolation="bilinear", fill=0.0, mask_fill=0))]
+    fn letterbox(
+        &self,
+        width: u32,
+        height: u32,
+        interpolation: &str,
+        fill: f32,
+        mask_fill: i64,
+    ) -> PyResult<Self> {
+        let config = LetterBoxConfig {
+            width,
+            height,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+            mask_fill,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().letterbox(config),
+        })
+    }
+
+    #[pyo3(signature = (radius_range=(1, 3)))]
+    fn defocus(&self, radius_range: (u32, u32)) -> PyResult<Self> {
+        let config = V2Config::Defocus { radius_range };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (holes=(1, 4), *, hole_height=(4, 8), hole_width=(4, 8), fill=0.0))]
+    fn coarse_dropout(
+        &self,
+        holes: (u32, u32),
+        hole_height: (u32, u32),
+        hole_width: (u32, u32),
+        fill: f32,
+    ) -> PyResult<Self> {
+        let config = V2Config::CoarseDropout {
+            holes,
+            hole_height,
+            hole_width,
+            fill,
+        };
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

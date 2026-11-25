@@ -93,12 +93,25 @@ fn targets(
     if clamp { s.clamp_boxes() } else { Ok(s) }
 }
 /// Map instance masks using precomputed integer coordinates and typed writers.
-fn masks_map<F>(input: &Tensor, oh: usize, ow: usize, mut mapping: F) -> RivetResult<Tensor>
+fn masks_map<F>(input: &Tensor, oh: usize, ow: usize, mapping: F) -> RivetResult<Tensor>
+where
+    F: FnMut(usize, usize) -> Option<(usize, usize)>,
+{
+    masks_map_fill(input, oh, ow, 0, mapping)
+}
+
+fn masks_map_fill<F>(
+    input: &Tensor,
+    oh: usize,
+    ow: usize,
+    fill: i64,
+    mut mapping: F,
+) -> RivetResult<Tensor>
 where
     F: FnMut(usize, usize) -> Option<(usize, usize)>,
 {
     if input.rank() == 2 {
-        return Ok(masks_map(&input.unsqueeze(0)?, oh, ow, mapping)?.squeeze(0)?);
+        return Ok(masks_map_fill(&input.unsqueeze(0)?, oh, ow, fill, mapping)?.squeeze(0)?);
     }
     let dims = input.dims();
     let n = dims[0];
@@ -134,7 +147,7 @@ where
                                     Some((y, x)) => *values
                                         .get(base + y * st[1] + x * st[2])
                                         .ok_or(rivet_core::Error::StorageOutOfBounds)?,
-                                    None => 0,
+                                    None => fill as $t,
                                 };
                                 out.write_next(v)?;
                             }
@@ -173,7 +186,24 @@ pub(super) fn crop(
     let m = [[1., 0., -(x as f64)], [0., 1., -(y as f64)], [0., 0., 1.]];
     targets(s, m, m, true)
 }
-fn pad(mut s: StructuredSample, p: &PadConfig) -> RivetResult<StructuredSample> {
+fn pad(s: StructuredSample, p: &PadConfig) -> RivetResult<StructuredSample> {
+    pad_with_mask_fill(s, p, 0)
+}
+
+fn pad_with_mask_fill(
+    mut s: StructuredSample,
+    p: &PadConfig,
+    mask_fill: i64,
+) -> RivetResult<StructuredSample> {
+    if s.masks
+        .as_ref()
+        .is_some_and(|mask| mask.dtype() == rivet_core::DType::U8)
+        && u8::try_from(mask_fill).is_err()
+    {
+        return Err(invalid_argument(
+            "LetterBox mask_fill must be in [0, 255] for uint8 masks",
+        ));
+    }
     let (h, w) = s.size()?;
     s.image = p.apply(image(&s), s.axis_order)?.into_decoded()?.image;
     if let Some(mask) = &s.masks {
@@ -200,7 +230,7 @@ fn pad(mut s: StructuredSample, p: &PadConfig) -> RivetResult<StructuredSample> 
                 }
             }
         };
-        s.masks = Some(masks_map(mask, oh, ow, |y, x| {
+        s.masks = Some(masks_map_fill(mask, oh, ow, mask_fill, |y, x| {
             Some((
                 coord(y as isize - p.top as isize, h)?,
                 coord(x as isize - p.left as isize, w)?,
@@ -605,6 +635,12 @@ pub(super) fn apply(
                 s = apply(s, &ops[i], &mut child_rng, ctx, child)?;
             }
             Ok(s)
+        }
+        ImageOp::V2(V2Config::LetterBox(config)) => {
+            let (h, w) = s.size()?;
+            let (scale, padding) = config.resolve(w, h)?;
+            let resized = resize(s, scale.width, scale.height, scale.interpolation)?;
+            pad_with_mask_fill(resized, &padding, config.mask_fill)
         }
         ImageOp::V2(V2Config::RandomResize {
             min_size,

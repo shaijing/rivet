@@ -195,15 +195,33 @@ pub(super) fn motion_blur(
     length: u32,
     angle: f64,
 ) -> RivetResult<rivet_core::Tensor> {
-    with_rgb_pixels(input, "MotionBlur", |pixels, width, height| {
-        let (dy, dx) = angle.to_radians().sin_cos();
-        let radius = i64::from(length / 2);
-        let taps = (-radius..=radius)
-            .map(|i| {
-                let i = i as f64;
-                ((i * dy).round() as i64, (i * dx).round() as i64)
-            })
-            .collect::<Vec<_>>();
+    let (dy, dx) = angle.to_radians().sin_cos();
+    let radius = i64::from(length / 2);
+    let taps = (-radius..=radius)
+        .map(|i| {
+            let i = i as f64;
+            ((i * dy).round() as i64, (i * dx).round() as i64)
+        })
+        .collect::<Vec<_>>();
+    convolve_uniform(input, "MotionBlur", &taps)
+}
+
+pub(super) fn defocus(input: &rivet_core::Tensor, radius: u32) -> RivetResult<rivet_core::Tensor> {
+    let radius = i64::from(radius);
+    let taps = (-radius..=radius)
+        .flat_map(|y| (-radius..=radius).map(move |x| (y, x)))
+        .filter(|&(y, x)| y * y + x * x <= radius * radius)
+        .collect::<Vec<_>>();
+    convolve_uniform(input, "Defocus", &taps)
+}
+
+fn convolve_uniform(
+    input: &rivet_core::Tensor,
+    name: &str,
+    taps: &[(i64, i64)],
+) -> RivetResult<rivet_core::Tensor> {
+    let count = taps.len() as u64;
+    with_rgb_pixels(input, name, |pixels, width, height| {
         let reflect = |index: i64, len: usize| {
             let len = len as i64;
             if (0..len).contains(&index) {
@@ -223,7 +241,7 @@ pub(super) fn motion_blur(
                 for y in 0..height {
                     for x in 0..width {
                         let mut sums = [0u64; 3];
-                        for &(dy, dx) in &taps {
+                        for &(dy, dx) in taps {
                             let sy = reflect(y as i64 + dy, height);
                             let sx = reflect(x as i64 + dx, width);
                             let offset = (sy * width + sx) * 3;
@@ -231,7 +249,6 @@ pub(super) fn motion_blur(
                             sums[1] += u64::from(pixels[offset + 1]);
                             sums[2] += u64::from(pixels[offset + 2]);
                         }
-                        let count = u64::from(length);
                         for sum in sums {
                             out.write_next(((sum + count / 2) / count) as u8)?;
                         }

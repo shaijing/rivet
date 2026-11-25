@@ -499,6 +499,57 @@ class Transform:
         """
         return Transform(self._inner.gaussian_noise(mean, sigma, clip))
 
+    def letterbox(
+        self,
+        width: int,
+        height: int,
+        *,
+        interpolation: str = "bilinear",
+        fill: float = 0.0,
+        mask_fill: int = 0,
+    ) -> Transform:
+        """Fit uint8 RGB inside a fixed canvas and center it.
+
+        When applied to annotated samples, masks use nearest-neighbor resizing
+        and their own padding value. Odd padding goes on the right or bottom.
+        """
+        return Transform(
+            self._inner.letterbox(
+                width,
+                height,
+                interpolation=interpolation,
+                fill=fill,
+                mask_fill=mask_fill,
+            )
+        )
+
+    def defocus(self, radius_range: tuple[int, int] = (1, 3)) -> Transform:
+        """Blur uint8 HWC RGB with a uniform disk and reflected borders.
+
+        Sample one integer radius from the inclusive bounds for each image.
+        Radius zero is an identity.
+        """
+        return Transform(self._inner.defocus(radius_range))
+
+    def coarse_dropout(
+        self,
+        holes: tuple[int, int] = (1, 4),
+        *,
+        hole_height: tuple[int, int] = (4, 8),
+        hole_width: tuple[int, int] = (4, 8),
+        fill: float = 0.0,
+    ) -> Transform:
+        """Fill random rectangles using inclusive count and pixel size ranges.
+
+        Rectangles can overlap and are clipped in size to fit the image.
+        Only image pixels are modified.
+        """
+        return Transform(
+            self._inner.coarse_dropout(
+                holes, hole_height=hole_height, hole_width=hole_width, fill=fill
+            )
+        )
+
     def motion_blur(
         self,
         length_range: tuple[int, int] = (3, 7),

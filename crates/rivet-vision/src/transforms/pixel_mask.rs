@@ -142,6 +142,45 @@ pub(super) fn grid_dropout(
     })
 }
 
+pub(super) fn coarse_dropout(
+    input: &Tensor,
+    axis: ImageAxisOrder,
+    size: (usize, usize),
+    holes: (u32, u32),
+    hole_height: (u32, u32),
+    hole_width: (u32, u32),
+    fill: f32,
+    rng: &mut RandomStream,
+) -> RivetResult<Tensor> {
+    let (height, width) = size;
+    if height == 0 || width == 0 {
+        return Err(invalid_argument("CoarseDropout requires a nonempty image"));
+    }
+    let sample = |rng: &mut RandomStream, bounds: (u32, u32), limit: usize| {
+        let low = (bounds.0 as usize).min(limit);
+        let high = (bounds.1 as usize).min(limit);
+        rng.gen_range_usize(low..high + 1)
+    };
+    let count = sample(rng, holes, usize::MAX - 1)?;
+    if count == 0 {
+        return Ok(input.clone());
+    }
+    let mut rectangles = Vec::new();
+    for _ in 0..count {
+        let h = sample(rng, hole_height, height)?;
+        let w = sample(rng, hole_width, width)?;
+        let y = rng.gen_range_usize(0..height - h + 1)?;
+        let x = rng.gen_range_usize(0..width - w + 1)?;
+        rectangles.push((y..y + h, x..x + w));
+    }
+    apply(input, axis, height, width, [fill; 2], |y, x| {
+        rectangles
+            .iter()
+            .any(|(rows, cols)| rows.contains(&y) && cols.contains(&x))
+            .then_some(false)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
