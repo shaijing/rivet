@@ -905,6 +905,60 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (noise_type="uniform", spatial_mode="constant", *, ranges=None, mean_range=(0.0, 0.0), scale_range=(0.1, 0.1), alpha_range=(0.5, 1.5), beta_range=(0.5, 1.5)))]
+    #[allow(clippy::too_many_arguments)]
+    fn additive_noise(
+        &self,
+        noise_type: &str,
+        spatial_mode: &str,
+        ranges: Option<Vec<(f64, f64)>>,
+        mean_range: (f64, f64),
+        scale_range: (f64, f64),
+        alpha_range: (f64, f64),
+        beta_range: (f64, f64),
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{AdditiveDistribution, NoiseSharing};
+        let distribution = match noise_type {
+            "uniform" => AdditiveDistribution::Uniform(ranges.unwrap_or_else(|| vec![(-0.1, 0.1)])),
+            "gaussian" => AdditiveDistribution::Gaussian {
+                mean: mean_range,
+                std: scale_range,
+            },
+            "laplace" => AdditiveDistribution::Laplace {
+                mean: mean_range,
+                scale: scale_range,
+            },
+            "beta" => AdditiveDistribution::Beta {
+                alpha: alpha_range,
+                beta: beta_range,
+                scale: scale_range,
+            },
+            _ => {
+                return Err(PyValueError::new_err(
+                    "noise_type must be uniform, gaussian, laplace or beta",
+                ));
+            }
+        };
+        let sharing = match spatial_mode {
+            "constant" => NoiseSharing::Constant,
+            "per_pixel" => NoiseSharing::PerPixel,
+            "shared" => NoiseSharing::Shared,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "spatial_mode must be constant, per_pixel or shared",
+                ));
+            }
+        };
+        let config = V2Config::AdditiveNoise {
+            distribution: std::sync::Arc::new(distribution),
+            sharing,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (multiplier=(0.9, 1.1), *, per_channel=false, elementwise=false))]
     fn multiplicative_noise(
         &self,
@@ -2245,6 +2299,60 @@ impl PyImagePipeline {
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().letterbox(config),
+        })
+    }
+
+    #[pyo3(signature = (noise_type="uniform", spatial_mode="constant", *, ranges=None, mean_range=(0.0, 0.0), scale_range=(0.1, 0.1), alpha_range=(0.5, 1.5), beta_range=(0.5, 1.5)))]
+    #[allow(clippy::too_many_arguments)]
+    fn additive_noise(
+        &self,
+        noise_type: &str,
+        spatial_mode: &str,
+        ranges: Option<Vec<(f64, f64)>>,
+        mean_range: (f64, f64),
+        scale_range: (f64, f64),
+        alpha_range: (f64, f64),
+        beta_range: (f64, f64),
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{AdditiveDistribution, NoiseSharing};
+        let distribution = match noise_type {
+            "uniform" => AdditiveDistribution::Uniform(ranges.unwrap_or_else(|| vec![(-0.1, 0.1)])),
+            "gaussian" => AdditiveDistribution::Gaussian {
+                mean: mean_range,
+                std: scale_range,
+            },
+            "laplace" => AdditiveDistribution::Laplace {
+                mean: mean_range,
+                scale: scale_range,
+            },
+            "beta" => AdditiveDistribution::Beta {
+                alpha: alpha_range,
+                beta: beta_range,
+                scale: scale_range,
+            },
+            _ => {
+                return Err(PyValueError::new_err(
+                    "noise_type must be uniform, gaussian, laplace or beta",
+                ));
+            }
+        };
+        let sharing = match spatial_mode {
+            "constant" => NoiseSharing::Constant,
+            "per_pixel" => NoiseSharing::PerPixel,
+            "shared" => NoiseSharing::Shared,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "spatial_mode must be constant, per_pixel or shared",
+                ));
+            }
+        };
+        let config = V2Config::AdditiveNoise {
+            distribution: std::sync::Arc::new(distribution),
+            sharing,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

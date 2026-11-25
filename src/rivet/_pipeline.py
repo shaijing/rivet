@@ -633,6 +633,28 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def additive_noise(
+        self, noise_type: str = "uniform", spatial_mode: str = "constant", *,
+        ranges: list[tuple[float, float]] | None = None,
+        mean_range: tuple[float, float] = (0.0, 0.0),
+        scale_range: tuple[float, float] = (0.1, 0.1),
+        alpha_range: tuple[float, float] = (0.5, 1.5),
+        beta_range: tuple[float, float] = (0.5, 1.5),
+    ) -> Pipeline:
+        """Add seeded offsets to uint8 or normalized float32 HWC and clip.
+
+        Constant samples per channel, per_pixel samples per element, and
+        shared samples one offset per pixel for all channels. Uniform accepts
+        one range or one per channel, with one required for shared mode.
+        Scale is Gaussian standard deviation, Laplace scale, or beta amplitude
+        after mapping beta variates to [-1, 1]. Beta shapes are in [1e-4, 1e6].
+        """
+        inner = self._inner.additive_noise(
+            noise_type, spatial_mode, ranges=ranges, mean_range=mean_range,
+            scale_range=scale_range, alpha_range=alpha_range, beta_range=beta_range,
+        )
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def multiplicative_noise(
         self,
         multiplier: tuple[float, float] = (0.9, 1.1),

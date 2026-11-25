@@ -1248,3 +1248,45 @@ def test_multiplicative_noise_identity_clipping_and_validation(source):
             rivet.Transform().multiplicative_noise(bounds)
     with pytest.raises(ValueError, match="MultiplicativeNoise"):
         output(root, lambda p: p.hwc_to_chw().multiplicative_noise())
+
+
+@pytest.mark.parametrize("distribution", ["uniform", "gaussian", "laplace", "beta"])
+def test_additive_noise_distributions_and_seeding(tmp_path, distribution):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.full((9, 11, 3), 128, dtype=np.uint8)
+    for i in range(4):
+        Image.fromarray(pixels).save(folder / f"{i}.png")
+
+    def augment(p):
+        return p.to_dtype("float32", True).additive_noise(distribution, "shared")
+
+    images = output(tmp_path, augment)
+    np.testing.assert_array_equal(
+        images, output(tmp_path, augment, transform=True, workers=3)
+    )
+    assert not np.array_equal(images, output(tmp_path, augment, epoch=1))
+    assert images[0].dtype == np.float32 and images[0].shape == pixels.shape
+    np.testing.assert_array_equal(images[0][..., 0], images[0][..., 2])
+    assert images[0].std() > 0
+    assert 0 <= np.min(images) <= np.max(images) <= 1
+
+
+def test_additive_noise_constant_channel_offsets_and_validation(source):
+    root, pixels = source
+
+    def augment(p):
+        return p.additive_noise(ranges=[(0.1, 0.1), (0, 0), (-0.1, -0.1)])
+
+    actual = output(root, augment, transform=True)[0]
+    expected = np.floor(pixels.astype(float) + np.array([25.5, 0, -25.5]) + 0.5)
+    np.testing.assert_allclose(actual, expected.clip(0, 255), atol=1)
+    assert actual.dtype == np.uint8
+    with pytest.raises(ValueError):
+        rivet.Transform().additive_noise("beta", alpha_range=(0, 1))
+    with pytest.raises(ValueError):
+        rivet.Transform().additive_noise("uniform", "shared", ranges=[(0, 0), (0, 0)])
+    with pytest.raises(ValueError, match="AdditiveNoise"):
+        output(root, lambda p: p.additive_noise(ranges=[(0, 0), (0, 0)]))
+    with pytest.raises(ValueError, match="AdditiveNoise"):
+        output(root, lambda p: p.hwc_to_chw().additive_noise())

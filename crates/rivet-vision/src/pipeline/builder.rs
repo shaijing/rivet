@@ -111,6 +111,18 @@ impl ImagePipeline {
         self.v2(crate::transforms::V2Config::LetterBox(config))
     }
 
+    /// Add seeded offsets drawn from the requested distribution and sharing mode.
+    pub fn additive_noise(
+        self,
+        distribution: crate::transforms::AdditiveDistribution,
+        sharing: crate::transforms::NoiseSharing,
+    ) -> Self {
+        self.v2(crate::transforms::V2Config::AdditiveNoise {
+            distribution: std::sync::Arc::new(distribution),
+            sharing,
+        })
+    }
+
     /// Apply seeded spatially and/or channel-shared multiplicative noise.
     pub fn multiplicative_noise(
         self,

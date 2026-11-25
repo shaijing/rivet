@@ -437,3 +437,124 @@ fn apply_sampled_noise(
         }
     })?)
 }
+
+/// Parameter ranges sampled once per image, except uniform offsets.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AdditiveDistribution {
+    Uniform(Vec<(f64, f64)>),
+    Gaussian {
+        mean: (f64, f64),
+        std: (f64, f64),
+    },
+    Laplace {
+        mean: (f64, f64),
+        scale: (f64, f64),
+    },
+    Beta {
+        alpha: (f64, f64),
+        beta: (f64, f64),
+        scale: (f64, f64),
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoiseSharing {
+    Constant,
+    PerPixel,
+    Shared,
+}
+
+impl AdditiveDistribution {
+    pub(super) fn valid(&self, sharing: NoiseSharing) -> bool {
+        let bounded = |(a, b), min, max| a >= min && a <= b && b <= max;
+        let shape = |(a, b): (f64, f64)| a >= 0.0001 && a <= b && b <= 1e6;
+        match self {
+            Self::Uniform(ranges) => {
+                !ranges.is_empty()
+                    && (sharing != NoiseSharing::Shared || ranges.len() == 1)
+                    && ranges.iter().all(|&range| bounded(range, -1.0, 1.0))
+            }
+            Self::Gaussian { mean, std } => bounded(*mean, -1.0, 1.0) && bounded(*std, 0.0, 1.0),
+            Self::Laplace { mean, scale } => bounded(*mean, -1.0, 1.0) && bounded(*scale, 0.0, 1.0),
+            Self::Beta { alpha, beta, scale } => {
+                shape(*alpha) && shape(*beta) && bounded(*scale, 0.0, 1.0)
+            }
+        }
+    }
+}
+
+fn log_gamma_sample(shape: f64, rng: &mut RandomStream) -> f64 {
+    // Marsaglia–Tsang sampler. Work in log space to retain small-shape samples.
+    let (shape, adjustment) = if shape < 1.0 {
+        (
+            shape + 1.0,
+            rng.next_f64().max(f64::MIN_POSITIVE).ln() / shape,
+        )
+    } else {
+        (shape, 0.0)
+    };
+    let d = shape - 1.0 / 3.0;
+    let c = (9.0 * d).sqrt().recip();
+    loop {
+        let z = normal_pair(rng).0;
+        let base = 1.0 + c * z;
+        if base <= 0.0 {
+            continue;
+        }
+        let v = base.powi(3);
+        let u = rng.next_f64();
+        if u < 1.0 - 0.0331 * z.powi(4) || u.ln() < 0.5 * z * z + d * (1.0 - v + v.ln()) {
+            return d.ln() + v.ln() + adjustment;
+        }
+    }
+}
+
+pub(super) fn additive_noise(
+    input: &Tensor,
+    distribution: &AdditiveDistribution,
+    sharing: NoiseSharing,
+    rng: &mut RandomStream,
+) -> RivetResult<Tensor> {
+    if let AdditiveDistribution::Uniform(ranges) = distribution
+        && ranges.len() != 1
+        && input.dims().get(2) != Some(&ranges.len())
+    {
+        return Err(invalid_argument(
+            "AdditiveNoise requires one uniform range or one per channel",
+        ));
+    }
+    let mut draw = |(low, high)| low + rng.next_f64() * (high - low);
+    let parameters = match distribution {
+        AdditiveDistribution::Uniform(_) => [0.0; 3],
+        AdditiveDistribution::Gaussian { mean, std } => [draw(*mean), draw(*std), 0.0],
+        AdditiveDistribution::Laplace { mean, scale } => [draw(*mean), draw(*scale), 0.0],
+        AdditiveDistribution::Beta { alpha, beta, scale } => {
+            [draw(*alpha), draw(*beta), draw(*scale)]
+        }
+    };
+    let [a, b, scale] = parameters;
+    apply_sampled_noise(
+        input,
+        "AdditiveNoise",
+        sharing != NoiseSharing::Shared,
+        sharing != NoiseSharing::Constant,
+        false,
+        |channel| match distribution {
+            AdditiveDistribution::Uniform(ranges) => {
+                let (low, high) = ranges[if ranges.len() == 1 { 0 } else { channel }];
+                low + rng.next_f64() * (high - low)
+            }
+            AdditiveDistribution::Gaussian { .. } => a + b * normal_pair(rng).0,
+            AdditiveDistribution::Laplace { .. } => {
+                let u = 2.0 * rng.next_f64() - 1.0;
+                a - b * u.signum() * (1.0 - u.abs()).max(f64::MIN_POSITIVE).ln()
+            }
+            AdditiveDistribution::Beta { .. } => {
+                let x = log_gamma_sample(a, rng);
+                let y = log_gamma_sample(b, rng);
+                scale * (2.0 / (1.0 + (y - x).exp()) - 1.0)
+            }
+        },
+        |value, offset| value + offset,
+    )
+}

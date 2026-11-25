@@ -60,6 +60,10 @@ pub enum V2Config {
         grid: (u32, u32),
         clip_limit: f64,
     },
+    AdditiveNoise {
+        distribution: std::sync::Arc<AdditiveDistribution>,
+        sharing: NoiseSharing,
+    },
     MultiplicativeNoise {
         multiplier: (f64, f64),
         per_channel: bool,
@@ -162,6 +166,7 @@ impl V2Config {
             Self::ShotNoise { .. } => "ShotNoise",
             Self::RandomToneCurve { .. } => "RandomToneCurve",
             Self::Clahe { .. } => "CLAHE",
+            Self::AdditiveNoise { .. } => "AdditiveNoise",
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::FilmGrain { .. } => "FilmGrain",
             Self::IsoNoise { .. } => "ISONoise",
@@ -200,6 +205,7 @@ impl V2Config {
             Self::ShotNoise { .. } => 60,
             Self::RandomToneCurve { .. } => 69,
             Self::Clahe { .. } => 70,
+            Self::AdditiveNoise { .. } => 83,
             Self::MultiplicativeNoise { .. } => 82,
             Self::FilmGrain { .. } => 81,
             Self::IsoNoise { .. } => 80,
@@ -239,6 +245,10 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::AdditiveNoise {
+                distribution,
+                sharing,
+            } => distribution.valid(*sharing),
             Self::MultiplicativeNoise {
                 multiplier: (low, high),
                 ..
@@ -653,6 +663,7 @@ impl V2Config {
             }
             Self::RandomToneCurve { .. }
             | Self::Clahe { .. }
+            | Self::AdditiveNoise { .. }
             | Self::MultiplicativeNoise { .. }
             | Self::FilmGrain { .. }
             | Self::IsoNoise { .. }
@@ -776,6 +787,12 @@ impl V2Config {
                     *elementwise,
                     rng,
                 )?;
+            }
+            Self::AdditiveNoise {
+                distribution,
+                sharing,
+            } => {
+                s.image = super::noise::additive_noise(&s.image, distribution, *sharing, rng)?;
             }
             Self::MedianBlur => {
                 s.image = super::blur::median_blur_3x3(&s.image)?;
