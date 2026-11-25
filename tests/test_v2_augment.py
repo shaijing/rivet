@@ -1397,3 +1397,40 @@ def test_random_shadow_roi_transmission_and_seed(tmp_path):
     np.testing.assert_allclose(gray[..., 0] * 255, image[..., 0], atol=1e-5)
     with pytest.raises(ValueError):
         rivet.Transform().random_shadow(shadow_roi=(0, 1, 1, 0))
+
+
+def test_random_sun_flare_source_color_and_radius(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.full((9, 9, 3), 40, dtype=np.uint8)
+    Image.fromarray(pixels).save(folder / "image.png")
+
+    def augment(p):
+        return p.random_sun_flare((0.5, 0.5, 0.5, 0.5), (0, 0), (0, 0), 3, (255, 96, 48))
+
+    image = output(tmp_path, augment, transform=True, workers=3)[0]
+    np.testing.assert_array_equal(image[4, 4], [255, 96, 48])
+    np.testing.assert_array_equal(image[0], pixels[0])
+    assert image.dtype == np.uint8 and image.shape == pixels.shape
+
+
+@pytest.mark.parametrize("optical", ["lens", "sun"])
+def test_optical_flare_seed_and_float_range(source, optical):
+    root, pixels = source
+
+    def augment(p):
+        p = p.to_dtype("float32", True)
+        if optical == "lens":
+            return p.lens_flare()
+        return p.random_sun_flare(src_radius=4, physics_based=True)
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(root, augment, epoch=1))
+    assert serial[0].dtype == np.float32 and serial[0].shape == pixels.shape
+    assert np.min(serial) >= 0 and np.max(serial) <= 1
+    assert np.any(serial[0] > pixels / 255 + 1e-5)
+    identity = output(root, lambda p: p.lens_flare(intensity_range=(0, 0)))
+    np.testing.assert_array_equal(identity[0], pixels)
+    with pytest.raises(ValueError, match="LensFlare"):
+        output(root, lambda p: p.grayscale().lens_flare())

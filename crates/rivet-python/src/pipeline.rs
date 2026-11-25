@@ -987,6 +987,58 @@ impl PyTransform {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (flare_roi=(0.0, 0.0, 1.0, 0.5), angle_range=(0.0, 1.0), num_flare_circles_range=(6, 10), src_radius=400, src_color=(255, 255, 255), physics_based=false))]
+    fn random_sun_flare(
+        &self,
+        flare_roi: (f64, f64, f64, f64),
+        angle_range: (f64, f64),
+        num_flare_circles_range: (u32, u32),
+        src_radius: u32,
+        src_color: (u8, u8, u8),
+        physics_based: bool,
+    ) -> PyResult<Self> {
+        let config = V2Config::RandomSunFlare(std::sync::Arc::new(
+            rivet_vision::transforms::RandomSunFlareConfig {
+                flare_roi,
+                angle_range,
+                num_flare_circles_range,
+                src_radius,
+                src_color,
+                physics_based,
+            },
+        ));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (flare_roi=(0.0, 0.0, 1.0, 0.5), num_ghosts_range=(3, 7), intensity_range=(0.3, 0.7), num_rays_range=(4, 8), bloom_range=(0.01, 0.05)))]
+    fn lens_flare(
+        &self,
+        flare_roi: (f64, f64, f64, f64),
+        num_ghosts_range: (u32, u32),
+        intensity_range: (f64, f64),
+        num_rays_range: (u32, u32),
+        bloom_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let config = V2Config::LensFlare(std::sync::Arc::new(
+            rivet_vision::transforms::LensFlareConfig {
+                flare_roi,
+                num_ghosts_range,
+                intensity_range,
+                num_rays_range,
+                bloom_range,
+            },
+        ));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (shadow_roi=(0.0, 0.5, 1.0, 1.0), num_shadows_range=(1, 2), shadow_dimension=5, shadow_intensity_range=(0.5, 0.5)))]
     fn random_shadow(
         &self,
@@ -2487,6 +2539,58 @@ impl PyImagePipeline {
             per_channel,
             elementwise,
         };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (flare_roi=(0.0, 0.0, 1.0, 0.5), angle_range=(0.0, 1.0), num_flare_circles_range=(6, 10), src_radius=400, src_color=(255, 255, 255), physics_based=false))]
+    fn random_sun_flare(
+        &self,
+        flare_roi: (f64, f64, f64, f64),
+        angle_range: (f64, f64),
+        num_flare_circles_range: (u32, u32),
+        src_radius: u32,
+        src_color: (u8, u8, u8),
+        physics_based: bool,
+    ) -> PyResult<Self> {
+        let config = V2Config::RandomSunFlare(std::sync::Arc::new(
+            rivet_vision::transforms::RandomSunFlareConfig {
+                flare_roi,
+                angle_range,
+                num_flare_circles_range,
+                src_radius,
+                src_color,
+                physics_based,
+            },
+        ));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (flare_roi=(0.0, 0.0, 1.0, 0.5), num_ghosts_range=(3, 7), intensity_range=(0.3, 0.7), num_rays_range=(4, 8), bloom_range=(0.01, 0.05)))]
+    fn lens_flare(
+        &self,
+        flare_roi: (f64, f64, f64, f64),
+        num_ghosts_range: (u32, u32),
+        intensity_range: (f64, f64),
+        num_rays_range: (u32, u32),
+        bloom_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let config = V2Config::LensFlare(std::sync::Arc::new(
+            rivet_vision::transforms::LensFlareConfig {
+                flare_roi,
+                num_ghosts_range,
+                intensity_range,
+                num_rays_range,
+                bloom_range,
+            },
+        ));
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

@@ -18,6 +18,7 @@ mod crop;
 mod decode;
 mod dtype;
 mod erase;
+mod flare;
 mod flip;
 mod layout;
 mod letterbox;
@@ -271,7 +272,8 @@ mod tests {
 
 mod v2;
 pub use v2::{
-    AdvancedBlurConfig, IlluminationEffect, IlluminationMode, RandomShadowConfig, V2Config,
+    AdvancedBlurConfig, IlluminationEffect, IlluminationMode, LensFlareConfig, RandomShadowConfig,
+    RandomSunFlareConfig, V2Config,
 };
 
 mod v2_jpeg;

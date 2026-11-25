@@ -34,6 +34,25 @@ pub struct RandomShadowConfig {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct RandomSunFlareConfig {
+    pub flare_roi: (f64, f64, f64, f64),
+    pub angle_range: (f64, f64),
+    pub num_flare_circles_range: (u32, u32),
+    pub src_radius: u32,
+    pub src_color: (u8, u8, u8),
+    pub physics_based: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LensFlareConfig {
+    pub flare_roi: (f64, f64, f64, f64),
+    pub num_ghosts_range: (u32, u32),
+    pub intensity_range: (f64, f64),
+    pub num_rays_range: (u32, u32),
+    pub bloom_range: (f64, f64),
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum V2Config {
     PermuteChannels(Vec<usize>),
     RandomChannelPermutation {
@@ -88,6 +107,8 @@ pub enum V2Config {
         per_channel: bool,
         elementwise: bool,
     },
+    RandomSunFlare(std::sync::Arc<RandomSunFlareConfig>),
+    LensFlare(std::sync::Arc<LensFlareConfig>),
     RandomShadow(std::sync::Arc<RandomShadowConfig>),
     PlasmaShadow {
         shadow_intensity_range: (f64, f64),
@@ -204,6 +225,8 @@ impl V2Config {
             Self::Clahe { .. } => "CLAHE",
             Self::AdditiveNoise(_) => "AdditiveNoise",
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
+            Self::RandomSunFlare(_) => "RandomSunFlare",
+            Self::LensFlare(_) => "LensFlare",
             Self::RandomShadow(_) => "RandomShadow",
             Self::PlasmaShadow { .. } => "PlasmaShadow",
             Self::PlasmaBrightnessContrast { .. } => "PlasmaBrightnessContrast",
@@ -247,6 +270,8 @@ impl V2Config {
             Self::Clahe { .. } => 70,
             Self::AdditiveNoise(_) => 83,
             Self::MultiplicativeNoise { .. } => 82,
+            Self::RandomSunFlare(_) => 88,
+            Self::LensFlare(_) => 89,
             Self::RandomShadow(_) => 87,
             Self::PlasmaShadow { .. } => 85,
             Self::PlasmaBrightnessContrast { .. } => 86,
@@ -289,6 +314,8 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::LensFlare(config) => super::flare::lens_flare_valid(config),
+            Self::RandomSunFlare(config) => super::flare::random_sun_flare_valid(config),
             Self::RandomShadow(config) => {
                 let (x0, y0, x1, y1) = config.shadow_roi;
                 let (min, max) = config.num_shadows_range;
@@ -755,6 +782,8 @@ impl V2Config {
             | Self::Clahe { .. }
             | Self::AdditiveNoise(_)
             | Self::MultiplicativeNoise { .. }
+            | Self::RandomSunFlare(_)
+            | Self::LensFlare(_)
             | Self::RandomShadow(_)
             | Self::PlasmaShadow { .. }
             | Self::PlasmaBrightnessContrast { .. }
@@ -940,6 +969,12 @@ impl V2Config {
             }
             Self::RandomShadow(config) => {
                 s.image = super::local_color::random_shadow(&s.image, config, rng)?;
+            }
+            Self::RandomSunFlare(config) => {
+                s.image = super::flare::random_sun_flare(&s.image, config, rng)?;
+            }
+            Self::LensFlare(config) => {
+                s.image = super::flare::lens_flare(&s.image, config, rng)?;
             }
             Self::MedianBlur => {
                 s.image = super::blur::median_blur_3x3(&s.image)?;

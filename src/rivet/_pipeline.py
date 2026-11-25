@@ -682,6 +682,39 @@ class Pipeline:
         )
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def random_sun_flare(
+        self,
+        flare_roi: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 0.5),
+        angle_range: tuple[float, float] = (0.0, 1.0),
+        num_flare_circles_range: tuple[int, int] = (6, 10),
+        src_radius: int = 400,
+        src_color: tuple[int, int, int] = (255, 255, 255),
+        physics_based: bool = False,
+    ) -> Pipeline:
+        """Add a seeded optical flare to uint8 or normalized float32 HWC RGB.
+
+        Angles are fractions of a turn, radius is in pixels, and color is RGB.
+        Set physics_based for diffraction rays and screen blending.
+        """
+        inner = self._inner.random_sun_flare(flare_roi, angle_range, num_flare_circles_range, src_radius, src_color, physics_based)
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
+    def lens_flare(
+        self,
+        flare_roi: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 0.5),
+        num_ghosts_range: tuple[int, int] = (3, 7),
+        intensity_range: tuple[float, float] = (0.3, 0.7),
+        num_rays_range: tuple[int, int] = (4, 8),
+        bloom_range: tuple[float, float] = (0.01, 0.05),
+    ) -> Pipeline:
+        """Add a seeded optical flare to uint8 or normalized float32 HWC RGB.
+
+        Source-position coordinates and bloom radius are normalized.
+        Ghosts and starburst rays use screen blending.
+        """
+        inner = self._inner.lens_flare(flare_roi, num_ghosts_range, intensity_range, num_rays_range, bloom_range)
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def random_shadow(
         self,
         shadow_roi: tuple[float, float, float, float] = (0, 0.5, 1, 1),

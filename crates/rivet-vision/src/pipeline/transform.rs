@@ -86,6 +86,20 @@ impl TransformSequence {
         })
     }
 
+    /// Render a seeded optical flare.
+    pub fn random_sun_flare(self, config: crate::transforms::RandomSunFlareConfig) -> Self {
+        self.v2(crate::transforms::V2Config::RandomSunFlare(
+            std::sync::Arc::new(config),
+        ))
+    }
+
+    /// Render a seeded optical flare.
+    pub fn lens_flare(self, config: crate::transforms::LensFlareConfig) -> Self {
+        self.v2(crate::transforms::V2Config::LensFlare(std::sync::Arc::new(
+            config,
+        )))
+    }
+
     /// Darken seeded polygonal regions of the image.
     pub fn random_shadow(self, config: crate::transforms::RandomShadowConfig) -> Self {
         self.v2(crate::transforms::V2Config::RandomShadow(
