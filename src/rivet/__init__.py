@@ -43,6 +43,7 @@ from ._structured import (
     uniform_temporal_subsample,
 )
 from ._transforms import Compose, Transform
+from ._spectrogram import SpectrogramSample
 from ._volume import VolumeSample
 
 __all__ = [
@@ -61,6 +62,7 @@ __all__ = [
     "Transform",
     "UniformTemporalSubsample",
     "VideoSample",
+    "SpectrogramSample",
     "VolumeSample",
     "convert_imagefolder_lance",
     "dataset",

@@ -7,6 +7,7 @@ mod error;
 mod loader;
 mod numpy;
 mod pipeline;
+mod spectrogram;
 mod structured;
 mod text;
 mod volume;
@@ -29,6 +30,7 @@ fn _rivet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<structured::PyStructuredLoader>()?;
     m.add_class::<structured::PyVideoSample>()?;
     m.add_class::<volume::PyVolumeSample>()?;
+    m.add_class::<spectrogram::PySpectrogramSample>()?;
     m.add_function(wrap_pyfunction!(structured::mix_batch, m)?)?;
     m.add_function(wrap_pyfunction!(structured::temporal_subsample, m)?)?;
     m.add_function(wrap_pyfunction!(loader::read_image_batch, m)?)?;
