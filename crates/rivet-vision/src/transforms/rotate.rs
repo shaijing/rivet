@@ -93,3 +93,56 @@ pub(crate) fn quarter_turn(
         _ => image.permute(&order)?.flip(&[x])?,
     })
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SquareSymmetry {
+    Identity,
+    Rotate90,
+    Rotate180,
+    Rotate270,
+    MirrorVerticalAxis,
+    MirrorHorizontalAxis,
+    MainDiagonal,
+    AntiDiagonal,
+}
+
+impl SquareSymmetry {
+    pub(crate) fn sample(
+        element: Option<Self>,
+        rng: &mut rivet_data::random::RandomStream,
+    ) -> RivetResult<Self> {
+        use SquareSymmetry::*;
+        let elements = [
+            Identity,
+            Rotate90,
+            Rotate180,
+            Rotate270,
+            MirrorVerticalAxis,
+            MirrorHorizontalAxis,
+            MainDiagonal,
+            AntiDiagonal,
+        ];
+        Ok(match element {
+            Some(element) => element,
+            None => elements[rng.gen_range_usize(0..elements.len())?],
+        })
+    }
+
+    pub(crate) fn components(self) -> (bool, usize) {
+        match self {
+            Self::Identity => (false, 0),
+            Self::Rotate90 => (false, 1),
+            Self::Rotate180 => (false, 2),
+            Self::Rotate270 => (false, 3),
+            Self::MirrorVerticalAxis => (true, 3),
+            Self::MirrorHorizontalAxis => (true, 1),
+            Self::MainDiagonal => (true, 0),
+            Self::AntiDiagonal => (true, 2),
+        }
+    }
+
+    pub(crate) fn swaps_axes(self) -> bool {
+        let (reflect, turns) = self.components();
+        reflect ^ (turns % 2 != 0)
+    }
+}

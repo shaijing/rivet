@@ -537,6 +537,19 @@ class Transform:
             )
         )
 
+    def square_symmetry(self, group_element: str | None = None) -> Transform:
+        """Apply one of the eight square symmetries to the image and targets.
+
+        Use e, r90, r180, r270, v (mirror across the vertical axis),
+        h (mirror across the horizontal axis), t, or hvt. None samples
+        uniformly. Axis-swapping elements also work on rectangular images.
+        """
+        return Transform(self._inner.square_symmetry(group_element))
+
+    def d4(self, group_element: str | None = None) -> Transform:
+        """Alias for square_symmetry."""
+        return self.square_symmetry(group_element)
+
     def random_rotate90(self) -> Transform:
         """Sample 0, 90, 180, or 270 degrees counterclockwise with equal probability.
 

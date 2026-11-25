@@ -633,6 +633,19 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def square_symmetry(self, group_element: str | None = None) -> Pipeline:
+        """Apply one of the eight square symmetries to the image and targets.
+
+        Use e, r90, r180, r270, v (mirror across the vertical axis),
+        h (mirror across the horizontal axis), t, or hvt. None samples
+        uniformly. Axis-swapping elements also work on rectangular images.
+        """
+        return Pipeline(self._inner.square_symmetry(group_element), as_numpy=self.as_numpy)
+
+    def d4(self, group_element: str | None = None) -> Pipeline:
+        """Alias for square_symmetry."""
+        return self.square_symmetry(group_element)
+
     def random_rotate90(self) -> Pipeline:
         """Sample 0, 90, 180, or 270 degrees counterclockwise with equal probability.
 

@@ -266,6 +266,7 @@ pub enum V2Config {
         dtype: DType,
         scale: bool,
     },
+    SquareSymmetry(Option<SquareSymmetry>),
     RandomRotate90,
     Transpose,
     GridMask(std::sync::Arc<GridMaskConfig>),
@@ -330,6 +331,7 @@ impl V2Config {
             Self::LetterBox(_) => "LetterBox",
             Self::Defocus { .. } => "Defocus",
             Self::ChannelDropout(_) => "ChannelDropout",
+            Self::SquareSymmetry(_) => "SquareSymmetry",
             Self::RandomRotate90 => "RandomRotate90",
             Self::Transpose => "Transpose",
             Self::GridMask(_) => "GridMask",
@@ -406,6 +408,7 @@ impl V2Config {
             Self::LetterBox(_) => 66,
             Self::Defocus { .. } => 67,
             Self::ChannelDropout(_) => 111,
+            Self::SquareSymmetry(_) => 122,
             Self::RandomRotate90 => 121,
             Self::Transpose => 120,
             Self::GridMask(_) => 113,
@@ -443,6 +446,7 @@ impl V2Config {
                 | Self::UnsharpMask { .. }
                 | Self::LetterBox(_)
                 | Self::ToSepia { .. }
+                | Self::SquareSymmetry(Some(_))
                 | Self::Transpose
                 | Self::MedianBlur
                 | Self::Clahe { .. }
@@ -1475,6 +1479,17 @@ impl V2Config {
             }
             Self::ChannelDropout(config) => {
                 s.image = config.apply(&s.image, axis, rng)?;
+            }
+            Self::SquareSymmetry(element) => {
+                let (reflect, turns) = SquareSymmetry::sample(*element, rng)?.components();
+                if reflect {
+                    let order = match axis {
+                        ImageAxisOrder::Hwc => [1, 0, 2],
+                        ImageAxisOrder::Chw => [0, 2, 1],
+                    };
+                    s.image = s.image.permute(&order)?;
+                }
+                s.image = super::quarter_turn(&s.image, axis, turns)?;
             }
             Self::RandomRotate90 => {
                 let turns = rng.gen_range_usize(0..4)?;

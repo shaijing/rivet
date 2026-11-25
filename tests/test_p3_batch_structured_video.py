@@ -1191,3 +1191,28 @@ def test_random_rotate90_structured_targets(annotated):
         np.testing.assert_array_equal(target["keypoints"], points)
         np.testing.assert_array_equal(target["labels"], original["labels"])
     assert seen == {0, 1, 2, 3}
+
+
+@pytest.mark.parametrize("element", ["e", "r90", "r180", "r270", "v", "h", "t", "hvt"])
+def test_square_symmetry_fixed_elements_and_annotations(annotated, element):
+    original = annotated.to_dict()
+    reverse = {"r90": "r270", "r270": "r90"}.get(element, element)
+    transform = rivet.Transform().d4(element)
+    result = annotated.apply(transform).to_dict()
+    img = original["image"]
+    if element.startswith("r"):
+        expected = np.rot90(img, int(element[1:]) // 90)
+    elif element == "v":
+        expected = img[:, ::-1]
+    elif element == "h":
+        expected = img[::-1]
+    elif element == "t":
+        expected = img.transpose(1, 0, 2)
+    elif element == "hvt":
+        expected = img[::-1, ::-1].transpose(1, 0, 2)
+    else:
+        expected = img
+    np.testing.assert_array_equal(result["image"], expected)
+    recovered = annotated.apply(transform.square_symmetry(reverse)).to_dict()
+    for key in ("image", "boxes", "keypoints", "masks", "labels"):
+        np.testing.assert_array_equal(recovered[key], original[key])

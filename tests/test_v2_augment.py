@@ -2374,3 +2374,16 @@ def test_random_rotate90_matches_discrete_rotations(source):
         seen.add(turn)
         np.testing.assert_allclose(chw, actual.transpose(2, 0, 1) / 255, atol=1e-7)
     assert len(seen) > 1
+
+
+def test_square_symmetry_sampling_and_dtype(source):
+    root, _ = source
+    serial = output(root, lambda p: p.square_symmetry())
+    parallel = output(root, lambda p: p.d4(), transform=True, workers=3)
+    for a, b in zip(serial, parallel, strict=True):
+        np.testing.assert_array_equal(a, b)
+    planar = output(root, lambda p: p.to_dtype("float32", True).hwc_to_chw().square_symmetry("hvt"))
+    hwc = output(root, lambda p: p.square_symmetry("hvt"))
+    np.testing.assert_allclose(planar[0], hwc[0].transpose(2, 0, 1) / 255, atol=1e-7)
+    with pytest.raises(ValueError):
+        rivet.Transform().d4("invalid")

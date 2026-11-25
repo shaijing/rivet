@@ -936,6 +936,30 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (group_element=None))]
+    fn square_symmetry(&self, group_element: Option<&str>) -> PyResult<Self> {
+        use rivet_vision::transforms::SquareSymmetry;
+        let element = match group_element {
+            None => None,
+            Some("e") => Some(SquareSymmetry::Identity),
+            Some("r90") => Some(SquareSymmetry::Rotate90),
+            Some("r180") => Some(SquareSymmetry::Rotate180),
+            Some("r270") => Some(SquareSymmetry::Rotate270),
+            Some("v") => Some(SquareSymmetry::MirrorVerticalAxis),
+            Some("h") => Some(SquareSymmetry::MirrorHorizontalAxis),
+            Some("t") => Some(SquareSymmetry::MainDiagonal),
+            Some("hvt") => Some(SquareSymmetry::AntiDiagonal),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "unknown square symmetry group element",
+                ));
+            }
+        };
+        Ok(Self {
+            inner: self.inner.clone().square_symmetry(element),
+        })
+    }
+
     fn random_rotate90(&self) -> Self {
         Self {
             inner: self.inner.clone().random_rotate90(),
@@ -3163,6 +3187,30 @@ impl PyImagePipeline {
         };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (group_element=None))]
+    fn square_symmetry(&self, group_element: Option<&str>) -> PyResult<Self> {
+        use rivet_vision::transforms::SquareSymmetry;
+        let element = match group_element {
+            None => None,
+            Some("e") => Some(SquareSymmetry::Identity),
+            Some("r90") => Some(SquareSymmetry::Rotate90),
+            Some("r180") => Some(SquareSymmetry::Rotate180),
+            Some("r270") => Some(SquareSymmetry::Rotate270),
+            Some("v") => Some(SquareSymmetry::MirrorVerticalAxis),
+            Some("h") => Some(SquareSymmetry::MirrorHorizontalAxis),
+            Some("t") => Some(SquareSymmetry::MainDiagonal),
+            Some("hvt") => Some(SquareSymmetry::AntiDiagonal),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "unknown square symmetry group element",
+                ));
+            }
+        };
+        Ok(Self {
+            inner: self.inner.clone().square_symmetry(element),
         })
     }
 

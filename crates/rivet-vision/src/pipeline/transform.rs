@@ -123,6 +123,11 @@ impl TransformSequence {
         ))
     }
 
+    /// Apply a fixed or uniformly sampled square symmetry.
+    pub fn square_symmetry(self, element: Option<crate::transforms::SquareSymmetry>) -> Self {
+        self.v2(crate::transforms::V2Config::SquareSymmetry(element))
+    }
+
     /// Sample zero to three counterclockwise quarter turns.
     pub fn random_rotate90(self) -> Self {
         self.v2(crate::transforms::V2Config::RandomRotate90)

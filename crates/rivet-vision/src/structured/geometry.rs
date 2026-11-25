@@ -664,12 +664,15 @@ pub(super) fn apply(
             }
             Ok(s)
         }
-        ImageOp::V2(V2Config::RandomRotate90) => match rng.gen_range_usize(0..4)? {
-            0 => Ok(s),
-            1 => flip(transpose(s)?, false),
-            2 => flip(flip(s, true)?, false),
-            _ => flip(transpose(s)?, true),
-        },
+        ImageOp::V2(V2Config::SquareSymmetry(element)) => {
+            let (reflect, turns) =
+                crate::transforms::SquareSymmetry::sample(*element, rng)?.components();
+            if reflect {
+                s = transpose(s)?;
+            }
+            rotate_quarters(s, turns)
+        }
+        ImageOp::V2(V2Config::RandomRotate90) => rotate_quarters(s, rng.gen_range_usize(0..4)?),
         ImageOp::V2(V2Config::Transpose) => transpose(s),
         ImageOp::V2(V2Config::GridMask(config)) => {
             let mask = config.sample(h, w, rng)?;
@@ -911,4 +914,13 @@ fn transpose(mut s: StructuredSample) -> RivetResult<StructuredSample> {
     }
     let swap = [[0., 1., 0.], [1., 0., 0.], [0., 0., 1.]];
     targets(s, swap, swap, false)
+}
+
+fn rotate_quarters(s: StructuredSample, turns: usize) -> RivetResult<StructuredSample> {
+    match turns {
+        0 => Ok(s),
+        1 => flip(transpose(s)?, false),
+        2 => flip(flip(s, true)?, false),
+        _ => flip(transpose(s)?, true),
+    }
 }
