@@ -153,6 +153,13 @@ impl ImagePipeline {
         )))
     }
 
+    /// Render seeded rain streaks and apply wet-scene blur and dimming.
+    pub fn random_rain(self, config: crate::transforms::RandomRainConfig) -> Self {
+        self.v2(crate::transforms::V2Config::RandomRain(
+            std::sync::Arc::new(config),
+        ))
+    }
+
     /// Darken seeded polygonal regions of the image.
     pub fn random_shadow(self, config: crate::transforms::RandomShadowConfig) -> Self {
         self.v2(crate::transforms::V2Config::RandomShadow(

@@ -32,6 +32,8 @@ mod resize;
 mod resized_crop;
 mod rotate;
 mod u8_color;
+mod weather;
+pub use weather::{RainType, RandomRainConfig};
 
 /// Padding semantics shared by geometry transforms.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

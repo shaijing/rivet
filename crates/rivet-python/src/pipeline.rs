@@ -1039,6 +1039,46 @@ impl PyTransform {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (slant_range=(-10.0, 10.0), drop_length=None, drop_width=1, drop_color=(200, 200, 200), blur_value=7, brightness_coefficient=0.7, rain_type="default"))]
+    fn random_rain(
+        &self,
+        slant_range: (f64, f64),
+        drop_length: Option<u32>,
+        drop_width: u32,
+        drop_color: (u8, u8, u8),
+        blur_value: u32,
+        brightness_coefficient: f64,
+        rain_type: &str,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{RainType, RandomRainConfig};
+        let style = match rain_type {
+            "default" => RainType::Default,
+            "drizzle" => RainType::Drizzle,
+            "heavy" => RainType::Heavy,
+            "torrential" => RainType::Torrential,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "rain_type must be default, drizzle, heavy or torrential",
+                ));
+            }
+        };
+        let (r, g, b) = drop_color;
+        let config = V2Config::RandomRain(std::sync::Arc::new(RandomRainConfig {
+            slant_range,
+            drop_length,
+            drop_width,
+            drop_color: [r, g, b],
+            blur_value,
+            brightness_coefficient,
+            style,
+        }));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (shadow_roi=(0.0, 0.5, 1.0, 1.0), num_shadows_range=(1, 2), shadow_dimension=5, shadow_intensity_range=(0.5, 0.5)))]
     fn random_shadow(
         &self,
@@ -2591,6 +2631,46 @@ impl PyImagePipeline {
                 bloom_range,
             },
         ));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (slant_range=(-10.0, 10.0), drop_length=None, drop_width=1, drop_color=(200, 200, 200), blur_value=7, brightness_coefficient=0.7, rain_type="default"))]
+    fn random_rain(
+        &self,
+        slant_range: (f64, f64),
+        drop_length: Option<u32>,
+        drop_width: u32,
+        drop_color: (u8, u8, u8),
+        blur_value: u32,
+        brightness_coefficient: f64,
+        rain_type: &str,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{RainType, RandomRainConfig};
+        let style = match rain_type {
+            "default" => RainType::Default,
+            "drizzle" => RainType::Drizzle,
+            "heavy" => RainType::Heavy,
+            "torrential" => RainType::Torrential,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "rain_type must be default, drizzle, heavy or torrential",
+                ));
+            }
+        };
+        let (r, g, b) = drop_color;
+        let config = V2Config::RandomRain(std::sync::Arc::new(RandomRainConfig {
+            slant_range,
+            drop_length,
+            drop_width,
+            drop_color: [r, g, b],
+            blur_value,
+            brightness_coefficient,
+            style,
+        }));
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

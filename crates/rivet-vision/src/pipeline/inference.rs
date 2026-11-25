@@ -335,7 +335,8 @@ pub(crate) fn infer_image_op(
                 V2Config::PlanckianJitter { .. }
                 | V2Config::IsoNoise { .. }
                 | V2Config::RandomSunFlare(..)
-                | V2Config::LensFlare(..) => {
+                | V2Config::LensFlare(..)
+                | V2Config::RandomRain(..) => {
                     if !matches!(
                         input_state,
                         PipelineImageState::Decoded {

@@ -1434,3 +1434,39 @@ def test_optical_flare_seed_and_float_range(source, optical):
     np.testing.assert_array_equal(identity[0], pixels)
     with pytest.raises(ValueError, match="LensFlare"):
         output(root, lambda p: p.grayscale().lens_flare())
+
+
+def test_random_rain_seed_and_rgb_blend(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.full((40, 48, 3), 100, dtype=np.uint8)
+    for i in range(4):
+        Image.fromarray(pixels).save(folder / f"{i}.png")
+
+    def augment(p):
+        return p.random_rain(
+            slant_range=(0, 0), drop_length=8, drop_width=1, drop_color=(200, 100, 0),
+            blur_value=1, brightness_coefficient=0.8,
+        )
+
+    serial = output(tmp_path, augment)
+    np.testing.assert_array_equal(serial, output(tmp_path, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(tmp_path, augment, epoch=1))
+    colors = np.unique(serial[0].reshape(-1, 3), axis=0)
+    np.testing.assert_array_equal(colors, [[80, 80, 80], [112, 80, 48]])
+    floats = output(tmp_path, lambda p: augment(p.to_dtype("float32", True)))
+    assert floats[0].shape == pixels.shape and floats[0].dtype == np.float32
+    np.testing.assert_allclose(floats[0] * 255, serial[0], atol=1e-5)
+    with pytest.raises(ValueError, match="RandomRain"):
+        output(tmp_path, lambda p: p.grayscale().random_rain())
+    with pytest.raises(ValueError):
+        rivet.Transform().random_rain(blur_value=2)
+
+
+def test_random_rain_single_pixel(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    Image.fromarray(np.zeros((1, 1, 3), dtype=np.uint8)).save(folder / "image.png")
+    image = output(tmp_path, lambda p: p.random_rain())[0]
+    assert image.shape == (1, 1, 3) and image.dtype == np.uint8
+    np.testing.assert_array_equal(image, 56)

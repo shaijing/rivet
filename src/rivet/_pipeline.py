@@ -715,6 +715,28 @@ class Pipeline:
         inner = self._inner.lens_flare(flare_roi, num_ghosts_range, intensity_range, num_rays_range, bloom_range)
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def random_rain(
+        self,
+        slant_range: tuple[float, float] = (-10, 10),
+        drop_length: int | None = None,
+        drop_width: int = 1,
+        drop_color: tuple[int, int, int] = (200, 200, 200),
+        blur_value: int = 7,
+        brightness_coefficient: float = 0.7,
+        rain_type: str = "default",
+    ) -> Pipeline:
+        """Add seeded semi-transparent streaks to uint8 or float32 HWC RGB.
+
+        Slant is measured from vertical in degrees. Length and width are in
+        pixels. Use blur_value=1 to skip box smoothing. Rain type controls
+        density and default streak length.
+        """
+        inner = self._inner.random_rain(
+            slant_range, drop_length, drop_width, drop_color, blur_value,
+            brightness_coefficient, rain_type,
+        )
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def random_shadow(
         self,
         shadow_roi: tuple[float, float, float, float] = (0, 0.5, 1, 1),
