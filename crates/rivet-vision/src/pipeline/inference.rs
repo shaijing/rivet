@@ -325,7 +325,7 @@ pub(crate) fn infer_image_op(
                         )));
                     }
                 }
-                V2Config::PlanckianJitter { .. } => {
+                V2Config::PlanckianJitter { .. } | V2Config::IsoNoise { .. } => {
                     if !matches!(
                         input_state,
                         PipelineImageState::Decoded {
@@ -334,9 +334,10 @@ pub(crate) fn infer_image_op(
                         }
                     ) || matches!(channel_dim(input), ShapeDim::Known(c) if c != 3)
                     {
-                        return Err(invalid_pipeline(
-                            "PlanckianJitter requires uint8 or float32 HWC RGB input",
-                        ));
+                        return Err(invalid_pipeline(format!(
+                            "{} requires uint8 or float32 HWC RGB input",
+                            op.name()
+                        )));
                     }
                 }
                 V2Config::Vignetting { .. } => {

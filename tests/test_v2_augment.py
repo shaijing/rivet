@@ -1113,3 +1113,49 @@ def test_glass_blur_validation(source):
             rivet.Transform().glass_blur(**kwargs)
     with pytest.raises(ValueError, match="GlassBlur"):
         output(root, lambda p: p.hwc_to_chw().glass_blur())
+
+
+def test_iso_noise_luma_and_chroma_are_independent(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.broadcast_to(np.array([120, 145, 165], dtype=np.uint8), (8, 11, 3))
+    Image.fromarray(pixels).save(folder / "image.png")
+
+    def run(color, intensity):
+        return output(
+            tmp_path,
+            lambda p: p.to_dtype("float32", True).iso_noise(
+                (color, color), (intensity, intensity)
+            ),
+            transform=True,
+            workers=3,
+        )[0]
+
+    np.testing.assert_allclose(run(1, 0), pixels / 255, atol=1e-7)
+    luma_only = run(0, 0.2)
+    both = run(0.2, 0.2)
+    delta = luma_only - pixels / 255
+    assert delta.std() > 0
+    np.testing.assert_allclose(delta[..., 0], delta[..., 1], atol=1e-7)
+    np.testing.assert_allclose(delta[..., 0], delta[..., 2], atol=1e-7)
+    weights = np.array([0.299, 0.587, 0.114])
+    np.testing.assert_allclose(both @ weights, luma_only @ weights, atol=1e-7)
+    assert not np.array_equal(both, luma_only)
+
+
+def test_iso_noise_seed_and_validation(source):
+    root, pixels = source
+    serial = output(root, lambda p: p.iso_noise())
+    parallel = output(root, lambda p: p.iso_noise(), transform=True, workers=3)
+    np.testing.assert_array_equal(serial, parallel)
+    assert serial[0].dtype == np.uint8 and serial[0].shape == pixels.shape
+    assert not np.array_equal(serial, output(root, lambda p: p.iso_noise(), epoch=1))
+    noisy = output(root, lambda p: p.to_dtype("float32", True).iso_noise((1, 1), (1, 1)))
+    assert 0 <= np.min(noisy) <= np.max(noisy) <= 1
+    for kwargs in [{"color_shift_range": (-1, 0)}, {"intensity_range": (0, 2)}]:
+        with pytest.raises(ValueError):
+            rivet.Transform().iso_noise(**kwargs)
+    with pytest.raises(ValueError, match="ISONoise"):
+        output(root, lambda p: p.grayscale().iso_noise())
+    with pytest.raises(ValueError, match="ISONoise"):
+        output(root, lambda p: p.hwc_to_chw().iso_noise())

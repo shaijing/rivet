@@ -60,6 +60,10 @@ pub enum V2Config {
         grid: (u32, u32),
         clip_limit: f64,
     },
+    IsoNoise {
+        color_shift_range: (f64, f64),
+        intensity_range: (f64, f64),
+    },
     GlassBlur {
         sigma: f64,
         max_delta: u32,
@@ -148,6 +152,7 @@ impl V2Config {
             Self::ShotNoise { .. } => "ShotNoise",
             Self::RandomToneCurve { .. } => "RandomToneCurve",
             Self::Clahe { .. } => "CLAHE",
+            Self::IsoNoise { .. } => "ISONoise",
             Self::GlassBlur { .. } => "GlassBlur",
             Self::ZoomBlur { .. } => "ZoomBlur",
             Self::StochasticConvolution { .. } => "StochasticConvolution",
@@ -183,6 +188,7 @@ impl V2Config {
             Self::ShotNoise { .. } => 60,
             Self::RandomToneCurve { .. } => 69,
             Self::Clahe { .. } => 70,
+            Self::IsoNoise { .. } => 80,
             Self::GlassBlur { .. } => 79,
             Self::ZoomBlur { .. } => 78,
             Self::StochasticConvolution { .. } => 77,
@@ -219,6 +225,12 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::IsoNoise {
+                color_shift_range,
+                intensity_range,
+            } => [color_shift_range, intensity_range]
+                .into_iter()
+                .all(|&(low, high)| low >= 0.0 && low <= high && high <= 1.0),
             Self::GlassBlur {
                 sigma,
                 max_delta,
@@ -618,6 +630,7 @@ impl V2Config {
             }
             Self::RandomToneCurve { .. }
             | Self::Clahe { .. }
+            | Self::IsoNoise { .. }
             | Self::GlassBlur { .. }
             | Self::ZoomBlur { .. }
             | Self::StochasticConvolution { .. }
@@ -707,6 +720,15 @@ impl V2Config {
                     *iterations,
                     rng,
                 )?;
+            }
+            Self::IsoNoise {
+                color_shift_range,
+                intensity_range,
+            } => {
+                let mut sample = |(low, high)| low + rng.next_f64() * (high - low);
+                let color_shift = sample(*color_shift_range);
+                let intensity = sample(*intensity_range);
+                s.image = super::noise::iso_noise(&s.image, color_shift, intensity, rng)?;
             }
             Self::MedianBlur => {
                 s.image = super::blur::median_blur_3x3(&s.image)?;

@@ -111,6 +111,14 @@ impl ImagePipeline {
         self.v2(crate::transforms::V2Config::LetterBox(config))
     }
 
+    /// Apply camera-like luma and chroma noise to RGB pixels.
+    pub fn iso_noise(self, color_shift_range: (f64, f64), intensity_range: (f64, f64)) -> Self {
+        self.v2(crate::transforms::V2Config::IsoNoise {
+            color_shift_range,
+            intensity_range,
+        })
+    }
+
     /// Apply Gaussian smoothing around seeded local pixel exchanges.
     pub fn glass_blur(self, sigma: f64, max_delta: u32, iterations: u32) -> Self {
         self.v2(crate::transforms::V2Config::GlassBlur {

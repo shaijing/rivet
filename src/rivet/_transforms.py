@@ -523,6 +523,19 @@ class Transform:
             )
         )
 
+    def iso_noise(
+        self,
+        color_shift_range: tuple[float, float] = (0.01, 0.05),
+        intensity_range: tuple[float, float] = (0.1, 0.5),
+    ) -> Transform:
+        """Add seeded luma and chroma noise to uint8 or normalized float32 HWC RGB.
+
+        Both ranges are in [0, 1]. Intensity scales both components, while
+        color shift controls chroma rotation in fractions of a turn. Luma
+        noise grows with the square root of luma. Output is clipped.
+        """
+        return Transform(self._inner.iso_noise(color_shift_range, intensity_range))
+
     def glass_blur(
         self, sigma: float = 0.7, max_delta: int = 4, iterations: int = 2
     ) -> Transform:

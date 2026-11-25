@@ -205,3 +205,63 @@ mod tests {
         assert_ne!(output[..8], output[8..]);
     }
 }
+
+pub(super) fn iso_noise(
+    input: &Tensor,
+    color_shift: f64,
+    intensity: f64,
+    rng: &mut RandomStream,
+) -> RivetResult<Tensor> {
+    if !matches!(input.dims(), [h, w, 3] if *h > 0 && *w > 0)
+        || !matches!(input.dtype(), DType::U8 | DType::F32)
+    {
+        return Err(invalid_argument(
+            "ISONoise requires nonempty uint8 or float32 HWC RGB input",
+        ));
+    }
+    if intensity == 0.0 {
+        return Ok(input.clone());
+    }
+    let chroma_scale = std::f64::consts::TAU * intensity * color_shift;
+    let mut perturb = |[r, g, b]: [f64; 3]| {
+        let y = 0.299 * r + 0.587 * g + 0.114 * b;
+        let (luma_noise, chroma_noise) = normal_pair(rng);
+        let delta = 0.1 * intensity * y.clamp(0.0, 1.0).sqrt() * luma_noise;
+        if chroma_scale == 0.0 {
+            return [r + delta, g + delta, b + delta];
+        }
+        let (sin, cos) = (chroma_scale * chroma_noise).sin_cos();
+        let cb = (b - y) / 1.772;
+        let cr = (r - y) / 1.402;
+        let cb_new = cb * cos - cr * sin;
+        let cr_new = cb * sin + cr * cos;
+        let red = 1.402 * cr_new;
+        let blue = 1.772 * cb_new;
+        let y = y + delta;
+        [y + red, y - (0.299 * red + 0.114 * blue) / 0.587, y + blue]
+    };
+    let input = input.contiguous()?;
+    Ok(input.with_cpu_storage(|storage, layout| {
+        macro_rules! write_rgb {
+            ($values:expr, $scale:expr, $finish:expr) => {{
+                let pixels = contiguous_values($values, layout)?;
+                Tensor::from_exact_writer(input.dims(), input.device(), |out| {
+                    for p in pixels.chunks_exact(3) {
+                        let rgb = [p[0], p[1], p[2]].map(|v| f64::from(v) * $scale);
+                        for v in perturb(rgb) {
+                            out.write_next($finish(v.clamp(0.0, 1.0)))?;
+                        }
+                    }
+                    Ok(())
+                })
+            }};
+        }
+        match storage {
+            CpuStorageRef::U8(values) => {
+                write_rgb!(values, 1.0 / 255.0, |v: f64| (v * 255.0).round() as u8)
+            }
+            CpuStorageRef::F32(values) => write_rgb!(values, 1.0, |v| v as f32),
+            _ => unreachable!(),
+        }
+    })?)
+}

@@ -905,6 +905,22 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (color_shift_range=(0.01, 0.05), intensity_range=(0.1, 0.5)))]
+    fn iso_noise(
+        &self,
+        color_shift_range: (f64, f64),
+        intensity_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let config = V2Config::IsoNoise {
+            color_shift_range,
+            intensity_range,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (sigma=0.7, max_delta=4, iterations=2))]
     fn glass_blur(&self, sigma: f64, max_delta: u32, iterations: u32) -> PyResult<Self> {
         let config = V2Config::GlassBlur {
@@ -2193,6 +2209,22 @@ impl PyImagePipeline {
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().letterbox(config),
+        })
+    }
+
+    #[pyo3(signature = (color_shift_range=(0.01, 0.05), intensity_range=(0.1, 0.5)))]
+    fn iso_noise(
+        &self,
+        color_shift_range: (f64, f64),
+        intensity_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let config = V2Config::IsoNoise {
+            color_shift_range,
+            intensity_range,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 
