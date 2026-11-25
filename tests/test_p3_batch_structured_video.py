@@ -914,3 +914,49 @@ def test_xy_masking_semantic_fill_matches_visible_strips():
     covered = result["image"][..., 0] == 0
     assert 0 < covered.sum() < covered.size
     np.testing.assert_array_equal(result["masks"], np.where(covered, -1, 3))
+
+
+def test_bbox_safe_random_crop_preserves_all_visible_targets():
+    h, w = 13, 17
+    y, x = np.indices((h, w), dtype=np.uint8)
+    image = np.stack((x, y, x + y), axis=-1)
+    boxes = np.array([[3.2, 2.5, 6, 5.5], [9, 7, 13.5, 10]], dtype=np.float32)
+    points = np.array([[[4, 4]], [[11, 8]]], dtype=np.float32)
+    masks = np.stack(((x + y) % 3, (x * y) % 7)).astype(np.uint8)
+    sample = rivet.AnnotatedSample(image, boxes=boxes, labels=[11, 22], masks=masks, keypoints=points)
+    pipeline = rivet.StructuredPipeline([sample] * 5).bbox_safe_random_crop().seed(23)
+    serial = list(pipeline.execute())
+    parallel = list(pipeline.workers(3).execute())
+    for left_batch, right_batch in zip(serial, parallel, strict=True):
+        out = left_batch["images"][0]
+        np.testing.assert_array_equal(out, right_batch["images"][0])
+        left, top = map(int, out[0, 0, :2])
+        oh, ow = out.shape[:2]
+        assert left <= 3 and top <= 2 and left + ow >= 14 and top + oh >= 10
+        target = left_batch["targets"][0]
+        np.testing.assert_allclose(target["boxes"], boxes - [left, top, left, top], atol=1e-6)
+        np.testing.assert_array_equal(target["keypoints"], points - [left, top])
+        np.testing.assert_array_equal(target["labels"], [11, 22])
+        np.testing.assert_array_equal(target["masks"], masks[:, top:top + oh, left:left + ow])
+
+
+def test_random_sized_bbox_safe_crop_full_image_and_empty_fallback(annotated):
+    image = annotated.to_dict()["image"]
+    empty = rivet.AnnotatedSample(image, boxes=np.zeros((0, 4), np.float32))
+    preserved = next(iter(rivet.StructuredPipeline([empty]).bbox_safe_random_crop().execute()))
+    np.testing.assert_array_equal(preserved["images"][0], image)
+    assert preserved["targets"][0]["boxes"].shape == (0, 4)
+    full = rivet.AnnotatedSample(
+        image, boxes=[[0, 0, 12, 10]], labels=[5],
+        masks=np.ones((1, 10, 12), np.uint8), keypoints=[[[6, 4]]],
+    )
+    pipeline = rivet.StructuredPipeline([full] * 3).random_sized_bbox_safe_crop(6, 5)
+    result = next(iter(pipeline.workers(3).batch(3).execute()))
+    assert result["images"].shape == (3, 5, 6, 3)
+    target = result["targets"][0]
+    np.testing.assert_array_equal(target["boxes"], [[0, 0, 6, 5]])
+    np.testing.assert_array_equal(target["labels"], [5])
+    np.testing.assert_array_equal(target["masks"], np.ones((1, 5, 6), np.uint8))
+    np.testing.assert_array_equal(target["keypoints"], [[[3, 2]]])
+    with pytest.raises(ValueError):
+        rivet.StructuredPipeline([full]).bbox_safe_random_crop(1.1)

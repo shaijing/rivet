@@ -6,9 +6,9 @@ use numpy::{PyArrayDyn, PyArrayMethods};
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 use rivet_core::{Device, Tensor};
 use rivet_vision::api::{
-    AtLeastOneBBoxRandomCropConfig, BatchMixConfig, BoxFormat, ImageAxisOrder, ImageBatch,
-    RandomIoUCropConfig, StructuredBatch, StructuredLoader, StructuredOp, StructuredPipeline,
-    StructuredSample, VideoLayout, VideoSample,
+    AtLeastOneBBoxRandomCropConfig, BBoxSafeRandomCropConfig, BatchMixConfig, BoxFormat,
+    ImageAxisOrder, ImageBatch, RandomIoUCropConfig, StructuredBatch, StructuredLoader,
+    StructuredOp, StructuredPipeline, StructuredSample, VideoLayout, VideoSample,
 };
 
 pub(crate) fn tensor_from_numpy(value: &Bound<'_, PyAny>) -> PyResult<Tensor> {
@@ -180,6 +180,37 @@ impl PyStructuredPipeline {
             inner: self.inner.clone().push(op),
         })
     }
+    #[pyo3(signature = (erosion_rate=0.0))]
+    fn bbox_safe_random_crop(&self, erosion_rate: f64) -> PyResult<Self> {
+        let op = StructuredOp::BBoxSafeRandomCrop(BBoxSafeRandomCropConfig {
+            erosion_rate,
+            output: None,
+        });
+        op.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().push(op),
+        })
+    }
+
+    #[pyo3(signature = (width, height, *, erosion_rate=0.0, interpolation="bilinear"))]
+    fn random_sized_bbox_safe_crop(
+        &self,
+        width: u32,
+        height: u32,
+        erosion_rate: f64,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        let interpolation = crate::pipeline::parse_interpolation(interpolation)?;
+        let op = StructuredOp::BBoxSafeRandomCrop(BBoxSafeRandomCropConfig {
+            erosion_rate,
+            output: Some((width, height, interpolation)),
+        });
+        op.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().push(op),
+        })
+    }
+
     #[pyo3(signature = (width, height, *, erosion_factor=0.0))]
     fn at_least_one_bbox_random_crop(
         &self,

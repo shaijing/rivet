@@ -244,7 +244,7 @@ fn pad_with_mask_fill(
     ];
     targets(s, m, m, false)
 }
-fn resize(
+pub(super) fn resize(
     mut s: StructuredSample,
     w: u32,
     h: u32,

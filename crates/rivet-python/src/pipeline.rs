@@ -113,7 +113,7 @@ fn parse_points(values: Vec<Vec<f32>>, name: &str) -> PyResult<[Point2; 4]> {
     ])
 }
 
-fn parse_interpolation(value: &str) -> PyResult<InterpolationMode> {
+pub(crate) fn parse_interpolation(value: &str) -> PyResult<InterpolationMode> {
     value.parse::<InterpolationMode>().map_err(to_py_err)
 }
 

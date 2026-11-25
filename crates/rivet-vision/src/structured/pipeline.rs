@@ -1,4 +1,7 @@
-use super::{AtLeastOneBBoxRandomCropConfig, BoxFormat, RandomIoUCropConfig, StructuredSample};
+use super::{
+    AtLeastOneBBoxRandomCropConfig, BBoxSafeRandomCropConfig, BoxFormat, RandomIoUCropConfig,
+    StructuredSample,
+};
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::pipeline::{
     TransformSequence,
@@ -17,6 +20,7 @@ pub enum StructuredOp {
     SanitizeKeypoints,
     Sanitize { min_size: f32, min_area: f32 },
     RandomIoUCrop(RandomIoUCropConfig),
+    BBoxSafeRandomCrop(BBoxSafeRandomCropConfig),
     AtLeastOneBBoxRandomCrop(AtLeastOneBBoxRandomCropConfig),
 }
 impl StructuredOp {
@@ -29,6 +33,8 @@ impl StructuredOp {
             Self::SanitizeKeypoints => "SanitizeKeyPoints",
             Self::Sanitize { .. } => "SanitizeBoundingBoxes",
             Self::RandomIoUCrop(_) => "RandomIoUCrop",
+            Self::BBoxSafeRandomCrop(c) if c.output.is_some() => "RandomSizedBBoxSafeCrop",
+            Self::BBoxSafeRandomCrop(_) => "BBoxSafeRandomCrop",
             Self::AtLeastOneBBoxRandomCrop(_) => "AtLeastOneBBoxRandomCrop",
         }
     }
@@ -36,6 +42,7 @@ impl StructuredOp {
         match self {
             Self::Image(op) => validate_image(op),
             Self::RandomIoUCrop(c) => c.validate(),
+            Self::BBoxSafeRandomCrop(c) => c.validate(),
             Self::AtLeastOneBBoxRandomCrop(c) => c.validate(),
             Self::Sanitize { min_size, min_area }
                 if !min_size.is_finite()
@@ -169,6 +176,7 @@ impl StructuredPipeline {
                     sample.sanitize(*min_size, *min_area)?
                 }
                 StructuredOp::RandomIoUCrop(c) => sample.random_iou_crop(c, &mut rng)?,
+                StructuredOp::BBoxSafeRandomCrop(c) => sample.bbox_safe_random_crop(c, &mut rng)?,
                 StructuredOp::AtLeastOneBBoxRandomCrop(c) => {
                     sample.at_least_one_bbox_random_crop(c, &mut rng)?
                 }

@@ -209,6 +209,25 @@ class StructuredPipeline:
         """Remove invalid boxes and corresponding labels, masks and keypoints."""
         return self._from_inner(self._inner.sanitize_bounding_boxes(min_size, min_area))
 
+    def bbox_safe_random_crop(self, erosion_rate: float = 0.0) -> StructuredPipeline:
+        """Sample a crop containing the union of visible boxes at zero erosion.
+
+        Erosion shrinks each box around its center before taking the union.
+        With no visible boxes, zero erosion keeps the full image. A positive
+        erosion rate allows a smaller random crop.
+        """
+        return self._from_inner(self._inner.bbox_safe_random_crop(erosion_rate))
+
+    def random_sized_bbox_safe_crop(
+        self, width: int, height: int, *, erosion_rate: float = 0.0,
+        interpolation: str = "bilinear",
+    ) -> StructuredPipeline:
+        """Sample a box-safe crop, then resize it to the given width and height."""
+        return self._from_inner(self._inner.random_sized_bbox_safe_crop(
+            _positive_integer(width, "width"), _positive_integer(height, "height"),
+            erosion_rate=erosion_rate, interpolation=interpolation,
+        ))
+
     def at_least_one_bbox_random_crop(
         self, width: int, height: int, *, erosion_factor: float = 0.0
     ) -> StructuredPipeline:
