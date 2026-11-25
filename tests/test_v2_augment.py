@@ -1290,3 +1290,26 @@ def test_additive_noise_constant_channel_offsets_and_validation(source):
         output(root, lambda p: p.additive_noise(ranges=[(0, 0), (0, 0)]))
     with pytest.raises(ValueError, match="AdditiveNoise"):
         output(root, lambda p: p.hwc_to_chw().additive_noise())
+
+
+def test_additive_noise_patch_union_and_seed(source):
+    root, pixels = source
+
+    def augment(p):
+        return p.additive_noise(
+            spatial_mode="patch",
+            ranges=[(1, 1)],
+            patch_count_range=(1, 1),
+            patch_height_range=(0.25, 0.25),
+            patch_width_range=(0.25, 0.25),
+        )
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    changed = np.any(serial[0] != pixels, axis=-1)
+    ys, xs = np.where(changed)
+    assert len(ys) == 3 * 5
+    assert np.ptp(ys) == 2 and np.ptp(xs) == 4
+    np.testing.assert_array_equal(serial[0][changed], 255)
+    with pytest.raises(ValueError):
+        rivet.Transform().additive_noise(spatial_mode="patch", patch_height_range=(0, 1))

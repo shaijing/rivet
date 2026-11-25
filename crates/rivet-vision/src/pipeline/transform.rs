@@ -64,10 +64,12 @@ impl TransformSequence {
         distribution: crate::transforms::AdditiveDistribution,
         sharing: crate::transforms::NoiseSharing,
     ) -> Self {
-        self.v2(crate::transforms::V2Config::AdditiveNoise {
-            distribution: std::sync::Arc::new(distribution),
-            sharing,
-        })
+        self.v2(crate::transforms::V2Config::AdditiveNoise(
+            std::sync::Arc::new(crate::transforms::AdditiveNoiseConfig {
+                distribution,
+                sharing,
+            }),
+        ))
     }
 
     /// Apply seeded spatially and/or channel-shared multiplicative noise.

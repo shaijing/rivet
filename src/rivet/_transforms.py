@@ -530,6 +530,10 @@ class Transform:
         scale_range: tuple[float, float] = (0.1, 0.1),
         alpha_range: tuple[float, float] = (0.5, 1.5),
         beta_range: tuple[float, float] = (0.5, 1.5),
+        patch_count_range: tuple[int, int] = (1, 1),
+        patch_height_range: tuple[float, float] = (0.1, 1.0),
+        patch_width_range: tuple[float, float] = (0.1, 1.0),
+        per_channel: bool = False,
     ) -> Transform:
         """Add seeded offsets to uint8 or normalized float32 HWC and clip.
 
@@ -538,10 +542,15 @@ class Transform:
         one range or one per channel, with one required for shared mode.
         Scale is Gaussian standard deviation, Laplace scale, or beta amplitude
         after mapping beta variates to [-1, 1]. Beta shapes are in [1e-4, 1e6].
+        Patch mode samples noise once at each pixel in the union of sampled
+        rectangles. Patch dimensions are fractions of the image dimensions.
+        Set per_channel in patch mode to sample each channel independently.
         """
         inner = self._inner.additive_noise(
             noise_type, spatial_mode, ranges=ranges, mean_range=mean_range,
             scale_range=scale_range, alpha_range=alpha_range, beta_range=beta_range,
+            patch_count_range=patch_count_range, patch_height_range=patch_height_range,
+            patch_width_range=patch_width_range, per_channel=per_channel,
         )
         return Transform(inner)
 

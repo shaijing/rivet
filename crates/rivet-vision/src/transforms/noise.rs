@@ -372,6 +372,7 @@ pub(super) fn multiplicative_noise(
         per_channel,
         elementwise,
         multiplier == (1.0, 1.0),
+        |_, _| true,
         |_| low + rng.next_f64() * (high - low),
         |value, gain| value * gain,
     )
@@ -383,6 +384,7 @@ fn apply_sampled_noise(
     per_channel: bool,
     elementwise: bool,
     identity: bool,
+    active: impl Fn(usize, usize) -> bool,
     mut sample: impl FnMut(usize) -> f64,
     combine: impl Fn(f64, f64) -> f64,
 ) -> RivetResult<Tensor> {
@@ -415,13 +417,22 @@ fn apply_sampled_noise(
                 let pixels = contiguous_values($values, layout)?;
                 let finish = $finish;
                 Tensor::from_exact_writer(input.dims(), input.device(), |out| {
-                    for pixel in pixels.chunks_exact(channels) {
-                        if elementwise {
-                            fill(&mut noise);
-                        }
-                        for (&value, &noise) in pixel.iter().zip(noise.iter().cycle()) {
-                            let value = combine(f64::from(value) * $scale, noise).clamp(0.0, 1.0);
-                            out.write_next(finish(value))?;
+                    for (y, row) in pixels.chunks_exact(w * channels).enumerate() {
+                        for (x, pixel) in row.chunks_exact(channels).enumerate() {
+                            if !active(x, y) {
+                                for &value in pixel {
+                                    out.write_next(value)?;
+                                }
+                                continue;
+                            }
+                            if elementwise {
+                                fill(&mut noise);
+                            }
+                            for (&value, &noise) in pixel.iter().zip(noise.iter().cycle()) {
+                                let value =
+                                    combine(f64::from(value) * $scale, noise).clamp(0.0, 1.0);
+                                out.write_next(finish(value))?;
+                            }
                         }
                     }
                     Ok(())
@@ -457,29 +468,78 @@ pub enum AdditiveDistribution {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NoiseSharing {
     Constant,
     PerPixel,
     Shared,
+    Patch {
+        count: (u32, u32),
+        height: (f64, f64),
+        width: (f64, f64),
+        per_channel: bool,
+    },
+}
+
+impl NoiseSharing {
+    fn per_channel(self) -> bool {
+        !matches!(
+            self,
+            Self::Shared
+                | Self::Patch {
+                    per_channel: false,
+                    ..
+                }
+        )
+    }
+
+    fn valid(self) -> bool {
+        match self {
+            Self::Patch {
+                count,
+                height,
+                width,
+                ..
+            } => {
+                (1..=128).contains(&count.0)
+                    && count.0 <= count.1
+                    && count.1 <= 128
+                    && [height, width]
+                        .into_iter()
+                        .all(|(lo, hi)| lo > 0.0 && lo <= hi && hi <= 1.0)
+            }
+            _ => true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdditiveNoiseConfig {
+    pub distribution: AdditiveDistribution,
+    pub sharing: NoiseSharing,
 }
 
 impl AdditiveDistribution {
     pub(super) fn valid(&self, sharing: NoiseSharing) -> bool {
         let bounded = |(a, b), min, max| a >= min && a <= b && b <= max;
         let shape = |(a, b): (f64, f64)| a >= 0.0001 && a <= b && b <= 1e6;
-        match self {
-            Self::Uniform(ranges) => {
-                !ranges.is_empty()
-                    && (sharing != NoiseSharing::Shared || ranges.len() == 1)
-                    && ranges.iter().all(|&range| bounded(range, -1.0, 1.0))
-            }
-            Self::Gaussian { mean, std } => bounded(*mean, -1.0, 1.0) && bounded(*std, 0.0, 1.0),
-            Self::Laplace { mean, scale } => bounded(*mean, -1.0, 1.0) && bounded(*scale, 0.0, 1.0),
-            Self::Beta { alpha, beta, scale } => {
-                shape(*alpha) && shape(*beta) && bounded(*scale, 0.0, 1.0)
-            }
-        }
+        sharing.valid()
+            && (match self {
+                Self::Uniform(ranges) => {
+                    !ranges.is_empty()
+                        && (sharing.per_channel() || ranges.len() == 1)
+                        && ranges.iter().all(|&range| bounded(range, -1.0, 1.0))
+                }
+                Self::Gaussian { mean, std } => {
+                    bounded(*mean, -1.0, 1.0) && bounded(*std, 0.0, 1.0)
+                }
+                Self::Laplace { mean, scale } => {
+                    bounded(*mean, -1.0, 1.0) && bounded(*scale, 0.0, 1.0)
+                }
+                Self::Beta { alpha, beta, scale } => {
+                    shape(*alpha) && shape(*beta) && bounded(*scale, 0.0, 1.0)
+                }
+            })
     }
 }
 
@@ -532,13 +592,47 @@ pub(super) fn additive_noise(
             [draw(*alpha), draw(*beta), draw(*scale)]
         }
     };
+    let mut patches = Vec::new();
+    if let NoiseSharing::Patch {
+        count,
+        height,
+        width,
+        ..
+    } = sharing
+    {
+        let [h, w, _] = *input.dims() else {
+            return Err(invalid_argument("AdditiveNoise expects rank-3 HWC input"));
+        };
+        if h == 0 || w == 0 {
+            return Err(invalid_argument(
+                "AdditiveNoise expects nonempty spatial dimensions",
+            ));
+        }
+        let count = rng.gen_range_usize(count.0 as usize..count.1 as usize + 1)?;
+        let sample_extent = |(lo, hi): (f64, f64), len: usize, rng: &mut RandomStream| {
+            (((lo + rng.next_f64() * (hi - lo)) * len as f64).round() as usize).clamp(1, len)
+        };
+        for _ in 0..count {
+            let ph = sample_extent(height, h, rng);
+            let pw = sample_extent(width, w, rng);
+            let y = rng.gen_range_usize(0..h - ph + 1)?;
+            let x = rng.gen_range_usize(0..w - pw + 1)?;
+            patches.push((x..x + pw, y..y + ph));
+        }
+    }
     let [a, b, scale] = parameters;
     apply_sampled_noise(
         input,
         "AdditiveNoise",
-        sharing != NoiseSharing::Shared,
+        sharing.per_channel(),
         sharing != NoiseSharing::Constant,
         false,
+        |x, y| {
+            patches.is_empty()
+                || patches
+                    .iter()
+                    .any(|(xs, ys)| xs.contains(&x) && ys.contains(&y))
+        },
         |channel| match distribution {
             AdditiveDistribution::Uniform(ranges) => {
                 let (low, high) = ranges[if ranges.len() == 1 { 0 } else { channel }];

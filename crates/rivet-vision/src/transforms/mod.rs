@@ -57,7 +57,9 @@ pub use geometry::{
     InterpolationMode, LayoutConfig, PadConfig, RandomCropConfig, RandomHorizontalFlipConfig,
     RandomResizedCropConfig, ResizeConfig, RotateConfig, RotationAngle, TenCropConfig,
 };
-pub use noise::{AdditiveDistribution, NoiseSharing, gaussian_noise, shot_noise};
+pub use noise::{
+    AdditiveDistribution, AdditiveNoiseConfig, NoiseSharing, gaussian_noise, shot_noise,
+};
 pub use representation::{ConvertImageDtypeConfig, DecodeImageConfig, NormalizeConfig};
 
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};

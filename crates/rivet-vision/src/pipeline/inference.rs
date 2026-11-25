@@ -313,7 +313,7 @@ pub(crate) fn infer_image_op(
                 | V2Config::GlassBlur { .. }
                 | V2Config::FilmGrain { .. }
                 | V2Config::MultiplicativeNoise { .. }
-                | V2Config::AdditiveNoise { .. } => {
+                | V2Config::AdditiveNoise(_) => {
                     if !matches!(
                         input_state,
                         PipelineImageState::Decoded {
