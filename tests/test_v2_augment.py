@@ -2528,3 +2528,18 @@ def test_pixel_spread_seed_layout_and_identity(source):
     chw = output(root, lambda p: p.hwc_to_chw().pixel_spread())[0]
     np.testing.assert_array_equal(chw, serial[0].transpose(2, 0, 1))
     assert serial[0].dtype == np.uint8
+
+
+def test_random_grid_shuffle_preserves_pixels_for_uneven_tile_shapes(source):
+    root, pixels = source
+    aug = lambda p: p.random_grid_shuffle((5, 7))
+    serial = output(root, aug)
+    parallel = output(root, aug, transform=True, workers=3)
+    np.testing.assert_array_equal(serial, parallel)
+    assert not np.array_equal(serial[0], pixels)
+    np.testing.assert_array_equal(np.sort(serial[0].reshape(-1, 3), axis=0),
+                                  np.sort(pixels.reshape(-1, 3), axis=0))
+    chw = output(root, lambda p: aug(p.to_dtype("float32", True).hwc_to_chw()))[0]
+    assert chw.dtype == np.float32
+    np.testing.assert_allclose(chw, serial[0].transpose(2, 0, 1) / 255, atol=1e-7)
+    np.testing.assert_array_equal(output(root, lambda p: p.random_grid_shuffle((1, 1)))[0], pixels)

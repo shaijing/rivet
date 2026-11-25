@@ -936,6 +936,16 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (grid=(3,3)))]
+    fn random_grid_shuffle(&self, grid: (u32, u32)) -> PyResult<Self> {
+        let config =
+            V2Config::RandomGridShuffle(rivet_vision::transforms::RandomGridShuffleConfig { grid });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (radius=2, *, padding_mode="reflect", fill=0, fill_mask=0))]
     fn pixel_spread(
         &self,
@@ -3390,6 +3400,16 @@ impl PyImagePipeline {
         };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (grid=(3,3)))]
+    fn random_grid_shuffle(&self, grid: (u32, u32)) -> PyResult<Self> {
+        let config =
+            V2Config::RandomGridShuffle(rivet_vision::transforms::RandomGridShuffleConfig { grid });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

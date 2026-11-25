@@ -123,6 +123,13 @@ impl TransformSequence {
         ))
     }
 
+    /// Permute same-sized grid cells using a seeded shuffle.
+    pub fn random_grid_shuffle(self, grid: (u32, u32)) -> Self {
+        self.v2(crate::transforms::V2Config::RandomGridShuffle(
+            crate::transforms::RandomGridShuffleConfig { grid },
+        ))
+    }
+
     /// Sample each output pixel from a seeded local neighborhood.
     pub fn pixel_spread(self, config: crate::transforms::PixelSpreadConfig) -> Self {
         self.v2(crate::transforms::V2Config::PixelSpread(config))

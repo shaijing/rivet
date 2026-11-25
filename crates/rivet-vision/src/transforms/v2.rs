@@ -267,6 +267,7 @@ pub enum V2Config {
         scale: bool,
     },
     SquareSymmetry(Option<SquareSymmetry>),
+    RandomGridShuffle(RandomGridShuffleConfig),
     PixelSpread(PixelSpreadConfig),
     ThinPlateSpline(ThinPlateSplineConfig),
     GridElasticDeform(GridElasticDeformConfig),
@@ -341,6 +342,7 @@ impl V2Config {
             Self::Defocus { .. } => "Defocus",
             Self::ChannelDropout(_) => "ChannelDropout",
             Self::SquareSymmetry(_) => "SquareSymmetry",
+            Self::RandomGridShuffle(_) => "RandomGridShuffle",
             Self::PixelSpread(_) => "PixelSpread",
             Self::ThinPlateSpline(_) => "ThinPlateSpline",
             Self::GridElasticDeform(_) => "GridElasticDeform",
@@ -427,6 +429,7 @@ impl V2Config {
             Self::Defocus { .. } => 67,
             Self::ChannelDropout(_) => 111,
             Self::SquareSymmetry(_) => 122,
+            Self::RandomGridShuffle(_) => 132,
             Self::PixelSpread(_) => 131,
             Self::ThinPlateSpline(_) => 130,
             Self::GridElasticDeform(_) => 129,
@@ -482,6 +485,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::RandomGridShuffle(config) => config.valid(),
             Self::PixelSpread(config) => config.valid(),
             Self::ThinPlateSpline(config) => config.valid(),
             Self::GridElasticDeform(config) => config.valid(),
@@ -1527,6 +1531,9 @@ impl V2Config {
                     s.image = s.image.permute(&order)?;
                 }
                 s.image = super::quarter_turn(&s.image, axis, turns)?;
+            }
+            Self::RandomGridShuffle(config) => {
+                s.image = config.sample(h, w, rng)?.apply(&s.image, axis)?;
             }
             Self::PixelSpread(config) => {
                 use super::remap::SpatialRemap;

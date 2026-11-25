@@ -671,6 +671,41 @@ pub(super) fn apply(
             }
             Ok(s)
         }
+        ImageOp::V2(V2Config::RandomGridShuffle(config)) => {
+            let map = config.sample(h, w, rng)?;
+            if map.identity {
+                return Ok(s);
+            }
+            s.image = map.apply(&s.image, s.axis_order)?;
+            if let Some(mask) = &s.masks {
+                s.masks = Some(map.apply(mask, ImageAxisOrder::Chw)?);
+            }
+            if let Some(boxes) = s.xyxy()? {
+                let values = boxes.to_vec::<f32>()?;
+                let mut keep = Vec::new();
+                let mut mapped = Vec::new();
+                for (i, b) in values.chunks_exact(4).enumerate() {
+                    if let Some(b) = map.box_bounds(b) {
+                        keep.push(i);
+                        mapped.extend(b);
+                    }
+                }
+                if keep.len() != values.len() / 4 {
+                    s = s.retain_instances(&keep)?;
+                }
+                let b = Tensor::from_vec(mapped, [keep.len(), 4], &Device::Cpu)?;
+                s.boxes = Some(convert_boxes(&b, BoxFormat::Xyxy, s.box_format)?);
+            }
+            if let Some(points) = &s.keypoints {
+                let mapped: Vec<_> = points
+                    .to_vec::<f32>()?
+                    .chunks_exact(2)
+                    .flat_map(|p| map.keypoint([p[0], p[1]]))
+                    .collect();
+                s.keypoints = Some(Tensor::from_vec(mapped, points.dims(), &Device::Cpu)?);
+            }
+            Ok(s)
+        }
         ImageOp::V2(V2Config::PixelSpread(config)) => {
             let map = config.sample(h, w, rng)?;
             remap_structured(

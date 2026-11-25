@@ -284,6 +284,9 @@ pub(crate) fn infer_image_op(
                     }
                     output.contiguity = Some(Contiguity::Unknown);
                 }
+                V2Config::RandomGridShuffle(_) => {
+                    output.contiguity = Some(Contiguity::Unknown);
+                }
                 V2Config::PixelSpread(_)
                 | V2Config::ThinPlateSpline(_)
                 | V2Config::GridElasticDeform(_)

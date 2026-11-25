@@ -1458,3 +1458,23 @@ def test_pixel_spread_shared_integer_map_and_keypoint_policy():
         np.testing.assert_array_equal(target["keypoints"], [[expected]])
         np.testing.assert_array_equal(target["boxes"], [[0, 0, w, h]])
         np.testing.assert_array_equal(target["labels"], [2])
+
+
+def test_random_grid_shuffle_moves_fragments_and_aligned_targets():
+    mask = np.arange(1, 25, dtype=np.int64).reshape(4, 6)
+    image = np.repeat(mask.astype(np.uint8)[..., None], 3, axis=-1)
+    sample = rivet.AnnotatedSample(image, masks=mask, boxes=[[1.5, 0.5, 4.5, 1.5]],
+                                  labels=[3], keypoints=[[[1.25, 1]]])
+    pipeline = rivet.StructuredPipeline([sample] * 5).compose(rivet.Transform().random_grid_shuffle((2, 2))).seed(31)
+    for a, b in zip(pipeline.execute(), pipeline.workers(3).execute(), strict=True):
+        t = a["targets"][0]
+        actual = a["images"][0]
+        np.testing.assert_array_equal(actual, b["images"][0])
+        np.testing.assert_array_equal(actual[..., 0], t["masks"])
+        y0, x0 = np.argwhere(t["masks"] == 1)[0]
+        y1, x1 = np.argwhere(t["masks"] == 4)[0]
+        expect = [[min(x0 + 1.5, x1), min(y0, y1) + 0.5,
+                   max(x0 + 3, x1 + 1.5), max(y0, y1) + 1.5]]
+        np.testing.assert_array_equal(t["boxes"], expect)
+        np.testing.assert_array_equal(t["keypoints"], [[[x0 + 1.25, y0 + 1]]])
+        np.testing.assert_array_equal(t["labels"], [3])

@@ -633,6 +633,15 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def random_grid_shuffle(self, grid: tuple[int, int] = (3, 3)) -> Pipeline:
+        """Shuffle equally sized cells of a (rows, columns) grid.
+
+        Preserves uint8 or float32 HWC or CHW and the original dimensions.
+        Masks and keypoints use the same permutation. Boxes spanning
+        multiple cells enclose all surviving fragments as one instance.
+        """
+        return Pipeline(self._inner.random_grid_shuffle(grid), as_numpy=self.as_numpy)
+
     def pixel_spread(
         self, radius: int = 2, *, padding_mode: str = "reflect", fill: int = 0, fill_mask: int = 0,
     ) -> Pipeline:
