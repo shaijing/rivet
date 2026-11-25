@@ -311,6 +311,7 @@ pub(crate) fn infer_image_op(
                 | V2Config::StochasticConvolution { .. }
                 | V2Config::ZoomBlur { .. }
                 | V2Config::GlassBlur { .. }
+                | V2Config::Illumination { .. }
                 | V2Config::FilmGrain { .. }
                 | V2Config::MultiplicativeNoise { .. }
                 | V2Config::AdditiveNoise(_) => {

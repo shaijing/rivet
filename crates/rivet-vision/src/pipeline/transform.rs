@@ -86,6 +86,20 @@ impl TransformSequence {
         })
     }
 
+    /// Apply a smooth, seeded illumination field.
+    pub fn illumination(
+        self,
+        intensity_range: (f64, f64),
+        mode: crate::transforms::IlluminationMode,
+        effect: crate::transforms::IlluminationEffect,
+    ) -> Self {
+        self.v2(crate::transforms::V2Config::Illumination {
+            intensity_range,
+            mode,
+            effect,
+        })
+    }
+
     /// Overlay seeded, spatially correlated grain with stronger shadows.
     pub fn film_grain(
         self,

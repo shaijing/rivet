@@ -987,6 +987,45 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (mode="linear", intensity_range=(0.01, 0.2), effect_type="both"))]
+    fn illumination(
+        &self,
+        mode: &str,
+        intensity_range: (f64, f64),
+        effect_type: &str,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{IlluminationEffect, IlluminationMode};
+        let mode = match mode {
+            "linear" => IlluminationMode::Linear,
+            "corner" => IlluminationMode::Corner,
+            "gaussian" => IlluminationMode::Gaussian,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "mode must be linear, corner or gaussian",
+                ));
+            }
+        };
+        let effect = match effect_type {
+            "brighten" => IlluminationEffect::Brighten,
+            "darken" => IlluminationEffect::Darken,
+            "both" => IlluminationEffect::Both,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "effect_type must be brighten, darken or both",
+                ));
+            }
+        };
+        let config = V2Config::Illumination {
+            intensity_range,
+            mode,
+            effect,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (intensity_range=(0.1, 0.3), grain_size_range=(1, 3), *, per_channel=false))]
     fn film_grain(
         &self,
@@ -2387,6 +2426,45 @@ impl PyImagePipeline {
             multiplier,
             per_channel,
             elementwise,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (mode="linear", intensity_range=(0.01, 0.2), effect_type="both"))]
+    fn illumination(
+        &self,
+        mode: &str,
+        intensity_range: (f64, f64),
+        effect_type: &str,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{IlluminationEffect, IlluminationMode};
+        let mode = match mode {
+            "linear" => IlluminationMode::Linear,
+            "corner" => IlluminationMode::Corner,
+            "gaussian" => IlluminationMode::Gaussian,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "mode must be linear, corner or gaussian",
+                ));
+            }
+        };
+        let effect = match effect_type {
+            "brighten" => IlluminationEffect::Brighten,
+            "darken" => IlluminationEffect::Darken,
+            "both" => IlluminationEffect::Both,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "effect_type must be brighten, darken or both",
+                ));
+            }
+        };
+        let config = V2Config::Illumination {
+            intensity_range,
+            mode,
+            effect,
         };
         config.validate().map_err(to_py_err)?;
         Ok(Self {

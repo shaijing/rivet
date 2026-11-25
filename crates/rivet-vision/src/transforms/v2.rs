@@ -11,6 +11,20 @@ pub struct AdvancedBlurConfig {
     pub noise_range: (f64, f64),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IlluminationMode {
+    Linear,
+    Corner,
+    Gaussian,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IlluminationEffect {
+    Brighten,
+    Darken,
+    Both,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum V2Config {
     PermuteChannels(Vec<usize>),
@@ -65,6 +79,11 @@ pub enum V2Config {
         multiplier: (f64, f64),
         per_channel: bool,
         elementwise: bool,
+    },
+    Illumination {
+        intensity_range: (f64, f64),
+        mode: IlluminationMode,
+        effect: IlluminationEffect,
     },
     FilmGrain {
         intensity_range: (f64, f64),
@@ -165,6 +184,7 @@ impl V2Config {
             Self::Clahe { .. } => "CLAHE",
             Self::AdditiveNoise(_) => "AdditiveNoise",
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
+            Self::Illumination { .. } => "Illumination",
             Self::FilmGrain { .. } => "FilmGrain",
             Self::IsoNoise { .. } => "ISONoise",
             Self::GlassBlur { .. } => "GlassBlur",
@@ -204,6 +224,7 @@ impl V2Config {
             Self::Clahe { .. } => 70,
             Self::AdditiveNoise(_) => 83,
             Self::MultiplicativeNoise { .. } => 82,
+            Self::Illumination { .. } => 84,
             Self::FilmGrain { .. } => 81,
             Self::IsoNoise { .. } => 80,
             Self::GlassBlur { .. } => 79,
@@ -242,6 +263,10 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::Illumination {
+                intensity_range: (low, high),
+                ..
+            } => *low >= 0.0 && low <= high && *high <= 1.0,
             Self::AdditiveNoise(config) => config.distribution.valid(config.sharing),
             Self::MultiplicativeNoise {
                 multiplier: (low, high),
@@ -659,6 +684,7 @@ impl V2Config {
             | Self::Clahe { .. }
             | Self::AdditiveNoise(_)
             | Self::MultiplicativeNoise { .. }
+            | Self::Illumination { .. }
             | Self::FilmGrain { .. }
             | Self::IsoNoise { .. }
             | Self::GlassBlur { .. }
@@ -787,6 +813,19 @@ impl V2Config {
                     &s.image,
                     &config.distribution,
                     config.sharing,
+                    rng,
+                )?;
+            }
+            Self::Illumination {
+                intensity_range,
+                mode,
+                effect,
+            } => {
+                s.image = super::local_color::illumination(
+                    &s.image,
+                    *intensity_range,
+                    *mode,
+                    *effect,
                     rng,
                 )?;
             }

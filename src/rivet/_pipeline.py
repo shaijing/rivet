@@ -682,6 +682,19 @@ class Pipeline:
         )
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def illumination(
+        self, mode: str = "linear", intensity_range: tuple[float, float] = (0.01, 0.2),
+        effect_type: str = "both",
+    ) -> Pipeline:
+        """Apply a seeded smooth gain to uint8 or normalized float32 HWC.
+
+        Linear samples a direction, corner samples a corner, and gaussian
+        samples a spotlight center and spread. Intensity in [0, 1] bounds
+        the peak gain change. Effect selects brightening, darkening, or
+        a random choice of the two.
+        """
+        return Pipeline(self._inner.illumination(mode, intensity_range, effect_type), as_numpy=self.as_numpy)
+
     def film_grain(
         self,
         intensity_range: tuple[float, float] = (0.1, 0.3),

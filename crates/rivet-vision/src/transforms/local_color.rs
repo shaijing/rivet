@@ -313,3 +313,96 @@ pub(super) fn planckian_jitter(input: &Tensor, kelvin: f64) -> RivetResult<Tenso
         })
     })?)
 }
+
+pub(super) fn illumination(
+    input: &Tensor,
+    intensity: (f64, f64),
+    mode: super::IlluminationMode,
+    effect: super::IlluminationEffect,
+    rng: &mut RandomStream,
+) -> RivetResult<Tensor> {
+    use super::{IlluminationEffect, IlluminationMode};
+    let amount = intensity.0 + rng.next_f64() * (intensity.1 - intensity.0);
+    let signed = match effect {
+        IlluminationEffect::Brighten => amount,
+        IlluminationEffect::Darken => -amount,
+        IlluminationEffect::Both if rng.next_f64() < 0.5 => -amount,
+        IlluminationEffect::Both => amount,
+    };
+    let angle = rng.next_f64() * std::f64::consts::TAU;
+    let (dy, dx) = angle.sin_cos();
+    let (cx, cy) = match mode {
+        IlluminationMode::Corner => (
+            rng.gen_range_usize(0..2)? as f64,
+            rng.gen_range_usize(0..2)? as f64,
+        ),
+        _ => (0.1 + 0.8 * rng.next_f64(), 0.1 + 0.8 * rng.next_f64()),
+    };
+    let sigma = 0.2 + 0.8 * rng.next_f64();
+    apply_light_gain(input, "Illumination", signed == 0.0, |x, y| {
+        let weight = match mode {
+            IlluminationMode::Linear => {
+                0.5 + ((x - 0.5) * dx + (y - 0.5) * dy) / (dx.abs() + dy.abs())
+            }
+            IlluminationMode::Corner => {
+                1.0 - ((x - cx).powi(2) + (y - cy).powi(2)).sqrt() * std::f64::consts::FRAC_1_SQRT_2
+            }
+            IlluminationMode::Gaussian => {
+                (-((x - cx).powi(2) + (y - cy).powi(2)) / (2.0 * sigma * sigma)).exp()
+            }
+        };
+        1.0 + signed * weight.clamp(0.0, 1.0)
+    })
+}
+
+fn apply_light_gain(
+    input: &Tensor,
+    name: &str,
+    identity: bool,
+    gain: impl Fn(f64, f64) -> f64,
+) -> RivetResult<Tensor> {
+    let [height, width, channels] = *input.dims() else {
+        return Err(invalid_argument(format!("{name} expects HWC input")));
+    };
+    if height == 0
+        || width == 0
+        || channels == 0
+        || !matches!(input.dtype(), DType::U8 | DType::F32)
+    {
+        return Err(invalid_argument(format!(
+            "{name} requires nonempty uint8 or float32 HWC input"
+        )));
+    }
+    if identity {
+        return Ok(input.clone());
+    }
+    let input = input.contiguous()?;
+    let dx = 1.0 / (width - 1).max(1) as f64;
+    let dy = 1.0 / (height - 1).max(1) as f64;
+    Ok(input.with_cpu_storage(|storage, layout| {
+        macro_rules! write_gain {
+            ($values:expr, $finish:expr) => {{
+                let pixels = super::contiguous_values($values, layout)?;
+                let finish = $finish;
+                Tensor::from_exact_writer(input.dims(), input.device(), |out| {
+                    for (y, row) in pixels.chunks_exact(width * channels).enumerate() {
+                        let y = if height == 1 { 0.5 } else { y as f64 * dy };
+                        for (x, pixel) in row.chunks_exact(channels).enumerate() {
+                            let x = if width == 1 { 0.5 } else { x as f64 * dx };
+                            let gain = gain(x, y);
+                            for &v in pixel {
+                                out.write_next(finish(f64::from(v) * gain))?;
+                            }
+                        }
+                    }
+                    Ok(())
+                })
+            }};
+        }
+        match storage {
+            CpuStorageRef::U8(values) => write_gain!(values, |v: f64| v.round() as u8),
+            CpuStorageRef::F32(values) => write_gain!(values, |v: f64| v.clamp(0.0, 1.0) as f32),
+            _ => unreachable!(),
+        }
+    })?)
+}

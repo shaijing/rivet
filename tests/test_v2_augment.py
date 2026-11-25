@@ -1313,3 +1313,27 @@ def test_additive_noise_patch_union_and_seed(source):
     np.testing.assert_array_equal(serial[0][changed], 255)
     with pytest.raises(ValueError):
         rivet.Transform().additive_noise(spatial_mode="patch", patch_height_range=(0, 1))
+
+
+@pytest.mark.parametrize("mode", ["linear", "corner", "gaussian"])
+def test_illumination_seed_and_gain_bounds(source, mode):
+    root, pixels = source
+
+    def augment(p):
+        return p.illumination(mode, (0.3, 0.3), "darken")
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    expected = np.stack([np.roll(pixels, i, axis=0) for i in range(len(serial))])
+    assert np.all(serial <= expected)
+    assert np.all(serial >= np.round(expected * 0.7))
+    assert not np.array_equal(serial, expected)
+    np.testing.assert_array_equal(
+        output(root, lambda p: p.illumination(mode, (0, 0))), expected
+    )
+    bright = output(
+        root, lambda p: p.to_dtype("float32", True).illumination(mode, (1, 1), "brighten")
+    )
+    assert bright[0].dtype == np.float32
+    assert np.all(np.asarray(bright) >= expected / 255 - 1e-7)
+    assert np.max(bright) <= 1
