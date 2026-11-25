@@ -605,6 +605,28 @@ class Transform:
         inner = self._inner.lens_flare(flare_roi, num_ghosts_range, intensity_range, num_rays_range, bloom_range)
         return Transform(inner)
 
+    def random_brightness_contrast(
+        self,
+        brightness_range: tuple[float, float] = (-0.2, 0.2),
+        contrast_range: tuple[float, float] = (-0.2, 0.2),
+        *,
+        brightness_by_max: bool = False,
+        ensure_safe_output: bool = False,
+    ) -> Transform:
+        """Sample brightness and contrast once per uint8 or float32 HWC image.
+
+        By default apply mean-centered contrast followed by brightness
+        multiplication, each using 1 + adjustment. With brightness_by_max,
+        apply contrast about zero then add brightness in normalized units.
+        Safe output projects the combined gain and offset into the range
+        that maps [0, 1] into [0, 1].
+        """
+        inner = self._inner.random_brightness_contrast(
+            brightness_range, contrast_range, brightness_by_max=brightness_by_max,
+            ensure_safe_output=ensure_safe_output,
+        )
+        return Transform(inner)
+
     def rgb_shift(
         self,
         r_shift_range: tuple[float, float] = (-20, 20),

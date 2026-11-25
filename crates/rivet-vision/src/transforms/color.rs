@@ -694,3 +694,100 @@ pub(super) fn random_gamma(input: &Tensor, exponent: f64) -> RivetResult<Tensor>
         _ => unreachable!(),
     })?)
 }
+
+pub(super) fn random_brightness_contrast(
+    input: &Tensor,
+    brightness: f64,
+    contrast: f64,
+    brightness_by_max: bool,
+    safe: bool,
+) -> RivetResult<Tensor> {
+    use rivet_core::CpuStorageRef;
+    let [h, w, channels] = *input.dims() else {
+        return Err(invalid_argument(
+            "RandomBrightnessContrast expects HWC input",
+        ));
+    };
+    if h == 0 || w == 0 || channels == 0 || !matches!(input.dtype(), DType::U8 | DType::F32) {
+        return Err(invalid_argument(
+            "RandomBrightnessContrast requires nonempty uint8 or float32 HWC input",
+        ));
+    }
+    if brightness == 0.0 && contrast == 0.0 {
+        return Ok(input.clone());
+    }
+    let multiplier = 1.0 + brightness;
+    let contrast = 1.0 + contrast;
+    let affine = |mean: f64| {
+        let (gain, offset) = if brightness_by_max {
+            (contrast, brightness)
+        } else {
+            (contrast * multiplier, mean * (1.0 - contrast) * multiplier)
+        };
+        let gain = gain.min(1.0);
+        (gain, offset.clamp(0.0, 1.0 - gain))
+    };
+    let input = input.contiguous()?;
+    Ok(input.with_cpu_storage(|storage, layout| match storage {
+        CpuStorageRef::U8(values) => {
+            let pixels = super::contiguous_values(values, layout)?;
+            let mean = if brightness_by_max || contrast == 1.0 {
+                0
+            } else if channels == 3 {
+                let sum: u64 = pixels.chunks_exact(3).map(|p| u64::from(luma(p))).sum();
+                (sum as f64 / (h * w) as f64).round() as u8
+            } else {
+                let sum: u64 = pixels.iter().map(|&v| u64::from(v)).sum();
+                (sum as f64 / pixels.len() as f64).round() as u8
+            };
+            let (gain, offset) = affine(f64::from(mean) / 255.0);
+            let lut: [u8; 256] = std::array::from_fn(|v| {
+                if safe {
+                    (v as f64 * gain + 255.0 * offset).round() as u8
+                } else if brightness_by_max {
+                    (v as f64 * contrast + 255.0 * brightness).round() as u8
+                } else {
+                    blend(0, blend(mean, v as u8, contrast as f32), multiplier as f32)
+                }
+            });
+            Tensor::from_exact_iter(
+                pixels.iter().map(|&v| lut[v as usize]),
+                input.dims(),
+                input.device(),
+            )
+        }
+        CpuStorageRef::F32(values) => {
+            let pixels = super::contiguous_values(values, layout)?;
+            let mean = if brightness_by_max || contrast == 1.0 {
+                0.0
+            } else if channels == 3 {
+                pixels
+                    .chunks_exact(3)
+                    .map(|p| {
+                        0.299 * f64::from(p[0]) + 0.587 * f64::from(p[1]) + 0.114 * f64::from(p[2])
+                    })
+                    .sum::<f64>()
+                    / (h * w) as f64
+            } else {
+                pixels.iter().map(|&v| f64::from(v)).sum::<f64>() / pixels.len() as f64
+            };
+            let (gain, offset) = affine(mean);
+            Tensor::from_exact_iter(
+                pixels.iter().map(|&v| {
+                    let v = f64::from(v);
+                    let adjusted = if safe {
+                        v * gain + offset
+                    } else if brightness_by_max {
+                        v * contrast + brightness
+                    } else {
+                        (mean + (v - mean) * contrast).clamp(0.0, 1.0) * multiplier
+                    };
+                    adjusted.clamp(0.0, 1.0) as f32
+                }),
+                input.dims(),
+                input.device(),
+            )
+        }
+        _ => unreachable!(),
+    })?)
+}

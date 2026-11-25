@@ -109,6 +109,12 @@ pub enum V2Config {
     },
     RandomSunFlare(std::sync::Arc<RandomSunFlareConfig>),
     RgbShift(std::sync::Arc<[(f64, f64); 3]>),
+    RandomBrightnessContrast {
+        brightness_range: (f64, f64),
+        contrast_range: (f64, f64),
+        brightness_by_max: bool,
+        ensure_safe_output: bool,
+    },
     RandomGamma {
         gamma_range: (f64, f64),
     },
@@ -237,6 +243,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::RandomSunFlare(_) => "RandomSunFlare",
             Self::RgbShift(_) => "RGBShift",
+            Self::RandomBrightnessContrast { .. } => "RandomBrightnessContrast",
             Self::RandomGamma { .. } => "RandomGamma",
             Self::RandomFog(_) => "RandomFog",
             Self::AtmosphericFog(_) => "AtmosphericFog",
@@ -290,6 +297,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => 82,
             Self::RandomSunFlare(_) => 88,
             Self::RgbShift(_) => 97,
+            Self::RandomBrightnessContrast { .. } => 98,
             Self::RandomGamma { .. } => 96,
             Self::RandomFog(_) => 94,
             Self::AtmosphericFog(_) => 95,
@@ -340,6 +348,13 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::RandomBrightnessContrast {
+                brightness_range,
+                contrast_range,
+                ..
+            } => [brightness_range, contrast_range]
+                .into_iter()
+                .all(|&(lo, hi)| lo >= -1.0 && lo <= hi && hi <= f64::from(f32::MAX)),
             Self::RgbShift(ranges) => ranges
                 .iter()
                 .all(|&(lo, hi)| lo >= -255.0 && lo <= hi && hi <= 255.0),
@@ -822,6 +837,7 @@ impl V2Config {
             | Self::MultiplicativeNoise { .. }
             | Self::RandomSunFlare(_)
             | Self::RgbShift(_)
+            | Self::RandomBrightnessContrast { .. }
             | Self::RandomGamma { .. }
             | Self::RandomFog(_)
             | Self::AtmosphericFog(_)
@@ -1024,6 +1040,23 @@ impl V2Config {
             }
             Self::RandomRain(config) => {
                 s.image = super::weather::random_rain(&s.image, config, rng)?;
+            }
+            Self::RandomBrightnessContrast {
+                brightness_range,
+                contrast_range,
+                brightness_by_max,
+                ensure_safe_output,
+            } => {
+                let mut sample = |(lo, hi)| lo + rng.next_f64() * (hi - lo);
+                let brightness = sample(*brightness_range);
+                let contrast = sample(*contrast_range);
+                s.image = super::color::random_brightness_contrast(
+                    &s.image,
+                    brightness,
+                    contrast,
+                    *brightness_by_max,
+                    *ensure_safe_output,
+                )?;
             }
             Self::RgbShift(ranges) => {
                 s.image = super::noise::rgb_shift(&s.image, ranges, rng)?;

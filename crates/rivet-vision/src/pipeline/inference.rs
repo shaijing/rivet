@@ -315,6 +315,7 @@ pub(crate) fn infer_image_op(
                 | V2Config::PlasmaShadow { .. }
                 | V2Config::PlasmaBrightnessContrast { .. }
                 | V2Config::Illumination { .. }
+                | V2Config::RandomBrightnessContrast { .. }
                 | V2Config::RandomGamma { .. }
                 | V2Config::FilmGrain { .. }
                 | V2Config::MultiplicativeNoise { .. }

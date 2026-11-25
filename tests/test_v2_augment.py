@@ -1671,3 +1671,37 @@ def test_rgb_shift_units_clipping_and_seed(source):
         output(root, lambda p: p.grayscale().rgb_shift())
     with pytest.raises(ValueError):
         rivet.Transform().rgb_shift((0, 256))
+
+
+def test_random_brightness_contrast_order_seed_and_safe_output(source):
+    root, pixels = source
+
+    def fixed(p):
+        return p.random_brightness_contrast((0.25, 0.25), (-0.4, -0.4))
+
+    actual = output(root, fixed, transform=True)[0]
+    expected = output(root, lambda p: p.contrast(0.6).brightness(1.25))[0]
+    np.testing.assert_array_equal(actual, expected)
+    assert actual.dtype == np.uint8 and actual.shape == pixels.shape
+
+    def affine(p, safe=False):
+        return p.to_dtype("float32", True).random_brightness_contrast(
+            (0.1, 0.1), (0.5, 0.5), brightness_by_max=True, ensure_safe_output=safe
+        )
+
+    floats = output(root, affine)[0]
+    assert floats.dtype == np.float32
+    np.testing.assert_allclose(floats, (pixels / 255 * 1.5 + 0.1).clip(0, 1), atol=1e-7)
+    safe = output(root, lambda p: affine(p, True))[0]
+    np.testing.assert_allclose(safe, pixels / 255, atol=1e-7)
+
+    serial = output(root, lambda p: p.random_brightness_contrast())
+    np.testing.assert_array_equal(
+        serial, output(root, lambda p: p.random_brightness_contrast(), transform=True, workers=3)
+    )
+    assert not np.array_equal(serial, output(root, lambda p: p.random_brightness_contrast(), epoch=1))
+    np.testing.assert_array_equal(
+        output(root, lambda p: p.random_brightness_contrast((0, 0), (0, 0)))[0], pixels
+    )
+    with pytest.raises(ValueError, match="RandomBrightnessContrast"):
+        output(root, lambda p: p.hwc_to_chw().random_brightness_contrast())

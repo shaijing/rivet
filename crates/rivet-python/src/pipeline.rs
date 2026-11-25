@@ -1039,6 +1039,26 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (brightness_range=(-0.2, 0.2), contrast_range=(-0.2, 0.2), *, brightness_by_max=false, ensure_safe_output=false))]
+    fn random_brightness_contrast(
+        &self,
+        brightness_range: (f64, f64),
+        contrast_range: (f64, f64),
+        brightness_by_max: bool,
+        ensure_safe_output: bool,
+    ) -> PyResult<Self> {
+        let config = V2Config::RandomBrightnessContrast {
+            brightness_range,
+            contrast_range,
+            brightness_by_max,
+            ensure_safe_output,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (r_shift_range=(-20.0, 20.0), g_shift_range=(-20.0, 20.0), b_shift_range=(-20.0, 20.0)))]
     fn rgb_shift(
         &self,
@@ -2773,6 +2793,26 @@ impl PyImagePipeline {
                 bloom_range,
             },
         ));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (brightness_range=(-0.2, 0.2), contrast_range=(-0.2, 0.2), *, brightness_by_max=false, ensure_safe_output=false))]
+    fn random_brightness_contrast(
+        &self,
+        brightness_range: (f64, f64),
+        contrast_range: (f64, f64),
+        brightness_by_max: bool,
+        ensure_safe_output: bool,
+    ) -> PyResult<Self> {
+        let config = V2Config::RandomBrightnessContrast {
+            brightness_range,
+            contrast_range,
+            brightness_by_max,
+            ensure_safe_output,
+        };
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

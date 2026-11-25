@@ -100,6 +100,22 @@ impl TransformSequence {
         )))
     }
 
+    /// Apply seeded contrast and brightness in a fixed order.
+    pub fn random_brightness_contrast(
+        self,
+        brightness_range: (f64, f64),
+        contrast_range: (f64, f64),
+        brightness_by_max: bool,
+        ensure_safe_output: bool,
+    ) -> Self {
+        self.v2(crate::transforms::V2Config::RandomBrightnessContrast {
+            brightness_range,
+            contrast_range,
+            brightness_by_max,
+            ensure_safe_output,
+        })
+    }
+
     /// Add independent seeded RGB offsets in 8-bit intensity units.
     pub fn rgb_shift(self, ranges: [(f64, f64); 3]) -> Self {
         self.v2(crate::transforms::V2Config::RgbShift(std::sync::Arc::new(
