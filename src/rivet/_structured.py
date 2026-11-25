@@ -226,6 +226,31 @@ class StructuredPipeline:
             subset_fraction_range, erosion_rate, aspect_ratio_range
         ))
 
+    def constrained_coarse_dropout(
+        self,
+        num_holes_range: tuple[int, int] = (1, 1),
+        hole_height_range: tuple[float, float] = (0.1, 0.1),
+        hole_width_range: tuple[float, float] = (0.1, 0.1),
+        *,
+        mask_indices: Iterable[int] | None = None,
+        bbox_labels: Iterable[int] | None = None,
+        fill: float = 0,
+        fill_mask: int | None = None,
+    ) -> StructuredPipeline:
+        """Sample rectangular holes around matching mask components or boxes.
+
+        Mask IDs are semantic values or zero-based instance planes. Masks
+        take precedence when available. Hole sizes are fractions of box
+        dimensions or the square root of each mask component's area.
+        The same sampled hole count is used for every matching object.
+        """
+        return self._from_inner(self._inner.constrained_coarse_dropout(
+            num_holes_range, hole_height_range, hole_width_range,
+            mask_indices=None if mask_indices is None else list(mask_indices),
+            bbox_labels=None if bbox_labels is None else list(bbox_labels),
+            fill=fill, fill_mask=fill_mask,
+        ))
+
     def mask_dropout(
         self,
         max_objects_range: tuple[int, int] = (1, 1),

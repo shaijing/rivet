@@ -1263,3 +1263,39 @@ def test_mask_dropout_semantic_ids_and_empty_fallback():
     empty = rivet.AnnotatedSample(image, masks=np.zeros_like(mask))
     unchanged = next(iter(rivet.StructuredPipeline([empty]).mask_dropout().execute()))
     np.testing.assert_array_equal(unchanged["images"][0], image)
+
+
+def test_constrained_dropout_box_labels_and_worker_seed(annotated):
+    original = annotated.to_dict()
+    pipeline = rivet.StructuredPipeline([annotated] * 6).constrained_coarse_dropout(
+        (1, 1), (0.5, 0.5), (0.5, 0.5), bbox_labels=[9], fill=23, fill_mask=0
+    ).seed(17)
+    for a, b in zip(pipeline.execute(), pipeline.workers(3).execute(), strict=True):
+        image = a["images"][0]
+        np.testing.assert_array_equal(image, b["images"][0])
+        covered = np.all(image == 23, axis=-1)
+        assert covered.sum() == 4 and covered[5:9, 7:11].sum() == 4
+        t = a["targets"][0]
+        np.testing.assert_array_equal(t["labels"], original["labels"])
+        np.testing.assert_array_equal(t["boxes"], original["boxes"])
+        np.testing.assert_array_equal(t["keypoints"], original["keypoints"])
+        np.testing.assert_array_equal(t["masks"], np.where(covered, 0, original["masks"]))
+    whole = rivet.StructuredPipeline([annotated]).constrained_coarse_dropout(
+        (1, 1), (1, 1), (1, 1), bbox_labels=[9], fill=23
+    )
+    np.testing.assert_array_equal(next(iter(whole.execute()))["targets"][0]["labels"], [4])
+
+
+def test_constrained_dropout_semantic_components_and_empty():
+    image = np.full((7, 9, 3), 80, np.uint8)
+    mask = np.zeros((7, 9), np.int64)
+    mask[1, 2] = mask[4, 6] = 5
+    mask[3, 3] = 9
+    sample = rivet.AnnotatedSample(image, masks=mask)
+    result = next(iter(rivet.StructuredPipeline([sample]).constrained_coarse_dropout(
+        mask_indices=[5], fill=23, fill_mask=-1
+    ).execute()))
+    np.testing.assert_array_equal(result["images"][0], np.where(mask[..., None] == 5, 23, image))
+    np.testing.assert_array_equal(result["targets"][0]["masks"], np.where(mask == 5, -1, mask))
+    unmatched = next(iter(rivet.StructuredPipeline([sample]).constrained_coarse_dropout(mask_indices=[99]).execute()))
+    np.testing.assert_array_equal(unmatched["images"][0], image)

@@ -73,7 +73,11 @@ impl StructuredSample {
     }
 }
 
-fn object_pixels(mask: &Tensor, h: usize, w: usize) -> RivetResult<(Vec<i64>, Vec<i64>)> {
+pub(super) fn object_pixels(
+    mask: &Tensor,
+    h: usize,
+    w: usize,
+) -> RivetResult<(Vec<i64>, Vec<i64>)> {
     let pixels = mask
         .with_cpu_storage(|storage, layout| {
             let mut pixels = Vec::with_capacity(layout.checked_elem_count()?);

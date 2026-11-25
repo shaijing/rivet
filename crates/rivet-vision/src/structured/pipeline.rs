@@ -1,10 +1,10 @@
 use super::CropNonEmptyMaskConfig;
-use super::MaskDropoutConfig;
 use super::RandomCropNearBBoxConfig;
 use super::{
     AtLeastOneBBoxRandomCropConfig, BBoxSafeRandomCropConfig, BBoxSubsetSafeRandomCropConfig,
     BoxFormat, RandomIoUCropConfig, StructuredSample,
 };
+use super::{ConstrainedCoarseDropoutConfig, MaskDropoutConfig};
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::pipeline::{
     TransformSequence,
@@ -28,6 +28,7 @@ pub enum StructuredOp {
     BBoxSubsetSafeRandomCrop(BBoxSubsetSafeRandomCropConfig),
     AtLeastOneBBoxRandomCrop(AtLeastOneBBoxRandomCropConfig),
     MaskDropout(MaskDropoutConfig),
+    ConstrainedCoarseDropout(std::sync::Arc<ConstrainedCoarseDropoutConfig>),
     CropNonEmptyMask(CropNonEmptyMaskConfig),
 }
 impl StructuredOp {
@@ -40,6 +41,7 @@ impl StructuredOp {
             Self::SanitizeKeypoints => "SanitizeKeyPoints",
             Self::Sanitize { .. } => "SanitizeBoundingBoxes",
             Self::RandomIoUCrop(_) => "RandomIoUCrop",
+            Self::ConstrainedCoarseDropout(_) => "ConstrainedCoarseDropout",
             Self::MaskDropout(_) => "MaskDropout",
             Self::CropNonEmptyMask(_) => "CropNonEmptyMaskIfExists",
             Self::RandomCropNearBBox(_) => "RandomCropNearBBox",
@@ -53,6 +55,7 @@ impl StructuredOp {
         match self {
             Self::Image(op) => validate_image(op),
             Self::RandomIoUCrop(c) => c.validate(),
+            Self::ConstrainedCoarseDropout(c) => c.validate(),
             Self::MaskDropout(c) => c.validate(),
             Self::CropNonEmptyMask(c) => c.validate(),
             Self::RandomCropNearBBox(c) => c.validate(),
@@ -193,6 +196,9 @@ impl StructuredPipeline {
                 StructuredOp::RandomIoUCrop(c) => sample.random_iou_crop(c, &mut rng)?,
                 StructuredOp::BBoxSubsetSafeRandomCrop(c) => {
                     sample.bbox_subset_safe_random_crop(c, &mut rng)?
+                }
+                StructuredOp::ConstrainedCoarseDropout(c) => {
+                    sample.constrained_coarse_dropout(c, &mut rng)?
                 }
                 StructuredOp::MaskDropout(c) => sample.mask_dropout(c, &mut rng)?,
                 StructuredOp::CropNonEmptyMask(c) => {

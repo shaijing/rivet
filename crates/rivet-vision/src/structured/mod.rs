@@ -5,6 +5,8 @@ mod bbox_safe;
 mod bbox_subset;
 pub use bbox_safe::BBoxSafeRandomCropConfig;
 pub use bbox_subset::BBoxSubsetSafeRandomCropConfig;
+mod constrained_dropout;
+pub use constrained_dropout::ConstrainedCoarseDropoutConfig;
 mod geometry;
 mod mask_crop;
 mod mask_dropout;

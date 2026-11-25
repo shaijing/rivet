@@ -199,6 +199,35 @@ impl PyStructuredPipeline {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (num_holes_range=(1,1),hole_height_range=(0.1,0.1),hole_width_range=(0.1,0.1), *, mask_indices=None,bbox_labels=None,fill=0.0,fill_mask=None))]
+    fn constrained_coarse_dropout(
+        &self,
+        num_holes_range: (u32, u32),
+        hole_height_range: (f64, f64),
+        hole_width_range: (f64, f64),
+        mask_indices: Option<Vec<i64>>,
+        bbox_labels: Option<Vec<i64>>,
+        fill: f32,
+        fill_mask: Option<i64>,
+    ) -> PyResult<Self> {
+        let op = StructuredOp::ConstrainedCoarseDropout(std::sync::Arc::new(
+            rivet_vision::structured::ConstrainedCoarseDropoutConfig {
+                num_holes_range,
+                hole_height_range,
+                hole_width_range,
+                mask_indices,
+                bbox_labels,
+                fill,
+                fill_mask,
+            },
+        ));
+        op.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().push(op),
+        })
+    }
+
     #[pyo3(signature = (max_objects_range=(1,1), *, fill=0.0, fill_mask=0))]
     fn mask_dropout(
         &self,
