@@ -181,6 +181,11 @@ class LanceDataset:
     def __len__(self) -> int:
         return len(self._inner)
 
+    @property
+    def path(self) -> Path | None:
+        """Physical Lance path resolved by the loader, or None for in-memory data."""
+        return self._inner.path
+
     def get_encoded(self, index: int) -> dict[str, Any]:
         return self._inner.get_encoded(index)
 

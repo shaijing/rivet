@@ -53,8 +53,7 @@ Reference command:
 
 ```bash
 .venv/bin/python bench/compare_cifar10_torchvision_rivet_decoded.py \
-  --torch-root ~/.data/pytorch \
-  --rivet-root ~/.cache/rivet/datasets/cifar10 \
+  --offline \
   --batch 128 --workers 4 --epochs 3
 ```
 

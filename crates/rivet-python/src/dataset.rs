@@ -96,6 +96,16 @@ impl PyLanceDataset {
         self.inner.len()
     }
 
+    #[getter]
+    fn path(&self) -> Option<PathBuf> {
+        match &self.inner {
+            ImageSource::Encoded(source) => {
+                source.as_dataset().source_path().map(ToOwned::to_owned)
+            }
+            _ => None,
+        }
+    }
+
     fn get_encoded(&self, py: Python<'_>, index: usize) -> PyResult<Py<PyDict>> {
         let sample = self.inner.get_encoded(index).map_err(to_py_err)?;
         encoded_sample_to_py(py, sample.image, sample.label)

@@ -11,15 +11,18 @@ import hashlib
 import json
 import statistics
 import time
-from pathlib import Path
 
-import rivet
 from rivet import _rivet
+
+if __package__:
+    from .cifar10_benchmark.common import add_dataset_args, load_train_dataset
+else:
+    from cifar10_benchmark.common import add_dataset_args, load_train_dataset
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--rivet-root", type=Path, required=True)
+    add_dataset_args(parser, "--rivet-root")
     parser.add_argument("--batch", type=int, default=128)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=30)
@@ -28,11 +31,11 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=123)
     args = parser.parse_args()
     if args.epochs < 1 or args.warmup < 0 or args.startup_repeats < 1:
-        parser.error("epochs/startup-repeats must be positive; warmup must be nonnegative")
-    path = args.rivet_root
-    if not path.name.endswith(".lance"):
-        path /= "train.lance"
-    cached = rivet.load_dataset(path).cache("decoded", chunk_size=4096)
+        parser.error(
+            "epochs/startup-repeats must be positive; warmup must be nonnegative"
+        )
+    dataset = load_train_dataset(args.dataset, offline=args.offline)
+    cached = dataset.cache("decoded", chunk_size=4096)
     expected_rows = len(cached)
 
     def pipeline():
@@ -109,8 +112,10 @@ def main() -> None:
                     name: statistics.median(values) for name, values in phases.items()
                 },
                 "startup_only_median_ms": statistics.median(startup_only),
-                "mean_throughput": expected_rows / (statistics.mean(phases["total"]) / 1000),
-                "median_throughput": expected_rows / (statistics.median(phases["total"]) / 1000),
+                "mean_throughput": expected_rows
+                / (statistics.mean(phases["total"]) / 1000),
+                "median_throughput": expected_rows
+                / (statistics.median(phases["total"]) / 1000),
                 "epoch_ms": phases,
             }
         )

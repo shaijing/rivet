@@ -14,8 +14,6 @@ the random transforms and normalization without a decode operation.
 Example:
 
     .venv/bin/python bench/compare_cifar10_torchvision_rivet_decoded.py \
-        --torch-root ~/.data/pytorch \
-        --rivet-root ~/.cache/rivet/datasets/cifar10 \
         --batch 128 --workers 4 --epochs 3
 """
 
@@ -27,16 +25,23 @@ import time
 from pathlib import Path
 from typing import Any
 
-from cifar10_benchmark.common import DEFAULT_LANCE_ROOT, _train_path, detect_encoding
-
 import rivet
 
-DEFAULT_TORCHVISION_ROOT = Path(
-    os.environ.get(
-        "TORCHVISION_CIFAR10_ROOT",
-        Path.home() / ".data" / "pytorch",
+if __package__:
+    from .cifar10_benchmark.common import (
+        CIFAR10_SOURCE,
+        add_dataset_args,
+        detect_encoding,
+        load_train_dataset,
     )
-)
+else:
+    from cifar10_benchmark.common import (
+        CIFAR10_SOURCE,
+        add_dataset_args,
+        detect_encoding,
+        load_train_dataset,
+    )
+
 CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
 CIFAR10_STD = (0.2470, 0.2435, 0.2616)
 
@@ -159,7 +164,7 @@ def bench_torchvision(
 
 
 def bench_rivet_decoded(
-    lance_root: Path,
+    source: str | Path,
     batch_size: int,
     workers: int,
     epochs: int,
@@ -168,10 +173,11 @@ def bench_rivet_decoded(
     batches: int,
     cache_chunk: int,
     max_bytes: int | None,
+    *,
+    offline: bool = False,
 ) -> dict[str, Any]:
-    lance_path = _train_path(lance_root)
     load_start = time.perf_counter()
-    dataset = rivet.load_dataset(lance_path)
+    dataset = load_train_dataset(source, offline=offline)
     encoding = detect_encoding(dataset)
     load_seconds = time.perf_counter() - load_start
     cache_start = time.perf_counter()
@@ -220,15 +226,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--torch-root",
         type=Path,
-        default=DEFAULT_TORCHVISION_ROOT,
-        help="torchvision dataset root (default: %(default)s)",
+        default=os.environ.get("TORCHVISION_CIFAR10_ROOT"),
+        help="torchvision dataset root (default: the Rivet-managed raw CIFAR-10 cache)",
     )
-    parser.add_argument(
-        "--rivet-root",
-        type=Path,
-        default=DEFAULT_LANCE_ROOT,
-        help="Rivet CIFAR-10 root or train.lance path (default: %(default)s)",
-    )
+    add_dataset_args(parser, "--rivet-root")
     parser.add_argument("--batch", type=int, default=128)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=3)
@@ -260,8 +261,13 @@ def main() -> None:
             "cache-chunk must be positive and max-bytes must be non-negative"
         )
 
+    if args.offline and args.download:
+        raise SystemExit("--offline cannot be combined with --download")
+    torch_root = args.torch_root
+    if torch_root is None:
+        torch_root = rivet.download_dataset(CIFAR10_SOURCE, offline=args.offline)
     torch_result = bench_torchvision(
-        args.torch_root,
+        torch_root,
         args.batch,
         args.workers,
         args.epochs,
@@ -271,7 +277,7 @@ def main() -> None:
         args.download,
     )
     rivet_result = bench_rivet_decoded(
-        args.rivet_root,
+        args.dataset,
         args.batch,
         args.workers,
         args.epochs,
@@ -280,10 +286,11 @@ def main() -> None:
         args.batches,
         args.cache_chunk,
         args.max_bytes,
+        offline=args.offline,
     )
 
-    print(f"torchvision root        : {args.torch_root}")
-    print(f"rivet root              : {_train_path(args.rivet_root)}")
+    print(f"torchvision root        : {torch_root}")
+    print(f"rivet dataset           : {args.dataset}")
     print(f"rivet encoding          : {rivet_result['encoding']}")
     print(
         f"batch={args.batch} workers={args.workers} epochs={args.epochs} "

@@ -4,11 +4,12 @@ use crate::sample::image::EncodedImageSample;
 use rivet_data::dataset::lance::LanceTable;
 use rivet_data::dataset::source::{AccessPattern, Dataset, SourceCapabilities, validate_indices};
 use rivet_data::errors::{DataResult, invalid_argument};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Rivet's native Lance image classification dataset.
 pub struct LanceImageDataset {
+    path: PathBuf,
     pub(super) table: Arc<LanceTable>,
     pub(super) image_column: String,
     pub(super) label_column: String,
@@ -20,12 +21,14 @@ impl LanceImageDataset {
         image_column: impl Into<String>,
         label_column: impl Into<String>,
     ) -> DataResult<Self> {
-        let table = Arc::new(LanceTable::open(path)?);
+        let path = path.as_ref().to_owned();
+        let table = Arc::new(LanceTable::open(&path)?);
         let image_column = image_column.into();
         let label_column = label_column.into();
         validate_schema(table.schema(), &image_column, &label_column)?;
 
         Ok(Self {
+            path,
             table,
             image_column,
             label_column,
@@ -62,6 +65,10 @@ impl Dataset for LanceImageDataset {
 
     fn len(&self) -> usize {
         self.table.len()
+    }
+
+    fn source_path(&self) -> Option<&Path> {
+        Some(&self.path)
     }
 
     fn capabilities(&self) -> SourceCapabilities {

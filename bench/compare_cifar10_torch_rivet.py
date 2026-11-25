@@ -14,9 +14,8 @@ Add ``--cache-compare`` to report Lance lazy versus an in-memory Rivet cache
 (decoded by default), including cache construction and per-epoch timings. Use
 ``--cache-level encoded`` to benchmark the compressed representation instead.
 
-Use ``--lance-root`` to select another converted CIFAR-10 root. The default is
-``~/.cache/rivet/datasets/cifar10``. Add ``--sweep`` for a Rivet worker scaling
-table.
+The default dataset is ``torch:CIFAR10``. Use ``--dataset`` to select another
+source or a local Lance path. Add ``--sweep`` for a Rivet worker scaling table.
 """
 
 from __future__ import annotations
@@ -26,12 +25,11 @@ from pathlib import Path
 
 if __package__:
     from .cifar10_benchmark import (
-        DEFAULT_LANCE_ROOT,
+        DEFAULT_DATASET,
         TorchLanceDataset,
         _peak_rss_mb,
         _rivet_checks,
         _rivet_pipeline,
-        _train_path,
         bench_rivet,
         bench_rivet_cache,
         bench_rivet_encoded_cache,
@@ -45,12 +43,11 @@ else:
     # benchmark package importable without requiring an installation step.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from cifar10_benchmark import (
-        DEFAULT_LANCE_ROOT,
+        DEFAULT_DATASET,
         TorchLanceDataset,
         _peak_rss_mb,
         _rivet_checks,
         _rivet_pipeline,
-        _train_path,
         bench_rivet,
         bench_rivet_cache,
         bench_rivet_encoded_cache,
@@ -61,12 +58,11 @@ else:
     )
 
 __all__ = [
-    "DEFAULT_LANCE_ROOT",
+    "DEFAULT_DATASET",
     "TorchLanceDataset",
     "_peak_rss_mb",
     "_rivet_checks",
     "_rivet_pipeline",
-    "_train_path",
     "bench_rivet",
     "bench_rivet_cache",
     "bench_rivet_encoded_cache",

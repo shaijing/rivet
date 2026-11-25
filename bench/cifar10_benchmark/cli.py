@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import rivet
 
-from .common import DEFAULT_LANCE_ROOT, _train_path, detect_encoding
+from .common import add_dataset_args, detect_encoding, load_train_dataset
 from .rivet_backend import bench_rivet, bench_rivet_cache
 from .torch_backend import bench_torch
 
@@ -58,7 +57,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Benchmark PyTorch and Rivet on a shared CIFAR-10 Lance split"
     )
-    parser.add_argument("--lance-root", type=Path, default=DEFAULT_LANCE_ROOT)
+    add_dataset_args(parser, "--lance-root")
     parser.add_argument("--modes", default="A,B,C")
     parser.add_argument("--batch", type=int, default=64)
     parser.add_argument(
@@ -94,8 +93,10 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = _build_parser().parse_args()
 
-    train_dataset = rivet.load_dataset(args.lance_root, split="train")
-    train_path = _train_path(args.lance_root)
+    train_dataset = load_train_dataset(args.dataset, offline=args.offline)
+    train_path = train_dataset.path
+    if train_path is None:
+        raise RuntimeError("the shared benchmark requires a physical Lance split")
     encoding = detect_encoding(train_dataset)
     print(f"shared Lance dataset     : {train_path}")
     print(f"encoded rows detected    : {encoding}")

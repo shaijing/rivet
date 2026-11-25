@@ -51,6 +51,11 @@ pub trait Dataset: Send + Sync {
 
     fn len(&self) -> usize;
 
+    /// The physical backing path, when this dataset has one.
+    fn source_path(&self) -> Option<&std::path::Path> {
+        None
+    }
+
     /// Describe storage access so planners can select a read strategy without
     /// depending on a concrete dataset implementation.
     fn capabilities(&self) -> SourceCapabilities {

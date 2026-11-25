@@ -79,7 +79,7 @@ def test_load_dataset_discovers_and_selects_splits(tmp_path: Path) -> None:
 def test_manifest_is_authoritative_and_physical_paths_stay_single(
     tmp_path: Path,
 ) -> None:
-    _write_split(tmp_path / "train.lance", [0, 1])
+    _write_split(tmp_path / "payload.lance", [0, 1])
     _write_split(tmp_path / "ignored.lance", [2, 3])
     (tmp_path / "dataset.rivet.json").write_text(
         json.dumps(
@@ -87,7 +87,7 @@ def test_manifest_is_authoritative_and_physical_paths_stay_single(
                 "format_version": 1,
                 "name": "fixture",
                 "splits": {
-                    "train": {"path": "train.lance", "num_rows": 2},
+                    "train": {"path": "payload.lance", "num_rows": 2},
                 },
             }
         )
@@ -95,10 +95,15 @@ def test_manifest_is_authoritative_and_physical_paths_stay_single(
 
     dataset = rivet.load_dataset(tmp_path)
     assert dataset.keys() == ["train"]
-    assert len(rivet.load_dataset(tmp_path / "train.lance")) == 2
+    physical_path = tmp_path / "payload.lance"
+    assert dataset["train"].path == physical_path
+    assert rivet.load_dataset(tmp_path, split="train").path == physical_path
+    physical = rivet.load_dataset(physical_path)
+    assert physical.path == physical_path
+    assert len(physical) == 2
 
     with pytest.raises(ValueError, match="single .lance"):
-        rivet.load_dataset(tmp_path / "train.lance", split="train")
+        rivet.load_dataset(tmp_path / "payload.lance", split="train")
 
 
 def test_v2_manifest_binds_semantic_features_to_lance_columns(tmp_path: Path) -> None:
@@ -200,11 +205,14 @@ def test_encoded_cache_is_explicit_and_keeps_original_lazy_dataset(
     cached = lazy.cache("encoded", chunk_size=1)
 
     assert cached is not lazy
+    assert cached.path is None
+    assert lazy.path == tmp_path / "train.lance"
     assert len(cached) == len(lazy) == 3
     assert [cached.get_encoded(index)["label"] for index in [2, 0, 2]] == [2, 0, 2]
     assert [lazy.get_encoded(index)["label"] for index in [2, 0, 2]] == [2, 0, 2]
 
     decoded = lazy.cache("decoded", chunk_size=1)
+    assert decoded.path is None
     assert [decoded.get_decoded(index)["labels"].tolist() for index in [2, 0]] == [
         [2],
         [0],

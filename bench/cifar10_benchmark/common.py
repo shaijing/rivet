@@ -1,31 +1,42 @@
-"""Shared paths and small measurement helpers for the benchmark."""
+"""Shared dataset loading and small measurement helpers for the benchmark."""
 
 from __future__ import annotations
 
+import argparse
 import os
 from pathlib import Path
 from typing import Any
+
+import rivet
 
 try:
     import resource
 except ImportError:  # pragma: no cover - resource is Unix-only
     resource = None
 
-DEFAULT_LANCE_ROOT = Path(
-    os.environ.get(
-        "RIVET_CIFAR10_ROOT",
-        Path.home() / ".cache" / "rivet" / "datasets" / "cifar10",
+CIFAR10_SOURCE = "torch:CIFAR10"
+DEFAULT_DATASET = os.environ.get("RIVET_CIFAR10_ROOT", CIFAR10_SOURCE)
+
+
+def add_dataset_args(parser: argparse.ArgumentParser, legacy_flag: str) -> None:
+    parser.add_argument(
+        "--dataset",
+        legacy_flag,
+        default=DEFAULT_DATASET,
+        help="Rivet dataset source or local Lance path (default: %(default)s)",
     )
-)
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="use cached dataset data without downloading",
+    )
 
 
-def _train_path(lance_root: Path) -> Path:
-    if lance_root.name.endswith(".lance"):
-        return lance_root
-    train_path = lance_root / "train.lance"
-    if not train_path.is_dir():
-        raise SystemExit(f"train Lance split not found: {train_path}")
-    return train_path
+def load_train_dataset(
+    source: str | Path, *, offline: bool = False
+) -> rivet.LanceDataset:
+    loaded = rivet.load_dataset(source, offline=offline)
+    return loaded["train"] if isinstance(loaded, rivet.DatasetDict) else loaded
 
 
 def detect_encoding(dataset: Any) -> str:
