@@ -60,6 +60,11 @@ pub enum V2Config {
         grid: (u32, u32),
         clip_limit: f64,
     },
+    FilmGrain {
+        intensity_range: (f64, f64),
+        grain_size_range: (u32, u32),
+        per_channel: bool,
+    },
     IsoNoise {
         color_shift_range: (f64, f64),
         intensity_range: (f64, f64),
@@ -152,6 +157,7 @@ impl V2Config {
             Self::ShotNoise { .. } => "ShotNoise",
             Self::RandomToneCurve { .. } => "RandomToneCurve",
             Self::Clahe { .. } => "CLAHE",
+            Self::FilmGrain { .. } => "FilmGrain",
             Self::IsoNoise { .. } => "ISONoise",
             Self::GlassBlur { .. } => "GlassBlur",
             Self::ZoomBlur { .. } => "ZoomBlur",
@@ -188,6 +194,7 @@ impl V2Config {
             Self::ShotNoise { .. } => 60,
             Self::RandomToneCurve { .. } => 69,
             Self::Clahe { .. } => 70,
+            Self::FilmGrain { .. } => 81,
             Self::IsoNoise { .. } => 80,
             Self::GlassBlur { .. } => 79,
             Self::ZoomBlur { .. } => 78,
@@ -225,6 +232,11 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::FilmGrain {
+                intensity_range: (low, high),
+                grain_size_range: (min, max),
+                ..
+            } => *low >= 0.0 && low <= high && *high <= 1.0 && *min > 0 && min <= max,
             Self::IsoNoise {
                 color_shift_range,
                 intensity_range,
@@ -630,6 +642,7 @@ impl V2Config {
             }
             Self::RandomToneCurve { .. }
             | Self::Clahe { .. }
+            | Self::FilmGrain { .. }
             | Self::IsoNoise { .. }
             | Self::GlassBlur { .. }
             | Self::ZoomBlur { .. }
@@ -729,6 +742,15 @@ impl V2Config {
                 let color_shift = sample(*color_shift_range);
                 let intensity = sample(*intensity_range);
                 s.image = super::noise::iso_noise(&s.image, color_shift, intensity, rng)?;
+            }
+            Self::FilmGrain {
+                intensity_range: (low, high),
+                grain_size_range: (min, max),
+                per_channel,
+            } => {
+                let intensity = low + rng.next_f64() * (high - low);
+                let size = *min as usize + rng.gen_range_usize(0..((*max - *min) as usize + 1))?;
+                s.image = super::noise::film_grain(&s.image, intensity, size, *per_channel, rng)?;
             }
             Self::MedianBlur => {
                 s.image = super::blur::median_blur_3x3(&s.image)?;

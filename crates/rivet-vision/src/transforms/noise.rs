@@ -265,3 +265,95 @@ pub(super) fn iso_noise(
         }
     })?)
 }
+
+pub(super) fn film_grain(
+    input: &Tensor,
+    intensity: f64,
+    size: usize,
+    per_channel: bool,
+    rng: &mut RandomStream,
+) -> RivetResult<Tensor> {
+    let [h, w, channels] = *input.dims() else {
+        return Err(invalid_argument("FilmGrain expects rank-3 HWC input"));
+    };
+    if h == 0 || w == 0 || channels == 0 || !matches!(input.dtype(), DType::U8 | DType::F32) {
+        return Err(invalid_argument(
+            "FilmGrain requires nonempty uint8 or float32 HWC input",
+        ));
+    }
+    if intensity == 0.0 {
+        return Ok(input.clone());
+    }
+    let (gh, gw) = ((h / size).max(1), (w / size).max(1));
+    let planes = if per_channel { channels } else { 1 };
+    let count = gh * gw * planes;
+    let grain: Vec<_> = (0..count.div_ceil(2))
+        .flat_map(|_| {
+            let (a, b) = normal_pair(rng);
+            [a, b]
+        })
+        .take(count)
+        .collect();
+    let coordinates = |length, coarse: usize| {
+        let scale = coarse as f64 / length as f64;
+        (0..length).map(move |i| {
+            let source = ((i as f64 + 0.5) * scale - 0.5).clamp(0.0, (coarse - 1) as f64);
+            let low = source as usize;
+            (low, (low + 1).min(coarse - 1), source - low as f64)
+        })
+    };
+    let xs: Vec<_> = coordinates(w, gw).collect();
+    let input = input.contiguous()?;
+    Ok(input.with_cpu_storage(|storage, layout| {
+        macro_rules! write_grain {
+            ($values:expr, $scale:expr, $finish:expr) => {{
+                let pixels = contiguous_values($values, layout)?;
+                let finish = $finish;
+                Tensor::from_exact_writer(input.dims(), input.device(), |out| {
+                    for (row, (top, bottom, fy)) in
+                        pixels.chunks_exact(w * channels).zip(coordinates(h, gh))
+                    {
+                        let (top, bottom) = (top * gw * planes, bottom * gw * planes);
+                        for (pixel, &(left, right, fx)) in row.chunks_exact(channels).zip(&xs) {
+                            let (left, right) = (left * planes, right * planes);
+                            let luma = match pixel {
+                                &[r, g, b] => {
+                                    0.299 * f64::from(r)
+                                        + 0.587 * f64::from(g)
+                                        + 0.114 * f64::from(b)
+                                }
+                                _ => {
+                                    pixel.iter().map(|&v| f64::from(v)).sum::<f64>()
+                                        / channels as f64
+                                }
+                            };
+                            let amplitude = intensity * (1.0 - (luma * $scale).clamp(0.0, 1.0));
+                            let interpolate = |c| {
+                                let a = grain[top + left + c];
+                                let b = grain[bottom + left + c];
+                                let upper = a + fx * (grain[top + right + c] - a);
+                                let lower = b + fx * (grain[bottom + right + c] - b);
+                                upper + fy * (lower - upper)
+                            };
+                            let shared = if per_channel { 0.0 } else { interpolate(0) };
+                            for (c, &value) in pixel.iter().enumerate() {
+                                let noise = if per_channel { interpolate(c) } else { shared };
+                                let value =
+                                    (f64::from(value) * $scale + amplitude * noise).clamp(0.0, 1.0);
+                                out.write_next(finish(value))?;
+                            }
+                        }
+                    }
+                    Ok(())
+                })
+            }};
+        }
+        match storage {
+            CpuStorageRef::U8(values) => {
+                write_grain!(values, 1.0 / 255.0, |v: f64| (v * 255.0).round() as u8)
+            }
+            CpuStorageRef::F32(values) => write_grain!(values, 1.0, |v| v as f32),
+            _ => unreachable!(),
+        }
+    })?)
+}

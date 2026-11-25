@@ -1159,3 +1159,49 @@ def test_iso_noise_seed_and_validation(source):
         output(root, lambda p: p.grayscale().iso_noise())
     with pytest.raises(ValueError, match="ISONoise"):
         output(root, lambda p: p.hwc_to_chw().iso_noise())
+
+
+def test_film_grain_scale_and_shadow_strength(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.full((7, 9, 3), 64, dtype=np.uint8)
+    pixels[:, 4:] = 192
+    Image.fromarray(pixels).save(folder / "grain.png")
+
+    def apply(size, strength=0.05, per_channel=False):
+        return output(
+            tmp_path,
+            lambda p: p.to_dtype("float32", True).film_grain(
+                (strength, strength), (size, size), per_channel=per_channel
+            ),
+            transform=True,
+            workers=2,
+        )[0]
+
+    base = apply(1, strength=0)
+    np.testing.assert_allclose(base, pixels / 255, atol=1e-7)
+    coarse = apply(20)
+    residual = (coarse - base) / (1 - base)
+    np.testing.assert_allclose(residual, residual[0, 0, 0], atol=2e-7)
+    assert abs(coarse[0, 0, 0] - base[0, 0, 0]) > abs(coarse[0, -1, 0] - base[0, -1, 0])
+    assert np.std(apply(1) - base) > 0
+    chromatic = apply(20, per_channel=True)
+    assert not np.array_equal(chromatic[..., 0], chromatic[..., 1])
+    clipped = apply(1, strength=1, per_channel=True)
+    assert clipped.dtype == np.float32 and clipped.shape == pixels.shape
+    assert clipped.min() == 0 and clipped.max() == 1
+
+
+def test_film_grain_seed_and_validation(source):
+    root, pixels = source
+    serial = output(root, lambda p: p.film_grain())
+    np.testing.assert_array_equal(
+        serial, output(root, lambda p: p.film_grain(), transform=True, workers=3)
+    )
+    assert serial[0].dtype == np.uint8 and serial[0].shape == pixels.shape
+    assert not np.array_equal(serial, output(root, lambda p: p.film_grain(), epoch=1))
+    for options in [{"intensity_range": (0, 2)}, {"grain_size_range": (0, 1)}]:
+        with pytest.raises(ValueError):
+            rivet.Transform().film_grain(**options)
+    with pytest.raises(ValueError, match="FilmGrain"):
+        output(root, lambda p: p.hwc_to_chw().film_grain())

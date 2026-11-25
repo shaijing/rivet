@@ -523,6 +523,22 @@ class Transform:
             )
         )
 
+    def film_grain(
+        self,
+        intensity_range: tuple[float, float] = (0.1, 0.3),
+        grain_size_range: tuple[int, int] = (1, 3),
+        *,
+        per_channel: bool = False,
+    ) -> Transform:
+        """Add seeded Gaussian grain to uint8 or normalized float32 HWC.
+
+        Grain size divides the field resolution before bilinear upsampling.
+        Grain amplitude is proportional to inverse luma. Set per_channel to
+        sample independent fields for each channel. Output is clipped.
+        """
+        inner = self._inner.film_grain(intensity_range, grain_size_range, per_channel=per_channel)
+        return Transform(inner)
+
     def iso_noise(
         self,
         color_shift_range: tuple[float, float] = (0.01, 0.05),

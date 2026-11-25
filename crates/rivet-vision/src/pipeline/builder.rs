@@ -111,6 +111,20 @@ impl ImagePipeline {
         self.v2(crate::transforms::V2Config::LetterBox(config))
     }
 
+    /// Overlay seeded, spatially correlated grain with stronger shadows.
+    pub fn film_grain(
+        self,
+        intensity_range: (f64, f64),
+        grain_size_range: (u32, u32),
+        per_channel: bool,
+    ) -> Self {
+        self.v2(crate::transforms::V2Config::FilmGrain {
+            intensity_range,
+            grain_size_range,
+            per_channel,
+        })
+    }
+
     /// Apply camera-like luma and chroma noise to RGB pixels.
     pub fn iso_noise(self, color_shift_range: (f64, f64), intensity_range: (f64, f64)) -> Self {
         self.v2(crate::transforms::V2Config::IsoNoise {

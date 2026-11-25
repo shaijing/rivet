@@ -905,6 +905,24 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (intensity_range=(0.1, 0.3), grain_size_range=(1, 3), *, per_channel=false))]
+    fn film_grain(
+        &self,
+        intensity_range: (f64, f64),
+        grain_size_range: (u32, u32),
+        per_channel: bool,
+    ) -> PyResult<Self> {
+        let config = V2Config::FilmGrain {
+            intensity_range,
+            grain_size_range,
+            per_channel,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (color_shift_range=(0.01, 0.05), intensity_range=(0.1, 0.5)))]
     fn iso_noise(
         &self,
@@ -2209,6 +2227,24 @@ impl PyImagePipeline {
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().letterbox(config),
+        })
+    }
+
+    #[pyo3(signature = (intensity_range=(0.1, 0.3), grain_size_range=(1, 3), *, per_channel=false))]
+    fn film_grain(
+        &self,
+        intensity_range: (f64, f64),
+        grain_size_range: (u32, u32),
+        per_channel: bool,
+    ) -> PyResult<Self> {
+        let config = V2Config::FilmGrain {
+            intensity_range,
+            grain_size_range,
+            per_channel,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 
