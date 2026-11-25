@@ -123,6 +123,11 @@ impl TransformSequence {
         ))
     }
 
+    /// Sample zero to three counterclockwise quarter turns.
+    pub fn random_rotate90(self) -> Self {
+        self.v2(crate::transforms::V2Config::RandomRotate90)
+    }
+
     /// Exchange the spatial axes while preserving channel placement.
     pub fn transpose(self) -> Self {
         self.v2(crate::transforms::V2Config::Transpose)

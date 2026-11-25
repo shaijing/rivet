@@ -1167,3 +1167,27 @@ def test_transpose_swaps_all_spatial_targets(annotated):
     np.testing.assert_array_equal(result["keypoints"], original["keypoints"][..., ::-1])
     np.testing.assert_array_equal(result["masks"], original["masks"].transpose(0, 2, 1))
     np.testing.assert_array_equal(result["labels"], original["labels"])
+
+
+def test_random_rotate90_structured_targets(annotated):
+    original = annotated.to_dict()
+    pipeline = rivet.StructuredPipeline([annotated] * 9).compose(rivet.Transform().random_rotate90()).seed(4)
+    seen = set()
+    for batch, parallel in zip(pipeline.execute(), pipeline.workers(3).execute(), strict=True):
+        img = batch["images"][0]
+        np.testing.assert_array_equal(img, parallel["images"][0])
+        k = next(i for i in range(4) if np.array_equal(img, np.rot90(original["image"], i)))
+        seen.add(k)
+        target = batch["targets"][0]
+        boxes = original["boxes"].copy()
+        points = original["keypoints"].copy()
+        h, w = original["image"].shape[:2]
+        for _ in range(k):
+            boxes = np.stack([boxes[:, 1], w - boxes[:, 2], boxes[:, 3], w - boxes[:, 0]], axis=-1)
+            points = np.stack([points[..., 1], w - 1 - points[..., 0]], axis=-1)
+            h, w = w, h
+        np.testing.assert_array_equal(target["masks"], np.rot90(original["masks"], k, axes=(1, 2)))
+        np.testing.assert_array_equal(target["boxes"], boxes)
+        np.testing.assert_array_equal(target["keypoints"], points)
+        np.testing.assert_array_equal(target["labels"], original["labels"])
+    assert seen == {0, 1, 2, 3}

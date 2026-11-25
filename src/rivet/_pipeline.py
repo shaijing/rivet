@@ -633,6 +633,14 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def random_rotate90(self) -> Pipeline:
+        """Sample 0, 90, 180, or 270 degrees counterclockwise with equal probability.
+
+        Odd quarter turns swap height and width. HWC and CHW are preserved,
+        and structured composition transforms image and targets together.
+        """
+        return Pipeline(self._inner.random_rotate90(), as_numpy=self.as_numpy)
+
     def transpose(self) -> Pipeline:
         """Exchange height and width in HWC or CHW images and aligned targets."""
         return Pipeline(self._inner.transpose(), as_numpy=self.as_numpy)

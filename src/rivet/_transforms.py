@@ -537,6 +537,14 @@ class Transform:
             )
         )
 
+    def random_rotate90(self) -> Transform:
+        """Sample 0, 90, 180, or 270 degrees counterclockwise with equal probability.
+
+        Odd quarter turns swap height and width. HWC and CHW are preserved,
+        and structured composition transforms image and targets together.
+        """
+        return Transform(self._inner.random_rotate90())
+
     def transpose(self) -> Transform:
         """Exchange height and width in HWC or CHW images and aligned targets."""
         return Transform(self._inner.transpose())

@@ -2359,3 +2359,18 @@ def test_transpose_rectangular_layout_and_composition(source):
     assert planar.dtype == np.float32
     np.testing.assert_allclose(planar, pixels.transpose(2, 1, 0) / 255, atol=1e-7)
     np.testing.assert_array_equal(output(root, lambda p: p.transpose().transpose())[0], pixels)
+
+
+def test_random_rotate90_matches_discrete_rotations(source):
+    root, pixels = source
+    serial = output(root, lambda p: p.random_rotate90())
+    parallel = output(root, lambda p: p.random_rotate90(), transform=True, workers=3)
+    planar = output(root, lambda p: p.to_dtype("float32", True).hwc_to_chw().random_rotate90())
+    seen = set()
+    for i, (actual, other, chw) in enumerate(zip(serial, parallel, planar, strict=True)):
+        np.testing.assert_array_equal(actual, other)
+        base = np.roll(pixels, i, axis=0)
+        turn = next(k for k in range(4) if np.array_equal(actual, np.rot90(base, k)))
+        seen.add(turn)
+        np.testing.assert_allclose(chw, actual.transpose(2, 0, 1) / 255, atol=1e-7)
+    assert len(seen) > 1

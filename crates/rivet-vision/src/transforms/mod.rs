@@ -49,6 +49,7 @@ pub use pixel_mask::{
 mod resize;
 mod resized_crop;
 mod rotate;
+pub(crate) use rotate::quarter_turn;
 mod sized_crop;
 pub use sized_crop::RandomSizedCropConfig;
 mod u8_color;

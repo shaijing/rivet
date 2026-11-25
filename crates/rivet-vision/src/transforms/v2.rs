@@ -266,6 +266,7 @@ pub enum V2Config {
         dtype: DType,
         scale: bool,
     },
+    RandomRotate90,
     Transpose,
     GridMask(std::sync::Arc<GridMaskConfig>),
     RandomSizedCrop(RandomSizedCropConfig),
@@ -329,6 +330,7 @@ impl V2Config {
             Self::LetterBox(_) => "LetterBox",
             Self::Defocus { .. } => "Defocus",
             Self::ChannelDropout(_) => "ChannelDropout",
+            Self::RandomRotate90 => "RandomRotate90",
             Self::Transpose => "Transpose",
             Self::GridMask(_) => "GridMask",
             Self::XyMasking(_) => "XYMasking",
@@ -404,6 +406,7 @@ impl V2Config {
             Self::LetterBox(_) => 66,
             Self::Defocus { .. } => 67,
             Self::ChannelDropout(_) => 111,
+            Self::RandomRotate90 => 121,
             Self::Transpose => 120,
             Self::GridMask(_) => 113,
             Self::XyMasking(_) => 112,
@@ -1472,6 +1475,10 @@ impl V2Config {
             }
             Self::ChannelDropout(config) => {
                 s.image = config.apply(&s.image, axis, rng)?;
+            }
+            Self::RandomRotate90 => {
+                let turns = rng.gen_range_usize(0..4)?;
+                s.image = super::quarter_turn(&s.image, axis, turns)?;
             }
             Self::Transpose => {
                 let order = match axis {

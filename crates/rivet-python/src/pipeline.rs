@@ -936,6 +936,12 @@ impl PyTransform {
         })
     }
 
+    fn random_rotate90(&self) -> Self {
+        Self {
+            inner: self.inner.clone().random_rotate90(),
+        }
+    }
+
     fn transpose(&self) -> Self {
         Self {
             inner: self.inner.clone().transpose(),
@@ -3158,6 +3164,12 @@ impl PyImagePipeline {
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
         })
+    }
+
+    fn random_rotate90(&self) -> Self {
+        Self {
+            inner: self.inner.clone().random_rotate90(),
+        }
     }
 
     fn transpose(&self) -> Self {

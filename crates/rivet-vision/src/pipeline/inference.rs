@@ -271,6 +271,13 @@ pub(crate) fn infer_image_op(
             use crate::transforms::V2Config;
             require_u8_or_f32_decoded(input_state, op.name())?;
             match config {
+                V2Config::RandomRotate90 => {
+                    let (h, w) = spatial_dims(input)?;
+                    if h != w {
+                        make_spatial_dynamic(&mut output);
+                    }
+                    output.contiguity = Some(Contiguity::Unknown);
+                }
                 V2Config::Transpose => {
                     swap_spatial_shape(&mut output);
                     output.contiguity = Some(Contiguity::Unknown);

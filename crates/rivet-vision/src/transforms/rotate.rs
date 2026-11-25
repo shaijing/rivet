@@ -75,3 +75,21 @@ mod tests {
         assert!(RotationAngle::try_from(45).is_err());
     }
 }
+
+pub(crate) fn quarter_turn(
+    image: &rivet_core::Tensor,
+    axis: crate::sample::image::ImageAxisOrder,
+    turns: usize,
+) -> RivetResult<rivet_core::Tensor> {
+    use crate::sample::image::ImageAxisOrder::{Chw, Hwc};
+    let (order, y, x) = match axis {
+        Hwc => ([1, 0, 2], 0, 1),
+        Chw => ([0, 2, 1], 1, 2),
+    };
+    Ok(match turns {
+        0 => image.clone(),
+        1 => image.permute(&order)?.flip(&[y])?,
+        2 => image.flip(&[y, x])?,
+        _ => image.permute(&order)?.flip(&[x])?,
+    })
+}

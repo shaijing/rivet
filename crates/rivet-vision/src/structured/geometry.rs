@@ -664,22 +664,13 @@ pub(super) fn apply(
             }
             Ok(s)
         }
-        ImageOp::V2(V2Config::Transpose) => {
-            let order = match s.axis_order {
-                ImageAxisOrder::Hwc => [1, 0, 2],
-                ImageAxisOrder::Chw => [0, 2, 1],
-            };
-            s.image = s.image.permute(&order)?;
-            if let Some(mask) = &s.masks {
-                s.masks = Some(if mask.rank() == 2 {
-                    mask.permute(&[1, 0])?
-                } else {
-                    mask.permute(&[0, 2, 1])?
-                });
-            }
-            let swap = [[0., 1., 0.], [1., 0., 0.], [0., 0., 1.]];
-            targets(s, swap, swap, false)
-        }
+        ImageOp::V2(V2Config::RandomRotate90) => match rng.gen_range_usize(0..4)? {
+            0 => Ok(s),
+            1 => flip(transpose(s)?, false),
+            2 => flip(flip(s, true)?, false),
+            _ => flip(transpose(s)?, true),
+        },
+        ImageOp::V2(V2Config::Transpose) => transpose(s),
         ImageOp::V2(V2Config::GridMask(config)) => {
             let mask = config.sample(h, w, rng)?;
             s.image = config.apply(&s.image, s.axis_order, mask)?;
@@ -903,4 +894,21 @@ fn apply_occlusion(
         }
     }
     Ok(s)
+}
+
+fn transpose(mut s: StructuredSample) -> RivetResult<StructuredSample> {
+    let order = match s.axis_order {
+        ImageAxisOrder::Hwc => [1, 0, 2],
+        ImageAxisOrder::Chw => [0, 2, 1],
+    };
+    s.image = s.image.permute(&order)?;
+    if let Some(mask) = &s.masks {
+        s.masks = Some(if mask.rank() == 2 {
+            mask.permute(&[1, 0])?
+        } else {
+            mask.permute(&[0, 2, 1])?
+        });
+    }
+    let swap = [[0., 1., 0.], [1., 0., 0.], [0., 0., 1.]];
+    targets(s, swap, swap, false)
 }
