@@ -973,6 +973,48 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (element_types,element_probabilities,*,count_range=(1,3),thickness_range=(1,3),corner_prob=0.6,black_white_prob=0.85))]
+    fn annotation_artifacts(
+        &self,
+        element_types: Vec<String>,
+        element_probabilities: Vec<f64>,
+        count_range: (u32, u32),
+        thickness_range: (u32, u32),
+        corner_prob: f64,
+        black_white_prob: f64,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{AnnotationArtifactsConfig, ArtifactElement};
+        if element_types.len() != element_probabilities.len() {
+            return Err(PyValueError::new_err(
+                "element types and probabilities must have the same length",
+            ));
+        }
+        let mut elements = Vec::with_capacity(element_types.len());
+        for (kind, weight) in element_types.iter().zip(element_probabilities) {
+            let kind = match kind.as_str() {
+                "text" => ArtifactElement::Text,
+                "rectangle" => ArtifactElement::Rectangle,
+                "arrow" => ArtifactElement::Arrow,
+                "line" => ArtifactElement::Line,
+                "callout" => ArtifactElement::Callout,
+                _ => return Err(PyValueError::new_err("unknown annotation artifact element")),
+            };
+            elements.push((kind, weight));
+        }
+        let config =
+            V2Config::AnnotationArtifacts(std::sync::Arc::new(AnnotationArtifactsConfig {
+                elements,
+                count_range,
+                thickness_range,
+                corner_prob,
+                black_white_prob,
+            }));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (references,beta_range=(0.0,0.1)))]
     fn fda(&self, references: Vec<Bound<'_, PyAny>>, beta_range: (f64, f64)) -> PyResult<Self> {
         use rivet_vision::transforms::{FdaConfig, ReferenceImages};
@@ -3648,6 +3690,48 @@ impl PyImagePipeline {
         };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (element_types,element_probabilities,*,count_range=(1,3),thickness_range=(1,3),corner_prob=0.6,black_white_prob=0.85))]
+    fn annotation_artifacts(
+        &self,
+        element_types: Vec<String>,
+        element_probabilities: Vec<f64>,
+        count_range: (u32, u32),
+        thickness_range: (u32, u32),
+        corner_prob: f64,
+        black_white_prob: f64,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{AnnotationArtifactsConfig, ArtifactElement};
+        if element_types.len() != element_probabilities.len() {
+            return Err(PyValueError::new_err(
+                "element types and probabilities must have the same length",
+            ));
+        }
+        let mut elements = Vec::with_capacity(element_types.len());
+        for (kind, weight) in element_types.iter().zip(element_probabilities) {
+            let kind = match kind.as_str() {
+                "text" => ArtifactElement::Text,
+                "rectangle" => ArtifactElement::Rectangle,
+                "arrow" => ArtifactElement::Arrow,
+                "line" => ArtifactElement::Line,
+                "callout" => ArtifactElement::Callout,
+                _ => return Err(PyValueError::new_err("unknown annotation artifact element")),
+            };
+            elements.push((kind, weight));
+        }
+        let config =
+            V2Config::AnnotationArtifacts(std::sync::Arc::new(AnnotationArtifactsConfig {
+                elements,
+                count_range,
+                thickness_range,
+                corner_prob,
+                black_white_prob,
+            }));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

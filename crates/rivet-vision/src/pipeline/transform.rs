@@ -123,6 +123,16 @@ impl TransformSequence {
         ))
     }
 
+    /// Draw synthetic annotation markup while preserving sample metadata.
+    pub fn annotation_artifacts(
+        self,
+        config: crate::transforms::AnnotationArtifactsConfig,
+    ) -> Self {
+        self.v2(crate::transforms::V2Config::AnnotationArtifacts(
+            std::sync::Arc::new(config),
+        ))
+    }
+
     /// Transfer low-frequency amplitudes from a seeded reference.
     pub fn fda(self, config: crate::transforms::FdaConfig) -> Self {
         self.v2(crate::transforms::V2Config::Fda(std::sync::Arc::new(

@@ -1648,3 +1648,13 @@ def test_guided_dropout_filters_boxes_at_visibility_threshold():
     removed = next(iter(p.guided_coarse_dropout(guide, min_visibility=1).execute()))
     assert removed["targets"][0]["boxes"].shape == (0, 4)
     assert removed["targets"][0]["keypoints"].shape == (0, 1, 2)
+
+def test_annotation_artifacts_is_independent_of_and_preserves_targets(annotated):
+    original = annotated.to_dict()
+    plain = rivet.AnnotatedSample(original["image"])
+    transform = rivet.Transform().annotation_artifacts(["rectangle"], black_white_prob=0)
+    result = annotated.apply(transform).to_dict()
+    np.testing.assert_array_equal(result["image"], plain.apply(transform).to_dict()["image"])
+    assert not np.array_equal(result["image"], original["image"])
+    for key in ("boxes", "masks", "keypoints", "labels"):
+        np.testing.assert_array_equal(result[key], original[key])

@@ -2825,3 +2825,26 @@ def test_webp_grayscale_and_single_pixel(tmp_path):
     assert hwc.shape == (1, 1, 1) and hwc.dtype == np.uint8
     np.testing.assert_array_equal(hwc, chw)
     np.testing.assert_allclose(hwc, 120, atol=5)
+
+@pytest.mark.parametrize("kind", ["text", "rectangle", "arrow", "line", "callout"])
+def test_annotation_artifacts_raster_and_seed(source, kind):
+    root, pixels = source
+
+    def augment(p):
+        return p.annotation_artifacts([kind], count_range=(1, 1), black_white_prob=0)
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert serial[0].dtype == np.uint8 and serial[0].shape == pixels.shape
+    assert np.any(np.all(serial[0] == [255, 0, 0], axis=-1))
+    floats = output(root, lambda p: augment(p.to_dtype("float32", True)))[0]
+    assert floats.dtype == np.float32
+    np.testing.assert_allclose(floats, serial[0] / 255, atol=1e-7)
+
+
+def test_annotation_artifacts_zero_count_is_identity(source):
+    root, pixels = source
+    result = output(root, lambda p: p.annotation_artifacts(count_range=(0, 0)))[0]
+    np.testing.assert_array_equal(result, pixels)
+    with pytest.raises(ValueError):
+        rivet.Transform().annotation_artifacts(["arrow"], [0])

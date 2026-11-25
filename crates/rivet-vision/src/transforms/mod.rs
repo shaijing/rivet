@@ -13,6 +13,8 @@ pub use autoaugment::{
 mod random_extra;
 pub use random_extra::{RandomGaussianBlurConfig, RandomRotationConfig};
 mod advanced_geometry;
+mod artifacts;
+pub use artifacts::{AnnotationArtifactsConfig, ArtifactElement};
 mod blur;
 mod border_crop;
 mod crop;

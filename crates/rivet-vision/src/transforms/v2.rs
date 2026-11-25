@@ -275,6 +275,7 @@ pub enum V2Config {
         scale: bool,
     },
     SquareSymmetry(Option<SquareSymmetry>),
+    AnnotationArtifacts(std::sync::Arc<AnnotationArtifactsConfig>),
     Fda(std::sync::Arc<FdaConfig>),
     PixelDistributionAdaptation(std::sync::Arc<PixelDistributionAdaptationConfig>),
     HistogramMatching(std::sync::Arc<HistogramMatchingConfig>),
@@ -362,6 +363,7 @@ impl V2Config {
             Self::Defocus { .. } => "Defocus",
             Self::ChannelDropout(_) => "ChannelDropout",
             Self::SquareSymmetry(_) => "SquareSymmetry",
+            Self::AnnotationArtifacts(_) => "AnnotationArtifacts",
             Self::Fda(_) => "FDA",
             Self::PixelDistributionAdaptation(_) => "PixelDistributionAdaptation",
             Self::HistogramMatching(_) => "HistogramMatching",
@@ -459,6 +461,7 @@ impl V2Config {
             Self::Defocus { .. } => 67,
             Self::ChannelDropout(_) => 111,
             Self::SquareSymmetry(_) => 122,
+            Self::AnnotationArtifacts(_) => 134,
             Self::Fda(_) => 137,
             Self::PixelDistributionAdaptation(_) => 136,
             Self::HistogramMatching(_) => 135,
@@ -520,6 +523,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::AnnotationArtifacts(config) => config.valid(),
             Self::Fda(config) => config.valid(),
             Self::PixelDistributionAdaptation(config) => config.valid(),
             Self::HistogramMatching(config) => config.valid(),
@@ -1637,6 +1641,12 @@ impl V2Config {
                     s.image = s.image.permute(&order)?;
                 }
                 s.image = super::quarter_turn(&s.image, axis, turns)?;
+            }
+            Self::AnnotationArtifacts(config) => {
+                if axis != ImageAxisOrder::Hwc {
+                    return Err(invalid_argument("AnnotationArtifacts requires HWC input"));
+                }
+                s.image = config.apply(&s.image, rng)?;
             }
             Self::Fda(config) => {
                 if axis != ImageAxisOrder::Hwc {

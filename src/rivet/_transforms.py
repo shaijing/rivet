@@ -554,6 +554,34 @@ class Transform:
             )
         )
 
+    def annotation_artifacts(
+        self,
+        element_types: Iterable[str] = ("text", "rectangle", "arrow", "line", "callout"),
+        element_probabilities: Iterable[float] | None = None,
+        *,
+        count_range: tuple[int, int] = (1, 3),
+        thickness_range: tuple[int, int] = (1, 3),
+        corner_prob: float = 0.6,
+        black_white_prob: float = 0.85,
+    ) -> Transform:
+        """Draw seeded synthetic markup on uint8 or normalized float32 HWC.
+
+        Elements include bitmap text, rectangles, arrows, guide lines, and
+        zoom callouts. Sampling uses image dimensions. Structured labels,
+        boxes, keypoints, and masks keep their original values.
+        """
+        types = list(element_types)
+        weights = (
+            [0.35, 0.2, 0.2, 0.15, 0.1]
+            if types == ["text", "rectangle", "arrow", "line", "callout"]
+            else [1.0] * len(types)
+        ) if element_probabilities is None else list(element_probabilities)
+        inner = self._inner.annotation_artifacts(
+            types, weights, count_range=count_range, thickness_range=thickness_range,
+            corner_prob=corner_prob, black_white_prob=black_white_prob,
+        )
+        return Transform(inner)
+
     def fda(
         self, references: Iterable[NDArray], beta_range: tuple[float, float] = (0, 0.1)
     ) -> Transform:

@@ -291,6 +291,18 @@ pub(crate) fn infer_image_op(
                 V2Config::RandomGridShuffle(_) => {
                     output.contiguity = Some(Contiguity::Unknown);
                 }
+                V2Config::AnnotationArtifacts(_) => {
+                    if !matches!(
+                        input_state,
+                        Decoded {
+                            axis_order: ImageAxisOrder::Hwc,
+                            ..
+                        }
+                    ) {
+                        return Err(invalid_pipeline("AnnotationArtifacts requires HWC input"));
+                    }
+                    output.contiguity = Some(Contiguity::Unknown);
+                }
                 V2Config::Fda(config) => {
                     if !matches!(
                         input_state,
