@@ -62,6 +62,24 @@ class Pipeline:
             self._inner.ten_crop(width, height, vertical_flip), as_numpy=self.as_numpy
         )
 
+    def random_scale(
+        self,
+        scale_range: tuple[float, float] | dict[str, tuple[float, float]] = (-0.1, 0.1),
+        interpolation: str = "bilinear",
+    ) -> Pipeline:
+        """Resize by 1 + a sampled adjustment. A tuple shares one draw across axes.
+
+        A dictionary with x and y ranges samples the axes independently.
+        Output axes are rounded down and kept at least one pixel.
+        """
+        if isinstance(scale_range, dict):
+            if set(scale_range) != {"x", "y"}:
+                raise ValueError("RandomScale requires both x and y ranges")
+            x, y = scale_range["x"], scale_range["y"]
+        else:
+            x, y = scale_range, None
+        return Pipeline(self._inner.random_scale(x, y, interpolation), as_numpy=self.as_numpy)
+
     def longest_max_size(
         self,
         max_size: int | Iterable[int] | None = None,

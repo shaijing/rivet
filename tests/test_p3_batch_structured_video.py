@@ -970,3 +970,15 @@ def test_longest_max_size_scales_structured_fields(annotated):
     np.testing.assert_array_equal(result["labels"], original["labels"])
     np.testing.assert_array_equal(result["keypoints"], original["keypoints"] / 2)
     np.testing.assert_array_equal(result["masks"], original["masks"][:, ::2, ::2])
+
+
+def test_random_scale_scales_image_and_structured_fields(annotated):
+    original = annotated.to_dict()
+    result = annotated.apply(
+        rivet.Transform().random_scale({"x": (-0.5, -0.5), "y": (0, 0)}, "nearest")
+    ).to_dict()
+    assert result["image"].shape == (10, 6, 3)
+    np.testing.assert_array_equal(result["boxes"], original["boxes"] * [0.5, 1, 0.5, 1])
+    np.testing.assert_array_equal(result["keypoints"], original["keypoints"] * [0.5, 1])
+    np.testing.assert_array_equal(result["labels"], original["labels"])
+    np.testing.assert_array_equal(result["masks"], original["masks"][:, :, ::2])

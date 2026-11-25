@@ -654,6 +654,14 @@ pub(super) fn apply(
                 Ok(s)
             }
         }
+        ImageOp::V2(V2Config::RandomScale {
+            range,
+            y,
+            interpolation,
+        }) => {
+            let (w, h) = crate::transforms::sample_scale(w, h, *range, *y, rng)?;
+            resize(s, w, h, *interpolation)
+        }
         ImageOp::V2(V2Config::LongestMaxSize(config)) => {
             let (w, h) = config.sample(w, h, rng)?;
             resize(s, w, h, config.interpolation)

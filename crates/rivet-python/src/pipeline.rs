@@ -240,6 +240,24 @@ impl PyTransform {
         }
     }
 
+    #[pyo3(signature = (range, y=None, interpolation="bilinear"))]
+    fn random_scale(
+        &self,
+        range: (f64, f64),
+        y: Option<(f64, f64)>,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        let config = V2Config::RandomScale {
+            range,
+            y,
+            interpolation: parse_interpolation(interpolation)?,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (max_size=None, *, max_size_hw=None, interpolation="bilinear"))]
     fn longest_max_size(
         &self,
@@ -2249,6 +2267,24 @@ impl PyImagePipeline {
         Self {
             inner: self.inner.clone().ten_crop(width, height, vertical_flip),
         }
+    }
+
+    #[pyo3(signature = (range, y=None, interpolation="bilinear"))]
+    fn random_scale(
+        &self,
+        range: (f64, f64),
+        y: Option<(f64, f64)>,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        let config = V2Config::RandomScale {
+            range,
+            y,
+            interpolation: parse_interpolation(interpolation)?,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
     }
 
     #[pyo3(signature = (max_size=None, *, max_size_hw=None, interpolation="bilinear"))]

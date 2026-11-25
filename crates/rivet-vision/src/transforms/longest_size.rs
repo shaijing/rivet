@@ -86,3 +86,25 @@ impl LongestMaxSizeConfig {
         self.dimensions(w, h, choice)
     }
 }
+
+pub(crate) fn sample_scale(
+    w: usize,
+    h: usize,
+    x: (f64, f64),
+    y: Option<(f64, f64)>,
+    rng: &mut RandomStream,
+) -> RivetResult<(u32, u32)> {
+    let mut sample = |(lo, hi)| (1.0 + lo) + rng.next_f64() * (hi - lo);
+    let sx = sample(x);
+    let sy = y.map_or(sx, sample);
+    let size = |length: usize, scale: f64| {
+        let out = (length as f64 * scale).floor();
+        if length == 0 || !out.is_finite() || out > u32::MAX as f64 {
+            return Err(invalid_argument(
+                "RandomScale output axis exceeds supported size",
+            ));
+        }
+        Ok(out.max(1.0) as u32)
+    };
+    Ok((size(w, sx)?, size(h, sy)?))
+}

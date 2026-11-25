@@ -180,6 +180,37 @@ impl<T> AlignedBufferBuilder<T> {
         Ok(())
     }
 
+    #[inline]
+    pub(crate) fn extend_exact(
+        &mut self,
+        mut values: impl ExactSizeIterator<Item = T>,
+    ) -> Result<()>
+    where
+        T: Copy,
+    {
+        let count = values.len();
+        let end = self
+            .initialized
+            .checked_add(count)
+            .ok_or(Error::StorageOutOfBounds)?;
+        if end > self.len {
+            return Err(Error::StorageOutOfBounds);
+        }
+        // SAFETY: the checked range is inside the allocation and spans only
+        // uninitialized slots. Copy values need no drop if iteration fails.
+        let slots = unsafe {
+            std::slice::from_raw_parts_mut(self.ptr.as_ptr().add(self.initialized), count)
+        };
+        for slot in slots {
+            slot.write(values.next().ok_or(Error::StorageOutOfBounds)?);
+        }
+        if values.next().is_some() {
+            return Err(Error::StorageOutOfBounds);
+        }
+        self.initialized = end;
+        Ok(())
+    }
+
     pub(crate) fn extend_from_slice(&mut self, values: &[T]) -> Result<()>
     where
         T: Copy,
@@ -331,6 +362,34 @@ mod tests {
         builder.write_next(1).unwrap();
         builder.extend_from_slice(&[2, 3, 4]).unwrap();
         assert_eq!(builder.remaining(), 0);
+        assert_eq!(builder.finish().unwrap().as_slice(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn exact_extension_rejects_incorrect_length_without_advancing() {
+        struct IncorrectLength(std::array::IntoIter<u8, 2>, usize);
+        impl Iterator for IncorrectLength {
+            type Item = u8;
+            fn next(&mut self) -> Option<u8> {
+                self.0.next()
+            }
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                (self.1, Some(self.1))
+            }
+        }
+        impl ExactSizeIterator for IncorrectLength {}
+
+        let mut builder = AlignedBufferBuilder::<u8>::new(4).unwrap();
+        builder.write_next(1).unwrap();
+        for reported in [1, 3, 4] {
+            assert!(
+                builder
+                    .extend_exact(IncorrectLength([8, 9].into_iter(), reported))
+                    .is_err()
+            );
+            assert_eq!(builder.remaining(), 3);
+        }
+        builder.extend_exact([2, 3, 4].into_iter()).unwrap();
         assert_eq!(builder.finish().unwrap().as_slice(), &[1, 2, 3, 4]);
     }
 

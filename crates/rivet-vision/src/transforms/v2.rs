@@ -248,6 +248,11 @@ pub enum V2Config {
         ratio: f64,
         fill: f32,
     },
+    RandomScale {
+        range: (f64, f64),
+        y: Option<(f64, f64)>,
+        interpolation: InterpolationMode,
+    },
     LongestMaxSize(LongestMaxSizeConfig),
     Jpeg {
         quality: (u8, u8),
@@ -321,6 +326,7 @@ impl V2Config {
             Self::Downscale { .. } => "Downscale",
             Self::SaltAndPepper { .. } => "SaltAndPepper",
             Self::GridDropout { .. } => "GridDropout",
+            Self::RandomScale { .. } => "RandomScale",
             Self::LongestMaxSize(_) => "LongestMaxSize",
             Self::Jpeg { .. } => "JPEG",
             Self::Rgb => "RGB",
@@ -389,6 +395,7 @@ impl V2Config {
             Self::Downscale { .. } => 61,
             Self::SaltAndPepper { .. } => 62,
             Self::GridDropout { .. } => 63,
+            Self::RandomScale { .. } => 119,
             Self::LongestMaxSize(_) => 118,
             Self::Jpeg { .. } => 57,
             Self::Rgb => 58,
@@ -416,6 +423,11 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::RandomScale { range, y, .. } => {
+                let valid = |(a, b): (f64, f64)| a > -1.0 && a <= b && b.is_finite();
+                valid(*range) && y.is_none_or(valid)
+            }
+
             Self::LongestMaxSize(config) => config.valid(),
             Self::XyMasking(config) => config.valid(),
             Self::ChannelDropout(config) => config.valid(),
@@ -1431,6 +1443,16 @@ impl V2Config {
                     *fill,
                     rng,
                 )?;
+            }
+            Self::RandomScale {
+                range,
+                y,
+                interpolation,
+            } => {
+                s = require_u8_hwc(s, self.name())?;
+                let (w, h) = super::sample_scale(w, h, *range, *y, rng)?;
+                return ResizeConfig::with_interpolation(w, h, *interpolation)
+                    .apply(ImageSample::Decoded(s));
             }
             Self::LongestMaxSize(config) => {
                 s = require_u8_hwc(s, self.name())?;

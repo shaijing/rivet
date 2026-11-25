@@ -124,6 +124,15 @@ impl<T> ExactOutput<T> {
         self.builder.extend_from_slice(values)
     }
 
+    /// Write a statically typed group of values after checking its capacity once.
+    #[inline]
+    pub fn extend_exact(&mut self, values: impl ExactSizeIterator<Item = T>) -> Result<()>
+    where
+        T: Copy,
+    {
+        self.builder.extend_exact(values)
+    }
+
     fn finish(self) -> Result<AlignedBuffer<T>> {
         self.builder.finish()
     }

@@ -273,6 +273,7 @@ pub(crate) fn infer_image_op(
             match config {
                 V2Config::RandomResize { .. }
                 | V2Config::RandomShortestSize { .. }
+                | V2Config::RandomScale { .. }
                 | V2Config::ScaleJitter { .. } => {
                     require_u8_hwc(input_state, op.name())?;
                     make_spatial_dynamic(&mut output);

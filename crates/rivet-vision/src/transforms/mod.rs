@@ -27,6 +27,7 @@ mod layout;
 mod letterbox;
 mod local_color;
 mod longest_size;
+pub(crate) use longest_size::sample_scale;
 pub use longest_size::{LongestMaxSizeConfig, LongestSizeLimit};
 mod multi_crop;
 mod noise;

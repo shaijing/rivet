@@ -2205,3 +2205,21 @@ def test_longest_max_size_bounds_and_worker_seed(source):
     for options in [{"max_size": []}, {"max_size_hw": (None, None)}, {"max_size": 0}]:
         with pytest.raises(ValueError):
             rivet.Transform().longest_max_size(**options)
+
+
+def test_random_scale_shared_and_independent_axes(source):
+    root, pixels = source
+    assert output(root, lambda p: p.random_scale((-.5, -.5)))[0].shape == (6, 9, 3)
+    axis = {"x": (-.5, -.5), "y": (.5, .5)}
+    assert output(root, lambda p: p.random_scale(axis))[0].shape == (18, 9, 3)
+    np.testing.assert_array_equal(output(root, lambda p: p.random_scale((0, 0)))[0], pixels)
+    assert output(root, lambda p: p.random_scale((-.999, -.999)))[0].shape == (1, 1, 3)
+    serial = output(root, lambda p: p.random_scale())
+    parallel = output(root, lambda p: p.random_scale(), transform=True, workers=3)
+    for image, other in zip(serial, parallel, strict=True):
+        np.testing.assert_array_equal(image, other)
+        assert image.dtype == np.uint8
+    with pytest.raises(ValueError):
+        rivet.Transform().random_scale((-1, 0))
+    with pytest.raises(ValueError):
+        rivet.Transform().random_scale({"x": (0, 0)})

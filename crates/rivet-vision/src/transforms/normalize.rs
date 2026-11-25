@@ -125,19 +125,24 @@ fn write_normalize_contiguous_nhwc_to_nchw(
     let spatial_size = height * width;
     let image_size = spatial_size * channels;
     if channels == 3 && image_size > 0 {
-        let table: [[f32; 256]; 3] = std::array::from_fn(|c| {
-            std::array::from_fn(|v| v as f32 * scale[c] + bias[c])
-        });
+        let table: [[f32; 256]; 3] =
+            std::array::from_fn(|c| std::array::from_fn(|v| v as f32 * scale[c] + bias[c]));
         for source in values.chunks_exact(image_size).take(batch) {
-            for pixel in source.chunks_exact(3) {
-                output.write_next(table[0][usize::from(pixel[0])])?;
-            }
-            for pixel in source.chunks_exact(3) {
-                output.write_next(table[1][usize::from(pixel[1])])?;
-            }
-            for pixel in source.chunks_exact(3) {
-                output.write_next(table[2][usize::from(pixel[2])])?;
-            }
+            output.extend_exact(
+                source
+                    .chunks_exact(3)
+                    .map(|pixel| table[0][usize::from(pixel[0])]),
+            )?;
+            output.extend_exact(
+                source
+                    .chunks_exact(3)
+                    .map(|pixel| table[1][usize::from(pixel[1])]),
+            )?;
+            output.extend_exact(
+                source
+                    .chunks_exact(3)
+                    .map(|pixel| table[2][usize::from(pixel[2])]),
+            )?;
         }
         return Ok(());
     }

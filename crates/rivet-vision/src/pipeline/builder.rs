@@ -721,6 +721,20 @@ impl ImagePipeline {
         self
     }
 
+    /// Sample a relative resize factor, with an optional independent Y range.
+    pub fn random_scale(
+        self,
+        range: (f64, f64),
+        y: Option<(f64, f64)>,
+        interpolation: crate::transforms::InterpolationMode,
+    ) -> Self {
+        self.v2(crate::transforms::V2Config::RandomScale {
+            range,
+            y,
+            interpolation,
+        })
+    }
+
     /// Resize proportionally to the longest side or explicit axis limits.
     pub fn longest_max_size(self, config: crate::transforms::LongestMaxSizeConfig) -> Self {
         self.v2(crate::transforms::V2Config::LongestMaxSize(config))
