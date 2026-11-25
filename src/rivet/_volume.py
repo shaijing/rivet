@@ -251,6 +251,23 @@ class VolumeSample:
         )
         return result
 
+    def motion_artifact(
+        self,
+        *,
+        num_events_range: tuple[int, int] = (2, 2),
+        rotate_range: tuple[float, float] = (-5.0, 5.0),
+        translate_percent_range: tuple[float, float] = (-0.02, 0.02),
+        axis: int = 2,
+        interpolation: str = "linear",
+        seed: int = 0,
+    ) -> VolumeSample:
+        """Reconstruct a volume from successive rigid poses along a DHW acquisition axis."""
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.motion_artifact(
+            num_events_range, rotate_range, translate_percent_range, axis, interpolation, seed,
+        )
+        return result
+
     def ghosting_artifact(
         self,
         num_ghosts_range: tuple[int, int] = (2, 4),

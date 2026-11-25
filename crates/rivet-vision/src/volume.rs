@@ -1153,3 +1153,6 @@ fn resized_crop_shape(
     // ranges where random log-shape proposals rarely fit.
     (round(adjust(longest, sampled_volume)), true)
 }
+
+mod motion;
+pub use motion::MotionArtifactConfig;

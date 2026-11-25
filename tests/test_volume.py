@@ -656,3 +656,52 @@ def test_random_resized_crop3d_aspect_bound():
             assert np.all(edges > 0)
             assert edges.max() / edges.min() <= 1.5
             assert tuple(out["volume"].shape) == (9, 9, 9)
+
+
+@pytest.mark.parametrize("axis", [0, 1, 2])
+def test_motion_artifact_centered_acquisition_and_annotations(axis):
+    shape = [5, 6, 7]
+    shape[axis] = 2
+    z, y, x = np.indices(shape)
+    grid = (0.1 + (x + 2 * y + 3 * z) / 50).astype(np.float32)
+    volume = np.stack([grid, grid * 0.5], axis=-1)
+    mask = ((z * shape[1] + y) * shape[2] + x).astype(np.int64) + 2**53
+    sample = VolumeSample(volume, mask=mask, keypoints=[[1, 1, 1]], label=83)
+    out = sample.motion_artifact(
+        num_events_range=(1, 1), axis=axis, rotate_range=(0, 0),
+        translate_percent_range=(1, 1),
+    ).to_dict()
+    # The second pose is entirely outside the acquisition grid. The two-plane
+    # axis keeps only the original Nyquist plane and replaces the DC plane.
+    spectrum = np.fft.fftn(volume, axes=(0, 1, 2))
+    dc = [slice(None)] * 4
+    dc[axis] = 0
+    spectrum[tuple(dc)] = 0
+    expected = np.abs(np.fft.ifftn(spectrum, axes=(0, 1, 2)))
+    np.testing.assert_allclose(out["volume"], expected, atol=1e-7)
+    np.testing.assert_array_equal(out["mask"], mask)
+    np.testing.assert_array_equal(out["keypoints"], [[1, 1, 1]])
+    assert out["label"] == 83
+
+
+def test_motion_artifact_uint8_seed_and_identity():
+    from concurrent.futures import ThreadPoolExecutor
+
+    image = np.random.default_rng(14).integers(0, 256, (5, 6, 7), dtype=np.uint8)
+    sample = VolumeSample(image)
+
+    def run(seed):
+        return sample.motion_artifact(
+            num_events_range=(1, 3), rotate_range=(-15, 15),
+            translate_percent_range=(-0.2, 0.2), seed=seed,
+        ).to_dict()["volume"]
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for seed, out in enumerate(pool.map(run, range(6))):
+            assert out.dtype == image.dtype and out.shape == image.shape
+            assert not np.array_equal(out, image)
+            np.testing.assert_array_equal(out, run(seed))
+    for kwargs in (dict(num_events_range=(0, 0)), dict(rotate_range=(0, 0), translate_percent_range=(0, 0))):
+        np.testing.assert_array_equal(sample.motion_artifact(**kwargs).to_dict()["volume"], image)
+    with pytest.raises(ValueError):
+        sample.motion_artifact(num_events_range=(7, 7))

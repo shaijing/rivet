@@ -645,6 +645,27 @@ fn normalize_u8_batch_to_nchw_f32_impl(
         // modulo per pixel is costly for the common padded-crop pipeline.
         let stride = layout.stride();
         Tensor::from_exact_writer::<f32, _, _>(dims, &device, |output| {
+            if *channels == 3 && stride[3] == 1 && stride[2] == 3 && *width > 0 {
+                let table: [[f32; 256]; 3] =
+                    std::array::from_fn(|c| std::array::from_fn(|v| v as f32 * scale[c] + bias[c]));
+                let row_len = *width * 3;
+                for n in 0..*batch {
+                    let batch_start = layout.start_offset() + n * stride[0];
+                    for (channel, table) in table.iter().enumerate() {
+                        for y in 0..*height {
+                            let start = batch_start + y * stride[1];
+                            let row = values
+                                .get(start..start + row_len)
+                                .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+                            output.extend_exact(
+                                row.chunks_exact(3)
+                                    .map(|rgb| table[usize::from(rgb[channel])]),
+                            )?;
+                        }
+                    }
+                }
+                return Ok(());
+            }
             for batch_index in 0..*batch {
                 let batch_offset = batch_index
                     .checked_mul(stride[0])
@@ -1016,5 +1037,26 @@ mod tests {
         {
             assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
         }
+    }
+    #[test]
+    fn fused_normalize_rgb_reads_cropped_rows_with_offsets() {
+        let base = Tensor::from_vec(
+            (0..180).map(|v| v as u8).collect(),
+            [2, 5, 6, 3],
+            &Device::Cpu,
+        )
+        .unwrap();
+        let input = base.narrow(1, 1, 3).unwrap().narrow(2, 2, 3).unwrap();
+        assert!(!input.is_contiguous());
+        let mean = [0.2, 0.3, 0.4];
+        let std = [0.1, 0.2, 0.3];
+        let expected =
+            normalize_u8_batch_to_nchw_f32(&input.contiguous().unwrap(), &mean, &std).unwrap();
+        let actual = normalize_u8_batch_to_nchw_f32(&input, &mean, &std).unwrap();
+        assert_eq!(actual.dims(), [2, 3, 3, 3]);
+        assert_eq!(
+            actual.to_vec::<f32>().unwrap(),
+            expected.to_vec::<f32>().unwrap()
+        );
     }
 }

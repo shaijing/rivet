@@ -327,6 +327,33 @@ impl PyVolumeSample {
         Ok(Self { inner })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn motion_artifact(
+        &self,
+        num_events_range: [usize; 2],
+        rotate_range: [f64; 2],
+        translate_percent_range: [f64; 2],
+        axis: usize,
+        interpolation: &str,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let (interpolation, _) = warp_modes(interpolation, "constant")?;
+        let mut rng = rivet_vision::RandomStream::from_seed(seed);
+        let config = rivet_vision::volume::MotionArtifactConfig {
+            num_events_range,
+            rotate_range,
+            translate_percent_range,
+            axis,
+            interpolation,
+        };
+        let inner = self
+            .inner
+            .clone()
+            .motion_artifact(config, &mut rng)
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
     fn ghosting_artifact(
         &self,
         num_ghosts_range: [usize; 2],
