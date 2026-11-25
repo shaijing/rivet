@@ -337,5 +337,27 @@ class VolumeSample:
         result._inner = self._inner.lambda_transform(volume, mask, keypoints, probability, seed)
         return result
 
+    def random_resized_crop3d(
+        self,
+        size: tuple[int, int, int],
+        *,
+        scale: tuple[float, float] = (0.08, 1.0),
+        ratio: float | None = 4 / 3,
+        interpolation: str = "linear",
+        sampling_method: str = "standard",
+        seed: int = 0,
+    ) -> VolumeSample:
+        """Sample a volume fraction and resize the resulting DHW window.
+
+        A numeric ratio bounds the longest crop edge relative to the shortest.
+        Use None to preserve the output proportions before integer rounding.
+        Masks use nearest-neighbor sampling.
+        """
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.random_resized_crop3d(
+            size, scale, ratio, interpolation, sampling_method, seed
+        )
+        return result
+
     def to_dict(self) -> dict[str, Any]:
         return self._inner.to_dict()

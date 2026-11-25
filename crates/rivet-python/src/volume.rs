@@ -2,8 +2,8 @@ use crate::{error::to_py_err, numpy::tensor_to_numpy, structured::tensor_from_nu
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 use rivet_vision::volume::{
     Affine3DConfig, Anisotropy3DConfig, CoarseDropout3DConfig, Crop3DConfig,
-    ElasticTransform3DConfig, Pad3DConfig, PadIfNeeded3DConfig, Resize3DConfig, VolumeBorder,
-    VolumeInterpolation, VolumeSample, volume_axis_mask,
+    ElasticTransform3DConfig, Pad3DConfig, PadIfNeeded3DConfig, RandomResizedCrop3DConfig,
+    Resize3DConfig, VolumeBorder, VolumeInterpolation, VolumeSample, volume_axis_mask,
 };
 
 #[pyclass(name = "_VolumeSample")]
@@ -33,15 +33,7 @@ impl PyVolumeSample {
 
     #[pyo3(signature=(size,interpolation="linear"))]
     fn resize3d(&self, size: [usize; 3], interpolation: &str) -> PyResult<Self> {
-        let interpolation = match interpolation {
-            "linear" | "trilinear" => VolumeInterpolation::Linear,
-            "nearest" => VolumeInterpolation::Nearest,
-            _ => {
-                return Err(PyValueError::new_err(
-                    "Resize3D interpolation must be linear or nearest",
-                ));
-            }
-        };
+        let interpolation = volume_interpolation(interpolation)?;
         let inner = self
             .inner
             .clone()
@@ -484,6 +476,47 @@ impl PyVolumeSample {
         Ok(Self { inner })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature=(size, scale, ratio, interpolation, sampling_method, seed))]
+    fn random_resized_crop3d(
+        &self,
+        size: [usize; 3],
+        scale: [f64; 2],
+        ratio: Option<f64>,
+        interpolation: &str,
+        sampling_method: &str,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let interpolation = volume_interpolation(interpolation)?;
+        let uniform_scale = match sampling_method {
+            "standard" => false,
+            "uniform_scale" => true,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "sampling_method must be standard or uniform_scale",
+                ));
+            }
+        };
+        let mut rng = rivet_vision::RandomStream::from_seed(seed);
+        let inner = self
+            .inner
+            .clone()
+            .random_resized_crop(
+                RandomResizedCrop3DConfig {
+                    resize: Resize3DConfig {
+                        size,
+                        interpolation,
+                    },
+                    scale,
+                    ratio,
+                    uniform_scale,
+                },
+                &mut rng,
+            )
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
         out.set_item("volume", tensor_to_numpy(py, self.inner.volume.clone())?)?;
@@ -583,4 +616,14 @@ pub(crate) fn stain_config(
     };
     config.validate().map_err(to_py_err)?;
     Ok(config)
+}
+
+fn volume_interpolation(value: &str) -> PyResult<VolumeInterpolation> {
+    match value {
+        "linear" | "trilinear" => Ok(VolumeInterpolation::Linear),
+        "nearest" => Ok(VolumeInterpolation::Nearest),
+        _ => Err(PyValueError::new_err(
+            "Resize3D interpolation must be linear or nearest",
+        )),
+    }
 }

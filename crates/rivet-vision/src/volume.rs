@@ -1056,3 +1056,100 @@ impl VolumeSample {
         Ok(self)
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct RandomResizedCrop3DConfig {
+    pub resize: Resize3DConfig,
+    pub scale: [f64; 2],
+    pub ratio: Option<f64>,
+    pub uniform_scale: bool,
+}
+
+impl VolumeSample {
+    pub fn random_resized_crop(
+        self,
+        config: RandomResizedCrop3DConfig,
+        rng: &mut rivet_data::random::RandomStream,
+    ) -> RivetResult<Self> {
+        self.validate()?;
+        let source = self.spatial_shape()?;
+        let [low, high] = config.scale;
+        if !(0.0..=1.0).contains(&low)
+            || !(low..=1.0).contains(&high)
+            || config.ratio.is_some_and(|v| !v.is_finite() || v < 1.0)
+            || config.resize.size.contains(&0)
+        {
+            return Err(invalid_argument(
+                "invalid RandomResizedCrop3D size, scale or ratio",
+            ));
+        }
+        let (size, random) = resized_crop_shape(source, config, rng);
+        let mut start = [0; 3];
+        for axis in 0..3 {
+            start[axis] = crop_offset(source[axis] - size[axis], random.then_some(&mut *rng))?;
+        }
+        self.crop_window(start, size)?.resize(config.resize)
+    }
+}
+
+fn resized_crop_shape(
+    source: [usize; 3],
+    config: RandomResizedCrop3DConfig,
+    rng: &mut rivet_data::random::RandomStream,
+) -> ([usize; 3], bool) {
+    let bounds = source.map(|v| v as f64);
+    let source_volume = bounds.iter().product::<f64>();
+    let [requested_low, requested_high] = config.scale.map(|s| s * source_volume);
+    let longest = match config.ratio {
+        Some(ratio) => {
+            let shortest = bounds.into_iter().fold(f64::INFINITY, f64::min);
+            bounds.map(|v| v.min(shortest * ratio))
+        }
+        None => {
+            let output = config.resize.size.map(|v| v as f64);
+            let scale = (0..3)
+                .map(|i| bounds[i] / output[i])
+                .fold(f64::INFINITY, f64::min);
+            output.map(|v| v * scale)
+        }
+    };
+    let round = |sides: [f64; 3]| {
+        let mut size = std::array::from_fn(|i| (sides[i].round() as usize).clamp(1, source[i]));
+        if let Some(ratio) = config.ratio {
+            let shortest = size.into_iter().min().unwrap();
+            let largest = (shortest as f64 * ratio) as usize;
+            size = size.map(|v| v.min(largest));
+        }
+        size
+    };
+    let max_volume = longest.iter().product::<f64>();
+    if requested_low > max_volume {
+        return (round(longest), false);
+    }
+    let high = requested_high.min(max_volume);
+    let sampled_volume = requested_low + (high - requested_low) * rng.next_f64();
+    let adjust = |edges: [f64; 3], volume: f64| {
+        let factor = (volume / edges.iter().product::<f64>()).cbrt();
+        edges.map(|v| v * factor)
+    };
+    if let Some(ratio) = config.ratio {
+        let spread = ratio.ln();
+        let attempts = if ratio == 1.0 { 0 } else { 32 };
+        for _ in 0..attempts {
+            let logs = bounds.map(|_| rng.next_f64() * spread);
+            let edges = logs.map(f64::exp);
+            let volume = if config.uniform_scale {
+                sampled_volume
+            } else {
+                requested_low + (requested_high - requested_low) * rng.next_f64()
+            };
+            let proposed = adjust(edges, volume);
+            if (0..3).all(|i| proposed[i] <= bounds[i]) {
+                return (round(proposed), true);
+            }
+        }
+    }
+    // A scaled maximum-volume box always fits. This also covers tight
+    // ranges where random log-shape proposals rarely fit.
+    (round(adjust(longest, sampled_volume)), true)
+}

@@ -595,3 +595,64 @@ def test_volume_lambda_shares_seed_and_preserves_sample_label():
     np.testing.assert_array_equal(out["keypoints"], out["volume"][0, 0, 0])
     np.testing.assert_array_equal(out["volume"], run()["volume"])
     assert out["label"] == 97
+
+
+@pytest.mark.parametrize("sampling_method", ["standard", "uniform_scale"])
+def test_random_resized_crop3d_shared_geometry(sampling_method):
+    from concurrent.futures import ThreadPoolExecutor
+
+    mask = np.arange(6 * 7 * 8, dtype=np.int64).reshape(6, 7, 8) + 2**53
+    volume = np.stack([mask - 2**53, 2 * (mask - 2**53)], axis=-1).astype(np.float32)
+    sample = VolumeSample(volume, mask=mask, keypoints=[[0, 0, 0]], label=31)
+    fraction = 27 / mask.size
+
+    def crop(seed):
+        return sample.random_resized_crop3d(
+            (6, 6, 6), scale=(fraction, fraction), ratio=1,
+            interpolation="nearest", sampling_method=sampling_method, seed=seed,
+        ).to_dict()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(crop, range(8)))
+    starts = set()
+    for seed, out in enumerate(results):
+        x, y, z = np.rint((0.5 - out["keypoints"][0]) / 2).astype(int)
+        starts.add((x, y, z))
+        expected = mask[z:z+3, y:y+3, x:x+3]
+        for axis in range(3):
+            expected = np.repeat(expected, 2, axis=axis)
+        np.testing.assert_array_equal(out["mask"], expected)
+        np.testing.assert_array_equal(out["volume"][..., 0], expected - 2**53)
+        np.testing.assert_array_equal(out["volume"][..., 1], 2 * (expected - 2**53))
+        np.testing.assert_array_equal(out["mask"], crop(seed)["mask"])
+        assert out["label"] == 31
+    assert len(starts) > 1
+
+
+def test_random_resized_crop3d_center_fallback_and_validation():
+    image = np.arange(24, dtype=np.uint8).reshape(2, 3, 4)
+    sample = VolumeSample(image, keypoints=[[1, 0, 0]])
+    out = sample.random_resized_crop3d((2, 2, 2), scale=(1, 1), ratio=1).to_dict()
+    np.testing.assert_array_equal(out["volume"], image[:, :2, 1:3])
+    np.testing.assert_array_equal(out["keypoints"], [[0, 0, 0]])
+    direct = sample.random_resized_crop3d((2, 3, 4), scale=(1, 1), ratio=None)
+    np.testing.assert_array_equal(direct.to_dict()["volume"], image)
+    for kwargs in ({"scale": (0.9, 0.2)}, {"ratio": float("inf")}, {"sampling_method": "invalid"}):
+        with pytest.raises(ValueError):
+            sample.random_resized_crop3d((2, 2, 2), **kwargs)
+
+
+def test_random_resized_crop3d_aspect_bound():
+    image = np.arange(5 * 8 * 13, dtype=np.float32).reshape(5, 8, 13)
+    # Differencing the transformed points recovers the crop dimensions,
+    # regardless of its random origin and interpolation.
+    sample = VolumeSample(image, keypoints=[[0, 0, 0], [1, 1, 1]])
+    for method in ("standard", "uniform_scale"):
+        for seed in range(8):
+            out = sample.random_resized_crop3d(
+                (9, 9, 9), scale=(0.12, 0.24), ratio=1.5, sampling_method=method, seed=seed,
+            ).to_dict()
+            edges = np.rint(9 / np.diff(out["keypoints"], axis=0)[0]).astype(int)
+            assert np.all(edges > 0)
+            assert edges.max() / edges.min() <= 1.5
+            assert tuple(out["volume"].shape) == (9, 9, 9)
