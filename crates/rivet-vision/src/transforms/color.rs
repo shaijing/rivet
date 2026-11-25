@@ -997,3 +997,61 @@ impl ColorizeConfig {
         })?)
     }
 }
+
+pub(super) fn exposure_matching(
+    input: &Tensor,
+    target: f64,
+    gain_range: Option<(f64, f64)>,
+) -> RivetResult<Tensor> {
+    use rivet_core::CpuStorageRef;
+    if !matches!(input.dims(), [h, w, c] if *h > 0 && *w > 0 && *c > 0)
+        || !matches!(input.dtype(), DType::U8 | DType::F32)
+    {
+        return Err(invalid_argument(
+            "ExposureMatching requires nonempty uint8 or float32 HWC input",
+        ));
+    }
+    let gain = |mean: f64| {
+        let ratio = target / mean;
+        gain_range.map_or(ratio, |(lo, hi)| ratio.clamp(lo, hi))
+    };
+    let input = input.contiguous()?;
+    Ok(input.with_cpu_storage(|storage, layout| match storage {
+        CpuStorageRef::U8(values) => {
+            let pixels = super::contiguous_values(values, layout)?;
+            let sum: u64 = pixels.iter().map(|&v| u64::from(v)).sum();
+            if sum == 0 {
+                return Ok(input.clone());
+            }
+            let gain = gain((sum as f64 / pixels.len() as f64) / 255.0);
+            if gain == 1.0 {
+                return Ok(input.clone());
+            }
+            let lut: [u8; 256] = std::array::from_fn(|v| (v as f64 * gain).round() as u8);
+            Tensor::from_exact_iter(
+                pixels.iter().map(|&v| lut[v as usize]),
+                input.dims(),
+                input.device(),
+            )
+        }
+        CpuStorageRef::F32(values) => {
+            let pixels = super::contiguous_values(values, layout)?;
+            let sum = pixels.iter().map(|&v| f64::from(v)).sum::<f64>();
+            if sum <= 0.0 {
+                return Ok(input.clone());
+            }
+            let gain = gain(sum / pixels.len() as f64);
+            if gain == 1.0 {
+                return Ok(input.clone());
+            }
+            Tensor::from_exact_iter(
+                pixels
+                    .iter()
+                    .map(|&v| (f64::from(v) * gain).clamp(0.0, 1.0) as f32),
+                input.dims(),
+                input.device(),
+            )
+        }
+        _ => unreachable!(),
+    })?)
+}

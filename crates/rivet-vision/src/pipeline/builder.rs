@@ -176,6 +176,18 @@ impl ImagePipeline {
         ))
     }
 
+    /// Match each image to a seeded normalized target mean.
+    pub fn exposure_matching(
+        self,
+        target_mean_range: (f64, f64),
+        gain_range: Option<(f64, f64)>,
+    ) -> Self {
+        self.v2(crate::transforms::V2Config::ExposureMatching {
+            target_mean_range,
+            gain_range,
+        })
+    }
+
     /// Add seeded covariance-weighted principal component offsets.
     pub fn fancy_pca(self, alpha: f64) -> Self {
         self.v2(crate::transforms::V2Config::FancyPca { alpha })

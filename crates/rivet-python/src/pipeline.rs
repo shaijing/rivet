@@ -1077,6 +1077,22 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (target_mean_range=(0.3, 0.5), gain_range=None))]
+    fn exposure_matching(
+        &self,
+        target_mean_range: (f64, f64),
+        gain_range: Option<(f64, f64)>,
+    ) -> PyResult<Self> {
+        let config = V2Config::ExposureMatching {
+            target_mean_range,
+            gain_range,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (alpha=0.1))]
     fn fancy_pca(&self, alpha: f64) -> PyResult<Self> {
         let config = V2Config::FancyPca { alpha };
@@ -2888,6 +2904,22 @@ impl PyImagePipeline {
             sat_shift_range,
             val_shift_range,
         ]));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (target_mean_range=(0.3, 0.5), gain_range=None))]
+    fn exposure_matching(
+        &self,
+        target_mean_range: (f64, f64),
+        gain_range: Option<(f64, f64)>,
+    ) -> PyResult<Self> {
+        let config = V2Config::ExposureMatching {
+            target_mean_range,
+            gain_range,
+        };
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

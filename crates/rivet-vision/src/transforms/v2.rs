@@ -109,6 +109,10 @@ pub enum V2Config {
     },
     RandomSunFlare(std::sync::Arc<RandomSunFlareConfig>),
     HueSaturationValue(std::sync::Arc<[(f64, f64); 3]>),
+    ExposureMatching {
+        target_mean_range: (f64, f64),
+        gain_range: Option<(f64, f64)>,
+    },
     FancyPca {
         alpha: f64,
     },
@@ -251,6 +255,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::RandomSunFlare(_) => "RandomSunFlare",
             Self::HueSaturationValue(_) => "HueSaturationValue",
+            Self::ExposureMatching { .. } => "ExposureMatching",
             Self::FancyPca { .. } => "FancyPCA",
             Self::Colorize(_) => "Colorize",
             Self::ToSepia { .. } => "ToSepia",
@@ -309,6 +314,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => 82,
             Self::RandomSunFlare(_) => 88,
             Self::HueSaturationValue(_) => 99,
+            Self::ExposureMatching { .. } => 103,
             Self::FancyPca { .. } => 102,
             Self::Colorize(_) => 101,
             Self::ToSepia { .. } => 100,
@@ -365,6 +371,15 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::ExposureMatching {
+                target_mean_range: (lo, hi),
+                gain_range,
+            } => {
+                *lo >= 0.0
+                    && lo <= hi
+                    && *hi <= 1.0
+                    && gain_range.is_none_or(|(lo, hi)| lo >= 0.0 && lo <= hi && hi.is_finite())
+            }
             Self::FancyPca { alpha } => alpha.is_finite() && *alpha >= 0.0,
             Self::Colorize(config) => config.valid(),
             Self::ToSepia { alpha } => (0.0..=1.0).contains(alpha),
@@ -861,6 +876,7 @@ impl V2Config {
             | Self::MultiplicativeNoise { .. }
             | Self::RandomSunFlare(_)
             | Self::HueSaturationValue(_)
+            | Self::ExposureMatching { .. }
             | Self::FancyPca { .. }
             | Self::Colorize(_)
             | Self::ToSepia { .. }
@@ -1089,6 +1105,13 @@ impl V2Config {
             Self::HueSaturationValue(ranges) => {
                 let shifts = ranges.map(|(lo, hi)| lo + rng.next_f64() * (hi - lo));
                 s.image = super::color::hue_saturation_value(&s.image, shifts)?;
+            }
+            Self::ExposureMatching {
+                target_mean_range: (lo, hi),
+                gain_range,
+            } => {
+                let target = lo + rng.next_f64() * (hi - lo);
+                s.image = super::color::exposure_matching(&s.image, target, *gain_range)?;
             }
             Self::FancyPca { alpha } => {
                 s.image = super::pca::fancy_pca(&s.image, *alpha, rng)?;

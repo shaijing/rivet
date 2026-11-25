@@ -643,6 +643,20 @@ class Transform:
         )
         return Transform(inner)
 
+    def exposure_matching(
+        self,
+        target_mean_range: tuple[float, float] = (0.3, 0.5),
+        gain_range: tuple[float, float] | None = None,
+    ) -> Transform:
+        """Match each uint8 or normalized float32 HWC image to a sampled mean.
+
+        The gain is the target divided by the mean of all image channels
+        and pixels. Optional gain bounds limit the adjustment. Black images
+        stay black, and clipping can prevent reaching the target exactly.
+        """
+        inner = self._inner.exposure_matching(target_mean_range, gain_range)
+        return Transform(inner)
+
     def fancy_pca(self, alpha: float = 0.1) -> Transform:
         """Add seeded covariance-weighted color offsets to uint8 or float32 HWC.
 

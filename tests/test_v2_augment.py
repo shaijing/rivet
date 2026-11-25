@@ -1852,3 +1852,46 @@ def test_fancy_pca_seed_identity_and_validation(source):
         output(root, lambda p: p.hwc_to_chw().fancy_pca())
     with pytest.raises(ValueError):
         rivet.Transform().fancy_pca(-1)
+
+
+def test_exposure_matching_per_image_mean_and_gain_bounds(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    for i, value in enumerate([0, 32, 64, 192]):
+        Image.fromarray(np.full((7, 9, 3), value, dtype=np.uint8)).save(folder / f"{i}.png")
+
+    def augment(p):
+        return p.exposure_matching((0.5, 0.5))
+
+    serial = output(tmp_path, augment)
+    np.testing.assert_array_equal(serial, output(tmp_path, augment, transform=True, workers=3))
+    assert serial[0].dtype == np.uint8 and serial[0].shape == (7, 9, 3)
+    for image, expected in zip(serial, [0, 128, 128, 128]):
+        np.testing.assert_allclose(image, expected, atol=1)
+    pipeline = rivet.scan_image_folder(tmp_path).decode_image().seed(712).exposure_matching((0.5, 0.5))
+    batch = next(iter(pipeline.batch(4).execute()))["images"]
+    np.testing.assert_array_equal(batch, serial)
+    bounds = output(tmp_path, lambda p: p.exposure_matching((0.5, 0.5), (0.75, 2)))
+    for image, expected in zip(bounds, [0, 64, 128, 144]):
+        np.testing.assert_allclose(image, expected, atol=1)
+    floats = output(
+        tmp_path, lambda p: augment(p.grayscale().to_dtype("float32", True))
+    )
+    assert floats[1].dtype == np.float32 and floats[1].shape[-1] == 1
+    np.testing.assert_allclose(floats[1:], 0.5, atol=1e-7)
+
+
+def test_exposure_matching_seed_and_clipping(source):
+    root, pixels = source
+    serial = output(root, lambda p: p.exposure_matching())
+    np.testing.assert_array_equal(
+        serial, output(root, lambda p: p.exposure_matching(), workers=3)
+    )
+    assert not np.array_equal(serial, output(root, lambda p: p.exposure_matching(), epoch=1))
+    clipped = output(root, lambda p: p.exposure_matching((1, 1)))[0]
+    ratio = 255 / pixels.mean()
+    np.testing.assert_allclose(clipped, (pixels * ratio).clip(0, 255), atol=0.5)
+    with pytest.raises(ValueError, match="ExposureMatching"):
+        output(root, lambda p: p.hwc_to_chw().exposure_matching())
+    with pytest.raises(ValueError):
+        rivet.Transform().exposure_matching(gain_range=(2, 1))
