@@ -791,3 +791,90 @@ pub(super) fn random_brightness_contrast(
         _ => unreachable!(),
     })?)
 }
+
+pub(super) fn hue_saturation_value(input: &Tensor, shifts: [f64; 3]) -> RivetResult<Tensor> {
+    use rivet_core::CpuStorageRef;
+
+    let [h, w, channels] = *input.dims() else {
+        return Err(invalid_argument(
+            "HueSaturationValue expects rank-3 HWC input",
+        ));
+    };
+    if h == 0
+        || w == 0
+        || !matches!(channels, 1 | 3)
+        || !matches!(input.dtype(), DType::U8 | DType::F32)
+    {
+        return Err(invalid_argument(
+            "HueSaturationValue requires nonempty uint8 or float32 HWC grayscale or RGB input",
+        ));
+    }
+    if shifts == [0.0; 3] || (channels == 1 && shifts[2] == 0.0) {
+        return Ok(input.clone());
+    }
+    let [hue, saturation, value] = shifts;
+    let shift_rgb = |[r, g, b]: [f64; 3]| {
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let chroma = max - min;
+        let h = if chroma == 0.0 {
+            0.0
+        } else if max == r {
+            (g - b) / chroma
+        } else if max == g {
+            2.0 + (b - r) / chroma
+        } else {
+            4.0 + (r - g) / chroma
+        };
+        let s = if max == 0.0 { 0.0 } else { chroma / max };
+        let h = (h + hue / 60.0).rem_euclid(6.0);
+        let v = (max + value / 255.0).clamp(0.0, 1.0);
+        let c = v * (s + saturation / 255.0).clamp(0.0, 1.0);
+        let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+        let rgb = match h as u32 {
+            0 => [c, x, 0.0],
+            1 => [x, c, 0.0],
+            2 => [0.0, c, x],
+            3 => [0.0, x, c],
+            4 => [x, 0.0, c],
+            _ => [c, 0.0, x],
+        };
+        rgb.map(|v0| v0 + (v - c))
+    };
+    let input = input.contiguous()?;
+    Ok(input.with_cpu_storage(|storage, layout| {
+        macro_rules! write_hsv {
+            ($values:expr, $normalizer:expr, $finish:expr) => {{
+                let pixels = super::contiguous_values($values, layout)?;
+                let finish = $finish;
+                if channels == 1 {
+                    Tensor::from_exact_iter(
+                        pixels.iter().map(|&v| {
+                            finish((f64::from(v) * $normalizer + value / 255.0).clamp(0.0, 1.0))
+                        }),
+                        input.dims(),
+                        input.device(),
+                    )
+                } else {
+                    Tensor::from_exact_writer(input.dims(), input.device(), |out| {
+                        for p in pixels.chunks_exact(3) {
+                            let rgb = [p[0], p[1], p[2]]
+                                .map(|v| (f64::from(v) * $normalizer).clamp(0.0, 1.0));
+                            for v in shift_rgb(rgb) {
+                                out.write_next(finish(v))?;
+                            }
+                        }
+                        Ok(())
+                    })
+                }
+            }};
+        }
+        match storage {
+            CpuStorageRef::U8(values) => {
+                write_hsv!(values, 1.0 / 255.0, |v: f64| (v * 255.0).round() as u8)
+            }
+            CpuStorageRef::F32(values) => write_hsv!(values, 1.0, |v| v as f32),
+            _ => unreachable!(),
+        }
+    })?)
+}

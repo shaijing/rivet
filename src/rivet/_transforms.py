@@ -627,6 +627,22 @@ class Transform:
         )
         return Transform(inner)
 
+    def hue_saturation_value(
+        self,
+        hue_shift_range: tuple[float, float] = (-20, 20),
+        sat_shift_range: tuple[float, float] = (-30, 30),
+        val_shift_range: tuple[float, float] = (-20, 20),
+    ) -> Transform:
+        """Sample HSV offsets per uint8 or normalized float32 HWC image.
+
+        Hue wraps in degrees. Saturation and value use 8-bit units and
+        are clipped after adjustment. Grayscale uses the value offset alone.
+        """
+        inner = self._inner.hue_saturation_value(
+            hue_shift_range, sat_shift_range, val_shift_range
+        )
+        return Transform(inner)
+
     def rgb_shift(
         self,
         r_shift_range: tuple[float, float] = (-20, 20),

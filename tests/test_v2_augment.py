@@ -1705,3 +1705,43 @@ def test_random_brightness_contrast_order_seed_and_safe_output(source):
     )
     with pytest.raises(ValueError, match="RandomBrightnessContrast"):
         output(root, lambda p: p.hwc_to_chw().random_brightness_contrast())
+
+
+def test_hue_saturation_value_units_and_bounds(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    rgb = np.array([[[255, 0, 0], [0, 255, 0], [0, 0, 255]]], dtype=np.uint8)
+    Image.fromarray(rgb).save(folder / "image.png")
+
+    def augment(p):
+        return p.hue_saturation_value((120, 120), (0, 0), (-55, -55))
+
+    expected = np.array([[[0, 200, 0], [0, 0, 200], [200, 0, 0]]])
+    actual = output(tmp_path, augment, transform=True, workers=2)[0]
+    assert actual.shape == rgb.shape and actual.dtype == np.uint8
+    np.testing.assert_array_equal(actual, expected)
+    floats = output(tmp_path, lambda p: augment(p.to_dtype("float32", True)))[0]
+    assert floats.dtype == np.float32
+    np.testing.assert_allclose(floats * 255, expected, atol=1e-5)
+    gray = output(tmp_path, lambda p: augment(p.grayscale()))[0]
+    base = output(tmp_path, lambda p: p.grayscale())[0]
+    np.testing.assert_array_equal(gray, (base.astype(int) - 55).clip(0, 255))
+    desaturated = output(
+        tmp_path, lambda p: p.hue_saturation_value((0, 0), (-255, -255), (0, 0))
+    )[0]
+    np.testing.assert_array_equal(desaturated, 255)
+
+
+def test_hue_saturation_value_seed_and_validation(source):
+    root, pixels = source
+    serial = output(root, lambda p: p.hue_saturation_value())
+    np.testing.assert_array_equal(
+        serial, output(root, lambda p: p.hue_saturation_value(), transform=True, workers=3)
+    )
+    assert not np.array_equal(serial, output(root, lambda p: p.hue_saturation_value(), epoch=1))
+    fixed = output(root, lambda p: p.hue_saturation_value((0, 0), (0, 0), (0, 0)))[0]
+    np.testing.assert_array_equal(fixed, pixels)
+    with pytest.raises(ValueError, match="HueSaturationValue"):
+        output(root, lambda p: p.hwc_to_chw().hue_saturation_value())
+    with pytest.raises(ValueError):
+        rivet.Transform().hue_saturation_value(hue_shift_range=(-181, 0))

@@ -1059,6 +1059,24 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (hue_shift_range=(-20.0, 20.0), sat_shift_range=(-30.0, 30.0), val_shift_range=(-20.0, 20.0)))]
+    fn hue_saturation_value(
+        &self,
+        hue_shift_range: (f64, f64),
+        sat_shift_range: (f64, f64),
+        val_shift_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let config = V2Config::HueSaturationValue(std::sync::Arc::new([
+            hue_shift_range,
+            sat_shift_range,
+            val_shift_range,
+        ]));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (r_shift_range=(-20.0, 20.0), g_shift_range=(-20.0, 20.0), b_shift_range=(-20.0, 20.0)))]
     fn rgb_shift(
         &self,
@@ -2813,6 +2831,24 @@ impl PyImagePipeline {
             brightness_by_max,
             ensure_safe_output,
         };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (hue_shift_range=(-20.0, 20.0), sat_shift_range=(-30.0, 30.0), val_shift_range=(-20.0, 20.0)))]
+    fn hue_saturation_value(
+        &self,
+        hue_shift_range: (f64, f64),
+        sat_shift_range: (f64, f64),
+        val_shift_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let config = V2Config::HueSaturationValue(std::sync::Arc::new([
+            hue_shift_range,
+            sat_shift_range,
+            val_shift_range,
+        ]));
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

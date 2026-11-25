@@ -169,6 +169,13 @@ impl ImagePipeline {
         })
     }
 
+    /// Sample HSV shifts in degrees and 8-bit saturation/value units.
+    pub fn hue_saturation_value(self, ranges: [(f64, f64); 3]) -> Self {
+        self.v2(crate::transforms::V2Config::HueSaturationValue(
+            std::sync::Arc::new(ranges),
+        ))
+    }
+
     /// Add independent seeded RGB offsets in 8-bit intensity units.
     pub fn rgb_shift(self, ranges: [(f64, f64); 3]) -> Self {
         self.v2(crate::transforms::V2Config::RgbShift(std::sync::Arc::new(

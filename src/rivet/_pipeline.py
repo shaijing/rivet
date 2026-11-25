@@ -737,6 +737,22 @@ class Pipeline:
         )
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def hue_saturation_value(
+        self,
+        hue_shift_range: tuple[float, float] = (-20, 20),
+        sat_shift_range: tuple[float, float] = (-30, 30),
+        val_shift_range: tuple[float, float] = (-20, 20),
+    ) -> Pipeline:
+        """Sample HSV offsets per uint8 or normalized float32 HWC image.
+
+        Hue wraps in degrees. Saturation and value use 8-bit units and
+        are clipped after adjustment. Grayscale uses the value offset alone.
+        """
+        inner = self._inner.hue_saturation_value(
+            hue_shift_range, sat_shift_range, val_shift_range
+        )
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def rgb_shift(
         self,
         r_shift_range: tuple[float, float] = (-20, 20),
