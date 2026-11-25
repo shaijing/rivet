@@ -916,14 +916,16 @@ impl PyTransform {
         beta_range: (f64, f64),
         noise_range: (f64, f64),
     ) -> PyResult<Self> {
-        let config = V2Config::AdvancedBlur {
-            kernel_range,
-            sigma_x_range,
-            sigma_y_range,
-            rotate_range,
-            beta_range,
-            noise_range,
-        };
+        let config = V2Config::AdvancedBlur(std::sync::Arc::new(
+            rivet_vision::transforms::AdvancedBlurConfig {
+                kernel_range,
+                sigma_x_range,
+                sigma_y_range,
+                rotate_range,
+                beta_range,
+                noise_range,
+            },
+        ));
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),
@@ -2156,14 +2158,16 @@ impl PyImagePipeline {
         beta_range: (f64, f64),
         noise_range: (f64, f64),
     ) -> PyResult<Self> {
-        let config = V2Config::AdvancedBlur {
-            kernel_range,
-            sigma_x_range,
-            sigma_y_range,
-            rotate_range,
-            beta_range,
-            noise_range,
-        };
+        let config = V2Config::AdvancedBlur(std::sync::Arc::new(
+            rivet_vision::transforms::AdvancedBlurConfig {
+                kernel_range,
+                sigma_x_range,
+                sigma_y_range,
+                rotate_range,
+                beta_range,
+                noise_range,
+            },
+        ));
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

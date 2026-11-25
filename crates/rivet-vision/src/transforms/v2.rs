@@ -2,6 +2,16 @@ use super::*;
 use crate::sample::image::{ImageAxisOrder, ImageSample};
 use rivet_data::random::RandomStream;
 #[derive(Clone, Debug, PartialEq)]
+pub struct AdvancedBlurConfig {
+    pub kernel_range: (u32, u32),
+    pub sigma_x_range: (f64, f64),
+    pub sigma_y_range: (f64, f64),
+    pub rotate_range: (f64, f64),
+    pub beta_range: (f64, f64),
+    pub noise_range: (f64, f64),
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum V2Config {
     PermuteChannels(Vec<usize>),
     RandomChannelPermutation {
@@ -50,14 +60,7 @@ pub enum V2Config {
         grid: (u32, u32),
         clip_limit: f64,
     },
-    AdvancedBlur {
-        kernel_range: (u32, u32),
-        sigma_x_range: (f64, f64),
-        sigma_y_range: (f64, f64),
-        rotate_range: (f64, f64),
-        beta_range: (f64, f64),
-        noise_range: (f64, f64),
-    },
+    AdvancedBlur(std::sync::Arc<AdvancedBlurConfig>),
     Blur {
         kernel_range: (u32, u32),
     },
@@ -130,7 +133,7 @@ impl V2Config {
             Self::ShotNoise { .. } => "ShotNoise",
             Self::RandomToneCurve { .. } => "RandomToneCurve",
             Self::Clahe { .. } => "CLAHE",
-            Self::AdvancedBlur { .. } => "AdvancedBlur",
+            Self::AdvancedBlur(_) => "AdvancedBlur",
             Self::Blur { .. } => "Blur",
             Self::MedianBlur => "MedianBlur",
             Self::PlanckianJitter { .. } => "PlanckianJitter",
@@ -162,7 +165,7 @@ impl V2Config {
             Self::ShotNoise { .. } => 60,
             Self::RandomToneCurve { .. } => 69,
             Self::Clahe { .. } => 70,
-            Self::AdvancedBlur { .. } => 76,
+            Self::AdvancedBlur(_) => 76,
             Self::Blur { .. } => 75,
             Self::MedianBlur => 74,
             Self::PlanckianJitter { .. } => 73,
@@ -195,14 +198,15 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
-            Self::AdvancedBlur {
-                kernel_range,
-                sigma_x_range,
-                sigma_y_range,
-                rotate_range,
-                beta_range,
-                noise_range,
-            } => {
+            Self::AdvancedBlur(config) => {
+                let AdvancedBlurConfig {
+                    kernel_range,
+                    sigma_x_range,
+                    sigma_y_range,
+                    rotate_range,
+                    beta_range,
+                    noise_range,
+                } = config.as_ref();
                 let positive =
                     |&(low, high): &(f64, f64)| low > 0.0 && low <= high && high.is_finite();
                 Self::Blur {
@@ -562,7 +566,7 @@ impl V2Config {
             }
             Self::RandomToneCurve { .. }
             | Self::Clahe { .. }
-            | Self::AdvancedBlur { .. }
+            | Self::AdvancedBlur(_)
             | Self::Blur { .. }
             | Self::MedianBlur
             | Self::PlanckianJitter { .. }
@@ -582,14 +586,15 @@ impl V2Config {
                     low + 2 * rng.gen_range_usize(0..((high - low) / 2 + 1) as usize)? as u32;
                 s.image = super::blur::box_blur(&s.image, size as usize)?;
             }
-            Self::AdvancedBlur {
-                kernel_range,
-                sigma_x_range,
-                sigma_y_range,
-                rotate_range,
-                beta_range,
-                noise_range,
-            } => {
+            Self::AdvancedBlur(config) => {
+                let AdvancedBlurConfig {
+                    kernel_range,
+                    sigma_x_range,
+                    sigma_y_range,
+                    rotate_range,
+                    beta_range,
+                    noise_range,
+                } = config.as_ref();
                 let (low, high) = kernel_range;
                 let size =
                     low + 2 * rng.gen_range_usize(0..((high - low) / 2 + 1) as usize)? as u32;

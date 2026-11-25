@@ -268,7 +268,7 @@ mod tests {
 }
 
 mod v2;
-pub use v2::V2Config;
+pub use v2::{AdvancedBlurConfig, V2Config};
 
 mod v2_jpeg;
 mod v2_numeric;

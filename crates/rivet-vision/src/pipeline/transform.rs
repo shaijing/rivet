@@ -69,14 +69,16 @@ impl TransformSequence {
         beta_range: (f64, f64),
         noise_range: (f64, f64),
     ) -> Self {
-        self.v2(crate::transforms::V2Config::AdvancedBlur {
-            kernel_range,
-            sigma_x_range,
-            sigma_y_range,
-            rotate_range,
-            beta_range,
-            noise_range,
-        })
+        self.v2(crate::transforms::V2Config::AdvancedBlur(
+            std::sync::Arc::new(crate::transforms::AdvancedBlurConfig {
+                kernel_range,
+                sigma_x_range,
+                sigma_y_range,
+                rotate_range,
+                beta_range,
+                noise_range,
+            }),
+        ))
     }
 
     /// Apply a box filter with a seeded odd kernel width.

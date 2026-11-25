@@ -306,7 +306,7 @@ pub(crate) fn infer_image_op(
                         ShapeDim::Known(config.width as usize),
                     );
                 }
-                V2Config::Blur { .. } | V2Config::AdvancedBlur { .. } => {
+                V2Config::Blur { .. } | V2Config::AdvancedBlur(_) => {
                     if !matches!(
                         input_state,
                         PipelineImageState::Decoded {
