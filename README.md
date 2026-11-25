@@ -20,7 +20,7 @@ inputs and image branch joins, while retaining the CPU linear fast path.
 ## Downloading datasets
 
 `rivet.download_dataset()` returns a local `Path` for a Hugging Face dataset
-repository, Git checkout, HTTP(S) file, or extracted HTTP(S) archive.
+repository, Git checkout, HTTP(S) file or archive, or a torchvision dataset root.
 
 ```python
 import rivet
@@ -51,6 +51,29 @@ contents contain a Lance dataset or split bundle. It recognizes
 `*.lance` splits. Existing local Lance paths work with the same API. For
 other formats, use the path returned by `download_dataset()` with the reader
 for that format.
+
+### Download torchvision datasets
+
+With torchvision installed, use `torch:<class-name>` to download original
+dataset files. For supported image classification datasets such as CIFAR-10,
+Rivet can convert those files into native Lance splits and open them directly.
+
+```python
+import rivet
+
+train = rivet.load_dataset("torch:CIFAR10", split="train")
+bundle = rivet.download_dataset("torch:CIFAR10", format="lance", offline=True)
+```
+
+Rivet retains raw files under `$XDG_CACHE_HOME/rivet/datasets/torch` and
+writes converted splits under `derived/lance/<dataset>` in the same cache.
+Rust losslessly encodes the pixels and preserves the original class IDs,
+class names when available, and sample order. `offline=True` reuses a
+completed conversion or converts an existing raw download. The default
+`format="raw"` returns the original files when needed. Names are
+case-insensitive and query options select constructor arguments, for
+example `torch:CIFAR10?split=test`. Classes with a boolean `train`
+argument use both splits unless a split is specified.
 
 ### Convert downloads to Lance
 

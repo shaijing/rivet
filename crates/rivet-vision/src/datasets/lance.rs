@@ -4,6 +4,7 @@ mod imagefolder_convert;
 mod loader;
 mod row;
 mod schema;
+mod torch_convert;
 
 pub use convert::{
     DEFAULT_MAX_BYTES_PER_FILE, DEFAULT_MAX_ROWS_PER_FILE, HuggingFaceLanceOptions,
@@ -15,6 +16,7 @@ pub use imagefolder_convert::convert_imagefolder_dataset;
 pub use loader::load_lance_image_dataset;
 #[cfg(test)]
 pub(super) use schema::validate_schema;
+pub use torch_convert::{TorchImageSplit, convert_torch_images};
 
 #[cfg(test)]
 mod tests {

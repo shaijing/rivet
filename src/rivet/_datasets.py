@@ -304,7 +304,9 @@ def _downloaded_lance_root(payload: Path) -> Path:
             dirs.clear()
 
     if len(candidates) != 1:
-        reason = "no Lance dataset" if not candidates else "multiple Lance dataset roots"
+        reason = (
+            "no Lance dataset" if not candidates else "multiple Lance dataset roots"
+        )
         raise ValueError(f"downloaded source contains {reason}; inspect {payload}")
 
     root = candidates[0]
@@ -343,10 +345,15 @@ def load_dataset(
     """
     _, lance_dataset_dict, load_lance_split = _require_lance()
     if _is_remote(path):
+        is_torch = str(path).startswith("torch:")
         payload = download_dataset(
-            str(path), revision=revision, cache_dir=cache_dir, offline=offline
+            str(path),
+            revision=revision,
+            cache_dir=cache_dir,
+            offline=offline,
+            format="lance" if is_torch else "raw",
         )
-        path = _downloaded_lance_root(payload)
+        path = payload if is_torch else _downloaded_lance_root(payload)
     else:
         if revision is not None:
             raise ValueError("revision requires a remote dataset source")

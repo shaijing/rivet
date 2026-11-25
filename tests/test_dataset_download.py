@@ -194,3 +194,82 @@ def test_download_lance_merges_selected_shards(monkeypatch, tmp_path: Path) -> N
         {"value": 1.0, "text": "first"},
         {"value": 2.5, "text": None},
     ]
+
+
+def test_torchvision_download_preserves_native_root(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    calls = []
+
+    class VisionDataset:
+        pass
+
+    class CIFAR10(VisionDataset):
+        def __init__(self, root, train=True, download=False):
+            calls.append((train, download))
+            raw = Path(root) / "Digits" / "raw"
+            source = raw / ("train" if train else "test")
+            if download:
+                raw.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(b"native bytes")
+            assert source.is_file()
+            import numpy as np
+
+            self.data = np.full((1, 2, 3, 3), 42 if train else 75, dtype=np.uint8)
+            self.targets = [0 if train else 1]
+            self.classes = ["first", "second"]
+
+    class ExtendedDigits(CIFAR10):
+        def __init__(self, root, variant, **kwargs):
+            assert variant == "letters"
+            super().__init__(root, **kwargs)
+
+    datasets = SimpleNamespace(
+        __all__=["CIFAR10", "ExtendedDigits"],
+        VisionDataset=VisionDataset,
+        CIFAR10=CIFAR10,
+        ExtendedDigits=ExtendedDigits,
+    )
+    monkeypatch.setitem(sys.modules, "torchvision", SimpleNamespace(datasets=datasets))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    root = download_dataset("torch:CIFAR10")
+    assert root.is_relative_to(tmp_path / "rivet" / "datasets" / "torch" / "cifar10")
+    assert (root / "Digits" / "raw" / "train").read_bytes() == b"native bytes"
+    assert (root / "Digits" / "raw" / "test").read_bytes() == b"native bytes"
+    assert download_dataset("torch:cifar10", offline=True) == root
+
+    test = download_dataset("torch:CIFAR10?split=test")
+    assert (test / "Digits" / "raw" / "test").is_file()
+    assert not (test / "Digits" / "raw" / "train").exists()
+
+    with pytest.raises(ValueError, match="invalid or repeated"):
+        download_dataset("torch:CIFAR10?download=false")
+
+    bundle = rivet.load_dataset("torch:CIFAR10", offline=True)
+    assert bundle.keys() == ["test", "train"]
+    assert bundle["train"].get_encoded(0)["label"] == 0
+    assert (
+        bundle["test"].get_decoded(0)["images"][0].tolist() == [[[75, 75, 75]] * 3] * 2
+    )
+    derived = download_dataset("torch:CIFAR10", format="lance", offline=True)
+    assert derived.is_relative_to(tmp_path / "rivet" / "datasets" / "derived" / "lance")
+    assert (
+        rivet.load_dataset(
+            "torch:CIFAR10?split=test", split="test", offline=True
+        ).get_encoded(0)["label"]
+        == 1
+    )
+    with pytest.raises(ValueError, match="variant"):
+        download_dataset("torch:ExtendedDigits")
+    download_dataset("torch:ExtendedDigits?train=false&variant=letters")
+    assert calls == [
+        (True, True),
+        (False, True),
+        (False, True),
+        (True, False),
+        (False, False),
+        (False, False),
+        (False, True),
+    ]

@@ -342,3 +342,17 @@ pub(crate) fn _convert_imagefolder_lance(
     })
     .map_err(to_py_err)
 }
+
+#[cfg(feature = "lance")]
+#[pyfunction]
+pub(crate) fn _convert_torch_images(
+    py: Python<'_>,
+    output: PathBuf,
+    splits: std::collections::BTreeMap<String, rivet_vision::datasets::lance::TorchImageSplit>,
+    classes: Option<Vec<String>>,
+) -> PyResult<()> {
+    py.detach(move || {
+        rivet_vision::datasets::lance::convert_torch_images(&output, splits, classes.as_deref())
+    })
+    .map_err(to_py_err)
+}

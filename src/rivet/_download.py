@@ -26,7 +26,7 @@ def _dataset_cache() -> Path:
 
 def _is_remote(source: str | Path) -> bool:
     return isinstance(source, str) and source.startswith(
-        ("hf:", "git:", "github:", "http://", "https://")
+        ("hf:", "git:", "github:", "torch:", "http://", "https://")
     )
 
 
@@ -161,6 +161,7 @@ def download_dataset(
     Set format="lance" to convert the source into cached Lance splits.
     data_files selects a relative file or maps split names to relative globs.
     json_columns names fields in positional JSON records.
+    A torch: source returns a root for the original torchvision dataset class.
     """
     if format not in {"raw", "lance"}:
         raise ValueError("format must be 'raw' or 'lance'")
@@ -168,22 +169,42 @@ def download_dataset(
         raise ValueError("data_files and json_columns require format='lance'")
     if not _is_remote(source):
         raise ValueError(
-            "dataset source must use hf:, git:, github:, http://, or https://"
+            "dataset source must use hf:, git:, github:, torch:, http://, or https://"
         )
     provider, location = source.split(":", 1)
-    if revision == "" or (revision is not None and provider in {"http", "https"}):
+    if revision == "" or (
+        revision is not None and provider in {"http", "https", "torch"}
+    ):
         raise ValueError("revision must be a nonempty Git or Hugging Face reference")
     if provider in {"git", "github"}:
         provider, location = "git", _git_url(location)
     elif provider in {"http", "https"}:
         provider, location = "http", source
-    extract = provider == "http" and extract
-    key = hashlib.sha256(json.dumps([location, revision, extract]).encode()).hexdigest()
     cache = (
         _dataset_cache()
         if cache_dir is None
         else Path(cache_dir).expanduser().absolute()
     )
+    if provider == "torch":
+        from ._torch_dataset import _derive_torch, _torch_source
+
+        name, options = _torch_source(location)
+        key = hashlib.sha256(json.dumps(options, sort_keys=True).encode()).hexdigest()
+
+        def download_torch() -> Path:
+            return _download_raw(
+                provider, location, None, False, cache / provider / name / key, offline
+            )
+
+        if format == "lance":
+            if data_files is not None or json_columns is not None:
+                raise ValueError(
+                    "torch: selects data with torchvision constructor options"
+                )
+            return _derive_torch(cache, name, key, location, download_torch)
+        return download_torch()
+    extract = provider == "http" and extract
+    key = hashlib.sha256(json.dumps([location, revision, extract]).encode()).hexdigest()
     if format == "lance":
         from ._derive_lance import _derive_lance
 
@@ -231,6 +252,11 @@ def _download_raw(
             )
         elif provider == "git":
             _download_git(location, payload, revision)
+        elif provider == "torch":
+            from ._torch_dataset import _download_torch
+
+            payload.mkdir()
+            _download_torch(location, payload)
         else:
             artifact = _download_http(location, payload, extract)
         (staging / "artifact").write_text(
