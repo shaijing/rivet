@@ -989,3 +989,6 @@ fn area_downsample(input: &Tensor, old: [usize; 3], new: [usize; 3]) -> RivetRes
         }
     })?)
 }
+
+mod warp;
+pub use warp::{Affine3DConfig, VolumeBorder};

@@ -1,8 +1,9 @@
 use crate::{error::to_py_err, numpy::tensor_to_numpy, structured::tensor_from_numpy};
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 use rivet_vision::volume::{
-    Anisotropy3DConfig, CoarseDropout3DConfig, Crop3DConfig, Pad3DConfig, PadIfNeeded3DConfig,
-    Resize3DConfig, VolumeInterpolation, VolumeSample, volume_axis_mask,
+    Affine3DConfig, Anisotropy3DConfig, CoarseDropout3DConfig, Crop3DConfig, Pad3DConfig,
+    PadIfNeeded3DConfig, Resize3DConfig, VolumeBorder, VolumeInterpolation, VolumeSample,
+    volume_axis_mask,
 };
 
 #[pyclass(name = "_VolumeSample")]
@@ -270,6 +271,54 @@ impl PyVolumeSample {
             .inner
             .clone()
             .anisotropy(&config, &mut rng)
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn affine3d(
+        &self,
+        rotate_range: [[f64; 2]; 3],
+        scale_range: [[f64; 2]; 3],
+        translate_percent_range: [[f64; 2]; 3],
+        interpolation: &str,
+        border_mode: &str,
+        fill: Vec<f32>,
+        fill_mask: i64,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let interpolation = match interpolation {
+            "nearest" => VolumeInterpolation::Nearest,
+            "linear" | "trilinear" => VolumeInterpolation::Linear,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "Affine3D interpolation must be linear or nearest",
+                ));
+            }
+        };
+        let border = match border_mode {
+            "constant" => VolumeBorder::Constant,
+            "replicate" => VolumeBorder::Replicate,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "Affine3D border mode must be constant or replicate",
+                ));
+            }
+        };
+        let config = Affine3DConfig {
+            rotate_range,
+            scale_range,
+            translate_percent_range,
+            interpolation,
+            border,
+            fill,
+            fill_mask,
+        };
+        let mut rng = rivet_vision::RandomStream::from_seed(seed);
+        let inner = self
+            .inner
+            .clone()
+            .affine(&config, &mut rng)
             .map_err(to_py_err)?;
         Ok(Self { inner })
     }

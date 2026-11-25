@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from numbers import Integral, Real
 from typing import Any
 
@@ -192,6 +192,38 @@ class VolumeSample:
         result = self.__class__.__new__(self.__class__)
         result._inner = self._inner.anisotropy3d(
             axes, num_axes_range, downscale_factor_range, antialias, seed,
+        )
+        return result
+
+    def affine3d(
+        self,
+        *,
+        rotate_range: Mapping[str, tuple[float, float]] | None = None,
+        scale_range: Mapping[str, tuple[float, float]] | None = None,
+        translate_percent_range: Mapping[str, tuple[float, float]] | None = None,
+        interpolation: str = "linear",
+        border_mode: str = "constant",
+        fill: float | Iterable[float] = 0,
+        fill_mask: int = 0,
+        seed: int = 0,
+    ) -> VolumeSample:
+        """Scale, rotate in XYZ order about the voxel center, and translate on the same grid.
+
+        Rotation ranges use degrees, and translation ranges use fractions of axis lengths.
+        Mask sampling is always nearest-neighbor to preserve integer IDs.
+        """
+        def xyz(ranges: Mapping[str, tuple[float, float]] | None, default: float):
+            if ranges is None:
+                return [(default, default)] * 3
+            if set(ranges) != {"x", "y", "z"}:
+                raise ValueError("Affine3D axis ranges must contain x, y, and z")
+            return [ranges[axis] for axis in "xyz"]
+
+        values = [fill] if isinstance(fill, Real) else list(fill)
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.affine3d(
+            xyz(rotate_range, 0), xyz(scale_range, 1), xyz(translate_percent_range, 0),
+            interpolation, border_mode, values, fill_mask, seed,
         )
         return result
 

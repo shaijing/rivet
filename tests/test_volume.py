@@ -280,3 +280,49 @@ def test_anisotropy3d_seeded_axes_on_uint8():
     for kwargs in ({"axes": (0, 0)}, {"axes": (1,), "num_axes_range": (1, 2)}, {"downscale_factor_range": (1, 2)}):
         with pytest.raises(ValueError):
             sample.anisotropy3d(**kwargs)
+
+
+def test_affine3d_fractional_translation_and_border():
+    sample = VolumeSample(
+        np.array([[[0, 4, 8, 12]]], np.float32),
+        mask=np.array([[[2**53 + 1, 2**53 + 2, 2**53 + 3, 2**53 + 4]]], np.int64),
+        keypoints=[[2, 0, 0]], label=51,
+    )
+    translation = {"x": (0.125, 0.125), "y": (0, 0), "z": (0, 0)}
+    out = sample.affine3d(translate_percent_range=translation, fill=10).to_dict()
+    np.testing.assert_array_equal(out["volume"], [[[5, 2, 6, 10]]])
+    np.testing.assert_array_equal(out["mask"], sample.to_dict()["mask"])
+    np.testing.assert_array_equal(out["keypoints"], [[2.5, 0, 0]])
+    assert out["label"] == 51
+    replicated = sample.affine3d(translate_percent_range=translation, border_mode="replicate")
+    np.testing.assert_array_equal(replicated.to_dict()["volume"], [[[0, 2, 6, 10]]])
+    translation["x"] = (0.25, 0.25)
+    shifted = sample.affine3d(translate_percent_range=translation, fill_mask=-9).to_dict()
+    np.testing.assert_array_equal(shifted["mask"], [[[-9, 2**53 + 1, 2**53 + 2, 2**53 + 3]]])
+
+
+def test_affine3d_rotation_and_random_reproducibility():
+    from concurrent.futures import ThreadPoolExecutor
+
+    volume = np.arange(54, dtype=np.uint8).reshape(3, 3, 3, 2)
+    sample = VolumeSample(volume, keypoints=[[2, 1, 0]])
+    rotate = {"x": (90, 90), "y": (0, 0), "z": (0, 0)}
+    out = sample.affine3d(rotate_range=rotate, interpolation="nearest").to_dict()
+    np.testing.assert_array_equal(out["volume"], np.rot90(volume, -1, (0, 1)))
+    np.testing.assert_allclose(out["keypoints"], [[2, 2, 1]])
+    np.testing.assert_array_equal(sample.affine3d().to_dict()["volume"], volume)
+
+    def run(seed):
+        return sample.affine3d(
+            rotate_range={"x": (-20, 20), "y": (-30, 30), "z": (-15, 15)},
+            scale_range={"x": (0.7, 1.4), "y": (0.8, 1.2), "z": (0.9, 1.0)},
+            seed=seed,
+        ).to_dict()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for seed, result in enumerate(pool.map(run, range(8))):
+            serial = run(seed)
+            np.testing.assert_array_equal(result["volume"], serial["volume"])
+            np.testing.assert_array_equal(result["keypoints"], serial["keypoints"])
+    with pytest.raises(ValueError):
+        sample.affine3d(scale_range={"x": (0, 1), "y": (1, 1), "z": (1, 1)})
