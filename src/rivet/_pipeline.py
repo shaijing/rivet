@@ -1850,6 +1850,11 @@ class Pipeline:
         interpolation: str = "bilinear",
         fill: int | Iterable[int] = 0,
     ) -> Pipeline:
+        """Apply elastic displacement to the image and structured targets.
+
+        Masks use nearest sampling. Keypoints invert the shared displacement
+        field, falling back to the nearest sampled correspondence when needed.
+        """
         return Pipeline(
             self._inner.elastic_transform(
                 alpha, sigma, interpolation, _normalize_fill(fill)

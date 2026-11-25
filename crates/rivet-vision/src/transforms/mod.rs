@@ -23,6 +23,7 @@ mod decode;
 mod dither;
 mod dtype;
 pub use dither::{DiffusionAlgorithm, DitherMethod, DitheringConfig};
+mod elastic_map;
 mod erase;
 mod flare;
 mod flip;

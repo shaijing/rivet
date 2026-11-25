@@ -671,6 +671,21 @@ pub(super) fn apply(
             }
             Ok(s)
         }
+        ImageOp::ElasticTransform(config) => {
+            use crate::transforms::remap::SpatialRemap;
+            if s.image.dtype() != rivet_core::DType::U8 {
+                return Err(invalid_argument("elastic transform requires uint8 input"));
+            }
+            let map = config.sample(h, w, rng)?;
+            if map.is_identity() {
+                return Ok(s);
+            }
+            s.image = config
+                .apply_sampled(image(&s).into_decoded()?, s.axis_order, &map)?
+                .into_decoded()?
+                .image;
+            remap_targets(s, &map, 0, true, |x, y| map.source([x as f64, y as f64]))
+        }
         ImageOp::V2(V2Config::WaterRefraction(config)) => {
             let map = config.sample(h, w, rng)?;
             remap_structured(s, &map, config.interpolation, config.fill, config.fill_mask)
@@ -927,7 +942,6 @@ pub(super) fn apply(
         ImageOp::Decode(_)
         | ImageOp::FiveCrop(_)
         | ImageOp::TenCrop(_)
-        | ImageOp::ElasticTransform(_)
         | ImageOp::AutoAugment(_)
         | ImageOp::RandAugment(_)
         | ImageOp::TrivialAugmentWide(_)
@@ -1080,10 +1094,28 @@ fn remap_structured(
     )?
     .into_decoded()?
     .image;
+    remap_targets(sample, map, fill_mask, false, |x, y| backward[y * w + x])
+}
+
+fn remap_targets(
+    mut sample: StructuredSample,
+    map: &impl crate::transforms::remap::SpatialRemap,
+    fill_mask: i64,
+    tensor_nearest: bool,
+    source: impl Fn(usize, usize) -> [f64; 2],
+) -> RivetResult<StructuredSample> {
+    let (h, w) = sample.size()?;
     if let Some(mask) = &sample.masks {
         sample.masks = Some(masks_map_fill(mask, h, w, fill_mask, |y, x| {
-            let [sx, sy] = backward[y * w + x];
-            let (sx, sy) = ((sx + 0.5).floor(), (sy + 0.5).floor());
+            let [sx, sy] = source(x, y);
+            let round = |v: f64| {
+                if tensor_nearest {
+                    f64::from((v as f32).round_ties_even())
+                } else {
+                    (v + 0.5).floor()
+                }
+            };
+            let (sx, sy) = (round(sx), round(sy));
             (sx >= 0.0 && sy >= 0.0).then_some((sy as usize, sx as usize))
         })?);
     }
@@ -1095,7 +1127,9 @@ fn remap_structured(
             let [l, t, r, b] = [b[0], b[1], b[2], b[3]].map(f64::from);
             let (l, t, r, b) = (l.max(0.0), t.max(0.0), r.min(w as f64), b.min(h as f64));
             let mut bounds = [w, h, 0, 0];
-            for (p, &[sx, sy]) in backward.iter().enumerate() {
+            for p in 0..h * w {
+                let (x, y) = (p % w, p / w);
+                let [sx, sy] = source(x, y);
                 let (sx, sy) = (sx + 0.5, sy + 0.5);
                 if sx >= l && sx < r && sy >= t && sy < b {
                     let (x, y) = (p % w, p / w);

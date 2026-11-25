@@ -86,7 +86,6 @@ fn validate_image(op: &ImageOp) -> RivetResult<()> {
         ImageOp::Decode(_)
         | ImageOp::FiveCrop(_)
         | ImageOp::TenCrop(_)
-        | ImageOp::ElasticTransform(_)
         | ImageOp::AutoAugment(_)
         | ImageOp::RandAugment(_)
         | ImageOp::TrivialAugmentWide(_)

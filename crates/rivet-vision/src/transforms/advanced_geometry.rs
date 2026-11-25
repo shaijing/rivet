@@ -1,3 +1,4 @@
+use super::elastic_map::ElasticMap;
 use super::logical_offset;
 use super::resize::InterpolationMode;
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
@@ -616,6 +617,16 @@ impl ElasticTransformConfig {
         let sample = require_u8_image(sample, "elastic transform")?;
         let dims = sample.image.dims();
         let (height, width, _) = image_dims(dims, axis_order)?;
+        let map = self.sample(height, width, rng)?;
+        self.apply_sampled(sample, axis_order, &map)
+    }
+
+    pub(crate) fn sample(
+        &self,
+        height: usize,
+        width: usize,
+        rng: &mut RandomStream,
+    ) -> RivetResult<ElasticMap> {
         let count = height
             .checked_mul(width)
             .ok_or_else(|| invalid_shape("elastic transform image is too large"))?;
@@ -635,23 +646,32 @@ impl ElasticTransformConfig {
             x_field = smooth_field(&x_field, width, height, self.sigma);
             y_field = smooth_field(&y_field, width, height, self.sigma);
         }
-        let alpha = self.alpha * 0.5;
+        Ok(ElasticMap {
+            width,
+            height,
+            alpha: self.alpha * 0.5,
+            x_field,
+            y_field,
+        })
+    }
+
+    pub(crate) fn apply_sampled(
+        &self,
+        sample: DecodedSample,
+        axis_order: ImageAxisOrder,
+        map: &ElasticMap,
+    ) -> RivetResult<ImageSample> {
+        use super::remap::SpatialRemap;
         warp_decoded::<true, _>(
             sample,
             axis_order,
-            width,
-            height,
+            map.width,
+            map.height,
             self.interpolation,
             self.fill,
             self.fill_channels,
             "elastic transform",
-            move |x, y| {
-                let index = y * width + x;
-                [
-                    x as f64 + f64::from(alpha * x_field[index]),
-                    y as f64 + f64::from(alpha * y_field[index]),
-                ]
-            },
+            |x, y| map.source([x as f64, y as f64]),
         )
         .map(ImageSample::Decoded)
     }

@@ -507,7 +507,6 @@ def test_structured_validation(kwargs):
 @pytest.mark.parametrize(
     "transform",
     [
-        rivet.Transform().elastic_transform(1, 1),
         rivet.Transform().five_crop(2, 2),
         rivet.Transform().auto_augment(),
         rivet.Transform().decode_image(),
@@ -1491,3 +1490,28 @@ def test_water_refraction_matches_integer_mask_sampling():
     np.testing.assert_array_equal(result["image"][..., 0], result["masks"])
     np.testing.assert_array_equal(result["labels"], [6])
     assert np.isfinite(result["keypoints"]).all()
+
+
+def test_structured_elastic_transform_shares_mask_and_worker_seed():
+    h, w = 9, 11
+    mask = np.arange(1, h*w+1, dtype=np.uint8).reshape(h,w)
+    image = np.repeat(mask[..., None], 3, axis=-1)
+    sample = rivet.AnnotatedSample(
+        image, masks=mask, boxes=[[2, 2, 8, 8]], labels=[5], keypoints=[[[5, 4]]],
+    )
+    transform = rivet.Transform().elastic_transform(5, 0, interpolation="nearest")
+    pipeline = rivet.StructuredPipeline([sample] * 5).compose(transform).seed(31)
+    for a, b in zip(pipeline.execute(), pipeline.workers(3).execute(), strict=True):
+        result = a["images"][0]
+        np.testing.assert_array_equal(result, b["images"][0])
+        assert not np.array_equal(result, image)
+        t = a["targets"][0]
+        np.testing.assert_array_equal(result[..., 0], t["masks"])
+        np.testing.assert_array_equal(t["labels"], [5])
+        assert np.isfinite(t["keypoints"]).all()
+        l, top, r, bottom = t["boxes"][0]
+        assert 0 <= l < r <= w and 0 <= top < bottom <= h
+    identity = sample.apply(rivet.Transform().elastic_transform(0, 0)).to_dict()
+    for key, value in sample.to_dict().items():
+        if key in {"image", "masks", "boxes", "labels", "keypoints"}:
+            np.testing.assert_array_equal(identity[key], value)
