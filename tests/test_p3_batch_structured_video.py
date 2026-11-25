@@ -1550,9 +1550,13 @@ def test_overlay_elements_resizes_and_filters_aligned_instances(annotated):
         np.testing.assert_array_equal(a["images"], b["images"])
 
 
-def test_structured_rician_noise_preserves_annotations(annotated):
+@pytest.mark.parametrize(
+    "transform",
+    [rivet.Transform().rician_noise((0.15, 0.15)),
+     rivet.Transform().bias_field(std_range=(0.4, 0.4))],
+)
+def test_structured_medical_intensity_preserves_annotations(annotated, transform):
     source = rivet.StructuredPipeline([annotated] * 4).seed(17).batch(2)
-    transform = rivet.Transform().rician_noise((0.15, 0.15))
     noisy = rivet.StructuredPipeline([annotated] * 4).compose(transform).seed(17).batch(2)
     for plain, serial, parallel in zip(
         source.execute(), noisy.execute(), noisy.workers(3).execute(), strict=True

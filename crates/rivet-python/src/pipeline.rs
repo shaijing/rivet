@@ -2425,6 +2425,23 @@ impl PyTransform {
         })
     }
 
+    fn bias_field(
+        &self,
+        std_range: [f64; 2],
+        scale_range: [f64; 2],
+        per_channel: bool,
+    ) -> PyResult<Self> {
+        let config = V2Config::BiasField(rivet_vision::volume::BiasFieldConfig {
+            std_range,
+            scale_range,
+            per_channel,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (std_range, per_channel))]
     fn rician_noise(&self, std_range: [f64; 2], per_channel: bool) -> PyResult<Self> {
         let config = V2Config::RicianNoise {
@@ -4986,6 +5003,23 @@ impl PyImagePipeline {
             ratio,
             fill,
         };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    fn bias_field(
+        &self,
+        std_range: [f64; 2],
+        scale_range: [f64; 2],
+        per_channel: bool,
+    ) -> PyResult<Self> {
+        let config = V2Config::BiasField(rivet_vision::volume::BiasFieldConfig {
+            std_range,
+            scale_range,
+            per_channel,
+        });
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

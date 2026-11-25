@@ -2685,3 +2685,18 @@ def test_rician_noise_image_pipeline_and_workers(source, transform):
     assert not np.array_equal(one[0], pixels)
     zero = output(root, lambda p: p.rician_noise((0, 0)), transform=transform)
     np.testing.assert_array_equal(zero[0], pixels)
+
+
+@pytest.mark.parametrize("transform", [False, True])
+def test_bias_field_image_pipeline_and_workers(source, transform):
+    root, pixels = source
+
+    def build(p):
+        return p.bias_field(std_range=(0.5, 0.5), per_channel=True)
+
+    one = output(root, build, transform=transform)
+    many = output(root, build, transform=transform, workers=3)
+    np.testing.assert_array_equal(one, many)
+    assert one[0].dtype == np.uint8 and not np.array_equal(one[0], pixels)
+    zero = output(root, lambda p: p.bias_field(std_range=(0, 0)), transform=transform)
+    np.testing.assert_array_equal(zero[0], pixels)

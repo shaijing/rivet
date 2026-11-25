@@ -9,7 +9,7 @@ pub(super) fn validate_gaussian_noise(mean: f64, sigma: f64) -> RivetResult<()> 
     Ok(())
 }
 
-pub(super) fn normal_pair(rng: &mut RandomStream) -> (f64, f64) {
+pub(crate) fn normal_pair(rng: &mut RandomStream) -> (f64, f64) {
     let radius = (-2.0 * rng.next_f64().max(f64::MIN_POSITIVE).ln()).sqrt();
     let (sine, cosine) = (std::f64::consts::TAU * rng.next_f64()).sin_cos();
     (radius * cosine, radius * sine)

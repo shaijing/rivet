@@ -251,6 +251,19 @@ class VolumeSample:
         )
         return result
 
+    def bias_field(
+        self,
+        *,
+        std_range: tuple[float, float] = (0.0, 0.5),
+        scale_range: tuple[float, float] = (0.025, 0.025),
+        per_channel: bool = False,
+        seed: int = 0,
+    ) -> VolumeSample:
+        """Multiply intensities by a smooth gain field sampled on a coarse grid."""
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.bias_field(std_range, scale_range, per_channel, seed)
+        return result
+
     def rician_noise(
         self, std_range: tuple[float, float] = (0.05, 0.15), *, per_channel: bool = False, seed: int = 0
     ) -> VolumeSample:

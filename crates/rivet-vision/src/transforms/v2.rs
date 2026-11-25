@@ -94,6 +94,7 @@ pub enum V2Config {
         sigma: f64,
         clip: bool,
     },
+    BiasField(crate::volume::BiasFieldConfig),
     RicianNoise {
         std_range: [f64; 2],
         per_channel: bool,
@@ -304,6 +305,7 @@ impl V2Config {
             Self::ScaleJitter { .. } => "ScaleJitter",
             Self::RandomZoomOut { .. } => "RandomZoomOut",
             Self::GaussianNoise { .. } => "GaussianNoise",
+            Self::BiasField(_) => "BiasField",
             Self::RicianNoise { .. } => "RicianNoise",
             Self::ShotNoise { .. } => "ShotNoise",
             Self::RandomToneCurve { .. } => "RandomToneCurve",
@@ -396,6 +398,7 @@ impl V2Config {
             Self::ScaleJitter { .. } => 54,
             Self::RandomZoomOut { .. } => 55,
             Self::GaussianNoise { .. } => 56,
+            Self::BiasField(_) => 139,
             Self::RicianNoise { .. } => 138,
             Self::ShotNoise { .. } => 60,
             Self::RandomToneCurve { .. } => 69,
@@ -789,6 +792,7 @@ impl V2Config {
             Self::GaussianNoise { mean, sigma, .. } => {
                 return super::noise::validate_gaussian_noise(*mean, *sigma);
             }
+            Self::BiasField(config) => return config.validate(),
             Self::RicianNoise { std_range, .. } => {
                 return super::noise::validate_rician_std(*std_range);
             }
@@ -1079,6 +1083,17 @@ impl V2Config {
             }
             Self::GaussianNoise { mean, sigma, clip } => {
                 s.image = super::gaussian_noise(&s.image, *mean, *sigma, *clip, rng)?;
+            }
+            Self::BiasField(config) => {
+                let input = match axis {
+                    ImageAxisOrder::Hwc => s.image,
+                    ImageAxisOrder::Chw => s.image.permute(&[1, 2, 0])?,
+                };
+                let image = config.apply(&input, [1, h, w], c, rng)?;
+                s.image = match axis {
+                    ImageAxisOrder::Hwc => image,
+                    ImageAxisOrder::Chw => image.permute(&[2, 0, 1])?,
+                };
             }
             Self::RicianNoise {
                 std_range,

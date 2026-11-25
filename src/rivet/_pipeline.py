@@ -1761,6 +1761,16 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def bias_field(
+        self,
+        *,
+        std_range: tuple[float, float] = (0.0, 0.5),
+        scale_range: tuple[float, float] = (0.025, 0.025),
+        per_channel: bool = False,
+    ) -> Pipeline:
+        """Multiply intensities by a smooth gain field sampled on a coarse grid."""
+        return Pipeline(self._inner.bias_field(std_range, scale_range, per_channel), as_numpy=self.as_numpy)
+
     def rician_noise(
         self, std_range: tuple[float, float] = (0.05, 0.15), *, per_channel: bool = False
     ) -> Pipeline:

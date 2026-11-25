@@ -707,7 +707,7 @@ pub(crate) fn infer_image_op(
                 V2Config::ToDtype { dtype, .. } => {
                     output.dtype = Some(core_dtype(*dtype));
                 }
-                V2Config::RicianNoise { .. } => {
+                V2Config::BiasField(_) | V2Config::RicianNoise { .. } => {
                     if !matches!(
                         input_state,
                         Decoded {
@@ -715,9 +715,10 @@ pub(crate) fn infer_image_op(
                             ..
                         }
                     ) {
-                        return Err(invalid_pipeline(
-                            "RicianNoise requires uint8 or float32 input",
-                        ));
+                        return Err(invalid_pipeline(format!(
+                            "{} requires uint8 or float32 input",
+                            config.name()
+                        )));
                     }
                 }
                 V2Config::ShotNoise { .. } => {

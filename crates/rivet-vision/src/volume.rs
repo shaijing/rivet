@@ -1014,3 +1014,6 @@ impl VolumeSample {
         Ok(self)
     }
 }
+
+mod bias;
+pub use bias::BiasFieldConfig;

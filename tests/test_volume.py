@@ -409,3 +409,34 @@ def test_rician_volume_noise_floor_channel_modes_and_annotations():
     assert noisy.dtype == np.uint8 and not np.array_equal(noisy, baseline)
     with pytest.raises(ValueError):
         sample.rician_noise((0.5, 0.1))
+
+
+def test_bias_field_volume_is_smooth_and_preserves_annotations():
+    from concurrent.futures import ThreadPoolExecutor
+
+    image = np.full((11, 13, 15, 2), 0.125, dtype=np.float32)
+    image[..., 1] *= 2
+    mask = np.full(image.shape[:3], 2**53 + 3, dtype=np.int64)
+    sample = VolumeSample(image, mask=mask, keypoints=[[2, 4, 6]], label=67)
+
+    def run(seed):
+        return sample.bias_field(std_range=(0.3, 0.3), seed=seed).to_dict()
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        for seed, out in enumerate(pool.map(run, range(4))):
+            augmented = out["volume"]
+            assert augmented.dtype == image.dtype and augmented.shape == image.shape
+            assert np.ptp(augmented) > 0.02 and np.all(augmented > 0)
+            np.testing.assert_allclose(augmented[..., 1], 2 * augmented[..., 0])
+            assert np.any(augmented[0] != augmented[-1])
+            log_gain = np.log(augmented[3:8, ..., 0] / 0.125)
+            np.testing.assert_allclose(np.diff(log_gain, n=2, axis=0), 0, atol=5e-7)
+            np.testing.assert_array_equal(augmented, run(seed)["volume"])
+            np.testing.assert_array_equal(out["mask"], mask)
+            np.testing.assert_array_equal(out["keypoints"], [[2, 4, 6]])
+            assert out["label"] == 67
+    separate = sample.bias_field(std_range=(0.3, 0.3), per_channel=True).to_dict()["volume"]
+    assert not np.allclose(separate[..., 1], 2 * separate[..., 0])
+    np.testing.assert_array_equal(sample.bias_field(std_range=(0, 0)).to_dict()["volume"], image)
+    with pytest.raises(ValueError):
+        sample.bias_field(scale_range=(0, 0.1))

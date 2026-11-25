@@ -335,6 +335,27 @@ impl PyVolumeSample {
         Ok(Self { inner })
     }
 
+    fn bias_field(
+        &self,
+        std_range: [f64; 2],
+        scale_range: [f64; 2],
+        per_channel: bool,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let mut rng = rivet_vision::RandomStream::from_seed(seed);
+        let config = rivet_vision::volume::BiasFieldConfig {
+            std_range,
+            scale_range,
+            per_channel,
+        };
+        let inner = self
+            .inner
+            .clone()
+            .bias_field(config, &mut rng)
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
     fn rician_noise(&self, std_range: [f64; 2], per_channel: bool, seed: u64) -> PyResult<Self> {
         let mut rng = rivet_vision::RandomStream::from_seed(seed);
         let inner = self
