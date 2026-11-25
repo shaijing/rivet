@@ -905,6 +905,24 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (multiplier=(0.9, 1.1), *, per_channel=false, elementwise=false))]
+    fn multiplicative_noise(
+        &self,
+        multiplier: (f64, f64),
+        per_channel: bool,
+        elementwise: bool,
+    ) -> PyResult<Self> {
+        let config = V2Config::MultiplicativeNoise {
+            multiplier,
+            per_channel,
+            elementwise,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (intensity_range=(0.1, 0.3), grain_size_range=(1, 3), *, per_channel=false))]
     fn film_grain(
         &self,
@@ -2227,6 +2245,24 @@ impl PyImagePipeline {
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().letterbox(config),
+        })
+    }
+
+    #[pyo3(signature = (multiplier=(0.9, 1.1), *, per_channel=false, elementwise=false))]
+    fn multiplicative_noise(
+        &self,
+        multiplier: (f64, f64),
+        per_channel: bool,
+        elementwise: bool,
+    ) -> PyResult<Self> {
+        let config = V2Config::MultiplicativeNoise {
+            multiplier,
+            per_channel,
+            elementwise,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

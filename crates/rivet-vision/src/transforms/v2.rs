@@ -60,6 +60,11 @@ pub enum V2Config {
         grid: (u32, u32),
         clip_limit: f64,
     },
+    MultiplicativeNoise {
+        multiplier: (f64, f64),
+        per_channel: bool,
+        elementwise: bool,
+    },
     FilmGrain {
         intensity_range: (f64, f64),
         grain_size_range: (u32, u32),
@@ -157,6 +162,7 @@ impl V2Config {
             Self::ShotNoise { .. } => "ShotNoise",
             Self::RandomToneCurve { .. } => "RandomToneCurve",
             Self::Clahe { .. } => "CLAHE",
+            Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::FilmGrain { .. } => "FilmGrain",
             Self::IsoNoise { .. } => "ISONoise",
             Self::GlassBlur { .. } => "GlassBlur",
@@ -194,6 +200,7 @@ impl V2Config {
             Self::ShotNoise { .. } => 60,
             Self::RandomToneCurve { .. } => 69,
             Self::Clahe { .. } => 70,
+            Self::MultiplicativeNoise { .. } => 82,
             Self::FilmGrain { .. } => 81,
             Self::IsoNoise { .. } => 80,
             Self::GlassBlur { .. } => 79,
@@ -232,6 +239,10 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::MultiplicativeNoise {
+                multiplier: (low, high),
+                ..
+            } => *low >= 0.0 && low <= high && high.is_finite(),
             Self::FilmGrain {
                 intensity_range: (low, high),
                 grain_size_range: (min, max),
@@ -642,6 +653,7 @@ impl V2Config {
             }
             Self::RandomToneCurve { .. }
             | Self::Clahe { .. }
+            | Self::MultiplicativeNoise { .. }
             | Self::FilmGrain { .. }
             | Self::IsoNoise { .. }
             | Self::GlassBlur { .. }
@@ -751,6 +763,19 @@ impl V2Config {
                 let intensity = low + rng.next_f64() * (high - low);
                 let size = *min as usize + rng.gen_range_usize(0..((*max - *min) as usize + 1))?;
                 s.image = super::noise::film_grain(&s.image, intensity, size, *per_channel, rng)?;
+            }
+            Self::MultiplicativeNoise {
+                multiplier,
+                per_channel,
+                elementwise,
+            } => {
+                s.image = super::noise::multiplicative_noise(
+                    &s.image,
+                    *multiplier,
+                    *per_channel,
+                    *elementwise,
+                    rng,
+                )?;
             }
             Self::MedianBlur => {
                 s.image = super::blur::median_blur_3x3(&s.image)?;

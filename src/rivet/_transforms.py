@@ -523,6 +523,24 @@ class Transform:
             )
         )
 
+    def multiplicative_noise(
+        self,
+        multiplier: tuple[float, float] = (0.9, 1.1),
+        *,
+        per_channel: bool = False,
+        elementwise: bool = False,
+    ) -> Transform:
+        """Multiply uint8 or normalized float32 HWC by seeded uniform gains.
+
+        Gain bounds are finite and nonnegative. Set per_channel for separate
+        gains by channel and elementwise for separate gains by pixel. The
+        default samples one gain per image. Output is clipped.
+        """
+        inner = self._inner.multiplicative_noise(
+            multiplier, per_channel=per_channel, elementwise=elementwise
+        )
+        return Transform(inner)
+
     def film_grain(
         self,
         intensity_range: tuple[float, float] = (0.1, 0.3),

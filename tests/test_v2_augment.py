@@ -1205,3 +1205,46 @@ def test_film_grain_seed_and_validation(source):
             rivet.Transform().film_grain(**options)
     with pytest.raises(ValueError, match="FilmGrain"):
         output(root, lambda p: p.hwc_to_chw().film_grain())
+
+
+@pytest.mark.parametrize("per_channel", [False, True])
+@pytest.mark.parametrize("elementwise", [False, True])
+def test_multiplicative_noise_sharing(tmp_path, per_channel, elementwise):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.full((5, 7, 3), 120, dtype=np.uint8)
+    pixels[0, 0] = 0
+    Image.fromarray(pixels).save(folder / "image.png")
+
+    def augment(p):
+        return p.to_dtype("float32", True).multiplicative_noise(
+            (0.5, 1.5), per_channel=per_channel, elementwise=elementwise
+        )
+
+    image = output(tmp_path, augment)[0]
+    np.testing.assert_array_equal(
+        image, output(tmp_path, augment, transform=True, workers=3)[0]
+    )
+    assert image.dtype == np.float32 and image.shape == pixels.shape
+    np.testing.assert_array_equal(image[0, 0], 0)
+    assert (not np.array_equal(image[1, 1], image[1, 2])) == elementwise
+    assert (image[1, 1, 0] != image[1, 1, 1]) == per_channel
+    assert 0.5 * 120 / 255 <= image[1:].min() <= image[1:].max() <= 1.5 * 120 / 255
+
+
+def test_multiplicative_noise_identity_clipping_and_validation(source):
+    root, pixels = source
+    identity = output(root, lambda p: p.multiplicative_noise((1, 1)))
+    np.testing.assert_array_equal(identity[0], pixels)
+    doubled = output(root, lambda p: p.multiplicative_noise((2, 2)))
+    np.testing.assert_array_equal(doubled[0], (2 * pixels.astype(int)).clip(0, 255))
+    assert doubled[0].dtype == np.uint8
+    assert not np.array_equal(
+        output(root, lambda p: p.multiplicative_noise()),
+        output(root, lambda p: p.multiplicative_noise(), epoch=1),
+    )
+    for bounds in [(-1, 1), (2, 1), (0, float("inf"))]:
+        with pytest.raises(ValueError):
+            rivet.Transform().multiplicative_noise(bounds)
+    with pytest.raises(ValueError, match="MultiplicativeNoise"):
+        output(root, lambda p: p.hwc_to_chw().multiplicative_noise())

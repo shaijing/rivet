@@ -111,6 +111,20 @@ impl ImagePipeline {
         self.v2(crate::transforms::V2Config::LetterBox(config))
     }
 
+    /// Apply seeded spatially and/or channel-shared multiplicative noise.
+    pub fn multiplicative_noise(
+        self,
+        multiplier: (f64, f64),
+        per_channel: bool,
+        elementwise: bool,
+    ) -> Self {
+        self.v2(crate::transforms::V2Config::MultiplicativeNoise {
+            multiplier,
+            per_channel,
+            elementwise,
+        })
+    }
+
     /// Overlay seeded, spatially correlated grain with stronger shadows.
     pub fn film_grain(
         self,

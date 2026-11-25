@@ -357,3 +357,83 @@ pub(super) fn film_grain(
         }
     })?)
 }
+
+pub(super) fn multiplicative_noise(
+    input: &Tensor,
+    multiplier: (f64, f64),
+    per_channel: bool,
+    elementwise: bool,
+    rng: &mut RandomStream,
+) -> RivetResult<Tensor> {
+    let (low, high) = multiplier;
+    apply_sampled_noise(
+        input,
+        "MultiplicativeNoise",
+        per_channel,
+        elementwise,
+        multiplier == (1.0, 1.0),
+        |_| low + rng.next_f64() * (high - low),
+        |value, gain| value * gain,
+    )
+}
+
+fn apply_sampled_noise(
+    input: &Tensor,
+    name: &str,
+    per_channel: bool,
+    elementwise: bool,
+    identity: bool,
+    mut sample: impl FnMut(usize) -> f64,
+    combine: impl Fn(f64, f64) -> f64,
+) -> RivetResult<Tensor> {
+    let [h, w, channels] = *input.dims() else {
+        return Err(invalid_argument(format!("{name} expects rank-3 HWC input")));
+    };
+    if h == 0 || w == 0 || channels == 0 || !matches!(input.dtype(), DType::U8 | DType::F32) {
+        return Err(invalid_argument(format!(
+            "{name} requires nonempty uint8 or float32 HWC input"
+        )));
+    }
+    if identity {
+        return Ok(input.clone());
+    }
+
+    let samples = if per_channel { channels } else { 1 };
+    let mut noise = vec![0.0; samples];
+    let mut fill = |noise: &mut [f64]| {
+        for (c, value) in noise.iter_mut().enumerate() {
+            *value = sample(c);
+        }
+    };
+    if !elementwise {
+        fill(&mut noise);
+    }
+    let input = input.contiguous()?;
+    Ok(input.with_cpu_storage(|storage, layout| {
+        macro_rules! write_noise {
+            ($values:expr, $scale:expr, $finish:expr) => {{
+                let pixels = contiguous_values($values, layout)?;
+                let finish = $finish;
+                Tensor::from_exact_writer(input.dims(), input.device(), |out| {
+                    for pixel in pixels.chunks_exact(channels) {
+                        if elementwise {
+                            fill(&mut noise);
+                        }
+                        for (&value, &noise) in pixel.iter().zip(noise.iter().cycle()) {
+                            let value = combine(f64::from(value) * $scale, noise).clamp(0.0, 1.0);
+                            out.write_next(finish(value))?;
+                        }
+                    }
+                    Ok(())
+                })
+            }};
+        }
+        match storage {
+            CpuStorageRef::U8(values) => {
+                write_noise!(values, 1.0 / 255.0, |v: f64| (v * 255.0).round() as u8)
+            }
+            CpuStorageRef::F32(values) => write_noise!(values, 1.0, |v| v as f32),
+            _ => unreachable!(),
+        }
+    })?)
+}
