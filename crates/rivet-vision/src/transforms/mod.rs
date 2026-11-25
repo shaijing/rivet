@@ -71,6 +71,8 @@ pub(crate) use rotate::quarter_turn;
 mod sized_crop;
 pub use sized_crop::RandomSizedCropConfig;
 mod u8_color;
+mod water;
+pub use water::WaterRefractionConfig;
 mod weather;
 pub use fog::{AtmosphericFogConfig, FogDepthMode, RandomFogConfig};
 pub use weather::{

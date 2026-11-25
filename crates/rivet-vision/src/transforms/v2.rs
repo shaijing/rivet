@@ -267,6 +267,7 @@ pub enum V2Config {
         scale: bool,
     },
     SquareSymmetry(Option<SquareSymmetry>),
+    WaterRefraction(WaterRefractionConfig),
     RandomGridShuffle(RandomGridShuffleConfig),
     PixelSpread(PixelSpreadConfig),
     ThinPlateSpline(ThinPlateSplineConfig),
@@ -342,6 +343,7 @@ impl V2Config {
             Self::Defocus { .. } => "Defocus",
             Self::ChannelDropout(_) => "ChannelDropout",
             Self::SquareSymmetry(_) => "SquareSymmetry",
+            Self::WaterRefraction(_) => "WaterRefraction",
             Self::RandomGridShuffle(_) => "RandomGridShuffle",
             Self::PixelSpread(_) => "PixelSpread",
             Self::ThinPlateSpline(_) => "ThinPlateSpline",
@@ -429,6 +431,7 @@ impl V2Config {
             Self::Defocus { .. } => 67,
             Self::ChannelDropout(_) => 111,
             Self::SquareSymmetry(_) => 122,
+            Self::WaterRefraction(_) => 133,
             Self::RandomGridShuffle(_) => 132,
             Self::PixelSpread(_) => 131,
             Self::ThinPlateSpline(_) => 130,
@@ -485,6 +488,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::WaterRefraction(config) => config.valid(),
             Self::RandomGridShuffle(config) => config.valid(),
             Self::PixelSpread(config) => config.valid(),
             Self::ThinPlateSpline(config) => config.valid(),
@@ -1531,6 +1535,25 @@ impl V2Config {
                     s.image = s.image.permute(&order)?;
                 }
                 s.image = super::quarter_turn(&s.image, axis, turns)?;
+            }
+            Self::WaterRefraction(config) => {
+                use super::remap::SpatialRemap;
+                if s.image.dtype() != DType::U8 || h == 0 || w == 0 {
+                    return Err(invalid_argument(
+                        "WaterRefraction requires nonempty uint8 input",
+                    ));
+                }
+                let map = config.sample(h, w, rng)?;
+                if !map.is_identity() {
+                    return super::remap::remap_image(
+                        ImageSample::Decoded(s),
+                        axis,
+                        (h, w),
+                        config.interpolation,
+                        config.fill,
+                        |x, y| map.source([x as f64, y as f64]),
+                    );
+                }
             }
             Self::RandomGridShuffle(config) => {
                 s.image = config.sample(h, w, rng)?.apply(&s.image, axis)?;

@@ -123,6 +123,11 @@ impl TransformSequence {
         ))
     }
 
+    /// Apply seeded, overlapping sinusoidal refraction waves.
+    pub fn water_refraction(self, config: crate::transforms::WaterRefractionConfig) -> Self {
+        self.v2(crate::transforms::V2Config::WaterRefraction(config))
+    }
+
     /// Permute same-sized grid cells using a seeded shuffle.
     pub fn random_grid_shuffle(self, grid: (u32, u32)) -> Self {
         self.v2(crate::transforms::V2Config::RandomGridShuffle(

@@ -2543,3 +2543,19 @@ def test_random_grid_shuffle_preserves_pixels_for_uneven_tile_shapes(source):
     assert chw.dtype == np.float32
     np.testing.assert_allclose(chw, serial[0].transpose(2, 0, 1) / 255, atol=1e-7)
     np.testing.assert_array_equal(output(root, lambda p: p.random_grid_shuffle((1, 1)))[0], pixels)
+
+
+def test_water_refraction_seed_layout_and_zero_amplitude(source):
+    root, pixels = source
+    np.testing.assert_array_equal(output(root, lambda p: p.water_refraction((0, 0)))[0], pixels)
+
+    def augment(p):
+        return p.water_refraction((0.2, 0.2), (0.8, 0.8), (2, 2))
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial[0], pixels)
+    chw = output(root, lambda p: augment(p.hwc_to_chw()))[0]
+    np.testing.assert_array_equal(chw, serial[0].transpose(2, 0, 1))
+    with pytest.raises(ValueError):
+        rivet.Transform().water_refraction(wavelength_range=(0, 0.1))

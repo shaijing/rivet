@@ -537,6 +537,28 @@ class Transform:
             )
         )
 
+    def water_refraction(
+        self,
+        amplitude_range: tuple[float, float] = (0.01, 0.05),
+        wavelength_range: tuple[float, float] = (0.05, 0.2),
+        num_waves_range: tuple[int, int] = (3, 7),
+        *,
+        interpolation: str = "bilinear",
+        fill: int = 0,
+        fill_mask: int = 0,
+    ) -> Transform:
+        """Warp uint8 HWC or CHW with superposed sine waves.
+
+        Amplitude and wavelength are relative to the shorter side. The
+        summed displacement is bounded to keep the map invertible. Zero
+        amplitude is identity, and out-of-bounds samples use constant fill.
+        """
+        inner = self._inner.water_refraction(
+            amplitude_range, wavelength_range, num_waves_range,
+            interpolation=interpolation, fill=fill, fill_mask=fill_mask,
+        )
+        return Transform(inner)
+
     def random_grid_shuffle(self, grid: tuple[int, int] = (3, 3)) -> Transform:
         """Shuffle equally sized cells of a (rows, columns) grid.
 

@@ -936,6 +936,30 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (amplitude_range=(0.01,0.05),wavelength_range=(0.05,0.2),num_waves_range=(3,7),*,interpolation="bilinear",fill=0,fill_mask=0))]
+    fn water_refraction(
+        &self,
+        amplitude_range: (f64, f64),
+        wavelength_range: (f64, f64),
+        num_waves_range: (u32, u32),
+        interpolation: &str,
+        fill: u8,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        let config = V2Config::WaterRefraction(rivet_vision::transforms::WaterRefractionConfig {
+            amplitude_range,
+            wavelength_range,
+            num_waves_range,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+            fill_mask,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (grid=(3,3)))]
     fn random_grid_shuffle(&self, grid: (u32, u32)) -> PyResult<Self> {
         let config =
@@ -3400,6 +3424,30 @@ impl PyImagePipeline {
         };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (amplitude_range=(0.01,0.05),wavelength_range=(0.05,0.2),num_waves_range=(3,7),*,interpolation="bilinear",fill=0,fill_mask=0))]
+    fn water_refraction(
+        &self,
+        amplitude_range: (f64, f64),
+        wavelength_range: (f64, f64),
+        num_waves_range: (u32, u32),
+        interpolation: &str,
+        fill: u8,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        let config = V2Config::WaterRefraction(rivet_vision::transforms::WaterRefractionConfig {
+            amplitude_range,
+            wavelength_range,
+            num_waves_range,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+            fill_mask,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

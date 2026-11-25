@@ -671,6 +671,10 @@ pub(super) fn apply(
             }
             Ok(s)
         }
+        ImageOp::V2(V2Config::WaterRefraction(config)) => {
+            let map = config.sample(h, w, rng)?;
+            remap_structured(s, &map, config.interpolation, config.fill, config.fill_mask)
+        }
         ImageOp::V2(V2Config::RandomGridShuffle(config)) => {
             let map = config.sample(h, w, rng)?;
             if map.identity {

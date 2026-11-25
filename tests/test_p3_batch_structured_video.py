@@ -1478,3 +1478,16 @@ def test_random_grid_shuffle_moves_fragments_and_aligned_targets():
         np.testing.assert_array_equal(t["boxes"], expect)
         np.testing.assert_array_equal(t["keypoints"], [[[x0 + 1.25, y0 + 1]]])
         np.testing.assert_array_equal(t["labels"], [3])
+
+
+def test_water_refraction_matches_integer_mask_sampling():
+    mask = np.arange(1, 101, dtype=np.uint8).reshape(10, 10)
+    image = np.repeat(mask[..., None], 3, axis=-1)
+    sample = rivet.AnnotatedSample(image, masks=mask, boxes=[[2, 2, 8, 8]], labels=[6], keypoints=[[[5, 5]]])
+    transform = rivet.Transform().water_refraction(
+        (0.3, 0.3), (1, 1), (1, 1), interpolation="nearest", fill=200, fill_mask=200
+    )
+    result = sample.apply(transform).to_dict()
+    np.testing.assert_array_equal(result["image"][..., 0], result["masks"])
+    np.testing.assert_array_equal(result["labels"], [6])
+    assert np.isfinite(result["keypoints"]).all()
