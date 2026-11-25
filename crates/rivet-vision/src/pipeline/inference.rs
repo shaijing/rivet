@@ -374,7 +374,9 @@ pub(crate) fn infer_image_op(
                     }
                     set_channel_dim(&mut output, ShapeDim::Known(3));
                 }
-                V2Config::HueSaturationValue(_) | V2Config::ToSepia { .. } => {
+                V2Config::HueSaturationValue(_)
+                | V2Config::ToSepia { .. }
+                | V2Config::FancyPca { .. } => {
                     if !matches!(
                         input_state,
                         PipelineImageState::Decoded {

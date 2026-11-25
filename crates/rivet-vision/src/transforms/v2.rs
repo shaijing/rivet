@@ -109,6 +109,9 @@ pub enum V2Config {
     },
     RandomSunFlare(std::sync::Arc<RandomSunFlareConfig>),
     HueSaturationValue(std::sync::Arc<[(f64, f64); 3]>),
+    FancyPca {
+        alpha: f64,
+    },
     Colorize(ColorizeConfig),
     ToSepia {
         alpha: f64,
@@ -248,6 +251,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::RandomSunFlare(_) => "RandomSunFlare",
             Self::HueSaturationValue(_) => "HueSaturationValue",
+            Self::FancyPca { .. } => "FancyPCA",
             Self::Colorize(_) => "Colorize",
             Self::ToSepia { .. } => "ToSepia",
             Self::RgbShift(_) => "RGBShift",
@@ -305,6 +309,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => 82,
             Self::RandomSunFlare(_) => 88,
             Self::HueSaturationValue(_) => 99,
+            Self::FancyPca { .. } => 102,
             Self::Colorize(_) => 101,
             Self::ToSepia { .. } => 100,
             Self::RgbShift(_) => 97,
@@ -360,6 +365,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::FancyPca { alpha } => alpha.is_finite() && *alpha >= 0.0,
             Self::Colorize(config) => config.valid(),
             Self::ToSepia { alpha } => (0.0..=1.0).contains(alpha),
             Self::HueSaturationValue(ranges) => ranges
@@ -855,6 +861,7 @@ impl V2Config {
             | Self::MultiplicativeNoise { .. }
             | Self::RandomSunFlare(_)
             | Self::HueSaturationValue(_)
+            | Self::FancyPca { .. }
             | Self::Colorize(_)
             | Self::ToSepia { .. }
             | Self::RgbShift(_)
@@ -1082,6 +1089,9 @@ impl V2Config {
             Self::HueSaturationValue(ranges) => {
                 let shifts = ranges.map(|(lo, hi)| lo + rng.next_f64() * (hi - lo));
                 s.image = super::color::hue_saturation_value(&s.image, shifts)?;
+            }
+            Self::FancyPca { alpha } => {
+                s.image = super::pca::fancy_pca(&s.image, *alpha, rng)?;
             }
             Self::Colorize(config) => {
                 s.image = config.apply(&s.image, rng)?;

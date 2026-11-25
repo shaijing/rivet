@@ -1077,6 +1077,15 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (alpha=0.1))]
+    fn fancy_pca(&self, alpha: f64) -> PyResult<Self> {
+        let config = V2Config::FancyPca { alpha };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (black_range=((0,0,0),(0,0,0)), white_range=((255,255,255),(255,255,255)), mid_range=None, mid_value_range=(127,127)))]
     fn colorize(
         &self,
@@ -2879,6 +2888,15 @@ impl PyImagePipeline {
             sat_shift_range,
             val_shift_range,
         ]));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (alpha=0.1))]
+    fn fancy_pca(&self, alpha: f64) -> PyResult<Self> {
+        let config = V2Config::FancyPca { alpha };
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

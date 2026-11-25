@@ -753,6 +753,15 @@ class Pipeline:
         )
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def fancy_pca(self, alpha: float = 0.1) -> Pipeline:
+        """Add seeded covariance-weighted color offsets to uint8 or float32 HWC.
+
+        Compute PCA in normalized intensity units. Each principal axis
+        contributes its variance times a Gaussian sample of standard
+        deviation alpha. Grayscale uses its scalar variance.
+        """
+        return Pipeline(self._inner.fancy_pca(alpha), as_numpy=self.as_numpy)
+
     def colorize(
         self,
         black_range: tuple[tuple[int, int, int], tuple[int, int, int]] = ((0, 0, 0), (0, 0, 0)),

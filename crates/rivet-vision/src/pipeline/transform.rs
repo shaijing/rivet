@@ -123,6 +123,11 @@ impl TransformSequence {
         ))
     }
 
+    /// Add seeded covariance-weighted principal component offsets.
+    pub fn fancy_pca(self, alpha: f64) -> Self {
+        self.v2(crate::transforms::V2Config::FancyPca { alpha })
+    }
+
     /// Map grayscale intensities to a seeded RGB ramp.
     pub fn colorize(self, config: crate::transforms::ColorizeConfig) -> Self {
         self.v2(crate::transforms::V2Config::Colorize(config))

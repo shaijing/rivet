@@ -1813,3 +1813,42 @@ def test_colorize_seed_and_validation(source):
         output(root, lambda p: p.colorize())
     with pytest.raises(ValueError):
         rivet.Transform().colorize(mid_range=((0, 0, 0), (1, 1, 1)), mid_value_range=(0, 127))
+
+
+def test_fancy_pca_rank_one_and_dtype(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    red = np.tile([64, 96, 128, 160, 192], (4, 1))
+    pixels = np.stack([red, 192 - red // 2, np.full_like(red, 128)], axis=-1).astype(np.uint8)
+    Image.fromarray(pixels).save(folder / "image.png")
+
+    def augment(p):
+        return p.fancy_pca(0.25)
+
+    floats = output(tmp_path, lambda p: augment(p.to_dtype("float32", True)), transform=True)[0]
+    assert floats.shape == pixels.shape and floats.dtype == np.float32
+    offsets = floats - pixels / 255
+    assert abs(offsets[0, 0, 0]) > 1e-5
+    np.testing.assert_allclose(offsets[..., 0], offsets[0, 0, 0], atol=1e-7)
+    np.testing.assert_allclose(0.5 * offsets[..., 0], -offsets[..., 1], atol=1e-7)
+    np.testing.assert_allclose(offsets[..., 2], 0, atol=1e-7)
+    u8 = output(tmp_path, augment)[0]
+    assert u8.dtype == np.uint8
+    np.testing.assert_allclose(u8, floats * 255, atol=0.5001)
+
+
+def test_fancy_pca_seed_identity_and_validation(source):
+    root, pixels = source
+    serial = output(root, lambda p: p.fancy_pca(1.0))
+    np.testing.assert_array_equal(
+        serial, output(root, lambda p: p.fancy_pca(1.0), transform=True, workers=3)
+    )
+    assert not np.array_equal(serial, output(root, lambda p: p.fancy_pca(1.0), epoch=1))
+    np.testing.assert_array_equal(output(root, lambda p: p.fancy_pca(0))[0], pixels)
+    gray = output(root, lambda p: p.grayscale().to_dtype("float32", True).fancy_pca(2))[0]
+    assert gray.shape == (*pixels.shape[:2], 1) and gray.dtype == np.float32
+    assert 0 <= gray.min() <= gray.max() <= 1
+    with pytest.raises(ValueError, match="FancyPCA"):
+        output(root, lambda p: p.hwc_to_chw().fancy_pca())
+    with pytest.raises(ValueError):
+        rivet.Transform().fancy_pca(-1)
