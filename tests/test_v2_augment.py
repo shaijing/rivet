@@ -2669,3 +2669,19 @@ def test_fda_reference_seed_resize_and_identity(source):
     np.testing.assert_array_equal(output(root, lambda p: p.fda(refs, (0, 0)))[0], pixels)
     with pytest.raises(ValueError):
         rivet.Transform().fda(refs, (0, 0.6))
+
+
+@pytest.mark.parametrize("transform", [False, True])
+def test_rician_noise_image_pipeline_and_workers(source, transform):
+    root, pixels = source
+
+    def build(p):
+        return p.rician_noise((0.15, 0.15), per_channel=True)
+
+    one = output(root, build, transform=transform, workers=1)
+    many = output(root, build, transform=transform, workers=3)
+    np.testing.assert_array_equal(one, many)
+    assert one[0].dtype == np.uint8
+    assert not np.array_equal(one[0], pixels)
+    zero = output(root, lambda p: p.rician_noise((0, 0)), transform=transform)
+    np.testing.assert_array_equal(zero[0], pixels)

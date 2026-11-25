@@ -52,7 +52,7 @@ pub use superpixels::SuperpixelsConfig;
 pub use thin_plate::ThinPlateSplineConfig;
 mod multi_crop;
 pub use morphology::{MorphologicalConfig, MorphologicalOperation};
-mod noise;
+pub(crate) mod noise;
 mod normalize;
 mod pad;
 mod pad_needed;

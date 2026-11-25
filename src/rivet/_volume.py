@@ -251,5 +251,13 @@ class VolumeSample:
         )
         return result
 
+    def rician_noise(
+        self, std_range: tuple[float, float] = (0.05, 0.15), *, per_channel: bool = False, seed: int = 0
+    ) -> VolumeSample:
+        """Apply a seeded MRI magnitude noise field on the entire DHW volume."""
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.rician_noise(std_range, per_channel, seed)
+        return result
+
     def to_dict(self) -> dict[str, Any]:
         return self._inner.to_dict()

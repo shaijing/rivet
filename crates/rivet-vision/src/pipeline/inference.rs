@@ -707,6 +707,19 @@ pub(crate) fn infer_image_op(
                 V2Config::ToDtype { dtype, .. } => {
                     output.dtype = Some(core_dtype(*dtype));
                 }
+                V2Config::RicianNoise { .. } => {
+                    if !matches!(
+                        input_state,
+                        Decoded {
+                            dtype: CoreDType::U8 | CoreDType::F32,
+                            ..
+                        }
+                    ) {
+                        return Err(invalid_pipeline(
+                            "RicianNoise requires uint8 or float32 input",
+                        ));
+                    }
+                }
                 V2Config::ShotNoise { .. } => {
                     if !matches!(
                         input_state,

@@ -1761,6 +1761,12 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def rician_noise(
+        self, std_range: tuple[float, float] = (0.05, 0.15), *, per_channel: bool = False
+    ) -> Pipeline:
+        """Simulate MRI magnitude reconstruction from Gaussian real and imaginary noise."""
+        return Pipeline(self._inner.rician_noise(std_range, per_channel), as_numpy=self.as_numpy)
+
     def shot_noise(self, intensity: float = 0.2) -> Pipeline:
         """Add Gaussian noise scaled by intensity * sqrt(max(pixel, 0) + 0.5).
 

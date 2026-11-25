@@ -675,3 +675,67 @@ pub(super) fn rgb_shift(
         |value, shift| value + shift,
     )
 }
+
+pub(crate) fn validate_rician_std([low, high]: [f64; 2]) -> RivetResult<()> {
+    if !(0.0..=1.0).contains(&low) || !(low..=1.0).contains(&high) {
+        return Err(invalid_argument(
+            "RicianNoise requires an ordered std range in [0, 1]",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn rician_noise(
+    input: &Tensor,
+    channels: usize,
+    std_range: [f64; 2],
+    per_channel: bool,
+    rng: &mut RandomStream,
+) -> RivetResult<Tensor> {
+    validate_rician_std(std_range)?;
+    if !matches!(input.dtype(), DType::U8 | DType::F32) || channels == 0 {
+        return Err(invalid_argument(
+            "RicianNoise requires uint8 or float32 input and nonempty channels",
+        ));
+    }
+    let [low, high] = std_range;
+    let std = low + (high - low) * rng.next_f64();
+    if std == 0.0 {
+        return Ok(input.clone());
+    }
+    let input = input.contiguous()?;
+    let len = input.elem_count();
+    Ok(input.with_cpu_storage(|storage, layout| {
+        let start = layout.start_offset();
+        macro_rules! apply {
+            ($pixels:expr, $limit:expr, $cast:expr) => {{
+                let pixels = &$pixels[start..start + len];
+                Tensor::from_exact_writer(input.dims(), input.device(), |out| {
+                    let scale = std * $limit;
+                    let mut draw = || {
+                        let (a, b) = normal_pair(rng);
+                        (a * scale, b * scale)
+                    };
+                    for voxel in pixels.chunks_exact(channels) {
+                        let shared = if per_channel { None } else { Some(draw()) };
+                        for &value in voxel {
+                            let (real, imaginary) = shared.unwrap_or_else(&mut draw);
+                            let signal = f64::from(value) + real;
+                            let magnitude = (signal * signal + imaginary * imaginary).sqrt();
+                            out.write_next($cast(magnitude.clamp(0.0, $limit)))?;
+                        }
+                    }
+                    Ok(())
+                })
+            }};
+        }
+        match storage {
+            CpuStorageRef::U8(v) => apply!(v, 255.0, |v: f64| v.round() as u8),
+            CpuStorageRef::F32(v) => apply!(v, 1.0, |v: f64| v as f32),
+            _ => Err(rivet_core::Error::UnsupportedDType {
+                dtype: input.dtype(),
+                op: "RicianNoise",
+            }),
+        }
+    })?)
+}

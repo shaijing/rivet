@@ -94,6 +94,10 @@ pub enum V2Config {
         sigma: f64,
         clip: bool,
     },
+    RicianNoise {
+        std_range: [f64; 2],
+        per_channel: bool,
+    },
     ShotNoise {
         intensity: f32,
     },
@@ -300,6 +304,7 @@ impl V2Config {
             Self::ScaleJitter { .. } => "ScaleJitter",
             Self::RandomZoomOut { .. } => "RandomZoomOut",
             Self::GaussianNoise { .. } => "GaussianNoise",
+            Self::RicianNoise { .. } => "RicianNoise",
             Self::ShotNoise { .. } => "ShotNoise",
             Self::RandomToneCurve { .. } => "RandomToneCurve",
             Self::Clahe { .. } => "CLAHE",
@@ -391,6 +396,7 @@ impl V2Config {
             Self::ScaleJitter { .. } => 54,
             Self::RandomZoomOut { .. } => 55,
             Self::GaussianNoise { .. } => 56,
+            Self::RicianNoise { .. } => 138,
             Self::ShotNoise { .. } => 60,
             Self::RandomToneCurve { .. } => 69,
             Self::Clahe { .. } => 70,
@@ -783,6 +789,9 @@ impl V2Config {
             Self::GaussianNoise { mean, sigma, .. } => {
                 return super::noise::validate_gaussian_noise(*mean, *sigma);
             }
+            Self::RicianNoise { std_range, .. } => {
+                return super::noise::validate_rician_std(*std_range);
+            }
             Self::ShotNoise { intensity } => return super::noise::validate_shot_noise(*intensity),
             Self::PlanckianJitter {
                 temperature_range: (low, high),
@@ -1070,6 +1079,20 @@ impl V2Config {
             }
             Self::GaussianNoise { mean, sigma, clip } => {
                 s.image = super::gaussian_noise(&s.image, *mean, *sigma, *clip, rng)?;
+            }
+            Self::RicianNoise {
+                std_range,
+                per_channel,
+            } => {
+                let input = match axis {
+                    ImageAxisOrder::Hwc => s.image,
+                    ImageAxisOrder::Chw => s.image.permute(&[1, 2, 0])?,
+                };
+                let image = super::noise::rician_noise(&input, c, *std_range, *per_channel, rng)?;
+                s.image = match axis {
+                    ImageAxisOrder::Hwc => image,
+                    ImageAxisOrder::Chw => image.permute(&[2, 0, 1])?,
+                };
             }
             Self::ShotNoise { intensity } => {
                 s.image = super::shot_noise(&s.image, *intensity, rng)?;

@@ -378,3 +378,34 @@ def test_elastic_transform3d_identity_singleton_and_validation():
         sample.elastic_transform3d(control_grid_shape=(3, 7))
     with pytest.raises(ValueError):
         sample.elastic_transform3d(displacement_range=(0.1, 1))
+
+
+def test_rician_volume_noise_floor_channel_modes_and_annotations():
+    from concurrent.futures import ThreadPoolExecutor
+
+    image = np.zeros((8, 24, 32, 2), dtype=np.float32)
+    mask = np.full(image.shape[:3], 2**53 + 1, dtype=np.int64)
+    sample = VolumeSample(image, mask=mask, keypoints=[[1, 2, 3]], label=61)
+
+    def run(seed):
+        return sample.rician_noise((0.1, 0.1), seed=seed).to_dict()
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        for seed, out in enumerate(pool.map(run, range(3))):
+            field = out["volume"]
+            assert 0.12 < field.mean() < 0.13
+            assert np.all(field >= 0)
+            np.testing.assert_array_equal(field[..., 0], field[..., 1])
+            np.testing.assert_array_equal(field, run(seed)["volume"])
+            np.testing.assert_array_equal(out["mask"], mask)
+            np.testing.assert_array_equal(out["keypoints"], [[1, 2, 3]])
+            assert out["label"] == 61
+    independent = sample.rician_noise((0.1, 0.1), per_channel=True).to_dict()["volume"]
+    assert not np.array_equal(independent[..., 0], independent[..., 1])
+    gray = VolumeSample(np.full((2, 3, 4), 5, np.uint8))
+    baseline = gray.to_dict()["volume"]
+    np.testing.assert_array_equal(gray.rician_noise((0, 0)).to_dict()["volume"], baseline)
+    noisy = gray.rician_noise((0.5, 0.5)).to_dict()["volume"]
+    assert noisy.dtype == np.uint8 and not np.array_equal(noisy, baseline)
+    with pytest.raises(ValueError):
+        sample.rician_noise((0.5, 0.1))

@@ -1637,6 +1637,12 @@ class Transform:
         """
         return Transform(self._inner.grid_dropout(unit_size, ratio=ratio, fill=fill))
 
+    def rician_noise(
+        self, std_range: tuple[float, float] = (0.05, 0.15), *, per_channel: bool = False
+    ) -> Transform:
+        """Simulate MRI magnitude reconstruction from Gaussian real and imaginary noise."""
+        return Transform(self._inner.rician_noise(std_range, per_channel))
+
     def shot_noise(self, intensity: float = 0.2) -> Transform:
         """Add Gaussian noise scaled by intensity * sqrt(max(pixel, 0) + 0.5).
 

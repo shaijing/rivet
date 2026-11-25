@@ -1548,3 +1548,17 @@ def test_overlay_elements_resizes_and_filters_aligned_instances(annotated):
     random = rivet.StructuredPipeline([annotated] * 6).overlay_elements([{"image": overlay}]).seed(17)
     for a,b in zip(random.execute(), random.workers(3).execute(), strict=True):
         np.testing.assert_array_equal(a["images"], b["images"])
+
+
+def test_structured_rician_noise_preserves_annotations(annotated):
+    source = rivet.StructuredPipeline([annotated] * 4).seed(17).batch(2)
+    transform = rivet.Transform().rician_noise((0.15, 0.15))
+    noisy = rivet.StructuredPipeline([annotated] * 4).compose(transform).seed(17).batch(2)
+    for plain, serial, parallel in zip(
+        source.execute(), noisy.execute(), noisy.workers(3).execute(), strict=True
+    ):
+        assert not np.array_equal(plain["images"], serial["images"])
+        np.testing.assert_array_equal(serial["images"], parallel["images"])
+        for expected, actual in zip(plain["targets"], serial["targets"], strict=True):
+            for name in expected["shapes"]:
+                np.testing.assert_array_equal(actual[name], expected[name])

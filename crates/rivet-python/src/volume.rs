@@ -335,6 +335,16 @@ impl PyVolumeSample {
         Ok(Self { inner })
     }
 
+    fn rician_noise(&self, std_range: [f64; 2], per_channel: bool, seed: u64) -> PyResult<Self> {
+        let mut rng = rivet_vision::RandomStream::from_seed(seed);
+        let inner = self
+            .inner
+            .clone()
+            .rician_noise(std_range, per_channel, &mut rng)
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
         out.set_item("volume", tensor_to_numpy(py, self.inner.volume.clone())?)?;
