@@ -1077,6 +1077,22 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (blur_range=(7,15), cutoff_range=(std::f64::consts::FRAC_PI_4,std::f64::consts::FRAC_PI_2)))]
+    fn ringing_overshoot(
+        &self,
+        blur_range: (u32, u32),
+        cutoff_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let config = V2Config::RingingOvershoot {
+            blur_range,
+            cutoff_range,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (mode="edge", alpha_range=(0.5, 1.0)))]
     fn enhance(&self, mode: &str, alpha_range: (f64, f64)) -> PyResult<Self> {
         use rivet_vision::transforms::EnhanceMode;
@@ -2931,6 +2947,22 @@ impl PyImagePipeline {
             sat_shift_range,
             val_shift_range,
         ]));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (blur_range=(7,15), cutoff_range=(std::f64::consts::FRAC_PI_4,std::f64::consts::FRAC_PI_2)))]
+    fn ringing_overshoot(
+        &self,
+        blur_range: (u32, u32),
+        cutoff_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let config = V2Config::RingingOvershoot {
+            blur_range,
+            cutoff_range,
+        };
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

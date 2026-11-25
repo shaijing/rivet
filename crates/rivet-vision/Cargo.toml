@@ -17,6 +17,7 @@ arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-ipc.workspace = true
 image = "0.25.10"
+libm = "0.2.16"
 mozjpeg = { version = "0.10.13", default-features = false }
 lance = { workspace = true, optional = true }
 rivet-core.workspace = true

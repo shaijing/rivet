@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from collections.abc import Iterable, Sequence
 
 from ._rivet import _Transform
@@ -642,6 +644,18 @@ class Transform:
             hue_shift_range, sat_shift_range, val_shift_range
         )
         return Transform(inner)
+
+    def ringing_overshoot(
+        self,
+        blur_range: tuple[int, int] = (7, 15),
+        cutoff_range: tuple[float, float] = (math.pi / 4, math.pi / 2),
+    ) -> Transform:
+        """Create edge ringing with a radial sinc filter on uint8 or float32 HWC.
+
+        Sample an odd kernel size and a cutoff in radians per pixel from
+        (0, pi). Use reflected borders and clip the final output.
+        """
+        return Transform(self._inner.ringing_overshoot(blur_range, cutoff_range))
 
     def enhance(
         self, mode: str = "edge", alpha_range: tuple[float, float] = (0.5, 1.0)

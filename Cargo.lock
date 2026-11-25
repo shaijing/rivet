@@ -5468,6 +5468,7 @@ dependencies = [
  "futures",
  "image",
  "lance",
+ "libm",
  "memmap2",
  "mozjpeg",
  "num_cpus",

@@ -176,6 +176,14 @@ impl ImagePipeline {
         ))
     }
 
+    /// Apply a radial sinc filter to simulate ringing at edges.
+    pub fn ringing_overshoot(self, blur_range: (u32, u32), cutoff_range: (f64, f64)) -> Self {
+        self.v2(crate::transforms::V2Config::RingingOvershoot {
+            blur_range,
+            cutoff_range,
+        })
+    }
+
     /// Apply the selected local detail or edge enhancement preset.
     pub fn enhance(self, mode: crate::transforms::EnhanceMode, alpha_range: (f64, f64)) -> Self {
         self.v2(crate::transforms::V2Config::Enhance { mode, alpha_range })

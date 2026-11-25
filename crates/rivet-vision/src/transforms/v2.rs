@@ -109,6 +109,10 @@ pub enum V2Config {
     },
     RandomSunFlare(std::sync::Arc<RandomSunFlareConfig>),
     HueSaturationValue(std::sync::Arc<[(f64, f64); 3]>),
+    RingingOvershoot {
+        blur_range: (u32, u32),
+        cutoff_range: (f64, f64),
+    },
     Enhance {
         mode: EnhanceMode,
         alpha_range: (f64, f64),
@@ -263,6 +267,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::RandomSunFlare(_) => "RandomSunFlare",
             Self::HueSaturationValue(_) => "HueSaturationValue",
+            Self::RingingOvershoot { .. } => "RingingOvershoot",
             Self::Enhance { .. } => "Enhance",
             Self::Emboss { .. } => "Emboss",
             Self::ExposureMatching { .. } => "ExposureMatching",
@@ -324,6 +329,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => 82,
             Self::RandomSunFlare(_) => 88,
             Self::HueSaturationValue(_) => 99,
+            Self::RingingOvershoot { .. } => 106,
             Self::Enhance { .. } => 105,
             Self::Emboss { .. } => 104,
             Self::ExposureMatching { .. } => 103,
@@ -383,6 +389,19 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::RingingOvershoot {
+                blur_range: (lo, hi),
+                cutoff_range: (min, max),
+            } => {
+                *lo >= 3
+                    && lo <= hi
+                    && *hi <= 127
+                    && lo % 2 == 1
+                    && hi % 2 == 1
+                    && *min > 0.0
+                    && min <= max
+                    && *max < std::f64::consts::PI
+            }
             Self::Enhance {
                 alpha_range: (lo, hi),
                 ..
@@ -903,6 +922,7 @@ impl V2Config {
             | Self::MultiplicativeNoise { .. }
             | Self::RandomSunFlare(_)
             | Self::HueSaturationValue(_)
+            | Self::RingingOvershoot { .. }
             | Self::Enhance { .. }
             | Self::Emboss { .. }
             | Self::ExposureMatching { .. }
@@ -1156,6 +1176,15 @@ impl V2Config {
             } => {
                 let alpha = lo + rng.next_f64() * (hi - lo);
                 s.image = super::blur::enhance(&s.image, *mode, alpha)?;
+            }
+            Self::RingingOvershoot {
+                blur_range: (lo, hi),
+                cutoff_range: (min, max),
+            } => {
+                let size =
+                    *lo as usize + 2 * rng.gen_range_usize(0..((hi - lo) / 2 + 1) as usize)?;
+                let cutoff = min + rng.next_f64() * (max - min);
+                s.image = super::blur::ringing_overshoot(&s.image, size, cutoff)?;
             }
             Self::FancyPca { alpha } => {
                 s.image = super::pca::fancy_pca(&s.image, *alpha, rng)?;

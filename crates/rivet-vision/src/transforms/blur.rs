@@ -427,7 +427,10 @@ fn convolve_square(
             size,
             weights,
             |sum| {
-                if matches!(name, "StochasticConvolution" | "Emboss" | "Enhance") {
+                if matches!(
+                    name,
+                    "StochasticConvolution" | "Emboss" | "Enhance" | "RingingOvershoot"
+                ) {
                     sum.clamp(0.0, 1.0) as f32
                 } else {
                     sum as f32
@@ -766,4 +769,37 @@ pub(super) fn enhance(
         corner, side, corner, side, center, side, corner, side, corner,
     ];
     convolve_square(input, "Enhance", 3, &weights, super::PaddingMode::Reflect)
+}
+
+pub(super) fn ringing_overshoot(
+    input: &rivet_core::Tensor,
+    size: usize,
+    cutoff: f64,
+) -> RivetResult<rivet_core::Tensor> {
+    let half = (size / 2) as i32;
+    let mut weights = Vec::with_capacity(size * size);
+    for y in -half..=half {
+        for x in -half..=half {
+            let radius = f64::from(x * x + y * y).sqrt();
+            let z = cutoff * radius;
+            // The radial impulse response of a circular low-pass filter,
+            // scaled by its center value before normalizing the finite grid.
+            let tap = if z < 1e-7 { 1.0 } else { 2.0 * libm::j1(z) / z };
+            weights.push(tap);
+        }
+    }
+    let sum = weights.iter().sum::<f64>();
+    if !sum.is_finite() || sum.abs() < 1e-12 {
+        return Err(invalid_argument("RingingOvershoot kernel has zero DC gain"));
+    }
+    for tap in &mut weights {
+        *tap /= sum;
+    }
+    convolve_square(
+        input,
+        "RingingOvershoot",
+        size,
+        &weights,
+        super::PaddingMode::Reflect,
+    )
 }

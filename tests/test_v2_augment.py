@@ -1947,3 +1947,51 @@ def test_enhance_preset_and_seed(source, mode):
     np.testing.assert_array_equal(output(root, lambda p: p.enhance(mode, (0, 0)))[0], pixels)
     with pytest.raises(ValueError, match="Enhance"):
         output(root, lambda p: p.hwc_to_chw().enhance(mode))
+
+
+def test_ringing_overshoot_radial_sinc_reference_and_seed(source):
+    import math
+
+    root, pixels = source
+    cutoff = 1.6
+    yy, xx = np.mgrid[-3:4, -3:4]
+    z = cutoff * np.hypot(xx, yy)
+    # Taylor expansion of 2 J1(z) / z, including the analytic center.
+    kernel = sum(
+        (-z * z / 4) ** k / (math.factorial(k) * math.factorial(k + 1))
+        for k in range(16)
+    )
+    assert kernel.min() < 0
+    kernel /= kernel.sum()
+    padded = np.pad(pixels, ((3, 3), (3, 3), (0, 0)), mode="reflect")
+    windows = np.lib.stride_tricks.sliding_window_view(padded, (7, 7), axis=(0, 1))
+    expected = np.einsum("hwcij,ij->hwc", windows, kernel).clip(0, 255)
+
+    def fixed(p):
+        return p.ringing_overshoot((7, 7), (cutoff, cutoff))
+
+    result = output(root, fixed, transform=True)[0]
+    assert result.shape == pixels.shape and result.dtype == np.uint8
+    np.testing.assert_allclose(result, expected, atol=0.5)
+    floats = output(root, lambda p: fixed(p.to_dtype("float32", True)))[0]
+    assert floats.dtype == np.float32
+    np.testing.assert_allclose(floats * 255, expected, atol=3e-5)
+    serial = output(root, lambda p: p.ringing_overshoot())
+    np.testing.assert_array_equal(
+        serial, output(root, lambda p: p.ringing_overshoot(), transform=True, workers=3)
+    )
+    assert not np.array_equal(serial, output(root, lambda p: p.ringing_overshoot(), epoch=1))
+    with pytest.raises(ValueError, match="RingingOvershoot"):
+        output(root, lambda p: p.hwc_to_chw().ringing_overshoot())
+    with pytest.raises(ValueError):
+        rivet.Transform().ringing_overshoot((4, 7))
+
+
+def test_ringing_overshoot_preserves_single_pixel(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.full((1, 1, 3), 120, dtype=np.uint8)
+    Image.fromarray(pixels).save(folder / "image.png")
+    actual = output(tmp_path, lambda p: p.grayscale().ringing_overshoot())[0]
+    assert actual.shape == (1, 1, 1)
+    np.testing.assert_array_equal(actual, 120)
