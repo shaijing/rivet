@@ -1745,3 +1745,32 @@ def test_hue_saturation_value_seed_and_validation(source):
         output(root, lambda p: p.hwc_to_chw().hue_saturation_value())
     with pytest.raises(ValueError):
         rivet.Transform().hue_saturation_value(hue_shift_range=(-181, 0))
+
+
+@pytest.mark.parametrize("alpha", [0.0, 0.4, 1.0])
+def test_to_sepia_matrix_and_blending(source, alpha):
+    root, pixels = source
+    matrix = np.array([
+        [0.393, 0.769, 0.189],
+        [0.349, 0.686, 0.168],
+        [0.272, 0.534, 0.131],
+    ])
+    expected = ((1 - alpha) * pixels + alpha * (pixels @ matrix.T)).clip(0, 255)
+    serial = output(root, lambda p: p.to_sepia(alpha))
+    parallel = output(root, lambda p: p.to_sepia(alpha), transform=True, workers=3)
+    np.testing.assert_array_equal(serial, parallel)
+    assert serial[0].dtype == np.uint8 and serial[0].shape == pixels.shape
+    np.testing.assert_allclose(serial[0], expected, atol=0.500001)
+    float_image = output(root, lambda p: p.to_dtype("float32", True).to_sepia(alpha))[0]
+    assert float_image.dtype == np.float32
+    np.testing.assert_allclose(float_image * 255, expected, atol=3e-5)
+    gray = output(root, lambda p: p.grayscale().to_sepia(alpha))[0]
+    np.testing.assert_array_equal(gray, output(root, lambda p: p.grayscale())[0])
+
+
+def test_to_sepia_validation(source):
+    root, _ = source
+    with pytest.raises(ValueError):
+        rivet.Transform().to_sepia(1.1)
+    with pytest.raises(ValueError, match="ToSepia"):
+        output(root, lambda p: p.hwc_to_chw().to_sepia())

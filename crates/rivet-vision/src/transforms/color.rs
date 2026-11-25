@@ -878,3 +878,33 @@ pub(super) fn hue_saturation_value(input: &Tensor, shifts: [f64; 3]) -> RivetRes
         }
     })?)
 }
+
+pub(super) fn to_sepia(input: &Tensor, alpha: f64) -> RivetResult<Tensor> {
+    let [h, w, channels] = *input.dims() else {
+        return Err(invalid_argument("ToSepia expects rank-3 HWC input"));
+    };
+    if h == 0
+        || w == 0
+        || !matches!(channels, 1 | 3)
+        || !matches!(input.dtype(), DType::U8 | DType::F32)
+    {
+        return Err(invalid_argument(
+            "ToSepia requires nonempty uint8 or float32 HWC grayscale or RGB input",
+        ));
+    }
+    if channels == 1 || alpha == 0.0 {
+        return Ok(input.clone());
+    }
+    let matrix = [
+        [0.393, 0.769, 0.189],
+        [0.349, 0.686, 0.168],
+        [0.272, 0.534, 0.131],
+    ];
+    super::weather::write_weather_rgb(input, |_, _, rgb| {
+        std::array::from_fn(|c| {
+            let [r, g, b] = matrix[c];
+            let sepia = r * rgb[0] + g * rgb[1] + b * rgb[2];
+            rgb[c] + alpha * (sepia - rgb[c])
+        })
+    })
+}

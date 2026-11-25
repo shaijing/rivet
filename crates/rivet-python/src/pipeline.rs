@@ -1077,6 +1077,15 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (alpha=1.0))]
+    fn to_sepia(&self, alpha: f64) -> PyResult<Self> {
+        let config = V2Config::ToSepia { alpha };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (r_shift_range=(-20.0, 20.0), g_shift_range=(-20.0, 20.0), b_shift_range=(-20.0, 20.0)))]
     fn rgb_shift(
         &self,
@@ -2849,6 +2858,15 @@ impl PyImagePipeline {
             sat_shift_range,
             val_shift_range,
         ]));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (alpha=1.0))]
+    fn to_sepia(&self, alpha: f64) -> PyResult<Self> {
+        let config = V2Config::ToSepia { alpha };
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

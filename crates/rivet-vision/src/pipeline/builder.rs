@@ -176,6 +176,11 @@ impl ImagePipeline {
         ))
     }
 
+    /// Apply a fixed sepia color matrix blended with the original RGB.
+    pub fn to_sepia(self, alpha: f64) -> Self {
+        self.v2(crate::transforms::V2Config::ToSepia { alpha })
+    }
+
     /// Add independent seeded RGB offsets in 8-bit intensity units.
     pub fn rgb_shift(self, ranges: [(f64, f64); 3]) -> Self {
         self.v2(crate::transforms::V2Config::RgbShift(std::sync::Arc::new(

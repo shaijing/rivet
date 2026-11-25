@@ -643,6 +643,14 @@ class Transform:
         )
         return Transform(inner)
 
+    def to_sepia(self, alpha: float = 1.0) -> Transform:
+        """Apply a sepia matrix to uint8 or normalized float32 HWC RGB.
+
+        Blend the transformed RGB with the original using alpha in [0, 1],
+        then clip. Grayscale is unchanged.
+        """
+        return Transform(self._inner.to_sepia(alpha))
+
     def rgb_shift(
         self,
         r_shift_range: tuple[float, float] = (-20, 20),

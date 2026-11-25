@@ -109,6 +109,9 @@ pub enum V2Config {
     },
     RandomSunFlare(std::sync::Arc<RandomSunFlareConfig>),
     HueSaturationValue(std::sync::Arc<[(f64, f64); 3]>),
+    ToSepia {
+        alpha: f64,
+    },
     RgbShift(std::sync::Arc<[(f64, f64); 3]>),
     RandomBrightnessContrast {
         brightness_range: (f64, f64),
@@ -244,6 +247,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::RandomSunFlare(_) => "RandomSunFlare",
             Self::HueSaturationValue(_) => "HueSaturationValue",
+            Self::ToSepia { .. } => "ToSepia",
             Self::RgbShift(_) => "RGBShift",
             Self::RandomBrightnessContrast { .. } => "RandomBrightnessContrast",
             Self::RandomGamma { .. } => "RandomGamma",
@@ -299,6 +303,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => 82,
             Self::RandomSunFlare(_) => 88,
             Self::HueSaturationValue(_) => 99,
+            Self::ToSepia { .. } => 100,
             Self::RgbShift(_) => 97,
             Self::RandomBrightnessContrast { .. } => 98,
             Self::RandomGamma { .. } => 96,
@@ -345,12 +350,14 @@ impl V2Config {
                 | Self::ToDtype { .. }
                 | Self::UnsharpMask { .. }
                 | Self::LetterBox(_)
+                | Self::ToSepia { .. }
                 | Self::MedianBlur
                 | Self::Clahe { .. }
         )
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::ToSepia { alpha } => (0.0..=1.0).contains(alpha),
             Self::HueSaturationValue(ranges) => ranges
                 .iter()
                 .zip([180.0, 255.0, 255.0])
@@ -844,6 +851,7 @@ impl V2Config {
             | Self::MultiplicativeNoise { .. }
             | Self::RandomSunFlare(_)
             | Self::HueSaturationValue(_)
+            | Self::ToSepia { .. }
             | Self::RgbShift(_)
             | Self::RandomBrightnessContrast { .. }
             | Self::RandomGamma { .. }
@@ -1069,6 +1077,9 @@ impl V2Config {
             Self::HueSaturationValue(ranges) => {
                 let shifts = ranges.map(|(lo, hi)| lo + rng.next_f64() * (hi - lo));
                 s.image = super::color::hue_saturation_value(&s.image, shifts)?;
+            }
+            Self::ToSepia { alpha } => {
+                s.image = super::color::to_sepia(&s.image, *alpha)?;
             }
             Self::RgbShift(ranges) => {
                 s.image = super::noise::rgb_shift(&s.image, ranges, rng)?;

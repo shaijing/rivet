@@ -753,6 +753,14 @@ class Pipeline:
         )
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def to_sepia(self, alpha: float = 1.0) -> Pipeline:
+        """Apply a sepia matrix to uint8 or normalized float32 HWC RGB.
+
+        Blend the transformed RGB with the original using alpha in [0, 1],
+        then clip. Grayscale is unchanged.
+        """
+        return Pipeline(self._inner.to_sepia(alpha), as_numpy=self.as_numpy)
+
     def rgb_shift(
         self,
         r_shift_range: tuple[float, float] = (-20, 20),

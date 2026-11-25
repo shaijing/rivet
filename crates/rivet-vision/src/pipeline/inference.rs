@@ -359,7 +359,7 @@ pub(crate) fn infer_image_op(
                         )));
                     }
                 }
-                V2Config::HueSaturationValue(_) => {
+                V2Config::HueSaturationValue(_) | V2Config::ToSepia { .. } => {
                     if !matches!(
                         input_state,
                         PipelineImageState::Decoded {
@@ -368,9 +368,10 @@ pub(crate) fn infer_image_op(
                         }
                     ) || matches!(channel_dim(input), ShapeDim::Known(c) if c != 1 && c != 3)
                     {
-                        return Err(invalid_pipeline(
-                            "HueSaturationValue requires uint8 or float32 HWC grayscale or RGB input",
-                        ));
+                        return Err(invalid_pipeline(format!(
+                            "{} requires uint8 or float32 HWC grayscale or RGB input",
+                            op.name()
+                        )));
                     }
                 }
                 V2Config::Vignetting { .. } => {
