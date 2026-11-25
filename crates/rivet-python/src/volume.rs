@@ -335,6 +335,29 @@ impl PyVolumeSample {
         Ok(Self { inner })
     }
 
+    fn ghosting_artifact(
+        &self,
+        num_ghosts_range: [usize; 2],
+        intensity_range: [f64; 2],
+        axis: usize,
+        restore_range: [f64; 2],
+        seed: u64,
+    ) -> PyResult<Self> {
+        let mut rng = rivet_vision::RandomStream::from_seed(seed);
+        let config = rivet_vision::volume::GhostingArtifactConfig {
+            num_ghosts_range,
+            intensity_range,
+            axis,
+            restore_range,
+        };
+        let inner = self
+            .inner
+            .clone()
+            .ghosting_artifact(config, &mut rng)
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
     fn gibbs_ringing(&self, retained_fraction_range: [f64; 2], seed: u64) -> PyResult<Self> {
         let mut rng = rivet_vision::RandomStream::from_seed(seed);
         let config = rivet_vision::volume::GibbsRingingConfig {

@@ -251,6 +251,22 @@ class VolumeSample:
         )
         return result
 
+    def ghosting_artifact(
+        self,
+        num_ghosts_range: tuple[int, int] = (2, 4),
+        *,
+        intensity_range: tuple[float, float] = (0.1, 0.5),
+        axis: int = 2,
+        restore_range: tuple[float, float] = (0.02, 0.08),
+        seed: int = 0,
+    ) -> VolumeSample:
+        """Attenuate periodic frequencies along the selected DHW phase-encode axis."""
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.ghosting_artifact(
+            num_ghosts_range, intensity_range, axis, restore_range, seed,
+        )
+        return result
+
     def gibbs_ringing(
         self, retained_fraction_range: tuple[float, float] = (0.5, 0.9), *, seed: int = 0
     ) -> VolumeSample:

@@ -131,3 +131,126 @@ fn reconstruct<T: WithDType + IntoVolumeFloat>(
     }
     Ok(Tensor::from_vec(output, input.dims(), input.device())?)
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GhostingArtifactConfig {
+    pub num_ghosts_range: [usize; 2],
+    pub intensity_range: [f64; 2],
+    pub axis: usize,
+    pub restore_range: [f64; 2],
+}
+
+impl VolumeSample {
+    pub fn ghosting_artifact(
+        mut self,
+        config: GhostingArtifactConfig,
+        rng: &mut RandomStream,
+    ) -> RivetResult<Self> {
+        self.validate()?;
+        let [min, max] = config.num_ghosts_range;
+        let valid_fraction =
+            |[lo, hi]: [f64; 2]| (0.0..=1.0).contains(&lo) && (lo..=1.0).contains(&hi);
+        if min < 2
+            || min > max
+            || max == usize::MAX
+            || config.axis >= 3
+            || !valid_fraction(config.intensity_range)
+            || !valid_fraction(config.restore_range)
+        {
+            return Err(invalid_argument(
+                "invalid GhostingArtifact axis, period, intensity or restore range",
+            ));
+        }
+        let length = self.spatial_shape()?[config.axis];
+        let period = if min == max {
+            min
+        } else {
+            rng.gen_range_usize(min..max + 1)?
+        };
+        let mut sample = |[lo, hi]: [f64; 2]| lo + (hi - lo) * rng.next_f64();
+        let intensity = sample(config.intensity_range);
+        let protected = (sample(config.restore_range) * length as f64 * 0.5).floor() as usize;
+        if intensity == 0.0 || protected / period == (length / 2) / period {
+            return Ok(self);
+        }
+        let affected: Vec<_> = (0..length)
+            .filter(|&bin| {
+                let signed = bin.min(length - bin);
+                signed > protected && signed % period == 0
+            })
+            .collect();
+        let axes = [0, 1, 2, 3];
+        let mut order = axes[..self.volume.rank()].to_vec();
+        order.swap(config.axis, 2);
+        let input = self.volume.permute(&order)?.contiguous()?;
+        let channels = input.dims().get(3).copied().unwrap_or(1);
+        let output = input.with_cpu_storage(|storage, layout| {
+            let start = layout.start_offset();
+            let end = start + input.elem_count();
+            match storage {
+                CpuStorageRef::U8(v) => ghost_lines(
+                    &input,
+                    &v[start..end],
+                    length,
+                    channels,
+                    &affected,
+                    intensity,
+                    |v| v.round() as u8,
+                ),
+                CpuStorageRef::F32(v) => ghost_lines(
+                    &input,
+                    &v[start..end],
+                    length,
+                    channels,
+                    &affected,
+                    intensity,
+                    |v| v.clamp(0.0, 1.0) as f32,
+                ),
+                _ => unreachable!("validated GhostingArtifact dtype"),
+            }
+        })?;
+        self.volume = output.permute(&order)?;
+        Ok(self)
+    }
+}
+
+fn ghost_lines<T: WithDType + IntoVolumeFloat>(
+    input: &Tensor,
+    pixels: &[T],
+    length: usize,
+    channels: usize,
+    affected: &[usize],
+    intensity: f64,
+    cast: impl Fn(f64) -> T,
+) -> rivet_core::Result<Tensor> {
+    let mut planner = rustfft::FftPlanner::new();
+    let forward = planner.plan_fft_forward(length);
+    let inverse = planner.plan_fft_inverse(length);
+    let scratch_len = forward
+        .get_inplace_scratch_len()
+        .max(inverse.get_inplace_scratch_len());
+    let mut scratch = vec![Complex64::default(); scratch_len];
+    let mut spectrum = vec![Complex64::default(); length];
+    let mut row = Vec::with_capacity(length * channels);
+    Tensor::from_exact_writer(input.dims(), input.device(), |out| {
+        for line in pixels.chunks_exact(length * channels) {
+            row.clear();
+            row.extend_from_slice(line);
+            for c in 0..channels {
+                for (bin, pixel) in spectrum.iter_mut().zip(line[c..].iter().step_by(channels)) {
+                    *bin = Complex64::new(pixel.as_f64(), 0.0);
+                }
+                forward.process_with_scratch(&mut spectrum, &mut scratch);
+                for &bin in affected {
+                    spectrum[bin] *= 1.0 - intensity;
+                }
+                inverse.process_with_scratch(&mut spectrum, &mut scratch);
+                for (pixel, bin) in row[c..].iter_mut().step_by(channels).zip(&spectrum) {
+                    *pixel = cast(bin.re.abs() / length as f64);
+                }
+            }
+            out.extend_from_slice(&row)?;
+        }
+        Ok(())
+    })
+}

@@ -465,3 +465,43 @@ def test_gibbs_ringing_matches_rectangular_numpy_fft():
     np.testing.assert_array_equal(gray.gibbs_ringing((0, 0)).to_dict()["volume"], 2)
     with pytest.raises(ValueError):
         sample.gibbs_ringing((-1, 1))
+
+
+@pytest.mark.parametrize("axis", [0, 1, 2])
+def test_ghosting_artifact_matches_phase_encode_fft(axis):
+    rng = np.random.default_rng(64)
+    image = rng.uniform(0, 1, (8, 9, 10, 2)).astype(np.float32)
+    mask = np.arange(720, dtype=np.int64).reshape(image.shape[:3]) + 2**53
+    sample = VolumeSample(image, mask=mask, keypoints=[[1, 2, 3]], label=73)
+    out = sample.ghosting_artifact((2, 2), intensity_range=(0.8, 0.8), axis=axis, restore_range=(0.5, 0.5)).to_dict()
+    n = image.shape[axis]
+    bins = np.abs(np.rint(np.fft.fftfreq(n) * n)).astype(int)
+    weights = np.where((bins > n // 4) & (bins % 2 == 0), 0.2, 1.0)
+    shape = [1] * 4
+    shape[axis] = n
+    expected = np.fft.ifft(np.fft.fft(image, axis=axis) * weights.reshape(shape), axis=axis)
+    np.testing.assert_allclose(out["volume"], np.clip(np.abs(expected.real), 0, 1), atol=2e-7)
+    np.testing.assert_array_equal(out["mask"], mask)
+    np.testing.assert_array_equal(out["keypoints"], [[1, 2, 3]])
+    assert out["label"] == 73
+
+
+def test_ghosting_artifact_uint8_identity_and_seed():
+    from concurrent.futures import ThreadPoolExecutor
+
+    image = np.random.default_rng(11).integers(0, 255, (1, 7, 15), dtype=np.uint8)
+    sample = VolumeSample(image)
+
+    def ghost(seed):
+        return sample.ghosting_artifact(seed=seed).to_dict()["volume"]
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(ghost, range(8)))
+    assert len({out.tobytes() for out in results}) > 1
+    for seed, out in enumerate(results):
+        assert out.dtype == image.dtype and out.shape == image.shape
+        np.testing.assert_array_equal(out, ghost(seed))
+    for args in (dict(axis=0), dict(restore_range=(1, 1)), dict(intensity_range=(0, 0)), dict(num_ghosts_range=(8, 8))):
+        np.testing.assert_array_equal(sample.ghosting_artifact(**args).to_dict()["volume"], image)
+    with pytest.raises(ValueError):
+        sample.ghosting_artifact(axis=3)

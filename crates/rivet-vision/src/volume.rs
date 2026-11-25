@@ -1019,4 +1019,4 @@ mod bias;
 pub use bias::BiasFieldConfig;
 
 mod spectral;
-pub use spectral::GibbsRingingConfig;
+pub use spectral::{GhostingArtifactConfig, GibbsRingingConfig};
