@@ -2584,6 +2584,17 @@ impl PyTransform {
         })
     }
 
+    fn webp(&self, quality: Vec<u8>) -> PyResult<Self> {
+        let range = parse_pair(Some(quality), "quality", [1, 100])?;
+        let config = V2Config::Webp {
+            quality: (range[0], range[1]),
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     fn jpeg(&self, quality: Vec<u8>) -> PyResult<Self> {
         let range = parse_pair(Some(quality), "quality", [1, 100])?;
         let config = V2Config::Jpeg {
@@ -5248,6 +5259,17 @@ impl PyImagePipeline {
             .map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().shot_noise(intensity),
+        })
+    }
+
+    fn webp(&self, quality: Vec<u8>) -> PyResult<Self> {
+        let range = parse_pair(Some(quality), "quality", [1, 100])?;
+        let config = V2Config::Webp {
+            quality: (range[0], range[1]),
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

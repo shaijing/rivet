@@ -16,12 +16,12 @@ def _normalize_fill(fill: float | Iterable[float]) -> float | list[float]:
     return fill if isinstance(fill, (int, float)) else list(fill)
 
 
-def _normalize_jpeg_quality(quality: int | Iterable[int]) -> list[int]:
+def _normalize_compression_quality(quality: int | Iterable[int], codec: str = "JPEG") -> list[int]:
     values = [quality, quality] if isinstance(quality, Integral) else list(quality)
     if any(
         isinstance(value, bool) or not isinstance(value, Integral) for value in values
     ):
-        raise TypeError("JPEG quality must be an integer or a pair of integers")
+        raise TypeError(f"{codec} quality must be an integer or a pair of integers")
     return [int(value) for value in values]
 
 

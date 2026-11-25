@@ -8,6 +8,7 @@ pub mod runtime;
 pub mod sample;
 pub mod source;
 pub mod transforms;
+mod webp_codec;
 
 pub mod sampler {
     pub(crate) use rivet_data::sampler::permute;

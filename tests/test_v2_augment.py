@@ -2791,3 +2791,37 @@ del loader
         [sys.executable, "-c", script, str(root), str(pixels[0, 0, 0])],
         check=True, timeout=15,
     )
+
+
+def test_webp_quality_layout_and_worker_seed(source):
+    root, pixels = source
+    low = output(root, lambda p: p.webp(1))[0]
+    high = output(root, lambda p: p.webp(100), transform=True)[0]
+    assert low.dtype == high.dtype == np.uint8 and low.shape == high.shape == pixels.shape
+    assert not np.array_equal(low, high)
+    assert np.mean((high.astype(float) - pixels) ** 2) < np.mean((low.astype(float) - pixels) ** 2)
+    chw = output(root, lambda p: p.hwc_to_chw().webp(100))[0]
+    np.testing.assert_array_equal(chw, high.transpose(2, 0, 1))
+
+    def augment(p):
+        return p.webp((10, 90))
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(root, augment, epoch=1))
+    for quality in [0, 101, (90, 10)]:
+        with pytest.raises(ValueError):
+            rivet.Transform().webp(quality)
+    with pytest.raises(ValueError, match="WebP"):
+        output(root, lambda p: p.to_dtype("float32", True).webp(80))
+
+
+def test_webp_grayscale_and_single_pixel(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    Image.fromarray(np.full((1, 1, 3), 120, dtype=np.uint8)).save(folder / "tiny.png")
+    hwc = output(tmp_path, lambda p: p.grayscale().webp(90))[0]
+    chw = output(tmp_path, lambda p: p.grayscale().hwc_to_chw().webp(90), transform=True)[0]
+    assert hwc.shape == (1, 1, 1) and hwc.dtype == np.uint8
+    np.testing.assert_array_equal(hwc, chw)
+    np.testing.assert_allclose(hwc, 120, atol=5)

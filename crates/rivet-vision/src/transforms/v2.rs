@@ -294,6 +294,9 @@ pub enum V2Config {
     GridMask(std::sync::Arc<GridMaskConfig>),
     RandomSizedCrop(RandomSizedCropConfig),
     CropAndPad(std::sync::Arc<CropAndPadConfig>),
+    Webp {
+        quality: (u8, u8),
+    },
 }
 impl V2Config {
     pub fn name(&self) -> &'static str {
@@ -387,6 +390,7 @@ impl V2Config {
             Self::RandomScale { .. } => "RandomScale",
             Self::LongestMaxSize(_) => "LongestMaxSize",
             Self::CropAndPad(_) => "CropAndPad",
+            Self::Webp { .. } => "WebP",
             Self::Jpeg { .. } => "JPEG",
             Self::Rgb => "RGB",
             Self::ToDtype { .. } => "ToDtype",
@@ -483,6 +487,7 @@ impl V2Config {
             Self::RandomScale { .. } => 119,
             Self::LongestMaxSize(_) => 118,
             Self::CropAndPad(_) => 116,
+            Self::Webp { .. } => 109,
             Self::Jpeg { .. } => 57,
             Self::Rgb => 58,
             Self::ToDtype { .. } => 59,
@@ -881,7 +886,9 @@ impl V2Config {
                 ratio,
                 fill,
             } => *unit_size >= 2 && *ratio > 0.0 && *ratio < 1.0 && fill.is_finite(),
-            Self::Jpeg { quality: (a, b) } => *a >= 1 && b >= a && *b <= 100,
+            Self::Webp { quality: (a, b) } | Self::Jpeg { quality: (a, b) } => {
+                *a >= 1 && b >= a && *b <= 100
+            }
             Self::ToDtype { dtype, .. } => matches!(dtype, DType::U8 | DType::F32),
             _ => true,
         };
@@ -1878,6 +1885,12 @@ impl V2Config {
                     }
                 }
                 return Ok(result);
+            }
+            Self::Webp {
+                quality: (low, high),
+            } => {
+                let quality = rng.gen_range_usize(*low as usize..*high as usize + 1)? as u8;
+                s.image = crate::webp_codec::webp(&s.image, axis, quality)?;
             }
             Self::Jpeg {
                 quality: (low, high),

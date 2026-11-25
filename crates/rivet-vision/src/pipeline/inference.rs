@@ -676,7 +676,7 @@ pub(crate) fn infer_image_op(
                     }
                     output.contiguity = Some(Contiguity::Unknown);
                 }
-                V2Config::Jpeg { .. } => {
+                V2Config::Jpeg { .. } | V2Config::Webp { .. } => {
                     if !matches!(
                         input_state,
                         Decoded {
@@ -684,10 +684,16 @@ pub(crate) fn infer_image_op(
                             ..
                         }
                     ) {
-                        return Err(invalid_pipeline("JPEG requires uint8 input"));
+                        return Err(invalid_pipeline(format!(
+                            "{} requires uint8 input",
+                            op.name()
+                        )));
                     }
                     if matches!(channel_dim(input), ShapeDim::Known(c) if c != 1 && c != 3) {
-                        return Err(invalid_pipeline("JPEG requires one or three channels"));
+                        return Err(invalid_pipeline(format!(
+                            "{} requires one or three channels",
+                            op.name()
+                        )));
                     }
                 }
                 V2Config::Rgb => {

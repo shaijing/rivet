@@ -8,7 +8,7 @@ from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING
 
 from ._rivet import _Transform
-from ._utils import _crop_pad_side_ranges, _normalize_fill, _normalize_jpeg_quality
+from ._utils import _crop_pad_side_ranges, _normalize_fill, _normalize_compression_quality
 
 
 if TYPE_CHECKING:
@@ -1706,13 +1706,21 @@ class Transform:
         """
         return Transform(self._inner.shot_noise(intensity))
 
+    def webp(self, quality: int | Iterable[int]) -> Transform:
+        """Round-trip uint8 gray or RGB through lossy WebP compression.
+
+        Quality is sampled once per image from inclusive bounds in [1, 100].
+        Preserves CHW or HWC layout and the input channel count.
+        """
+        return Transform(self._inner.webp(_normalize_compression_quality(quality, "WebP")))
+
     def jpeg(self, quality: int | Iterable[int]) -> Transform:
         """JPEG encode/decode uint8 gray/RGB pixels; quality bounds are inclusive.
 
         Uses libjpeg-compatible encoding with 4:2:0 chroma subsampling for RGB;
         grayscale uses one component. Quality is sampled once per image.
         """
-        qualities = _normalize_jpeg_quality(quality)
+        qualities = _normalize_compression_quality(quality)
         return Transform(self._inner.jpeg(qualities))
 
     def rgb(self) -> Transform:
