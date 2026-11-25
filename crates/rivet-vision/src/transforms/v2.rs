@@ -212,6 +212,7 @@ pub enum V2Config {
         blue_range: (f64, f64),
         interpolation: InterpolationMode,
     },
+    PadIfNeeded(std::sync::Arc<PadIfNeededConfig>),
     LetterBox(LetterBoxConfig),
     Defocus {
         radius_range: (u32, u32),
@@ -315,6 +316,7 @@ impl V2Config {
             Self::PlanckianJitter { .. } => "PlanckianJitter",
             Self::Vignetting { .. } => "Vignetting",
             Self::ChromaticAberration { .. } => "ChromaticAberration",
+            Self::PadIfNeeded(_) => "PadIfNeeded",
             Self::LetterBox(_) => "LetterBox",
             Self::Defocus { .. } => "Defocus",
             Self::ChannelDropout(_) => "ChannelDropout",
@@ -384,6 +386,7 @@ impl V2Config {
             Self::PlanckianJitter { .. } => 73,
             Self::Vignetting { .. } => 72,
             Self::ChromaticAberration { .. } => 71,
+            Self::PadIfNeeded(_) => 117,
             Self::LetterBox(_) => 66,
             Self::Defocus { .. } => 67,
             Self::ChannelDropout(_) => 111,
@@ -405,6 +408,9 @@ impl V2Config {
     pub fn is_random(&self) -> bool {
         if let Self::LongestMaxSize(config) = self {
             return config.random();
+        }
+        if let Self::PadIfNeeded(config) = self {
+            return config.position == PadPosition::Random;
         }
         if let Self::Dithering(config) = self {
             return matches!(config.method, DitherMethod::Random { .. });
@@ -429,6 +435,7 @@ impl V2Config {
             }
 
             Self::LongestMaxSize(config) => config.valid(),
+            Self::PadIfNeeded(config) => config.valid(),
             Self::XyMasking(config) => config.valid(),
             Self::ChannelDropout(config) => config.valid(),
             Self::PixelDropout(config) => config.valid(),
@@ -1319,6 +1326,10 @@ impl V2Config {
                     blue,
                     *interpolation,
                 )?;
+            }
+            Self::PadIfNeeded(config) => {
+                let pad = config.sample(h, w, rng)?;
+                return pad.apply(ImageSample::Decoded(s), axis);
             }
             Self::LetterBox(config) => {
                 if axis != ImageAxisOrder::Hwc {

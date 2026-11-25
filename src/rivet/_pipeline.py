@@ -97,6 +97,31 @@ class Pipeline:
         inner = self._inner.longest_max_size(sizes, max_size_hw=max_size_hw, interpolation=interpolation)
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def pad_if_needed(
+        self,
+        min_height: int | None = None,
+        min_width: int | None = None,
+        *,
+        pad_height_divisor: int | None = None,
+        pad_width_divisor: int | None = None,
+        position: str = "center",
+        padding_mode: str = "constant",
+        fill: float | Iterable[float] = 0,
+        fill_mask: int = 0,
+    ) -> Pipeline:
+        """Pad each axis to its minimum, then round up to its divisor.
+
+        Position may be center, a corner such as bottom_right, or random.
+        An unconstrained axis keeps its original length. Structured masks
+        use fill_mask for constant padding.
+        """
+        inner = self._inner.pad_if_needed(
+            min_height, min_width, pad_height_divisor=pad_height_divisor,
+            pad_width_divisor=pad_width_divisor, position=position,
+            padding_mode=padding_mode, fill=_normalize_fill(fill), fill_mask=fill_mask,
+        )
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def center_crop(self, width: int, height: int) -> Pipeline:
         return Pipeline(self._inner.center_crop(width, height), as_numpy=self.as_numpy)
 

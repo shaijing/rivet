@@ -666,6 +666,10 @@ pub(super) fn apply(
             let (w, h) = config.sample(w, h, rng)?;
             resize(s, w, h, config.interpolation)
         }
+        ImageOp::V2(V2Config::PadIfNeeded(config)) => {
+            let padding = config.sample(h, w, rng)?;
+            pad_with_mask_fill(s, &padding, config.fill_mask)
+        }
         ImageOp::V2(V2Config::LetterBox(config)) => {
             let (h, w) = s.size()?;
             let (scale, padding) = config.resolve(w, h)?;

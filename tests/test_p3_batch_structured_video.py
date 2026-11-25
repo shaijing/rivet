@@ -982,3 +982,16 @@ def test_random_scale_scales_image_and_structured_fields(annotated):
     np.testing.assert_array_equal(result["keypoints"], original["keypoints"] * [0.5, 1])
     np.testing.assert_array_equal(result["labels"], original["labels"])
     np.testing.assert_array_equal(result["masks"], original["masks"][:, :, ::2])
+def test_pad_if_needed_keeps_structured_annotations_aligned(annotated):
+    original = annotated.to_dict()
+    result = annotated.apply(
+        rivet.Transform().pad_if_needed(12, 14, position="bottom_right", fill_mask=7)
+    ).to_dict()
+    assert result["image"].shape == (12, 14, 3)
+    np.testing.assert_array_equal(result["image"][2:, 2:], original["image"])
+    np.testing.assert_array_equal(result["boxes"], original["boxes"] + 2)
+    np.testing.assert_array_equal(result["keypoints"], original["keypoints"] + 2)
+    np.testing.assert_array_equal(result["labels"], original["labels"])
+    np.testing.assert_array_equal(
+        result["masks"], np.pad(original["masks"], ((0, 0), (2, 0), (2, 0)), constant_values=7)
+    )

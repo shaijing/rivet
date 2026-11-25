@@ -740,6 +740,13 @@ impl ImagePipeline {
         self.v2(crate::transforms::V2Config::LongestMaxSize(config))
     }
 
+    /// Pad to minimum dimensions and optional divisibility constraints.
+    pub fn pad_if_needed(self, config: crate::transforms::PadIfNeededConfig) -> Self {
+        self.v2(crate::transforms::V2Config::PadIfNeeded(
+            std::sync::Arc::new(config),
+        ))
+    }
+
     pub fn crop(mut self, x: u32, y: u32, width: u32, height: u32) -> Self {
         self.push_image(ImageOp::crop(x, y, width, height));
         self

@@ -296,6 +296,30 @@ pub(crate) fn infer_image_op(
                 V2Config::RandomPhotometricDistort { .. } => {
                     require_u8_hwc(input_state, op.name())?;
                 }
+                V2Config::PadIfNeeded(config) => {
+                    if config.fill_channels.is_some()
+                        && matches!(channel_dim(input), ShapeDim::Known(c) if c != 3)
+                    {
+                        return Err(invalid_pipeline(
+                            "PadIfNeeded per-channel fill requires RGB",
+                        ));
+                    }
+                    let (h, w) = spatial_dims(input)?;
+                    let size = |dim, min, divisor| -> RivetResult<ShapeDim> {
+                        match dim {
+                            ShapeDim::Known(v) => Ok(ShapeDim::Known(
+                                crate::transforms::PadIfNeededConfig::output_axis(v, min, divisor)?,
+                            )),
+                            other => Ok(other),
+                        }
+                    };
+                    set_spatial_shape(
+                        &mut output,
+                        size(h, config.min_height, config.pad_height_divisor)?,
+                        size(w, config.min_width, config.pad_width_divisor)?,
+                    );
+                    output.contiguity = Some(Contiguity::Unknown);
+                }
                 V2Config::LetterBox(config) => {
                     require_u8_hwc(input_state, op.name())?;
                     if matches!(channel_dim(input), ShapeDim::Known(c) if c != 3) {

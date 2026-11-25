@@ -285,6 +285,47 @@ impl PyTransform {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (min_height=None, min_width=None, *, pad_height_divisor=None, pad_width_divisor=None, position="center", padding_mode="constant", fill=None, fill_mask=0))]
+    fn pad_if_needed(
+        &self,
+        min_height: Option<u32>,
+        min_width: Option<u32>,
+        pad_height_divisor: Option<u32>,
+        pad_width_divisor: Option<u32>,
+        position: &str,
+        padding_mode: &str,
+        fill: Option<&Bound<'_, PyAny>>,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{PadIfNeededConfig, PadPosition};
+        let position = match position {
+            "center" => PadPosition::Center,
+            "top_left" => PadPosition::TopLeft,
+            "top_right" => PadPosition::TopRight,
+            "bottom_left" => PadPosition::BottomLeft,
+            "bottom_right" => PadPosition::BottomRight,
+            "random" => PadPosition::Random,
+            _ => return Err(PyValueError::new_err("unknown padding position")),
+        };
+        let (fill, fill_channels) = parse_fill_f32(fill)?;
+        let config = V2Config::PadIfNeeded(std::sync::Arc::new(PadIfNeededConfig {
+            min_height,
+            min_width,
+            pad_height_divisor,
+            pad_width_divisor,
+            position,
+            padding_mode: parse_padding_mode(padding_mode)?,
+            fill,
+            fill_channels,
+            fill_mask,
+        }));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     fn center_crop(&self, width: u32, height: u32) -> Self {
         Self {
             inner: self.inner.clone().center_crop(width, height),
@@ -2308,6 +2349,47 @@ impl PyImagePipeline {
             limit,
             interpolation: parse_interpolation(interpolation)?,
         });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (min_height=None, min_width=None, *, pad_height_divisor=None, pad_width_divisor=None, position="center", padding_mode="constant", fill=None, fill_mask=0))]
+    fn pad_if_needed(
+        &self,
+        min_height: Option<u32>,
+        min_width: Option<u32>,
+        pad_height_divisor: Option<u32>,
+        pad_width_divisor: Option<u32>,
+        position: &str,
+        padding_mode: &str,
+        fill: Option<&Bound<'_, PyAny>>,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{PadIfNeededConfig, PadPosition};
+        let position = match position {
+            "center" => PadPosition::Center,
+            "top_left" => PadPosition::TopLeft,
+            "top_right" => PadPosition::TopRight,
+            "bottom_left" => PadPosition::BottomLeft,
+            "bottom_right" => PadPosition::BottomRight,
+            "random" => PadPosition::Random,
+            _ => return Err(PyValueError::new_err("unknown padding position")),
+        };
+        let (fill, fill_channels) = parse_fill_f32(fill)?;
+        let config = V2Config::PadIfNeeded(std::sync::Arc::new(PadIfNeededConfig {
+            min_height,
+            min_width,
+            pad_height_divisor,
+            pad_width_divisor,
+            position,
+            padding_mode: parse_padding_mode(padding_mode)?,
+            fill,
+            fill_channels,
+            fill_mask,
+        }));
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

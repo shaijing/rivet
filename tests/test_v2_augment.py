@@ -2223,3 +2223,30 @@ def test_random_scale_shared_and_independent_axes(source):
         rivet.Transform().random_scale((-1, 0))
     with pytest.raises(ValueError):
         rivet.Transform().random_scale({"x": (0, 0)})
+def test_pad_if_needed_minimum_divisors_layout_and_seed(source):
+    root, pixels = source
+
+    def fixed(p):
+        return p.pad_if_needed(13, 19, pad_height_divisor=4, pad_width_divisor=8,
+                               position="bottom_right", fill=(1, 2, 3))
+
+    image = output(root, fixed, transform=True)[0]
+    assert image.shape == (16, 24, 3) and image.dtype == np.uint8
+    np.testing.assert_array_equal(image[4:, 6:], pixels)
+    np.testing.assert_array_equal(image[0, 0], [1, 2, 3])
+    chw = output(root, lambda p: fixed(p.hwc_to_chw()))[0]
+    np.testing.assert_array_equal(chw, image.transpose(2, 0, 1))
+    float_image = output(
+        root, lambda p: p.to_dtype("float32", True).pad_if_needed(13, fill=0.25)
+    )[0]
+    assert float_image.dtype == np.float32 and float_image.shape == (13, 18, 3)
+    np.testing.assert_array_equal(float_image[-1], 0.25)
+
+    def random(p):
+        return p.pad_if_needed(18, 27, position="random")
+
+    serial = output(root, random)
+    np.testing.assert_array_equal(serial, output(root, random, transform=True, workers=3))
+    assert not np.array_equal(serial, output(root, random, epoch=1))
+    with pytest.raises(ValueError):
+        rivet.Transform().pad_if_needed(pad_height_divisor=0)

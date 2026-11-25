@@ -33,6 +33,8 @@ mod multi_crop;
 mod noise;
 mod normalize;
 mod pad;
+mod pad_needed;
+pub use pad_needed::{PadIfNeededConfig, PadPosition};
 mod pca;
 mod pixel_mask;
 pub use pixel_mask::{
