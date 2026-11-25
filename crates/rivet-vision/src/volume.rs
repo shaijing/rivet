@@ -1017,3 +1017,6 @@ impl VolumeSample {
 
 mod bias;
 pub use bias::BiasFieldConfig;
+
+mod spectral;
+pub use spectral::GibbsRingingConfig;

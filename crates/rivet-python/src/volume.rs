@@ -335,6 +335,19 @@ impl PyVolumeSample {
         Ok(Self { inner })
     }
 
+    fn gibbs_ringing(&self, retained_fraction_range: [f64; 2], seed: u64) -> PyResult<Self> {
+        let mut rng = rivet_vision::RandomStream::from_seed(seed);
+        let config = rivet_vision::volume::GibbsRingingConfig {
+            retained_fraction_range,
+        };
+        let inner = self
+            .inner
+            .clone()
+            .gibbs_ringing(config, &mut rng)
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
     fn bias_field(
         &self,
         std_range: [f64; 2],

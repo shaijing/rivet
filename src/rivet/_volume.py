@@ -251,6 +251,14 @@ class VolumeSample:
         )
         return result
 
+    def gibbs_ringing(
+        self, retained_fraction_range: tuple[float, float] = (0.5, 0.9), *, seed: int = 0
+    ) -> VolumeSample:
+        """Simulate ringing by retaining a rectangular region of spatial frequencies."""
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.gibbs_ringing(retained_fraction_range, seed)
+        return result
+
     def bias_field(
         self,
         *,

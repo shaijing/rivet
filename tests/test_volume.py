@@ -440,3 +440,28 @@ def test_bias_field_volume_is_smooth_and_preserves_annotations():
     np.testing.assert_array_equal(sample.bias_field(std_range=(0, 0)).to_dict()["volume"], image)
     with pytest.raises(ValueError):
         sample.bias_field(scale_range=(0, 0.1))
+
+
+def test_gibbs_ringing_matches_rectangular_numpy_fft():
+    rng = np.random.default_rng(29)
+    image = rng.uniform(0.1, 0.9, (5, 6, 7, 2)).astype(np.float32)
+    mask = rng.integers(0, 4, image.shape[:3], dtype=np.int64) + 2**53
+    sample = VolumeSample(image, mask=mask, keypoints=[[2, 3, 4]], label=71)
+    axes = (0, 1, 2)
+    for fraction in (0, 0.62, 1):
+        out = sample.gibbs_ringing((fraction, fraction)).to_dict()
+        spectrum = np.fft.fftn(image, axes=axes)
+        for axis, n in enumerate(image.shape[:3]):
+            keep = np.abs(np.rint(np.fft.fftfreq(n) * n)) <= np.floor(fraction * n / 2)
+            shape = [1, 1, 1, 1]
+            shape[axis] = n
+            spectrum *= keep.reshape(shape)
+        expected = np.clip(np.fft.ifftn(spectrum, axes=axes).real, 0, 1)
+        np.testing.assert_allclose(out["volume"], expected, atol=2e-7)
+        np.testing.assert_array_equal(out["mask"], mask)
+        np.testing.assert_array_equal(out["keypoints"], [[2, 3, 4]])
+        assert out["label"] == 71 and out["volume"].dtype == np.float32
+    gray = VolumeSample(np.array([[[0, 2, 4]]], dtype=np.uint8))
+    np.testing.assert_array_equal(gray.gibbs_ringing((0, 0)).to_dict()["volume"], 2)
+    with pytest.raises(ValueError):
+        sample.gibbs_ringing((-1, 1))

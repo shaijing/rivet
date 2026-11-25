@@ -32,7 +32,7 @@ pub use fda::FdaConfig;
 mod flare;
 mod flip;
 mod fog;
-mod frequency;
+pub(crate) mod frequency;
 mod grid_mask;
 mod grid_shuffle;
 mod histogram_match;

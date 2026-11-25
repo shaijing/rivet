@@ -2425,6 +2425,16 @@ impl PyTransform {
         })
     }
 
+    fn gibbs_ringing(&self, retained_fraction_range: [f64; 2]) -> PyResult<Self> {
+        let config = V2Config::GibbsRinging(rivet_vision::volume::GibbsRingingConfig {
+            retained_fraction_range,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     fn bias_field(
         &self,
         std_range: [f64; 2],
@@ -5003,6 +5013,16 @@ impl PyImagePipeline {
             ratio,
             fill,
         };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    fn gibbs_ringing(&self, retained_fraction_range: [f64; 2]) -> PyResult<Self> {
+        let config = V2Config::GibbsRinging(rivet_vision::volume::GibbsRingingConfig {
+            retained_fraction_range,
+        });
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

@@ -1553,7 +1553,8 @@ def test_overlay_elements_resizes_and_filters_aligned_instances(annotated):
 @pytest.mark.parametrize(
     "transform",
     [rivet.Transform().rician_noise((0.15, 0.15)),
-     rivet.Transform().bias_field(std_range=(0.4, 0.4))],
+     rivet.Transform().bias_field(std_range=(0.4, 0.4)),
+     rivet.Transform().gibbs_ringing((0.3, 0.3))],
 )
 def test_structured_medical_intensity_preserves_annotations(annotated, transform):
     source = rivet.StructuredPipeline([annotated] * 4).seed(17).batch(2)

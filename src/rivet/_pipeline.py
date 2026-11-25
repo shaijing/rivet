@@ -1761,6 +1761,12 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def gibbs_ringing(
+        self, retained_fraction_range: tuple[float, float] = (0.5, 0.9)
+    ) -> Pipeline:
+        """Simulate ringing by retaining a rectangular region of spatial frequencies."""
+        return Pipeline(self._inner.gibbs_ringing(retained_fraction_range), as_numpy=self.as_numpy)
+
     def bias_field(
         self,
         *,

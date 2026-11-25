@@ -1637,6 +1637,12 @@ class Transform:
         """
         return Transform(self._inner.grid_dropout(unit_size, ratio=ratio, fill=fill))
 
+    def gibbs_ringing(
+        self, retained_fraction_range: tuple[float, float] = (0.5, 0.9)
+    ) -> Transform:
+        """Simulate ringing by retaining a rectangular region of spatial frequencies."""
+        return Transform(self._inner.gibbs_ringing(retained_fraction_range))
+
     def bias_field(
         self,
         *,

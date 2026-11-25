@@ -2700,3 +2700,19 @@ def test_bias_field_image_pipeline_and_workers(source, transform):
     assert one[0].dtype == np.uint8 and not np.array_equal(one[0], pixels)
     zero = output(root, lambda p: p.bias_field(std_range=(0, 0)), transform=transform)
     np.testing.assert_array_equal(zero[0], pixels)
+
+
+@pytest.mark.parametrize("transform", [False, True])
+def test_gibbs_ringing_image_pipeline_and_workers(source, transform):
+    root, pixels = source
+
+    def build(p):
+        return p.gibbs_ringing((0.2, 0.6))
+
+    one = output(root, build, transform=transform, workers=1)
+    many = output(root, build, transform=transform, workers=3)
+    np.testing.assert_array_equal(one, many)
+    assert one[0].dtype == np.uint8 and not np.array_equal(one[0], pixels)
+    dc = output(root, lambda p: p.gibbs_ringing((0, 0)), transform=transform)[0]
+    expected = np.broadcast_to(np.floor(pixels.mean(axis=(0, 1)) + 0.5), pixels.shape)
+    np.testing.assert_array_equal(dc, expected)

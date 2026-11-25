@@ -83,3 +83,61 @@ mod tests {
         }
     }
 }
+
+/// Separable DHW FFT. Inversion normalizes each spatial axis exactly once.
+pub(crate) struct Fft3 {
+    plane: Fft2,
+    depth: usize,
+    depth_forward: Arc<dyn Fft<f64>>,
+    depth_inverse: Arc<dyn Fft<f64>>,
+    line: Vec<Complex64>,
+    scratch: Vec<Complex64>,
+}
+
+impl Fft3 {
+    pub(crate) fn new([d, h, w]: [usize; 3]) -> Self {
+        let mut planner = FftPlanner::new();
+        let depth_forward = planner.plan_fft_forward(d);
+        let depth_inverse = planner.plan_fft_inverse(d);
+        let scratch = depth_forward
+            .get_inplace_scratch_len()
+            .max(depth_inverse.get_inplace_scratch_len());
+        Self {
+            plane: Fft2::new(w, h),
+            depth: d,
+            depth_forward,
+            depth_inverse,
+            line: vec![Complex64::default(); d],
+            scratch: vec![Complex64::default(); scratch],
+        }
+    }
+
+    pub(crate) fn transform(&mut self, values: &mut [Complex64], inverse: bool) {
+        let plane_len = self.plane.width * self.plane.height;
+        for plane in values.chunks_exact_mut(plane_len) {
+            self.plane.transform(plane, inverse);
+        }
+        if self.depth == 1 {
+            return;
+        }
+        let plan = if inverse {
+            &self.depth_inverse
+        } else {
+            &self.depth_forward
+        };
+        let scale = if inverse {
+            1.0 / self.depth as f64
+        } else {
+            1.0
+        };
+        for yx in 0..plane_len {
+            for (line, plane) in self.line.iter_mut().zip(values.chunks_exact(plane_len)) {
+                *line = plane[yx];
+            }
+            plan.process_with_scratch(&mut self.line, &mut self.scratch);
+            for (plane, &value) in values.chunks_exact_mut(plane_len).zip(&self.line) {
+                plane[yx] = value * scale;
+            }
+        }
+    }
+}
