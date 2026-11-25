@@ -198,3 +198,47 @@ def test_grid_shuffle3d_uneven_cells_and_seed():
     for grid in ((0, 2, 2), (6, 2, 2)):
         with pytest.raises(ValueError):
             sample.grid_shuffle3d(grid)
+
+
+def test_coarse_dropout3d_synchronizes_overlapping_cuboids():
+    from concurrent.futures import ThreadPoolExecutor
+
+    mask = np.full((3, 5, 7), 2**53 + 1, dtype=np.int64)
+    image = np.full((*mask.shape, 2), 127, dtype=np.uint8)
+    z, y, x = np.indices(mask.shape)
+    points = np.stack([x.ravel(), y.ravel(), z.ravel()], axis=-1)
+    sample = VolumeSample(image, mask=mask, keypoints=points, label=41)
+    args = dict(
+        num_holes_range=(3, 4), hole_depth_range=(0.6, 0.8),
+        hole_height_range=(0.6, 0.8), hole_width_range=(0.6, 0.8), fill=(1, 2),
+    )
+
+    def run(seed):
+        return sample.coarse_dropout3d(**args, fill_mask=-3, seed=seed).to_dict()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for seed, out in enumerate(pool.map(run, range(8))):
+            holes = out["mask"] == -3
+            assert holes.any()
+            np.testing.assert_array_equal(out["mask"][~holes], 2**53 + 1)
+            np.testing.assert_array_equal(out["volume"][..., 0], np.where(holes, 1, 127))
+            np.testing.assert_array_equal(out["volume"][..., 1], np.where(holes, 2, 127))
+            np.testing.assert_array_equal(out["keypoints"], points[~holes.ravel()])
+            np.testing.assert_array_equal(out["mask"], run(seed)["mask"])
+            assert out["label"] == 41
+    kept = sample.coarse_dropout3d(**args, remove_invisible=False).to_dict()
+    np.testing.assert_array_equal(kept["mask"], mask)
+    np.testing.assert_array_equal(kept["keypoints"], points)
+
+
+def test_coarse_dropout3d_full_empty_and_invalid():
+    sample = VolumeSample(np.ones((1, 2, 3), np.float32), keypoints=[[2, 1, 0]])
+    opts = dict(hole_depth_range=(1, 1), hole_height_range=(1, 1), hole_width_range=(1, 1))
+    out = sample.coarse_dropout3d(**opts, fill=-0.25).to_dict()
+    np.testing.assert_array_equal(out["volume"], -0.25)
+    assert out["keypoints"].shape == (0, 3)
+    np.testing.assert_array_equal(sample.coarse_dropout3d((0, 0), **opts).to_dict()["volume"], 1)
+    with pytest.raises(ValueError):
+        sample.coarse_dropout3d(hole_depth_range=(0.5, 0.1))
+    with pytest.raises(ValueError):
+        sample.coarse_dropout3d(fill=(1, 2))

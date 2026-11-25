@@ -1,8 +1,8 @@
 use crate::{error::to_py_err, numpy::tensor_to_numpy, structured::tensor_from_numpy};
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 use rivet_vision::volume::{
-    Crop3DConfig, Pad3DConfig, PadIfNeeded3DConfig, Resize3DConfig, VolumeInterpolation,
-    VolumeSample, volume_axis_mask,
+    CoarseDropout3DConfig, Crop3DConfig, Pad3DConfig, PadIfNeeded3DConfig, Resize3DConfig,
+    VolumeInterpolation, VolumeSample, volume_axis_mask,
 };
 
 #[pyclass(name = "_VolumeSample")]
@@ -221,6 +221,32 @@ impl PyVolumeSample {
             .inner
             .clone()
             .grid_shuffle(grid_zyx, &mut rng)
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
+    #[pyo3(signature=(num_holes_range, hole_ranges, fill, fill_mask, remove_invisible, seed))]
+    fn coarse_dropout3d(
+        &self,
+        num_holes_range: [usize; 2],
+        hole_ranges: [[f64; 2]; 3],
+        fill: Vec<f32>,
+        fill_mask: Option<i64>,
+        remove_invisible: bool,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let mut rng = rivet_vision::RandomStream::from_seed(seed);
+        let config = CoarseDropout3DConfig {
+            num_holes_range,
+            hole_ranges,
+            fill,
+            fill_mask,
+            remove_invisible,
+        };
+        let inner = self
+            .inner
+            .clone()
+            .coarse_dropout(&config, &mut rng)
             .map_err(to_py_err)?;
         Ok(Self { inner })
     }

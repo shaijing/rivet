@@ -155,5 +155,26 @@ class VolumeSample:
         result._inner = self._inner.grid_shuffle3d(grid_zyx, seed)
         return result
 
+    def coarse_dropout3d(
+        self,
+        num_holes_range: tuple[int, int] = (1, 1),
+        *,
+        hole_depth_range: tuple[float, float] = (0.1, 0.2),
+        hole_height_range: tuple[float, float] = (0.1, 0.2),
+        hole_width_range: tuple[float, float] = (0.1, 0.2),
+        fill: float | Iterable[float] = 0,
+        fill_mask: int | None = None,
+        remove_invisible: bool = True,
+        seed: int = 0,
+    ) -> VolumeSample:
+        """Fill seeded cuboids and optionally fill masks or keep occluded points."""
+        values = [fill] if isinstance(fill, Real) else list(fill)
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.coarse_dropout3d(
+            num_holes_range, (hole_depth_range, hole_height_range, hole_width_range),
+            values, fill_mask, remove_invisible, seed,
+        )
+        return result
+
     def to_dict(self) -> dict[str, Any]:
         return self._inner.to_dict()
