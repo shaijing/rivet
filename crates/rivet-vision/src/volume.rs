@@ -503,3 +503,101 @@ fn crop_offset(
         _ => Ok(extra / 2),
     }
 }
+
+impl VolumeSample {
+    /// Reorient output DHW axes by permuting input axes and then reflecting
+    /// selected output axes. The channel axis and label are preserved.
+    pub fn reorient(mut self, order: [usize; 3], reflected_axes: &[usize]) -> RivetResult<Self> {
+        self.validate()?;
+        if volume_axis_mask(&order)? != 0b111 {
+            return Err(invalid_argument("3D axis order must be a permutation"));
+        }
+        let reflected = volume_axis_mask(reflected_axes)?;
+        let shape = self.spatial_shape()?;
+        let reorder = |t: Tensor| -> rivet_core::Result<Tensor> {
+            let t = if order == [0, 1, 2] {
+                t
+            } else if t.rank() == 4 {
+                t.permute(&[order[0], order[1], order[2], 3])?
+            } else {
+                t.permute(&order)?
+            };
+            if reflected_axes.is_empty() {
+                Ok(t)
+            } else {
+                t.flip(reflected_axes)
+            }
+        };
+        self.volume = reorder(self.volume)?;
+        self.mask = self.mask.map(reorder).transpose()?;
+        if let Some(points) = &self.keypoints
+            && (order != [0, 1, 2] || reflected != 0)
+        {
+            let coords = points.to_vec::<f32>()?;
+            self.keypoints = Some(Tensor::from_exact_iter(
+                (0..coords.len()).map(|i| {
+                    let axis = 2 - i % 3;
+                    let original = order[axis];
+                    let value = coords[i / 3 * 3 + 2 - original];
+                    if reflected & (1 << axis) == 0 {
+                        value
+                    } else {
+                        ((shape[original] - 1) as f64 - f64::from(value)) as f32
+                    }
+                }),
+                points.dims(),
+                points.device(),
+            )?);
+        }
+        Ok(self)
+    }
+
+    pub fn rotate90(self, [a, b]: [usize; 2], turns: u8) -> RivetResult<Self> {
+        if a >= b || b >= 3 || turns >= 4 {
+            return Err(invalid_argument(
+                "expected ascending DHW axes and 0 to 3 quarter turns",
+            ));
+        }
+        let mut order = [0, 1, 2];
+        if turns % 2 == 1 {
+            order.swap(a, b);
+        }
+        match turns {
+            0 => self.reorient(order, &[]),
+            1 => self.reorient(order, &[a]),
+            2 => self.reorient(order, &[a, b]),
+            _ => self.reorient(order, &[b]),
+        }
+    }
+
+    /// Apply one of the 48 signed spatial permutations, with identity at 0.
+    pub fn cubic_symmetry(self, element: usize) -> RivetResult<Self> {
+        const PERMUTATIONS: [[usize; 3]; 6] = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+        let order = PERMUTATIONS
+            .get(element / 8)
+            .copied()
+            .ok_or_else(|| invalid_argument("CubicSymmetry element must be in [0, 47]"))?;
+        let reflected = (0..3)
+            .filter(|axis| element & (1 << axis) != 0)
+            .collect::<Vec<_>>();
+        self.reorient(order, &reflected)
+    }
+}
+
+pub fn volume_axis_mask(axes: &[usize]) -> RivetResult<u8> {
+    let mut mask = 0;
+    for &axis in axes {
+        if axis >= 3 || mask & (1 << axis) != 0 {
+            return Err(invalid_argument("expected distinct DHW spatial axes"));
+        }
+        mask |= 1 << axis;
+    }
+    Ok(mask)
+}

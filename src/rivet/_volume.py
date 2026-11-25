@@ -116,5 +116,36 @@ class VolumeSample:
         result._inner = self._inner.crop3d(size, pad_if_needed, values, fill_mask, seed)
         return result
 
+    def flip3d(
+        self,
+        axes: tuple[int, ...] = (0, 1, 2),
+        *,
+        flip_axes: tuple[int, ...] | None = None,
+        seed: int = 0,
+    ) -> VolumeSample:
+        """Reflect explicit axes or independently sample the allowed DHW axes."""
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.flip3d(axes, flip_axes, seed)
+        return result
+
+    def random_rotate90_3d(
+        self,
+        axis_pairs: tuple[tuple[int, int], ...] = ((0, 1), (0, 2), (1, 2)),
+        *,
+        axis_pair: tuple[int, int] | None = None,
+        group_element: str | None = None,
+        seed: int = 0,
+    ) -> VolumeSample:
+        """Rotate counterclockwise across an ascending DHW axis pair."""
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.random_rotate90_3d(axis_pairs, axis_pair, group_element, seed)
+        return result
+
+    def cubic_symmetry(self, *, element: int | None = None, seed: int = 0) -> VolumeSample:
+        """Apply a signed DHW axis permutation selected from 48 possibilities."""
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.cubic_symmetry(element, seed)
+        return result
+
     def to_dict(self) -> dict[str, Any]:
         return self._inner.to_dict()

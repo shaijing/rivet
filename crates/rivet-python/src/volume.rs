@@ -2,7 +2,7 @@ use crate::{error::to_py_err, numpy::tensor_to_numpy, structured::tensor_from_nu
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 use rivet_vision::volume::{
     Crop3DConfig, Pad3DConfig, PadIfNeeded3DConfig, Resize3DConfig, VolumeInterpolation,
-    VolumeSample,
+    VolumeSample, volume_axis_mask,
 };
 
 #[pyclass(name = "_VolumeSample")]
@@ -126,6 +126,91 @@ impl PyVolumeSample {
                 },
                 rng.as_mut(),
             )
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
+    #[pyo3(signature=(axes, flip_axes, seed))]
+    fn flip3d(&self, axes: Vec<usize>, flip_axes: Option<Vec<usize>>, seed: u64) -> PyResult<Self> {
+        let allowed = volume_axis_mask(&axes).map_err(to_py_err)?;
+        if allowed == 0 {
+            return Err(PyValueError::new_err(
+                "Flip3D requires at least one allowed axis",
+            ));
+        }
+        let reflected = if let Some(fixed) = flip_axes {
+            if volume_axis_mask(&fixed).map_err(to_py_err)? & !allowed != 0 {
+                return Err(PyValueError::new_err("flip_axes must be a subset of axes"));
+            }
+            fixed
+        } else {
+            let bits = rivet_vision::RandomStream::from_seed(seed).next_u64() as u8 & allowed;
+            (0..3).filter(|axis| bits & (1 << axis) != 0).collect()
+        };
+        let inner = self
+            .inner
+            .clone()
+            .reorient([0, 1, 2], &reflected)
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
+    #[pyo3(signature=(axis_pairs, axis_pair, group_element, seed))]
+    fn random_rotate90_3d(
+        &self,
+        axis_pairs: Vec<[usize; 2]>,
+        axis_pair: Option<[usize; 2]>,
+        group_element: Option<&str>,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let valid_pair = |[a, b]: [usize; 2]| a < b && b < 3;
+        if axis_pairs.is_empty()
+            || axis_pairs
+                .iter()
+                .enumerate()
+                .any(|(i, &pair)| !valid_pair(pair) || axis_pairs[..i].contains(&pair))
+            || axis_pair.is_some_and(|pair| !valid_pair(pair))
+        {
+            return Err(PyValueError::new_err(
+                "expected distinct ascending DHW axis pairs",
+            ));
+        }
+        let mut rng = rivet_vision::RandomStream::from_seed(seed);
+        let pair = match axis_pair {
+            Some(pair) => pair,
+            None => axis_pairs[rng.gen_range_usize(0..axis_pairs.len()).unwrap()],
+        };
+        let turns = match group_element {
+            None => (rng.next_u64() & 3) as u8,
+            Some("e") => 0,
+            Some("r90") => 1,
+            Some("r180") => 2,
+            Some("r270") => 3,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "group_element must be e, r90, r180 or r270",
+                ));
+            }
+        };
+        let inner = self
+            .inner
+            .clone()
+            .rotate90(pair, turns)
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
+    #[pyo3(signature=(element, seed))]
+    fn cubic_symmetry(&self, element: Option<usize>, seed: u64) -> PyResult<Self> {
+        let element = element.unwrap_or_else(|| {
+            rivet_vision::RandomStream::from_seed(seed)
+                .gen_range_usize(0..48)
+                .unwrap()
+        });
+        let inner = self
+            .inner
+            .clone()
+            .cubic_symmetry(element)
             .map_err(to_py_err)?;
         Ok(Self { inner })
     }
