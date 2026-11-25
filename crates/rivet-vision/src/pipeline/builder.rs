@@ -176,6 +176,14 @@ impl ImagePipeline {
         ))
     }
 
+    /// Render luminance-dependent dots with seeded cell size and blend.
+    pub fn halftone(self, dot_size_range: (u32, u32), blend_range: (f64, f64)) -> Self {
+        self.v2(crate::transforms::V2Config::Halftone {
+            dot_size_range,
+            blend_range,
+        })
+    }
+
     /// Apply palette quantization with the configured dithering method.
     pub fn dithering(self, config: crate::transforms::DitheringConfig) -> Self {
         self.v2(crate::transforms::V2Config::Dithering(config))

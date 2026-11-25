@@ -109,6 +109,10 @@ pub enum V2Config {
     },
     RandomSunFlare(std::sync::Arc<RandomSunFlareConfig>),
     HueSaturationValue(std::sync::Arc<[(f64, f64); 3]>),
+    Halftone {
+        dot_size_range: (u32, u32),
+        blend_range: (f64, f64),
+    },
     Dithering(DitheringConfig),
     RingingOvershoot {
         blur_range: (u32, u32),
@@ -268,6 +272,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::RandomSunFlare(_) => "RandomSunFlare",
             Self::HueSaturationValue(_) => "HueSaturationValue",
+            Self::Halftone { .. } => "Halftone",
             Self::Dithering(_) => "Dithering",
             Self::RingingOvershoot { .. } => "RingingOvershoot",
             Self::Enhance { .. } => "Enhance",
@@ -331,6 +336,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => 82,
             Self::RandomSunFlare(_) => 88,
             Self::HueSaturationValue(_) => 99,
+            Self::Halftone { .. } => 108,
             Self::Dithering(_) => 107,
             Self::RingingOvershoot { .. } => 106,
             Self::Enhance { .. } => 105,
@@ -395,6 +401,10 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::Halftone {
+                dot_size_range: (lo, hi),
+                blend_range: (min, max),
+            } => *lo >= 2 && lo <= hi && *min >= 0.0 && min <= max && *max <= 1.0,
             Self::Dithering(config) => config.valid(),
             Self::RingingOvershoot {
                 blur_range: (lo, hi),
@@ -929,6 +939,7 @@ impl V2Config {
             | Self::MultiplicativeNoise { .. }
             | Self::RandomSunFlare(_)
             | Self::HueSaturationValue(_)
+            | Self::Halftone { .. }
             | Self::Dithering(_)
             | Self::RingingOvershoot { .. }
             | Self::Enhance { .. }
@@ -1193,6 +1204,14 @@ impl V2Config {
                     *lo as usize + 2 * rng.gen_range_usize(0..((hi - lo) / 2 + 1) as usize)?;
                 let cutoff = min + rng.next_f64() * (max - min);
                 s.image = super::blur::ringing_overshoot(&s.image, size, cutoff)?;
+            }
+            Self::Halftone {
+                dot_size_range: (lo, hi),
+                blend_range: (min, max),
+            } => {
+                let size = *lo as usize + rng.gen_range_usize(0..(*hi - *lo) as usize + 1)?;
+                let blend = min + rng.next_f64() * (max - min);
+                s.image = super::dither::halftone(&s.image, size, blend)?;
             }
             Self::Dithering(config) => {
                 s.image = config.apply(&s.image, rng)?;

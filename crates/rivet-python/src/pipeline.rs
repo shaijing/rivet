@@ -1077,6 +1077,18 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (dot_size_range=(4,10), blend_range=(0.0,0.5)))]
+    fn halftone(&self, dot_size_range: (u32, u32), blend_range: (f64, f64)) -> PyResult<Self> {
+        let config = V2Config::Halftone {
+            dot_size_range,
+            blend_range,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (method="error_diffusion", n_colors=2, color_mode="grayscale", error_diffusion_algorithm="floyd_steinberg", bayer_matrix_size=4, serpentine=false, noise_range=(-0.5,0.5)))]
     fn dithering(
@@ -3008,6 +3020,18 @@ impl PyImagePipeline {
             sat_shift_range,
             val_shift_range,
         ]));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (dot_size_range=(4,10), blend_range=(0.0,0.5)))]
+    fn halftone(&self, dot_size_range: (u32, u32), blend_range: (f64, f64)) -> PyResult<Self> {
+        let config = V2Config::Halftone {
+            dot_size_range,
+            blend_range,
+        };
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

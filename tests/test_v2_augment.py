@@ -2050,3 +2050,38 @@ def test_dithering_random_seed_and_validation(source):
         rivet.Transform().dithering("ordered", bayer_matrix_size=3)
     with pytest.raises(ValueError, match="Dithering"):
         output(root, lambda p: p.hwc_to_chw().dithering())
+
+
+def test_halftone_dot_geometry_and_partial_cells(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.full((5, 6, 3), 255, dtype=np.uint8)
+    Image.fromarray(pixels).save(folder / "image.png")
+
+    def augment(p):
+        return p.halftone((5, 5), (0, 0))
+
+    actual = output(tmp_path, augment, transform=True)[0]
+    y, x = np.mgrid[-2:3, -2:3]
+    expected = np.zeros((5, 6), dtype=np.uint8)
+    expected[:, :5] = 255 * (x * x + y * y <= 2.5**2)
+    expected[2, 5] = 255
+    np.testing.assert_array_equal(actual, np.repeat(expected[..., None], 3, axis=-1))
+    floats = output(tmp_path, lambda p: augment(p.grayscale().to_dtype("float32", True)))[0]
+    assert floats.shape == (5, 6, 1) and floats.dtype == np.float32
+    np.testing.assert_array_equal(floats[..., 0], expected / 255)
+
+
+def test_halftone_seed_and_identity(source):
+    root, pixels = source
+    serial = output(root, lambda p: p.halftone())
+    np.testing.assert_array_equal(
+        serial, output(root, lambda p: p.halftone(), transform=True, workers=3)
+    )
+    assert serial[0].shape == pixels.shape and serial[0].dtype == np.uint8
+    assert not np.array_equal(serial, output(root, lambda p: p.halftone(), epoch=1))
+    np.testing.assert_array_equal(output(root, lambda p: p.halftone(blend_range=(1, 1)))[0], pixels)
+    with pytest.raises(ValueError, match="Halftone"):
+        output(root, lambda p: p.hwc_to_chw().halftone())
+    with pytest.raises(ValueError):
+        rivet.Transform().halftone(dot_size_range=(1, 2))

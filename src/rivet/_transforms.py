@@ -645,6 +645,19 @@ class Transform:
         )
         return Transform(inner)
 
+    def halftone(
+        self,
+        dot_size_range: tuple[int, int] = (4, 10),
+        blend_range: tuple[float, float] = (0.0, 0.5),
+    ) -> Transform:
+        """Render colored dots on black for uint8 or normalized float32 HWC.
+
+        Sample the cell size in pixels and the original-image blend per
+        image. Mean cell luma controls radius. Edge cells use their actual
+        dimensions. A blend of one keeps the original.
+        """
+        return Transform(self._inner.halftone(dot_size_range, blend_range))
+
     def dithering(
         self,
         method: str = "error_diffusion",

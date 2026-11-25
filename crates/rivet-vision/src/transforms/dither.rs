@@ -288,3 +288,103 @@ fn bayer_thresholds(size: usize) -> Vec<f64> {
         .map(|rank| (f64::from(rank) + 0.5) / (size * size) as f64 - 0.5)
         .collect()
 }
+
+pub(super) fn halftone(input: &Tensor, size: usize, blend: f64) -> RivetResult<Tensor> {
+    if !matches!(input.dims(), [h,w,c] if *h > 0 && *w > 0 && *c > 0)
+        || !matches!(input.dtype(), DType::U8 | DType::F32)
+    {
+        return Err(invalid_argument(
+            "Halftone requires nonempty uint8 or float32 HWC input",
+        ));
+    }
+    if blend == 1.0 {
+        return Ok(input.clone());
+    }
+    let input = input.contiguous()?;
+    Ok(input.with_cpu_storage(|storage, layout| match storage {
+        CpuStorageRef::U8(values) => write_halftone(
+            &input,
+            contiguous_values(values, layout)?,
+            size,
+            blend,
+            255.0,
+            |v| v.round() as u8,
+        ),
+        CpuStorageRef::F32(values) => write_halftone(
+            &input,
+            contiguous_values(values, layout)?,
+            size,
+            blend,
+            1.0,
+            |v| v.clamp(0.0, 1.0) as f32,
+        ),
+        _ => unreachable!(),
+    })?)
+}
+
+fn write_halftone<T: WithDType + Into<f64>>(
+    input: &Tensor,
+    pixels: &[T],
+    size: usize,
+    blend: f64,
+    max: f64,
+    finish: impl Fn(f64) -> T,
+) -> rivet_core::Result<Tensor> {
+    let [height, width, channels] = *input.dims() else {
+        unreachable!()
+    };
+    let columns = width.div_ceil(size);
+    let stride = width * channels;
+    let mut colors = vec![0.0; columns * channels];
+    let mut radii = vec![0.0; columns];
+
+    Tensor::from_exact_writer(input.dims(), input.device(), |out| {
+        for y0 in (0..height).step_by(size) {
+            let h = (height - y0).min(size);
+            for (column, color) in colors.chunks_exact_mut(channels).enumerate() {
+                color.fill(0.0);
+                let x0 = column * size;
+                let w = (width - x0).min(size);
+                for y in y0..y0 + h {
+                    let start = y * stride + x0 * channels;
+                    for pixel in pixels[start..start + w * channels].chunks_exact(channels) {
+                        for (sum, &v) in color.iter_mut().zip(pixel) {
+                            *sum += v.into();
+                        }
+                    }
+                }
+                for v in color.iter_mut() {
+                    *v /= (w * h) as f64;
+                }
+                let luma = match &*color {
+                    &[r, g, b] => 0.299 * r + 0.587 * g + 0.114 * b,
+                    _ => color.iter().sum::<f64>() / channels as f64,
+                };
+                radii[column] = (0.5 * h.min(w) as f64 * (luma / max).clamp(0.0, 1.0)).powi(2);
+            }
+            for y in 0..h {
+                let dy = (y as f64 + 0.5 - h as f64 * 0.5).powi(2);
+                for (column, color) in colors.chunks_exact(channels).enumerate() {
+                    let x0 = column * size;
+                    let w = (width - x0).min(size);
+                    let start = (y0 + y) * stride + x0 * channels;
+                    for (x, pixel) in pixels[start..start + w * channels]
+                        .chunks_exact(channels)
+                        .enumerate()
+                    {
+                        let dx = x as f64 + 0.5 - w as f64 * 0.5;
+                        let weight = if dx * dx + dy <= radii[column] {
+                            1.0 - blend
+                        } else {
+                            0.0
+                        };
+                        for (&value, &dot) in pixel.iter().zip(color) {
+                            out.write_next(finish(value.into() * blend + dot * weight))?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    })
+}
