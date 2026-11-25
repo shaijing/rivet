@@ -1112,6 +1112,29 @@ class Transform:
         eligible = None if channels_to_drop is None else list(channels_to_drop)
         return Transform(self._inner.channel_dropout(eligible, dropout_ratio, fill))
 
+    def xy_masking(
+        self,
+        num_masks_x_range: tuple[int, int] = (0, 0),
+        num_masks_y_range: tuple[int, int] = (0, 0),
+        mask_x_length_range: tuple[int, int] | tuple[float, float] = (0, 0),
+        mask_y_length_range: tuple[int, int] | tuple[float, float] = (0, 0),
+        *,
+        fill: float = 0,
+        fill_mask: int | None = None,
+    ) -> Transform:
+        """Fill seeded vertical (X) and horizontal (Y) strips.
+
+        Integer lengths are pixels; fractional lengths scale by the
+        corresponding axis. Strips may overlap. Structured masks can
+        share the fill region, and fully occluded instances are removed.
+        Preserves uint8 or float32 and HWC or CHW layout.
+        """
+        inner = self._inner.xy_masking(
+            num_masks_x_range, num_masks_y_range, mask_x_length_range,
+            mask_y_length_range, fill=fill, fill_mask=fill_mask,
+        )
+        return Transform(inner)
+
     def pixel_dropout(
         self,
         dropout_prob: float = 0.01,

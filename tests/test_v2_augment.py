@@ -2139,3 +2139,26 @@ def test_channel_dropout_selection_mean_layout_and_seed(source):
         rivet.Transform().channel_dropout([0, 0])
     with pytest.raises(ValueError, match="ChannelDropout"):
         output(root, lambda p: p.channel_dropout([3]))
+
+
+def test_xy_masking_axis_units_and_layout(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    Image.fromarray(np.full((8, 12, 3), 90, dtype=np.uint8)).save(folder / "image.png")
+
+    def augment(p):
+        return p.xy_masking((1, 1), (1, 1), (0.25, 0.25), (2, 2), fill=7)
+
+    actual = output(tmp_path, augment, transform=True, workers=2)[0]
+    changed = actual[..., 0] == 7
+    assert changed.all(axis=0).sum() == 3
+    assert changed.all(axis=1).sum() == 2
+    assert changed.sum() == 3 * 8 + 2 * 12 - 3 * 2
+    chw = output(tmp_path, lambda p: augment(p.hwc_to_chw()))[0]
+    np.testing.assert_array_equal(chw, actual.transpose(2, 0, 1))
+    floats = output(
+        tmp_path,
+        lambda p: p.to_dtype("float32", True).xy_masking((1, 1), (0, 0), (12, 12), fill=0.25),
+    )[0]
+    assert floats.dtype == np.float32
+    np.testing.assert_array_equal(floats, 0.25)

@@ -470,3 +470,109 @@ impl ChannelDropoutConfig {
         })
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StripLength {
+    Pixels(u32, u32),
+    Fraction(f64, f64),
+}
+
+impl StripLength {
+    fn valid(self) -> bool {
+        match self {
+            Self::Pixels(lo, hi) => lo <= hi,
+            Self::Fraction(lo, hi) => lo >= 0.0 && lo <= hi && hi <= 1.0,
+        }
+    }
+    fn bounds(self, length: usize) -> (usize, usize) {
+        match self {
+            Self::Pixels(lo, hi) => ((lo as usize).min(length), (hi as usize).min(length)),
+            Self::Fraction(lo, hi) => (
+                (lo * length as f64).round() as usize,
+                (hi * length as f64).round() as usize,
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct XyMaskingConfig {
+    pub num_masks_x_range: (u32, u32),
+    pub num_masks_y_range: (u32, u32),
+    pub mask_x_length: StripLength,
+    pub mask_y_length: StripLength,
+    pub fill: f32,
+    pub fill_mask: Option<i64>,
+}
+
+pub(crate) struct StripMask {
+    cols: Vec<bool>,
+    rows: Vec<bool>,
+}
+
+impl StripMask {
+    pub(crate) fn covers(&self, y: usize, x: usize) -> bool {
+        self.rows[y] || self.cols[x]
+    }
+}
+
+impl XyMaskingConfig {
+    pub(super) fn valid(&self) -> bool {
+        [self.num_masks_x_range, self.num_masks_y_range]
+            .into_iter()
+            .all(|(lo, hi)| lo <= hi && hi <= 1024)
+            && self.mask_x_length.valid()
+            && self.mask_y_length.valid()
+            && self.fill.is_finite()
+    }
+
+    pub(crate) fn sample(
+        &self,
+        h: usize,
+        w: usize,
+        rng: &mut RandomStream,
+    ) -> RivetResult<StripMask> {
+        let mut axis =
+            |length: usize, (lo, hi): (u32, u32), size: StripLength| -> RivetResult<Vec<bool>> {
+                let mut mask = vec![false; length];
+                let count = rng.gen_range_usize(lo as usize..hi as usize + 1)?;
+                let (lo, hi) = size.bounds(length);
+                for _ in 0..count {
+                    let size = rng.gen_range_usize(lo..hi + 1)?;
+                    if size != 0 {
+                        let start = rng.gen_range_usize(0..length - size + 1)?;
+                        mask[start..start + size].fill(true);
+                    }
+                }
+                Ok(mask)
+            };
+        Ok(StripMask {
+            cols: axis(w, self.num_masks_x_range, self.mask_x_length)?,
+            rows: axis(h, self.num_masks_y_range, self.mask_y_length)?,
+        })
+    }
+
+    pub(crate) fn apply(
+        &self,
+        input: &Tensor,
+        axis: ImageAxisOrder,
+        mask: &StripMask,
+    ) -> RivetResult<Tensor> {
+        if !matches!(input.dtype(), DType::U8 | DType::F32) {
+            return Err(invalid_argument(
+                "XYMasking requires uint8 or float32 input",
+            ));
+        }
+        if !mask.rows.contains(&true) && !mask.cols.contains(&true) {
+            return Ok(input.clone());
+        }
+        apply(
+            input,
+            axis,
+            mask.rows.len(),
+            mask.cols.len(),
+            [self.fill; 2],
+            |y, x| mask.covers(y, x).then_some(false),
+        )
+    }
+}

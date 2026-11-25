@@ -315,6 +315,7 @@ def test_structured_geometry_torchvision(annotated, case):
         rivet.Transform().scale_jitter(10, 8, [0.8, 1.2]).center_crop(6, 6),
         rivet.Transform().random_zoom_out(probability=1).center_crop(24, 24),
         rivet.Transform().pixel_dropout(0.3, mask_drop_value=0),
+        rivet.Transform().xy_masking((1, 2), (1, 2), (2, 3), (1, 2), fill_mask=0),
         rivet.Transform().random_apply(1, rivet.Transform().horizontal_flip()),
     ],
 )
@@ -890,3 +891,26 @@ def test_channel_dropout_preserves_structured_targets(annotated):
     np.testing.assert_array_equal(transformed["image"][..., 1:], original["image"][..., 1:])
     for key in ["boxes", "labels", "keypoints", "masks"]:
         np.testing.assert_array_equal(transformed[key], original[key])
+
+
+def test_xy_masking_updates_mask_and_removes_fully_occluded_instances(annotated):
+    result = annotated.apply(
+        rivet.Transform().xy_masking((1, 1), (0, 0), (1.0, 1.0), fill=23, fill_mask=0)
+    ).to_dict()
+    np.testing.assert_array_equal(result["image"], 23)
+    assert result["boxes"].shape == (0, 4)
+    assert result["labels"].shape == (0,)
+    assert result["masks"].shape == (0, 10, 12)
+    assert result["keypoints"].shape == (0, 2, 2)
+
+
+def test_xy_masking_semantic_fill_matches_visible_strips():
+    image = np.full((6, 8, 3), 120, dtype=np.uint8)
+    mask = np.full((6, 8), 3, dtype=np.int64)
+    sample = rivet.AnnotatedSample(image, masks=mask)
+    result = sample.apply(
+        rivet.Transform().xy_masking((1, 1), (1, 1), (2, 2), (1, 1), fill_mask=-1)
+    ).to_dict()
+    covered = result["image"][..., 0] == 0
+    assert 0 < covered.sum() < covered.size
+    np.testing.assert_array_equal(result["masks"], np.where(covered, -1, 3))

@@ -148,6 +148,20 @@ fn parse_crop_padding(value: Option<&Bound<'_, PyAny>>) -> PyResult<(u32, Option
     }
 }
 
+fn parse_strip_length(
+    value: Option<&Bound<'_, PyAny>>,
+) -> PyResult<rivet_vision::transforms::StripLength> {
+    use rivet_vision::transforms::StripLength;
+    let Some(value) = value else {
+        return Ok(StripLength::Pixels(0, 0));
+    };
+    if let Ok((lo, hi)) = value.extract::<(u32, u32)>() {
+        return Ok(StripLength::Pixels(lo, hi));
+    }
+    let (lo, hi) = value.extract::<(f64, f64)>()?;
+    Ok(StripLength::Fraction(lo, hi))
+}
+
 fn parse_crop_fill(value: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<f32>> {
     let Some(value) = value else {
         return Ok(vec![0.0]);
@@ -1812,6 +1826,32 @@ impl PyTransform {
             dropout_ratio,
             fill,
         }));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (num_masks_x_range=(0,0), num_masks_y_range=(0,0), mask_x_length_range=None, mask_y_length_range=None, *, fill=0.0, fill_mask=None))]
+    fn xy_masking(
+        &self,
+        num_masks_x_range: (u32, u32),
+        num_masks_y_range: (u32, u32),
+        mask_x_length_range: Option<&Bound<'_, PyAny>>,
+        mask_y_length_range: Option<&Bound<'_, PyAny>>,
+        fill: f32,
+        fill_mask: Option<i64>,
+    ) -> PyResult<Self> {
+        let config = V2Config::XyMasking(std::sync::Arc::new(
+            rivet_vision::transforms::XyMaskingConfig {
+                num_masks_x_range,
+                num_masks_y_range,
+                mask_x_length: parse_strip_length(mask_x_length_range)?,
+                mask_y_length: parse_strip_length(mask_y_length_range)?,
+                fill,
+                fill_mask,
+            },
+        ));
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),
@@ -3813,6 +3853,32 @@ impl PyImagePipeline {
             dropout_ratio,
             fill,
         }));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (num_masks_x_range=(0,0), num_masks_y_range=(0,0), mask_x_length_range=None, mask_y_length_range=None, *, fill=0.0, fill_mask=None))]
+    fn xy_masking(
+        &self,
+        num_masks_x_range: (u32, u32),
+        num_masks_y_range: (u32, u32),
+        mask_x_length_range: Option<&Bound<'_, PyAny>>,
+        mask_y_length_range: Option<&Bound<'_, PyAny>>,
+        fill: f32,
+        fill_mask: Option<i64>,
+    ) -> PyResult<Self> {
+        let config = V2Config::XyMasking(std::sync::Arc::new(
+            rivet_vision::transforms::XyMaskingConfig {
+                num_masks_x_range,
+                num_masks_y_range,
+                mask_x_length: parse_strip_length(mask_x_length_range)?,
+                mask_y_length: parse_strip_length(mask_y_length_range)?,
+                fill,
+                fill_mask,
+            },
+        ));
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

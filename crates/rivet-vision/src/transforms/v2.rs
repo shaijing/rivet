@@ -217,6 +217,7 @@ pub enum V2Config {
         radius_range: (u32, u32),
     },
     ChannelDropout(std::sync::Arc<ChannelDropoutConfig>),
+    XyMasking(std::sync::Arc<XyMaskingConfig>),
     PixelDropout(std::sync::Arc<PixelDropoutConfig>),
     CoarseDropout {
         holes: (u32, u32),
@@ -311,6 +312,7 @@ impl V2Config {
             Self::LetterBox(_) => "LetterBox",
             Self::Defocus { .. } => "Defocus",
             Self::ChannelDropout(_) => "ChannelDropout",
+            Self::XyMasking(_) => "XYMasking",
             Self::PixelDropout(_) => "PixelDropout",
             Self::CoarseDropout { .. } => "CoarseDropout",
             Self::MotionBlur { .. } => "MotionBlur",
@@ -377,6 +379,7 @@ impl V2Config {
             Self::LetterBox(_) => 66,
             Self::Defocus { .. } => 67,
             Self::ChannelDropout(_) => 111,
+            Self::XyMasking(_) => 112,
             Self::PixelDropout(_) => 110,
             Self::CoarseDropout { .. } => 68,
             Self::MotionBlur { .. } => 64,
@@ -407,6 +410,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::XyMasking(config) => config.valid(),
             Self::ChannelDropout(config) => config.valid(),
             Self::PixelDropout(config) => config.valid(),
             Self::Halftone {
@@ -1399,6 +1403,9 @@ impl V2Config {
             }
             Self::ChannelDropout(config) => {
                 s.image = config.apply(&s.image, axis, rng)?;
+            }
+            Self::XyMasking(config) => {
+                s.image = config.apply(&s.image, axis, &config.sample(h, w, rng)?)?;
             }
             Self::PixelDropout(config) => {
                 s.image = config.apply(&s.image, axis, rng, None)?;

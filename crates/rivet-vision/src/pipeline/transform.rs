@@ -130,6 +130,13 @@ impl TransformSequence {
         ))
     }
 
+    /// Fill seeded horizontal and vertical strips.
+    pub fn xy_masking(self, config: crate::transforms::XyMaskingConfig) -> Self {
+        self.v2(crate::transforms::V2Config::XyMasking(std::sync::Arc::new(
+            config,
+        )))
+    }
+
     /// Replace independently sampled pixels or channel elements.
     pub fn pixel_dropout(self, config: crate::transforms::PixelDropoutConfig) -> Self {
         self.v2(crate::transforms::V2Config::PixelDropout(
