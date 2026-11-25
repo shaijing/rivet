@@ -267,6 +267,7 @@ pub enum V2Config {
         scale: bool,
     },
     SquareSymmetry(Option<SquareSymmetry>),
+    PixelDistributionAdaptation(std::sync::Arc<PixelDistributionAdaptationConfig>),
     HistogramMatching(std::sync::Arc<HistogramMatchingConfig>),
     WaterRefraction(WaterRefractionConfig),
     RandomGridShuffle(RandomGridShuffleConfig),
@@ -344,6 +345,7 @@ impl V2Config {
             Self::Defocus { .. } => "Defocus",
             Self::ChannelDropout(_) => "ChannelDropout",
             Self::SquareSymmetry(_) => "SquareSymmetry",
+            Self::PixelDistributionAdaptation(_) => "PixelDistributionAdaptation",
             Self::HistogramMatching(_) => "HistogramMatching",
             Self::WaterRefraction(_) => "WaterRefraction",
             Self::RandomGridShuffle(_) => "RandomGridShuffle",
@@ -433,6 +435,7 @@ impl V2Config {
             Self::Defocus { .. } => 67,
             Self::ChannelDropout(_) => 111,
             Self::SquareSymmetry(_) => 122,
+            Self::PixelDistributionAdaptation(_) => 136,
             Self::HistogramMatching(_) => 135,
             Self::WaterRefraction(_) => 133,
             Self::RandomGridShuffle(_) => 132,
@@ -491,6 +494,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::PixelDistributionAdaptation(config) => config.valid(),
             Self::HistogramMatching(config) => config.valid(),
             Self::WaterRefraction(config) => config.valid(),
             Self::RandomGridShuffle(config) => config.valid(),
@@ -1539,6 +1543,14 @@ impl V2Config {
                     s.image = s.image.permute(&order)?;
                 }
                 s.image = super::quarter_turn(&s.image, axis, turns)?;
+            }
+            Self::PixelDistributionAdaptation(config) => {
+                if axis != ImageAxisOrder::Hwc {
+                    return Err(invalid_argument(
+                        "PixelDistributionAdaptation requires HWC input",
+                    ));
+                }
+                s.image = config.apply(&s.image, rng)?;
             }
             Self::HistogramMatching(config) => {
                 if axis != ImageAxisOrder::Hwc {

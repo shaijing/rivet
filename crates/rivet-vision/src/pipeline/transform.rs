@@ -123,6 +123,16 @@ impl TransformSequence {
         ))
     }
 
+    /// Transfer color-distribution statistics from a seeded reference.
+    pub fn pixel_distribution_adaptation(
+        self,
+        config: crate::transforms::PixelDistributionAdaptationConfig,
+    ) -> Self {
+        self.v2(crate::transforms::V2Config::PixelDistributionAdaptation(
+            std::sync::Arc::new(config),
+        ))
+    }
+
     /// Match image channel histograms to a seeded reference.
     pub fn histogram_matching(self, config: crate::transforms::HistogramMatchingConfig) -> Self {
         self.v2(crate::transforms::V2Config::HistogramMatching(

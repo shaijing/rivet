@@ -542,6 +542,21 @@ class Transform:
             )
         )
 
+    def pixel_distribution_adaptation(
+        self,
+        references: Iterable[NDArray],
+        blend_range: tuple[float, float] = (0.25, 1.0),
+        transform_type: str = "pca",
+    ) -> Transform:
+        """Transfer color statistics from a seeded reference image.
+
+        Accepts uint8 or normalized float32 HWC grayscale or RGB. Modes are
+        pca, standard (mean and spread), and minmax. Constant source axes
+        use the target center or minimum. Output is blended and clipped.
+        """
+        inner = self._inner.pixel_distribution_adaptation(list(references), blend_range, transform_type)
+        return Transform(inner)
+
     def histogram_matching(
         self, references: Iterable[NDArray], blend_range: tuple[float, float] = (0.5, 1.0)
     ) -> Transform:

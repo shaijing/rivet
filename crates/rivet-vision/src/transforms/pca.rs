@@ -102,7 +102,7 @@ fn apply<T: WithDType + Into<f64>>(
 
 /// Jacobi rotations for a real symmetric 3×3 matrix. Columns of the
 /// accumulated rotations are the principal axes.
-fn diagonalize(mut a: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
+pub(super) fn diagonalize(mut a: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
     let mut axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     for _ in 0..32 {
         let (p, q) = [(0, 1), (0, 2), (1, 2)]

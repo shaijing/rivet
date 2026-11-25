@@ -287,6 +287,21 @@ pub(crate) fn infer_image_op(
                 V2Config::RandomGridShuffle(_) => {
                     output.contiguity = Some(Contiguity::Unknown);
                 }
+                V2Config::PixelDistributionAdaptation(config) => {
+                    if !matches!(
+                        input_state,
+                        Decoded {
+                            axis_order: ImageAxisOrder::Hwc,
+                            ..
+                        }
+                    ) || matches!(channel_dim(input), ShapeDim::Known(c) if c != config.channels())
+                    {
+                        return Err(invalid_pipeline(
+                            "PixelDistributionAdaptation requires HWC input with matching reference channels",
+                        ));
+                    }
+                    output.contiguity = Some(Contiguity::Unknown);
+                }
                 V2Config::HistogramMatching(config) => {
                     if !matches!(
                         input_state,

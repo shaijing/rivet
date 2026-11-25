@@ -936,6 +936,38 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (references,blend_range=(0.25,1.0),transform_type="pca"))]
+    fn pixel_distribution_adaptation(
+        &self,
+        references: Vec<Bound<'_, PyAny>>,
+        blend_range: (f64, f64),
+        transform_type: &str,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{
+            DistributionMode, PixelDistributionAdaptationConfig, ReferenceImages,
+        };
+        let mode = match transform_type {
+            "pca" => DistributionMode::Pca,
+            "standard" => DistributionMode::Standard,
+            "minmax" => DistributionMode::MinMax,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "transform_type must be pca, standard or minmax",
+                ));
+            }
+        };
+        let tensors = references
+            .iter()
+            .map(crate::structured::tensor_from_numpy)
+            .collect::<PyResult<_>>()?;
+        let references = ReferenceImages::new(tensors).map_err(to_py_err)?;
+        let config = PixelDistributionAdaptationConfig::new(references, mode, blend_range)
+            .map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().pixel_distribution_adaptation(config),
+        })
+    }
+
     #[pyo3(signature = (references,blend_range=(0.5,1.0)))]
     fn histogram_matching(
         &self,
@@ -3442,6 +3474,38 @@ impl PyImagePipeline {
         };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (references,blend_range=(0.25,1.0),transform_type="pca"))]
+    fn pixel_distribution_adaptation(
+        &self,
+        references: Vec<Bound<'_, PyAny>>,
+        blend_range: (f64, f64),
+        transform_type: &str,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{
+            DistributionMode, PixelDistributionAdaptationConfig, ReferenceImages,
+        };
+        let mode = match transform_type {
+            "pca" => DistributionMode::Pca,
+            "standard" => DistributionMode::Standard,
+            "minmax" => DistributionMode::MinMax,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "transform_type must be pca, standard or minmax",
+                ));
+            }
+        };
+        let tensors = references
+            .iter()
+            .map(crate::structured::tensor_from_numpy)
+            .collect::<PyResult<_>>()?;
+        let references = ReferenceImages::new(tensors).map_err(to_py_err)?;
+        let config = PixelDistributionAdaptationConfig::new(references, mode, blend_range)
+            .map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().pixel_distribution_adaptation(config),
         })
     }
 

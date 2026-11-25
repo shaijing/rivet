@@ -2595,3 +2595,39 @@ def test_histogram_matching_seeded_reference_selection(source):
         output(root, lambda p: p.histogram_matching([np.zeros((1, 1), np.uint8)]))
     with pytest.raises(ValueError):
         rivet.Transform().histogram_matching([])
+
+
+@pytest.mark.parametrize("mode", ["pca", "standard", "minmax"])
+def test_pixel_distribution_adaptation_matches_reference_statistics(tmp_path, mode):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    level = np.array([[0, 40, 80], [120, 160, 200]], np.uint8)
+    rgb = np.stack((level, np.full_like(level, 100), np.full_like(level, 50)), axis=-1)
+    reference = np.stack((40 + level // 2, np.full_like(level, 120), np.full_like(level, 70)), axis=-1)
+    Image.fromarray(rgb).save(folder / "image.png")
+
+    def augment(p):
+        return p.pixel_distribution_adaptation([reference], (1, 1), mode)
+
+    actual = output(tmp_path, augment, transform=True)[0]
+    np.testing.assert_array_equal(actual, reference)
+    floats = output(tmp_path, lambda p: augment(p.to_dtype("float32", True)))[0]
+    assert floats.dtype == np.float32
+    np.testing.assert_allclose(floats, reference / 255, atol=1e-7)
+
+
+def test_pixel_distribution_adaptation_reference_seed_and_identity(source):
+    root, pixels = source
+    references = [np.full((1, 2, 3), level, np.uint8) for level in [40, 80, 120, 160]]
+
+    def augment(p):
+        return p.pixel_distribution_adaptation(references, (1, 1))
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(root, augment, epoch=1))
+    assert set(np.unique(serial)) <= {40, 80, 120, 160}
+    identity = output(root, lambda p: p.pixel_distribution_adaptation(references, (0, 0)))[0]
+    np.testing.assert_array_equal(identity, pixels)
+    with pytest.raises(ValueError):
+        rivet.Transform().pixel_distribution_adaptation(references, transform_type="bad")
