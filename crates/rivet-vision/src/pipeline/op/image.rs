@@ -39,6 +39,7 @@ pub enum ExecutionKind {
 
 #[derive(Clone)]
 pub enum ImageOp {
+    Callback(super::CallbackConfig),
     Decode(DecodeImageConfig),
     V2(crate::transforms::V2Config),
     LinearTransformation(LinearTransformationConfig),
@@ -113,6 +114,7 @@ impl ImageOp {
     /// Stable semantic name used to assign per-operator random namespaces.
     pub fn random_key_kind(&self) -> Option<&'static str> {
         match self {
+            Self::Callback(_) => Some("Lambda"),
             Self::V2(op) => op.is_random().then(|| op.name()),
             Self::RandomRotation(_) => Some("RandomRotation"),
             Self::RandomGaussianBlur(_) => Some("RandomGaussianBlur"),
@@ -139,7 +141,7 @@ impl ImageOp {
     pub fn execution_kind(&self) -> ExecutionKind {
         match self {
             Self::V2(crate::transforms::V2Config::ToDtype { .. }) => ExecutionKind::Batch,
-            Self::V2(_) => ExecutionKind::Sample,
+            Self::V2(_) | Self::Callback(_) => ExecutionKind::Sample,
             Self::Normalize(_) | Self::ConvertImageDtype(_) | Self::Layout(_) => {
                 ExecutionKind::Batch
             }
@@ -193,6 +195,7 @@ impl ImageOp {
 
     pub fn name(&self) -> &'static str {
         match self {
+            Self::Callback(_) => "Lambda",
             Self::V2(op) => op.name(),
             Self::Saturation(_) => "Saturation",
             Self::Gamma(_) => "Gamma",
@@ -249,6 +252,7 @@ impl ImageOp {
     /// protocol. Keep these values stable when variants are reordered.
     pub const fn planning_op_id(&self) -> u32 {
         match self {
+            Self::Callback(_) => 143,
             Self::V2(op) => op.planning_op_id(),
             Self::Saturation(_) => 36,
             Self::Gamma(_) => 37,
@@ -339,6 +343,14 @@ impl ImageOp {
             PipelineImageState::Decoded { axis_order, .. } => axis_order,
         };
         match self {
+            Self::Callback(op) => {
+                let mut sample = sample.into_decoded()?;
+                let mut rng = required_rng(ctx, random_key, self.name())?;
+                if let Some(seed) = op.sample(&mut rng)? {
+                    sample.image = op.apply("image", &sample.image, seed)?;
+                }
+                Ok(ImageSample::Decoded(sample))
+            }
             Self::V2(op) => {
                 let mut rng =
                     ctx.stream(random_key.unwrap_or_else(|| OpKey::from_parts(op.name(), 0)));
@@ -798,6 +810,7 @@ impl ImageOp {
     /// pipeline; that is `transition`'s job).
     pub fn validate(&self) -> RivetResult<()> {
         match self {
+            Self::Callback(op) => op.validate(),
             Self::V2(op) => op.validate(),
             Self::LinearTransformation(op) => op.validate(),
             Self::AutoAugment(op) => op.validate(),

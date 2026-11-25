@@ -19,7 +19,7 @@ pub use crate::errors::{
     RivetError, RivetResult, VisionError, VisionResult, invalid_argument, invalid_pipeline,
     invalid_shape,
 };
-pub use crate::pipeline::op::ImageOp;
+pub use crate::pipeline::op::{CallbackConfig, ImageOp};
 pub use crate::pipeline::{
     Compose, ImageConcat, ImageGraphInfo, ImageOptimizationOptions, ImagePipeline, ImageTransform,
     TransformSequence,

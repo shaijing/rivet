@@ -454,6 +454,36 @@ impl PyVolumeSample {
         Ok(Self { inner })
     }
 
+    #[pyo3(signature=(volume, mask, keypoints, probability, seed))]
+    fn lambda_transform(
+        &self,
+        volume: Option<Py<PyAny>>,
+        mask: Option<Py<PyAny>>,
+        keypoints: Option<Py<PyAny>>,
+        probability: f64,
+        seed: u64,
+        py: Python<'_>,
+    ) -> PyResult<Self> {
+        let config = crate::pipeline::lambda_config(
+            [
+                ("volume", volume),
+                ("mask", mask),
+                ("keypoints", keypoints),
+                ("", None),
+                ("", None),
+            ],
+            probability,
+            py,
+        )?;
+        let mut rng = rivet_vision::RandomStream::from_seed(seed);
+        let inner = self
+            .inner
+            .clone()
+            .apply_callback(&config, &mut rng)
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
         out.set_item("volume", tensor_to_numpy(py, self.inner.volume.clone())?)?;

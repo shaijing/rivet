@@ -520,6 +520,19 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def lambda_transform(
+        self, image=None, *, mask=None, bboxes=None, keypoints=None, labels=None,
+        probability: float = 1.0,
+    ) -> Pipeline:
+        """Apply optional per-target callbacks at this position in the transform.
+
+        Callbacks receive a read-only NumPy array and a shared per-sample
+        seed keyword. Return an array with the same shape and dtype.
+        Calls may run on loader workers. Use the seed for reproducible sampling.
+        """
+        inner = self._inner.lambda_transform(image, mask, bboxes, keypoints, labels, probability)
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def compose(self, sequence: Transform) -> Pipeline:
         return Pipeline(self._inner.compose(sequence._inner), as_numpy=self.as_numpy)
 

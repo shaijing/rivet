@@ -46,6 +46,20 @@ pub(crate) fn image_semantics(op: &ImageOp) -> OperatorSemantics {
     // Exhaustively list built-ins. Adding a new variant requires reviewing its
     // effects rather than silently treating every image payload as pure.
     match op {
+        ImageOp::Callback(_) => OperatorSemantics::default(),
+        ImageOp::RandomApply { ops, .. } | ImageOp::RandomOrder { ops }
+            if ops.iter().any(|op| image_semantics(op).has_side_effects) =>
+        {
+            OperatorSemantics::default()
+        }
+        ImageOp::RandomChoice { choices, .. }
+            if choices
+                .iter()
+                .flatten()
+                .any(|op| image_semantics(op).has_side_effects) =>
+        {
+            OperatorSemantics::default()
+        }
         ImageOp::FiveCrop(_) | ImageOp::TenCrop(_) => OperatorSemantics {
             one_to_one: false,
             preserves_order: true,

@@ -267,6 +267,10 @@ pub(crate) fn infer_image_op(
     use PipelineImageState::{Decoded, Encoded};
     let mut output = input.clone();
     match op {
+        ImageOp::Callback(_) => {
+            require_u8_or_f32_decoded(input_state, op.name())?;
+            output.contiguity = Some(Contiguity::Unknown);
+        }
         ImageOp::V2(config) => {
             use crate::transforms::V2Config;
             require_u8_or_f32_decoded(input_state, op.name())?;

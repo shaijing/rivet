@@ -21,6 +21,18 @@ class Transform:
     def __init__(self, inner: _Transform | None = None) -> None:
         self._inner = _Transform() if inner is None else inner
 
+    def lambda_transform(
+        self, image=None, *, mask=None, bboxes=None, keypoints=None, labels=None,
+        probability: float = 1.0,
+    ) -> Transform:
+        """Apply optional per-target callbacks at this position in the transform.
+
+        Callbacks receive a read-only NumPy array and a shared per-sample
+        seed keyword. Return an array with the same shape and dtype.
+        Calls may run on loader workers. Use the seed for reproducible sampling.
+        """
+        return Transform(self._inner.lambda_transform(image, mask, bboxes, keypoints, labels, probability))
+
     def compose(self, other: Transform) -> Transform:
         return Transform(self._inner.compose(other._inner))
 

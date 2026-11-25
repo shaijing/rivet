@@ -13,3 +13,6 @@ pub(crate) use plan::{
     BatchKernel, CompiledNormalize, CompiledProgram, CompiledSampleOp, SampleKernel,
 };
 pub use source::SourceOp;
+
+mod callback;
+pub use callback::{CallbackConfig, TargetCallback};

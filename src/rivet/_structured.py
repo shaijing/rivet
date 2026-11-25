@@ -184,6 +184,20 @@ class StructuredPipeline:
         out._inner = inner
         return out
 
+    def lambda_transform(
+        self, image=None, *, mask=None, bboxes=None, keypoints=None, labels=None,
+        probability: float = 1.0,
+    ) -> StructuredPipeline:
+        """Apply optional per-target callbacks at this position in the transform.
+
+        Callbacks receive a read-only NumPy array and a shared per-sample
+        seed keyword. Return an array with the same shape and dtype.
+        Calls may run on loader workers. Use the seed for reproducible sampling.
+        """
+        return self.compose(Transform().lambda_transform(
+            image, mask=mask, bboxes=bboxes, keypoints=keypoints, labels=labels, probability=probability,
+        ))
+
     def compose(self, transform: Transform) -> StructuredPipeline:
         return self._from_inner(self._inner.compose(transform._inner))
 

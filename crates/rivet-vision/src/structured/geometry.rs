@@ -454,6 +454,23 @@ pub(super) fn apply(
     op.validate()?;
     let (h, w) = s.size()?;
     match op {
+        ImageOp::Callback(op) => {
+            if let Some(seed) = op.sample(rng)? {
+                s.image = op.apply("image", &s.image, seed)?;
+                for (name, slot) in [
+                    ("mask", &mut s.masks),
+                    ("bboxes", &mut s.boxes),
+                    ("keypoints", &mut s.keypoints),
+                    ("labels", &mut s.labels),
+                ] {
+                    if let Some(value) = slot {
+                        *value = op.apply(name, value, seed)?;
+                    }
+                }
+                s.validate()?;
+            }
+            Ok(s)
+        }
         ImageOp::Resize(c) => {
             let (ow, oh) = c.output_dimensions(w as u32, h as u32)?;
             resize(s, ow, oh, c.interpolation)

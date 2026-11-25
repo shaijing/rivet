@@ -329,5 +329,13 @@ class VolumeSample:
         result._inner = self._inner.rician_noise(std_range, per_channel, seed)
         return result
 
+    def lambda_transform(
+        self, volume=None, *, mask=None, keypoints=None, probability: float = 1.0, seed: int = 0
+    ) -> VolumeSample:
+        """Apply callbacks to read-only arrays with a shared seed keyword."""
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.lambda_transform(volume, mask, keypoints, probability, seed)
+        return result
+
     def to_dict(self) -> dict[str, Any]:
         return self._inner.to_dict()

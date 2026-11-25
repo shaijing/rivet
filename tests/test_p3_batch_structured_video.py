@@ -1569,3 +1569,27 @@ def test_structured_medical_intensity_preserves_annotations(annotated, transform
         for expected, actual in zip(plain["targets"], serial["targets"], strict=True):
             for name in expected["shapes"]:
                 np.testing.assert_array_equal(actual[name], expected[name])
+
+
+def test_structured_lambda_shared_seed_and_target_protocol(annotated):
+    plain = rivet.StructuredPipeline([annotated]).batch(1)
+    seen = []
+
+    def marker(array, *, seed):
+        seen.append(seed)
+        return array
+
+    transform = rivet.Transform().lambda_transform(
+        marker, mask=marker, bboxes=marker, keypoints=marker, labels=marker,
+    )
+    expected = next(iter(plain.execute()))
+    actual = next(iter(plain.compose(transform).workers(2).execute()))
+    np.testing.assert_array_equal(expected["images"], actual["images"])
+    for name in expected["targets"][0]["shapes"]:
+        np.testing.assert_array_equal(actual["targets"][0][name], expected["targets"][0][name])
+    assert len(seen) >= 2 and len(set(seen)) == 1
+
+    seen.clear()
+    skipped = rivet.Transform().lambda_transform(marker, probability=0)
+    list(plain.compose(skipped).execute())
+    assert not seen

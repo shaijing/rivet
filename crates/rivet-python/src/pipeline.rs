@@ -8,6 +8,43 @@ use rivet_vision::api::{
     TransformSequence, V2Config,
 };
 
+pub(crate) fn lambda_config(
+    callbacks: [(&'static str, Option<Py<PyAny>>); 5],
+    probability: f64,
+    py: Python<'_>,
+) -> PyResult<rivet_vision::api::CallbackConfig> {
+    for (name, callback) in &callbacks {
+        if callback
+            .as_ref()
+            .is_some_and(|callback| !callback.bind(py).is_callable())
+        {
+            return Err(PyValueError::new_err(format!(
+                "Lambda {name} must be callable"
+            )));
+        }
+    }
+    let config = rivet_vision::api::CallbackConfig {
+        probability,
+        callback: std::sync::Arc::new(move |name, value, seed| {
+            let Some(callback) = callbacks.iter().find_map(|(target, callback)| {
+                (*target == name).then_some(callback.as_ref()).flatten()
+            }) else {
+                return Ok(value.clone());
+            };
+            Python::attach(|py| -> PyResult<_> {
+                let input = crate::numpy::tensor_to_numpy(py, value.clone())?;
+                let kwargs = pyo3::types::PyDict::new(py);
+                kwargs.set_item("seed", seed)?;
+                let output = callback.bind(py).call((input,), Some(&kwargs))?;
+                crate::structured::tensor_from_numpy(&output)
+            })
+            .map_err(|err| rivet_vision::api::invalid_argument(format!("Lambda {name}: {err}")))
+        }),
+    };
+    config.validate().map_err(to_py_err)?;
+    Ok(config)
+}
+
 fn parse_pair<T: Clone + std::fmt::Debug>(
     values: Option<Vec<T>>,
     name: &str,
@@ -2465,6 +2502,36 @@ impl PyTransform {
         )?);
         Ok(Self {
             inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature=(image, mask, bboxes, keypoints, labels, probability))]
+    fn lambda_transform(
+        &self,
+        image: Option<Py<PyAny>>,
+        mask: Option<Py<PyAny>>,
+        bboxes: Option<Py<PyAny>>,
+        keypoints: Option<Py<PyAny>>,
+        labels: Option<Py<PyAny>>,
+        probability: f64,
+        py: Python<'_>,
+    ) -> PyResult<Self> {
+        let config = lambda_config(
+            [
+                ("image", image),
+                ("mask", mask),
+                ("bboxes", bboxes),
+                ("keypoints", keypoints),
+                ("labels", labels),
+            ],
+            probability,
+            py,
+        )?;
+        let sequence =
+            TransformSequence::from_ops(vec![rivet_vision::api::ImageOp::Callback(config)]);
+        Ok(Self {
+            inner: self.inner.clone().compose(sequence),
         })
     }
 
@@ -5105,6 +5172,36 @@ impl PyImagePipeline {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature=(image, mask, bboxes, keypoints, labels, probability))]
+    fn lambda_transform(
+        &self,
+        image: Option<Py<PyAny>>,
+        mask: Option<Py<PyAny>>,
+        bboxes: Option<Py<PyAny>>,
+        keypoints: Option<Py<PyAny>>,
+        labels: Option<Py<PyAny>>,
+        probability: f64,
+        py: Python<'_>,
+    ) -> PyResult<Self> {
+        let config = lambda_config(
+            [
+                ("image", image),
+                ("mask", mask),
+                ("bboxes", bboxes),
+                ("keypoints", keypoints),
+                ("labels", labels),
+            ],
+            probability,
+            py,
+        )?;
+        let sequence =
+            TransformSequence::from_ops(vec![rivet_vision::api::ImageOp::Callback(config)]);
+        Ok(Self {
+            inner: self.inner.clone().compose(sequence),
+        })
+    }
+
     fn gibbs_ringing(&self, retained_fraction_range: [f64; 2]) -> PyResult<Self> {
         let config = V2Config::GibbsRinging(rivet_vision::volume::GibbsRingingConfig {
             retained_fraction_range,
@@ -5452,9 +5549,9 @@ impl PyImagePipeline {
     }
 
     fn execute(&self) -> PyResult<PyDataLoader> {
-        Ok(PyDataLoader {
-            inner: self.inner.clone().compile().map_err(to_py_err)?,
-        })
+        Ok(PyDataLoader::from_inner(
+            self.inner.clone().compile().map_err(to_py_err)?,
+        ))
     }
 
     fn explain(&self) -> PyResult<String> {

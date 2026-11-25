@@ -2744,3 +2744,50 @@ def test_he_stain_image_pipeline_and_workers(source, transform):
     many = output(root, build, transform=transform, workers=3)
     np.testing.assert_array_equal(one, many)
     assert one[0].dtype == np.uint8 and not np.array_equal(one[0], pixels)
+
+
+@pytest.mark.parametrize("transform", [False, True])
+def test_lambda_transform_seed_layout_and_errors(source, transform):
+    root, _ = source
+
+    def callback(image, *, seed):
+        assert not image.flags.writeable
+        return np.full_like(image, seed % 251)
+
+    def build(p):
+        return p.lambda_transform(callback).horizontal_flip()
+
+    one = output(root, build, transform=transform, workers=1)
+    many = output(root, build, transform=transform, workers=3)
+    np.testing.assert_array_equal(one, many)
+    for image in one:
+        assert np.unique(image).size == 1
+
+    with pytest.raises(Exception, match="preserve shape"):
+        output(root, lambda p: p.lambda_transform(lambda x, **_: x[:1]), transform=transform)
+
+
+def test_lambda_can_drop_loader_with_pending_callbacks(source):
+    import subprocess
+    import sys
+
+    root, pixels = source
+    script = """
+import sys
+import time
+import rivet
+
+def callback(image, *, seed):
+    if int(image[0, 0, 0]) != int(sys.argv[2]):
+        time.sleep(0.1)
+    return image
+
+loader = (rivet.scan_image_folder(sys.argv[1]).decode_image()
+          .lambda_transform(callback).workers(3).batch(1).execute())
+next(iter(loader))
+del loader
+"""
+    subprocess.run(
+        [sys.executable, "-c", script, str(root), str(pixels[0, 0, 0])],
+        check=True, timeout=15,
+    )

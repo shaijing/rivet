@@ -578,3 +578,20 @@ def test_he_stain_estimated_bases_on_synthetic_histology():
         assert out.shape == image.shape and not np.array_equal(out, image)
         assert np.isfinite(out).all()
         np.testing.assert_array_equal(out, source.he_stain(**args).to_dict()["volume"])
+
+
+def test_volume_lambda_shares_seed_and_preserves_sample_label():
+    image = np.ones((2, 3, 4), dtype=np.uint8)
+    sample = VolumeSample(image, mask=image, keypoints=[[1, 1, 1]], label=97)
+
+    def update(array, *, seed):
+        return np.full_like(array, seed % 251)
+
+    def run():
+        return sample.lambda_transform(update, mask=update, keypoints=update, seed=9).to_dict()
+
+    out = run()
+    np.testing.assert_array_equal(out["volume"], out["mask"])
+    np.testing.assert_array_equal(out["keypoints"], out["volume"][0, 0, 0])
+    np.testing.assert_array_equal(out["volume"], run()["volume"])
+    assert out["label"] == 97

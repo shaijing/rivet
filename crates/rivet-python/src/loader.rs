@@ -14,20 +14,34 @@ use std::sync::Arc;
 
 #[pyclass(name = "_DataLoader")]
 pub(crate) struct PyDataLoader {
-    pub(crate) inner: ImageDataLoader,
+    inner: Option<ImageDataLoader>,
+}
+
+impl PyDataLoader {
+    pub(crate) fn from_inner(inner: ImageDataLoader) -> Self {
+        Self { inner: Some(inner) }
+    }
+}
+
+impl Drop for PyDataLoader {
+    fn drop(&mut self) {
+        let mut inner = self.inner.take();
+        // Native workers may need to attach to finish an in-flight callback.
+        Python::try_attach(|py| py.detach(|| drop(inner.take())));
+    }
 }
 
 #[pymethods]
 impl PyDataLoader {
     #[new]
     fn new(dataset: &PyArrowDataset, batch_size: usize) -> PyResult<Self> {
-        Ok(Self {
-            inner: ImagePipeline::new(Arc::clone(&dataset.inner))
+        Ok(Self::from_inner(
+            ImagePipeline::new(Arc::clone(&dataset.inner))
                 .decode_image()
                 .batch(batch_size, false)
                 .compile()
                 .map_err(to_py_err)?,
-        })
+        ))
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -35,13 +49,12 @@ impl PyDataLoader {
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
-        // Release the GIL while the rust workers load/decode/transform;
-        // no python objects are touched on worker threads.
-        let batch = py.detach(|| self.inner.next_batch()).map_err(to_py_err)?;
+        let inner = self.inner.as_mut().expect("live data loader");
+        let batch = py.detach(|| inner.next_batch()).map_err(to_py_err)?;
 
         batch
             .map(|batch| {
-                let count = self.inner.info.views_per_sample;
+                let count = inner.info.views_per_sample;
                 let source_count = batch.images.dims()[0] / count;
                 annotate_views(py, image_batch_to_py(py, batch)?, count, source_count)
             })
@@ -49,10 +62,11 @@ impl PyDataLoader {
     }
 
     fn next_dlpack(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
-        let batch = py.detach(|| self.inner.next_batch()).map_err(to_py_err)?;
+        let inner = self.inner.as_mut().expect("live data loader");
+        let batch = py.detach(|| inner.next_batch()).map_err(to_py_err)?;
         batch
             .map(|batch| {
-                let count = self.inner.info.views_per_sample;
+                let count = inner.info.views_per_sample;
                 let source_count = batch.images.dims()[0] / count;
                 annotate_views(py, image_batch_to_dlpack(py, batch)?, count, source_count)
             })
