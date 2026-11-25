@@ -74,7 +74,7 @@ pub use crate::transforms::{V2Config, gaussian_noise, shot_noise};
 pub use crate::batch::BatchMixConfig;
 
 pub use crate::structured::{
-    BoxFormat, RandomIoUCropConfig, StructuredBatch, StructuredLoader, StructuredOp,
-    StructuredPipeline, StructuredSample,
+    AtLeastOneBBoxRandomCropConfig, BoxFormat, RandomIoUCropConfig, StructuredBatch,
+    StructuredLoader, StructuredOp, StructuredPipeline, StructuredSample,
 };
 pub use crate::video::{VideoLayout, VideoSample, uniform_temporal_subsample};

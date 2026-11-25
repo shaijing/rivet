@@ -54,6 +54,21 @@ impl TransformSequence {
     }
 
     /// Add signal-dependent Gaussian noise to a normalized float32 image.
+    pub fn motion_blur(self, length_range: (u32, u32), angle_range: (f64, f64)) -> Self {
+        self.v2(crate::transforms::V2Config::MotionBlur {
+            length_range,
+            angle_range,
+        })
+    }
+
+    pub fn unsharp_mask(self, sigma: f32, amount: f32, threshold: u8) -> Self {
+        self.v2(crate::transforms::V2Config::UnsharpMask {
+            sigma,
+            amount,
+            threshold,
+        })
+    }
+
     pub fn downscale(
         self,
         scale_range: (f64, f64),

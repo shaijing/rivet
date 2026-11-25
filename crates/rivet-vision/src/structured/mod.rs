@@ -3,5 +3,7 @@
 mod annotations;
 mod geometry;
 mod pipeline;
-pub use annotations::{BoxFormat, RandomIoUCropConfig, StructuredSample};
+pub use annotations::{
+    AtLeastOneBBoxRandomCropConfig, BoxFormat, RandomIoUCropConfig, StructuredSample,
+};
 pub use pipeline::{StructuredBatch, StructuredLoader, StructuredOp, StructuredPipeline};

@@ -43,6 +43,15 @@ pub enum V2Config {
     ShotNoise {
         intensity: f32,
     },
+    MotionBlur {
+        length_range: (u32, u32),
+        angle_range: (f64, f64),
+    },
+    UnsharpMask {
+        sigma: f32,
+        amount: f32,
+        threshold: u8,
+    },
     Downscale {
         scale_range: (f64, f64),
         down_interpolation: InterpolationMode,
@@ -78,6 +87,8 @@ impl V2Config {
             Self::RandomZoomOut { .. } => "RandomZoomOut",
             Self::GaussianNoise { .. } => "GaussianNoise",
             Self::ShotNoise { .. } => "ShotNoise",
+            Self::MotionBlur { .. } => "MotionBlur",
+            Self::UnsharpMask { .. } => "UnsharpMask",
             Self::Downscale { .. } => "Downscale",
             Self::SaltAndPepper { .. } => "SaltAndPepper",
             Self::GridDropout { .. } => "GridDropout",
@@ -97,6 +108,8 @@ impl V2Config {
             Self::RandomZoomOut { .. } => 55,
             Self::GaussianNoise { .. } => 56,
             Self::ShotNoise { .. } => 60,
+            Self::MotionBlur { .. } => 64,
+            Self::UnsharpMask { .. } => 65,
             Self::Downscale { .. } => 61,
             Self::SaltAndPepper { .. } => 62,
             Self::GridDropout { .. } => 63,
@@ -108,7 +121,7 @@ impl V2Config {
     pub fn is_random(&self) -> bool {
         !matches!(
             self,
-            Self::PermuteChannels(_) | Self::Rgb | Self::ToDtype { .. }
+            Self::PermuteChannels(_) | Self::Rgb | Self::ToDtype { .. } | Self::UnsharpMask { .. }
         )
     }
     pub fn validate(&self) -> RivetResult<()> {
@@ -177,6 +190,23 @@ impl V2Config {
                 return super::noise::validate_gaussian_noise(*mean, *sigma);
             }
             Self::ShotNoise { intensity } => return super::noise::validate_shot_noise(*intensity),
+            Self::MotionBlur {
+                length_range: (low, high),
+                angle_range: (start, end),
+            } => {
+                *low > 0
+                    && high >= low
+                    && low % 2 == 1
+                    && high % 2 == 1
+                    && *high <= 255
+                    && start.is_finite()
+                    && end.is_finite()
+                    && end >= start
+                    && (end - start).is_finite()
+            }
+            Self::UnsharpMask { sigma, amount, .. } => {
+                sigma.is_finite() && *sigma > 0.0 && amount.is_finite() && *amount >= 0.0
+            }
             Self::Downscale {
                 scale_range: (a, b),
                 ..
@@ -391,6 +421,33 @@ impl V2Config {
             }
             Self::ShotNoise { intensity } => {
                 s.image = super::shot_noise(&s.image, *intensity, rng)?;
+            }
+            Self::MotionBlur {
+                length_range: (low, high),
+                angle_range: (start, end),
+            } => {
+                if axis != ImageAxisOrder::Hwc || h == 0 || w == 0 {
+                    return Err(invalid_argument(
+                        "MotionBlur requires nonempty uint8 HWC RGB input",
+                    ));
+                }
+                let length =
+                    low + 2 * rng.gen_range_usize(0..((high - low) / 2 + 1) as usize)? as u32;
+                let angle = (start + rng.next_f64() * (end - start)).rem_euclid(180.0);
+                s.image = super::blur::motion_blur(&s.image, length, angle)?;
+            }
+            Self::UnsharpMask {
+                sigma,
+                amount,
+                threshold,
+            } => {
+                if axis != ImageAxisOrder::Hwc || h == 0 || w == 0 {
+                    return Err(invalid_argument(
+                        "UnsharpMask requires nonempty uint8 HWC RGB input",
+                    ));
+                }
+                s = require_u8_hwc(s, self.name())?;
+                s.image = super::blur::unsharp_mask(s.clone(), *sigma, *amount, *threshold)?;
             }
             Self::Downscale {
                 scale_range: (low, high),

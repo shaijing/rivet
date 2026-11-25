@@ -6,8 +6,9 @@ use numpy::{PyArrayDyn, PyArrayMethods};
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 use rivet_core::{Device, Tensor};
 use rivet_vision::api::{
-    BatchMixConfig, BoxFormat, ImageAxisOrder, ImageBatch, RandomIoUCropConfig, StructuredBatch,
-    StructuredLoader, StructuredOp, StructuredPipeline, StructuredSample, VideoLayout, VideoSample,
+    AtLeastOneBBoxRandomCropConfig, BatchMixConfig, BoxFormat, ImageAxisOrder, ImageBatch,
+    RandomIoUCropConfig, StructuredBatch, StructuredLoader, StructuredOp, StructuredPipeline,
+    StructuredSample, VideoLayout, VideoSample,
 };
 
 pub(crate) fn tensor_from_numpy(value: &Bound<'_, PyAny>) -> PyResult<Tensor> {
@@ -179,6 +180,24 @@ impl PyStructuredPipeline {
             inner: self.inner.clone().push(op),
         })
     }
+    #[pyo3(signature = (width, height, *, erosion_factor=0.0))]
+    fn at_least_one_bbox_random_crop(
+        &self,
+        width: u32,
+        height: u32,
+        erosion_factor: f64,
+    ) -> PyResult<Self> {
+        let op = StructuredOp::AtLeastOneBBoxRandomCrop(AtLeastOneBBoxRandomCropConfig {
+            width,
+            height,
+            erosion_factor,
+        });
+        op.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().push(op),
+        })
+    }
+
     #[pyo3(signature=(min_scale=0.3,max_scale=1.0,min_aspect_ratio=0.5,max_aspect_ratio=2.0,sampler_options=None,trials=40,max_attempts=100))]
     fn random_iou_crop(
         &self,

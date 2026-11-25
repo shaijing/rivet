@@ -499,6 +499,27 @@ class Transform:
         """
         return Transform(self._inner.gaussian_noise(mean, sigma, clip))
 
+    def motion_blur(
+        self,
+        length_range: tuple[int, int] = (3, 7),
+        *,
+        angle_range: tuple[float, float] = (0.0, 180.0),
+    ) -> Transform:
+        """Blur uint8 HWC RGB along a line with reflected borders.
+
+        Sample an odd length from the inclusive bounds and an angle in
+        degrees from the horizontal axis, once per image.
+        """
+        return Transform(self._inner.motion_blur(length_range, angle_range=angle_range))
+
+    def unsharp_mask(
+        self, sigma: float = 1.0, *, amount: float = 1.0, threshold: int = 0
+    ) -> Transform:
+        """Amplify Gaussian residuals on uint8 HWC RGB above a pixel threshold."""
+        return Transform(
+            self._inner.unsharp_mask(sigma, amount=amount, threshold=threshold)
+        )
+
     def downscale(
         self,
         scale_range: tuple[float, float] = (0.25, 0.5),

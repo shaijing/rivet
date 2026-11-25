@@ -189,3 +189,97 @@ mod tests {
         assert!(GaussianBlurConfig::new(f32::NAN).validate().is_err());
     }
 }
+
+pub(super) fn motion_blur(
+    input: &rivet_core::Tensor,
+    length: u32,
+    angle: f64,
+) -> RivetResult<rivet_core::Tensor> {
+    with_rgb_pixels(input, "MotionBlur", |pixels, width, height| {
+        let (dy, dx) = angle.to_radians().sin_cos();
+        let radius = i64::from(length / 2);
+        let taps = (-radius..=radius)
+            .map(|i| {
+                let i = i as f64;
+                ((i * dy).round() as i64, (i * dx).round() as i64)
+            })
+            .collect::<Vec<_>>();
+        let reflect = |index: i64, len: usize| {
+            let len = len as i64;
+            if (0..len).contains(&index) {
+                return index as usize;
+            }
+            if len <= 1 {
+                return 0;
+            }
+            let period = 2 * (len - 1);
+            let index = index.rem_euclid(period);
+            index.min(period - index) as usize
+        };
+        Ok(rivet_core::Tensor::from_exact_writer::<u8, _, _>(
+            [height, width, 3],
+            input.device(),
+            |out| {
+                for y in 0..height {
+                    for x in 0..width {
+                        let mut sums = [0u64; 3];
+                        for &(dy, dx) in &taps {
+                            let sy = reflect(y as i64 + dy, height);
+                            let sx = reflect(x as i64 + dx, width);
+                            let offset = (sy * width + sx) * 3;
+                            sums[0] += u64::from(pixels[offset]);
+                            sums[1] += u64::from(pixels[offset + 1]);
+                            sums[2] += u64::from(pixels[offset + 2]);
+                        }
+                        let count = u64::from(length);
+                        for sum in sums {
+                            out.write_next(((sum + count / 2) / count) as u8)?;
+                        }
+                    }
+                }
+                Ok(())
+            },
+        )?)
+    })
+}
+
+pub(super) fn unsharp_mask(
+    sample: crate::sample::image::DecodedSample,
+    sigma: f32,
+    amount: f32,
+    threshold: u8,
+) -> RivetResult<rivet_core::Tensor> {
+    let input = &sample.image;
+    let [height, width, _] = *input.dims() else {
+        return Err(invalid_argument("UnsharpMask requires a rank-3 image"));
+    };
+    if amount == 0.0 {
+        return Ok(input.clone());
+    }
+    // Bound the radius for the existing reflect-padding Gaussian kernel.
+    let radius = |len: usize| {
+        ((3.0 * sigma).ceil() as u32).min((len.saturating_sub(1) as u32).min(u32::MAX / 2))
+    };
+    let blurred = GaussianBlurConfig::new(sigma)
+        .with_kernel_dimensions([2 * radius(width) + 1, 2 * radius(height) + 1])
+        .apply(ImageSample::Decoded(sample.clone()))?
+        .into_decoded()?;
+    with_rgb_pixels(input, "UnsharpMask", |pixels, _, _| {
+        with_rgb_pixels(&blurred.image, "UnsharpMask", |smooth, _, _| {
+            Ok(rivet_core::Tensor::from_exact_iter(
+                pixels.iter().zip(smooth).map(|(&pixel, &blurred)| {
+                    let detail = i16::from(pixel) - i16::from(blurred);
+                    if detail.unsigned_abs() > u16::from(threshold) {
+                        (f32::from(pixel) + amount * f32::from(detail))
+                            .round()
+                            .clamp(0.0, 255.0) as u8
+                    } else {
+                        pixel
+                    }
+                }),
+                input.dims(),
+                input.device(),
+            )?)
+        })
+    })
+}

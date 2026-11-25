@@ -413,7 +413,9 @@ def test_keypoint_maintenance_matches_torchvision(semantic_mask):
     np.testing.assert_array_equal(sanitized["keypoints"], expected_points.numpy())
     np.testing.assert_array_equal(sanitized["labels"], labels[keep])
     np.testing.assert_array_equal(sanitized["boxes"], boxes[keep])
-    np.testing.assert_array_equal(sanitized["masks"], masks if semantic_mask else masks[keep])
+    np.testing.assert_array_equal(
+        sanitized["masks"], masks if semantic_mask else masks[keep]
+    )
 
 
 @pytest.mark.parametrize("options", [[1.0], [0.0], [0.5], [0.99]])
@@ -758,3 +760,56 @@ def test_iou_crop_greater_than_one_is_identity_sentinel(annotated):
     p = rivet.StructuredPipeline([annotated]).random_iou_crop(sampler_options=[2.0])
     actual = next(p.execute())
     np.testing.assert_array_equal(actual["images"][0], annotated.to_dict()["image"])
+
+
+@pytest.mark.parametrize("erosion", [0.0, 1.0])
+def test_at_least_one_bbox_crop_transforms_aligned_fields(erosion):
+    y, x = np.indices((12, 12), dtype=np.uint8)
+    image = np.stack((x, y, np.zeros_like(x)), axis=-1)
+    boxes = np.array([[1, 1, 3, 3], [9, 9, 11, 11]], dtype=np.float32)
+    points = np.array([[[2, 2]], [[10, 10]]], dtype=np.float32)
+    masks = np.stack((np.ones_like(x), np.full_like(x, 2)))
+    sample = rivet.AnnotatedSample(
+        image, boxes=boxes, labels=[0, 1], masks=masks, keypoints=points
+    )
+    pipeline = (
+        rivet.StructuredPipeline([sample] * 6)
+        .at_least_one_bbox_random_crop(5, 5, erosion_factor=erosion)
+        .seed(13)
+        .batch(2)
+    )
+    outputs = list(pipeline.execute())
+    threaded = list(pipeline.workers(2).execute())
+    for batch, parallel in zip(outputs, threaded, strict=True):
+        np.testing.assert_array_equal(batch["images"], parallel["images"])
+        for cropped, target in zip(batch["images"], batch["targets"], strict=True):
+            cx, cy = cropped[0, 0, :2].astype(int)
+            assert cropped.shape == (5, 5, 3)
+            np.testing.assert_array_equal(cropped, image[cy : cy + 5, cx : cx + 5])
+            [label] = target["labels"]
+            translated = boxes[[label]] - [cx, cy, cx, cy]
+            expected_box = np.clip(translated, 0, 5)
+            if erosion == 0:
+                np.testing.assert_array_equal(expected_box, translated)
+            np.testing.assert_array_equal(target["boxes"], expected_box)
+            np.testing.assert_array_equal(
+                target["masks"], masks[[label], cy : cy + 5, cx : cx + 5]
+            )
+            np.testing.assert_array_equal(
+                target["keypoints"], points[[label]] - [cx, cy]
+            )
+
+
+def test_at_least_one_bbox_crop_falls_back_without_boxes():
+    image = np.arange(8 * 8 * 3, dtype=np.uint8).reshape(8, 8, 3)
+    mask = image[..., 0].copy()
+    source = rivet.StructuredPipeline([rivet.AnnotatedSample(image, masks=mask)])
+    [batch] = source.at_least_one_bbox_random_crop(4, 6).execute()
+    assert batch["images"].shape == (1, 6, 4, 3)
+    np.testing.assert_array_equal(
+        batch["images"][0, ..., 0], batch["targets"][0]["masks"]
+    )
+    with pytest.raises(ValueError):
+        next(iter(source.at_least_one_bbox_random_crop(9, 4).execute()))
+    with pytest.raises(ValueError):
+        source.at_least_one_bbox_random_crop(4, 4, erosion_factor=1.1)

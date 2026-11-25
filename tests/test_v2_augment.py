@@ -552,3 +552,55 @@ def test_degradations_preserve_structured_targets(source, transform):
     assert not np.array_equal(result["image"], pixels)
     for name in ("boxes", "labels", "masks", "keypoints"):
         np.testing.assert_array_equal(result[name], original[name])
+
+
+@pytest.mark.parametrize("transform", [False, True])
+@pytest.mark.parametrize("angle,axis", [(0, 1), (90, 0)])
+def test_motion_blur_direction_and_reflection(source, transform, angle, axis):
+    root, pixels = source
+    result = output(
+        root,
+        lambda p: p.motion_blur((3, 3), angle_range=(angle, angle)),
+        transform=transform,
+        workers=2,
+    )[0]
+    padded = np.pad(
+        pixels.astype(np.uint16),
+        ((1, 1), (0, 0), (0, 0)) if axis == 0 else ((0, 0), (1, 1), (0, 0)),
+        mode="reflect",
+    )
+    taps = [
+        np.take(padded, range(index, index + pixels.shape[axis]), axis=axis)
+        for index in range(3)
+    ]
+    np.testing.assert_array_equal(result, (sum(taps) + 1) // 3)
+
+
+@pytest.mark.parametrize("transform", [False, True])
+def test_unsharp_mask_matches_thresholded_gaussian_residual(source, transform):
+    root, pixels = source
+    smooth = output(root, lambda p: p.gaussian_blur(1.0))[0]
+    detail = pixels.astype(np.int16) - smooth.astype(np.int16)
+    expected = np.where(np.abs(detail) > 20, np.clip(pixels + detail, 0, 255), pixels)
+    actual = output(root, lambda p: p.unsharp_mask(threshold=20), transform=transform)[
+        0
+    ]
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(
+        output(root, lambda p: p.unsharp_mask(amount=0), transform=transform)[0],
+        pixels,
+    )
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda p: p.motion_blur((2, 7)),
+        lambda p: p.motion_blur(angle_range=(100, 10)),
+        lambda p: p.unsharp_mask(sigma=0),
+        lambda p: p.unsharp_mask(amount=float("nan")),
+    ],
+)
+def test_new_filters_validate_parameters(build):
+    with pytest.raises(ValueError):
+        build(rivet.Transform())

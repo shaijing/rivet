@@ -882,6 +882,31 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (length_range=(3, 7), *, angle_range=(0.0, 180.0)))]
+    fn motion_blur(&self, length_range: (u32, u32), angle_range: (f64, f64)) -> PyResult<Self> {
+        let config = V2Config::MotionBlur {
+            length_range,
+            angle_range,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (sigma=1.0, *, amount=1.0, threshold=0))]
+    fn unsharp_mask(&self, sigma: f32, amount: f32, threshold: u8) -> PyResult<Self> {
+        let config = V2Config::UnsharpMask {
+            sigma,
+            amount,
+            threshold,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (scale_range=(0.25, 0.5), *, down_interpolation="nearest", up_interpolation="nearest"))]
     fn downscale(
         &self,
@@ -1943,6 +1968,31 @@ impl PyImagePipeline {
     #[pyo3(signature = (mean=0.0, sigma=0.1, clip=true))]
     fn gaussian_noise(&self, mean: f64, sigma: f64, clip: bool) -> PyResult<Self> {
         let config = V2Config::GaussianNoise { mean, sigma, clip };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (length_range=(3, 7), *, angle_range=(0.0, 180.0)))]
+    fn motion_blur(&self, length_range: (u32, u32), angle_range: (f64, f64)) -> PyResult<Self> {
+        let config = V2Config::MotionBlur {
+            length_range,
+            angle_range,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (sigma=1.0, *, amount=1.0, threshold=0))]
+    fn unsharp_mask(&self, sigma: f32, amount: f32, threshold: u8) -> PyResult<Self> {
+        let config = V2Config::UnsharpMask {
+            sigma,
+            amount,
+            threshold,
+        };
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

@@ -295,10 +295,15 @@ pub(crate) fn infer_image_op(
                 V2Config::RandomPhotometricDistort { .. } => {
                     require_u8_hwc(input_state, op.name())?;
                 }
-                V2Config::Downscale { .. } => {
+                V2Config::Downscale { .. }
+                | V2Config::MotionBlur { .. }
+                | V2Config::UnsharpMask { .. } => {
                     require_u8_hwc(input_state, op.name())?;
                     if matches!(channel_dim(input), ShapeDim::Known(c) if c != 3) {
-                        return Err(invalid_pipeline("Downscale requires three channels"));
+                        return Err(invalid_pipeline(format!(
+                            "{} requires three channels",
+                            op.name()
+                        )));
                     }
                 }
                 V2Config::SaltAndPepper { .. } | V2Config::GridDropout { .. } => {

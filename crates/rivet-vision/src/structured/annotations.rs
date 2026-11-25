@@ -253,6 +253,73 @@ impl StructuredSample {
             .transpose()?;
         Ok(self)
     }
+    /// Crop around a randomly selected visible box and discard instances outside the crop.
+    pub fn at_least_one_bbox_random_crop(
+        self,
+        cfg: &AtLeastOneBBoxRandomCropConfig,
+        rng: &mut RandomStream,
+    ) -> RivetResult<Self> {
+        cfg.validate()?;
+        let (height, width) = self.size()?;
+        let (crop_width, crop_height) = (cfg.width as usize, cfg.height as usize);
+        if crop_width > width || crop_height > height {
+            return Err(invalid_shape(
+                "AtLeastOneBBoxRandomCrop exceeds image dimensions",
+            ));
+        }
+
+        let boxes = self
+            .xyxy()?
+            .map(|boxes| boxes.to_vec::<f32>())
+            .transpose()?;
+        let visible = |b: &[f32]| {
+            if b.iter().any(|v| !v.is_finite()) {
+                return None;
+            }
+            let x0 = f64::from(b[0]).max(0.0);
+            let y0 = f64::from(b[1]).max(0.0);
+            let x1 = f64::from(b[2]).min(width as f64);
+            let y1 = f64::from(b[3]).min(height as f64);
+            (x0 < x1 && y0 < y1).then_some([x0, y0, x1, y1])
+        };
+        let candidates: Vec<_> = boxes
+            .as_deref()
+            .unwrap_or_default()
+            .chunks_exact(4)
+            .enumerate()
+            .filter_map(|(index, b)| visible(b).map(|b| (index, b)))
+            .collect();
+
+        let (x, y) = if candidates.is_empty() {
+            (
+                rng.gen_range_usize(0..width - crop_width + 1)?,
+                rng.gen_range_usize(0..height - crop_height + 1)?,
+            )
+        } else {
+            let [x0, y0, x1, y1] = candidates[rng.gen_range_usize(0..candidates.len())?].1;
+            (
+                bbox_crop_origin(x0, x1, crop_width, width, cfg.erosion_factor, rng)?,
+                bbox_crop_origin(y0, y1, crop_height, height, cfg.erosion_factor, rng)?,
+            )
+        };
+        let sample = if boxes.is_some() {
+            let right = (x + crop_width) as f64;
+            let bottom = (y + crop_height) as f64;
+            let keep = candidates
+                .iter()
+                .filter_map(|&(index, [x0, y0, x1, y1])| {
+                    (x0 < right && y0 < bottom && x1 > x as f64 && y1 > y as f64).then_some(index)
+                })
+                .collect::<Vec<_>>();
+            self.retain_instances(&keep)?
+        } else {
+            self
+        };
+        let x = u32::try_from(x).map_err(|_| invalid_shape("crop X exceeds u32"))?;
+        let y = u32::try_from(y).map_err(|_| invalid_shape("crop Y exceeds u32"))?;
+        super::geometry::crop(sample, x, y, cfg.width, cfg.height)
+    }
+
     pub fn random_iou_crop(
         self,
         cfg: &RandomIoUCropConfig,
@@ -327,6 +394,58 @@ impl StructuredSample {
         Ok(self)
     }
 }
+/// Sample directions independently within the integer positions that overlap the box.
+fn bbox_crop_origin(
+    start: f64,
+    end: f64,
+    crop: usize,
+    image: usize,
+    erosion: f64,
+    rng: &mut RandomStream,
+) -> RivetResult<usize> {
+    let span = crop as f64;
+    let limit = (image - crop) as f64;
+    // At zero erosion, contain the box when possible. For an oversized
+    // box, choose a crop contained by the box along this axis.
+    let tight_lo = start.min(end - span);
+    let tight_hi = start.max(end - span);
+    let relaxed_lo = start - span;
+    let relaxed_hi = end;
+    let lo = tight_lo + erosion * (relaxed_lo - tight_lo);
+    let hi = tight_hi + erosion * (relaxed_hi - tight_hi);
+    // Strict positive overlap even when an endpoint is an integer.
+    let overlap_lo = (relaxed_lo.floor() + 1.0).max(0.0);
+    let overlap_hi = (relaxed_hi.ceil() - 1.0).min(limit);
+    let first = lo.ceil().max(overlap_lo);
+    let last = hi.floor().min(overlap_hi);
+    if first > last {
+        // Fractional box coordinates can make the tight interval contain no
+        // integer origin. The centered overlapping crop is then the fallback.
+        return Ok(((start + end - span) * 0.5)
+            .round()
+            .clamp(overlap_lo, overlap_hi) as usize);
+    }
+    Ok(rng.gen_range_usize(first as usize..last as usize + 1)?)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AtLeastOneBBoxRandomCropConfig {
+    pub width: u32,
+    pub height: u32,
+    pub erosion_factor: f64,
+}
+
+impl AtLeastOneBBoxRandomCropConfig {
+    pub fn validate(&self) -> RivetResult<()> {
+        if self.width == 0 || self.height == 0 || !(0.0..=1.0).contains(&self.erosion_factor) {
+            return Err(invalid_argument(
+                "invalid AtLeastOneBBoxRandomCrop configuration",
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub(super) fn convert_boxes(boxes: &Tensor, from: BoxFormat, to: BoxFormat) -> RivetResult<Tensor> {
     if from == to {
         return Ok(boxes.clone());
