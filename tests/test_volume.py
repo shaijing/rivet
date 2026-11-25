@@ -505,3 +505,42 @@ def test_ghosting_artifact_uint8_identity_and_seed():
         np.testing.assert_array_equal(sample.ghosting_artifact(**args).to_dict()["volume"], image)
     with pytest.raises(ValueError):
         sample.ghosting_artifact(axis=3)
+
+
+def test_k_space_spike_noise_adds_one_hermitian_pair():
+    from concurrent.futures import ThreadPoolExecutor
+
+    shape = (4, 5, 6)
+    image = np.full((*shape, 2), 0.25, dtype=np.float32)
+    mask = np.ones(shape, dtype=np.int64) * (2**53 + 1)
+    sample = VolumeSample(image, mask=mask, keypoints=[[1, 2, 3]], label=79)
+
+    def run(seed):
+        return sample.k_space_spike_noise(
+            (1, 1), intensity_range=(0.2, 0.2), seed=seed,
+        ).to_dict()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for seed, out in enumerate(pool.map(run, range(16))):
+            field = out["volume"]
+            delta = np.fft.fftn(field[..., 0] - image[..., 0])
+            nonzero = np.argwhere(np.abs(delta) > 1e-4)
+            assert len(nonzero) in (1, 2)
+            k = tuple(nonzero[0])
+            mirror = tuple((-i) % n for i, n in zip(k, shape, strict=True))
+            assert (len(nonzero) == 1) == (k == mirror)
+            np.testing.assert_allclose(delta[k], 0.05 * np.prod(shape), atol=1e-5)
+            np.testing.assert_allclose(delta[mirror], delta[k], atol=1e-5)
+            np.testing.assert_array_equal(field[..., 0], field[..., 1])
+            np.testing.assert_array_equal(field, run(seed)["volume"])
+            np.testing.assert_array_equal(out["mask"], mask)
+            np.testing.assert_array_equal(out["keypoints"], [[1, 2, 3]])
+            assert out["label"] == 79
+    independent = sample.k_space_spike_noise((1, 1), per_channel=True).to_dict()["volume"]
+    assert not np.array_equal(independent[..., 0], independent[..., 1])
+    singleton = VolumeSample(np.array([[[100]]], dtype=np.uint8))
+    out = singleton.k_space_spike_noise((1, 1), intensity_range=(0.2, 0.2)).to_dict()
+    np.testing.assert_array_equal(out["volume"], 120)
+    np.testing.assert_array_equal(sample.k_space_spike_noise((0, 0)).to_dict()["volume"], image)
+    with pytest.raises(ValueError):
+        sample.k_space_spike_noise(intensity_range=(-1, 0))

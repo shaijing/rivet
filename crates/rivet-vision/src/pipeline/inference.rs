@@ -707,7 +707,8 @@ pub(crate) fn infer_image_op(
                 V2Config::ToDtype { dtype, .. } => {
                     output.dtype = Some(core_dtype(*dtype));
                 }
-                V2Config::GibbsRinging(_)
+                V2Config::KSpaceSpikeNoise(_)
+                | V2Config::GibbsRinging(_)
                 | V2Config::BiasField(_)
                 | V2Config::RicianNoise { .. } => {
                     if !matches!(

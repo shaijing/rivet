@@ -96,6 +96,7 @@ pub enum V2Config {
     },
     BiasField(crate::volume::BiasFieldConfig),
     GibbsRinging(crate::volume::GibbsRingingConfig),
+    KSpaceSpikeNoise(crate::volume::KSpaceSpikeNoiseConfig),
     RicianNoise {
         std_range: [f64; 2],
         per_channel: bool,
@@ -308,6 +309,7 @@ impl V2Config {
             Self::GaussianNoise { .. } => "GaussianNoise",
             Self::BiasField(_) => "BiasField",
             Self::GibbsRinging(_) => "GibbsRinging",
+            Self::KSpaceSpikeNoise(_) => "KSpaceSpikeNoise",
             Self::RicianNoise { .. } => "RicianNoise",
             Self::ShotNoise { .. } => "ShotNoise",
             Self::RandomToneCurve { .. } => "RandomToneCurve",
@@ -402,6 +404,7 @@ impl V2Config {
             Self::GaussianNoise { .. } => 56,
             Self::BiasField(_) => 139,
             Self::GibbsRinging(_) => 140,
+            Self::KSpaceSpikeNoise(_) => 141,
             Self::RicianNoise { .. } => 138,
             Self::ShotNoise { .. } => 60,
             Self::RandomToneCurve { .. } => 69,
@@ -797,6 +800,7 @@ impl V2Config {
             }
             Self::BiasField(config) => return config.validate(),
             Self::GibbsRinging(config) => return config.validate(),
+            Self::KSpaceSpikeNoise(config) => return config.validate(),
             Self::RicianNoise { std_range, .. } => {
                 return super::noise::validate_rician_std(*std_range);
             }
@@ -1100,6 +1104,17 @@ impl V2Config {
                 };
             }
             Self::GibbsRinging(config) => {
+                let input = match axis {
+                    ImageAxisOrder::Hwc => s.image,
+                    ImageAxisOrder::Chw => s.image.permute(&[1, 2, 0])?,
+                };
+                let image = config.apply(&input, [1, h, w], c, rng)?;
+                s.image = match axis {
+                    ImageAxisOrder::Hwc => image,
+                    ImageAxisOrder::Chw => image.permute(&[2, 0, 1])?,
+                };
+            }
+            Self::KSpaceSpikeNoise(config) => {
                 let input = match axis {
                     ImageAxisOrder::Hwc => s.image,
                     ImageAxisOrder::Chw => s.image.permute(&[1, 2, 0])?,

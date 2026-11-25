@@ -267,6 +267,19 @@ class VolumeSample:
         )
         return result
 
+    def k_space_spike_noise(
+        self,
+        num_spikes_range: tuple[int, int] = (1, 5),
+        *,
+        intensity_range: tuple[float, float] = (0.1, 0.5),
+        per_channel: bool = False,
+        seed: int = 0,
+    ) -> VolumeSample:
+        """Inject conjugate-paired spikes into the spatial Fourier spectrum."""
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.k_space_spike_noise(num_spikes_range, intensity_range, per_channel, seed)
+        return result
+
     def gibbs_ringing(
         self, retained_fraction_range: tuple[float, float] = (0.5, 0.9), *, seed: int = 0
     ) -> VolumeSample:

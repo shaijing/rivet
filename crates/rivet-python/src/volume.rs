@@ -358,6 +358,27 @@ impl PyVolumeSample {
         Ok(Self { inner })
     }
 
+    fn k_space_spike_noise(
+        &self,
+        num_spikes_range: [usize; 2],
+        intensity_range: [f64; 2],
+        per_channel: bool,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let mut rng = rivet_vision::RandomStream::from_seed(seed);
+        let config = rivet_vision::volume::KSpaceSpikeNoiseConfig {
+            num_spikes_range,
+            intensity_range,
+            per_channel,
+        };
+        let inner = self
+            .inner
+            .clone()
+            .k_space_spike_noise(config, &mut rng)
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
     fn gibbs_ringing(&self, retained_fraction_range: [f64; 2], seed: u64) -> PyResult<Self> {
         let mut rng = rivet_vision::RandomStream::from_seed(seed);
         let config = rivet_vision::volume::GibbsRingingConfig {

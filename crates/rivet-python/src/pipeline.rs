@@ -2425,6 +2425,23 @@ impl PyTransform {
         })
     }
 
+    fn k_space_spike_noise(
+        &self,
+        num_spikes_range: [usize; 2],
+        intensity_range: [f64; 2],
+        per_channel: bool,
+    ) -> PyResult<Self> {
+        let config = V2Config::KSpaceSpikeNoise(rivet_vision::volume::KSpaceSpikeNoiseConfig {
+            num_spikes_range,
+            intensity_range,
+            per_channel,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     fn gibbs_ringing(&self, retained_fraction_range: [f64; 2]) -> PyResult<Self> {
         let config = V2Config::GibbsRinging(rivet_vision::volume::GibbsRingingConfig {
             retained_fraction_range,
@@ -5013,6 +5030,23 @@ impl PyImagePipeline {
             ratio,
             fill,
         };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    fn k_space_spike_noise(
+        &self,
+        num_spikes_range: [usize; 2],
+        intensity_range: [f64; 2],
+        per_channel: bool,
+    ) -> PyResult<Self> {
+        let config = V2Config::KSpaceSpikeNoise(rivet_vision::volume::KSpaceSpikeNoiseConfig {
+            num_spikes_range,
+            intensity_range,
+            per_channel,
+        });
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

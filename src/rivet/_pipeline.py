@@ -1761,6 +1761,19 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def k_space_spike_noise(
+        self,
+        num_spikes_range: tuple[int, int] = (1, 5),
+        *,
+        intensity_range: tuple[float, float] = (0.1, 0.5),
+        per_channel: bool = False,
+    ) -> Pipeline:
+        """Inject conjugate-paired spikes into the spatial Fourier spectrum."""
+        return Pipeline(
+            self._inner.k_space_spike_noise(num_spikes_range, intensity_range, per_channel),
+            as_numpy=self.as_numpy,
+        )
+
     def gibbs_ringing(
         self, retained_fraction_range: tuple[float, float] = (0.5, 0.9)
     ) -> Pipeline:

@@ -254,3 +254,107 @@ fn ghost_lines<T: WithDType + IntoVolumeFloat>(
         Ok(())
     })
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KSpaceSpikeNoiseConfig {
+    pub num_spikes_range: [usize; 2],
+    pub intensity_range: [f64; 2],
+    pub per_channel: bool,
+}
+
+impl KSpaceSpikeNoiseConfig {
+    pub fn validate(self) -> RivetResult<()> {
+        let [min, max] = self.num_spikes_range;
+        let [lo, hi] = self.intensity_range;
+        if min > max
+            || max == usize::MAX
+            || !lo.is_finite()
+            || !hi.is_finite()
+            || lo < 0.0
+            || lo > hi
+        {
+            return Err(invalid_argument(
+                "invalid KSpaceSpikeNoise count or intensity range",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn apply(
+        self,
+        input: &Tensor,
+        [d, h, w]: [usize; 3],
+        channels: usize,
+        rng: &mut RandomStream,
+    ) -> RivetResult<Tensor> {
+        self.validate()?;
+        if !matches!(input.dtype(), DType::U8 | DType::F32)
+            || d == 0
+            || h == 0
+            || w == 0
+            || channels == 0
+        {
+            return Err(invalid_argument(
+                "KSpaceSpikeNoise requires nonempty uint8 or float32 pixels",
+            ));
+        }
+        let [min, max] = self.num_spikes_range;
+        let count = if min == max {
+            min
+        } else {
+            rng.gen_range_usize(min..max + 1)?
+        };
+        let [lo, hi] = self.intensity_range;
+        let intensity = lo + (hi - lo) * rng.next_f64();
+        if count == 0 || intensity == 0.0 {
+            return Ok(input.clone());
+        }
+        let fields = if self.per_channel { channels } else { 1 };
+        let bins = d * h * w;
+        // Bound both injection and the unnormalized inverse FFT for finite pixels.
+        if intensity > f64::MAX / (f64::from(f32::MAX) * (bins as f64).powi(2) * count as f64 * 4.0)
+        {
+            return Err(invalid_argument(
+                "KSpaceSpikeNoise intensity exceeds numeric limits",
+            ));
+        }
+        let entries = count
+            .checked_mul(fields)
+            .ok_or_else(|| invalid_argument("KSpaceSpikeNoise sample count overflow"))?;
+        let mut spikes = Vec::new();
+        spikes.try_reserve_exact(entries).map_err(|_| {
+            invalid_argument("KSpaceSpikeNoise sample count exceeds allocation limits")
+        })?;
+        for _ in 0..entries {
+            let bin = rng.gen_range_usize(0..bins)?;
+            let (z, y, x) = (bin / (h * w), bin / w % h, bin % w);
+            let mirror = |k, n| if k == 0 { 0 } else { n - k };
+            let partner = (mirror(z, d) * h + mirror(y, h)) * w + mirror(x, w);
+            spikes.push((bin, partner));
+        }
+        spectral_filter(input, [d, h, w], channels, |channel, spectrum| {
+            let field = if self.per_channel { channel } else { 0 };
+            let peak = spectrum.iter().map(|v| v.norm()).fold(0.0, f64::max);
+            let amplitude = intensity * peak;
+            for &(bin, partner) in &spikes[field * count..(field + 1) * count] {
+                spectrum[bin].re += amplitude;
+                if bin != partner {
+                    spectrum[partner].re += amplitude;
+                }
+            }
+        })
+    }
+}
+
+impl VolumeSample {
+    pub fn k_space_spike_noise(
+        mut self,
+        config: KSpaceSpikeNoiseConfig,
+        rng: &mut RandomStream,
+    ) -> RivetResult<Self> {
+        self.validate()?;
+        let c = self.volume.dims().get(3).copied().unwrap_or(1);
+        self.volume = config.apply(&self.volume, self.spatial_shape()?, c, rng)?;
+        Ok(self)
+    }
+}
