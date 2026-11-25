@@ -50,6 +50,7 @@ pub use pad_needed::{PadIfNeededConfig, PadPosition};
 mod pca;
 mod piecewise;
 mod pixel_mask;
+mod pixel_spread;
 pub use piecewise::{GridElasticDeformConfig, PiecewiseAffineConfig};
 pub use pixel_mask::{
     ChannelDropoutConfig, ChannelDropoutFill, PixelDropoutConfig, StripLength, XyMaskingConfig,
@@ -57,6 +58,7 @@ pub use pixel_mask::{
 pub(crate) use pixel_mask::{
     apply as replace_spatial_pixels, sample_coarse_dropout, sample_grid_dropout,
 };
+pub use pixel_spread::PixelSpreadConfig;
 pub(crate) mod remap;
 mod resize;
 mod resized_crop;

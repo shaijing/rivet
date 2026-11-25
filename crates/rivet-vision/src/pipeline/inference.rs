@@ -284,7 +284,8 @@ pub(crate) fn infer_image_op(
                     }
                     output.contiguity = Some(Contiguity::Unknown);
                 }
-                V2Config::ThinPlateSpline(_)
+                V2Config::PixelSpread(_)
+                | V2Config::ThinPlateSpline(_)
                 | V2Config::GridElasticDeform(_)
                 | V2Config::PiecewiseAffine(_)
                 | V2Config::GridDistortion(_)

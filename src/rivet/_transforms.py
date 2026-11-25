@@ -537,6 +537,18 @@ class Transform:
             )
         )
 
+    def pixel_spread(
+        self, radius: int = 2, *, padding_mode: str = "reflect", fill: int = 0, fill_mask: int = 0,
+    ) -> Transform:
+        """Sample each output pixel from a seeded square neighborhood.
+
+        Supports uint8 HWC or CHW and radius zero for identity. Images
+        and masks use the same integer map. A keypoint uses the closest
+        output pixel sampling its source, or stays put if none does.
+        """
+        inner = self._inner.pixel_spread(radius, padding_mode=padding_mode, fill=fill, fill_mask=fill_mask)
+        return Transform(inner)
+
     def thin_plate_spline(
         self,
         scale_range: tuple[float, float] = (0.2, 0.4),

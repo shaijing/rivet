@@ -1431,3 +1431,30 @@ def test_thin_plate_spline_matches_nearest_masks_and_preserves_degenerate_image(
     assert np.isfinite(result["keypoints"]).all()
     one_row = rivet.AnnotatedSample(image[:1], masks=mask[:1])
     np.testing.assert_array_equal(one_row.apply(t).to_dict()["image"], image[:1])
+
+
+def test_pixel_spread_shared_integer_map_and_keypoint_policy():
+    h, w = 9, 11
+    mask = np.arange(1, h*w+1, dtype=np.uint8).reshape(h,w)
+    image = np.repeat(mask[..., None], 3, axis=-1)
+    sample = rivet.AnnotatedSample(
+        image, masks=mask, boxes=[[0, 0, w, h]], labels=[2], keypoints=[[[5, 4]]]
+    )
+    for epoch in range(4):
+        pipeline = rivet.StructuredPipeline([sample]).compose(rivet.Transform().pixel_spread(2)).seed(23).epoch(epoch)
+        result = next(iter(pipeline.execute()))
+        target = result["targets"][0]
+        np.testing.assert_array_equal(result["images"][0][..., 0], target["masks"])
+        y, x = np.indices((h,w))
+        src = target["masks"].astype(int) - 1
+        assert np.max(abs(src % w - x)) <= 2
+        assert np.max(abs(src // w - y)) <= 2
+        ys, xs = np.where(target["masks"] == mask[4,5])
+        if len(xs):
+            i = np.argmin((xs-5)**2+(ys-4)**2)
+            expected = [xs[i], ys[i]]
+        else:
+            expected = [5,4]
+        np.testing.assert_array_equal(target["keypoints"], [[expected]])
+        np.testing.assert_array_equal(target["boxes"], [[0, 0, w, h]])
+        np.testing.assert_array_equal(target["labels"], [2])

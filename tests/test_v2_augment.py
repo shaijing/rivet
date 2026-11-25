@@ -2517,3 +2517,14 @@ def test_thin_plate_spline_identity_and_seed(source):
     assert serial[0].shape == pixels.shape and serial[0].dtype == np.uint8
     with pytest.raises(ValueError):
         rivet.Transform().thin_plate_spline(num_control_points=1)
+
+
+def test_pixel_spread_seed_layout_and_identity(source):
+    root, pixels = source
+    np.testing.assert_array_equal(output(root, lambda p: p.pixel_spread(0))[0], pixels)
+    serial = output(root, lambda p: p.pixel_spread())
+    np.testing.assert_array_equal(serial, output(root, lambda p: p.pixel_spread(), transform=True, workers=3))
+    assert not np.array_equal(serial[0], pixels)
+    chw = output(root, lambda p: p.hwc_to_chw().pixel_spread())[0]
+    np.testing.assert_array_equal(chw, serial[0].transpose(2, 0, 1))
+    assert serial[0].dtype == np.uint8

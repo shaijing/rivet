@@ -176,6 +176,11 @@ impl ImagePipeline {
         ))
     }
 
+    /// Sample each output pixel from a seeded local neighborhood.
+    pub fn pixel_spread(self, config: crate::transforms::PixelSpreadConfig) -> Self {
+        self.v2(crate::transforms::V2Config::PixelSpread(config))
+    }
+
     /// Apply a smooth seeded thin-plate spline remap.
     pub fn thin_plate_spline(self, config: crate::transforms::ThinPlateSplineConfig) -> Self {
         self.v2(crate::transforms::V2Config::ThinPlateSpline(config))
