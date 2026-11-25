@@ -859,3 +859,32 @@ def test_planckian_jitter_seed_and_validation(source):
         output(root, lambda p: p.grayscale().planckian_jitter())
     with pytest.raises(ValueError, match="PlanckianJitter"):
         output(root, lambda p: p.hwc_to_chw().planckian_jitter())
+
+
+@pytest.mark.parametrize("shape", [(5, 7, 3), (7, 5, 1), (1, 5, 3), (5, 1, 1), (1, 1, 3)])
+def test_median_blur_matches_replicated_border_reference(tmp_path, shape):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.random.default_rng(91).integers(0, 256, shape, dtype=np.uint8)
+    grayscale = shape[-1] == 1
+    encoded = np.repeat(pixels, 3, axis=-1) if grayscale else pixels
+    Image.fromarray(encoded).save(folder / "image.png")
+
+    def augment(p):
+        return (p.grayscale() if grayscale else p).median_blur()
+
+    padded = np.pad(pixels, ((1, 1), (1, 1), (0, 0)), mode="edge")
+    windows = np.lib.stride_tricks.sliding_window_view(padded, (3, 3), axis=(0, 1))
+    expected = np.median(windows, axis=(-2, -1)).astype(np.uint8)
+    for transform, workers in [(False, 0), (True, 3)]:
+        actual = output(tmp_path, augment, transform=transform, workers=workers)[0]
+        assert actual.dtype == np.uint8
+        np.testing.assert_array_equal(actual, expected)
+
+
+def test_median_blur_rejects_incompatible_inputs(source):
+    root, _ = source
+    with pytest.raises(ValueError, match="MedianBlur"):
+        output(root, lambda p: p.to_dtype("float32", True).median_blur())
+    with pytest.raises(ValueError, match="MedianBlur"):
+        output(root, lambda p: p.hwc_to_chw().median_blur())

@@ -334,10 +334,13 @@ pub(crate) fn infer_image_op(
                         ));
                     }
                 }
-                V2Config::Clahe { .. } => {
+                V2Config::Clahe { .. } | V2Config::MedianBlur => {
                     require_u8_hwc(input_state, op.name())?;
                     if matches!(channel_dim(input), ShapeDim::Known(c) if c != 1 && c != 3) {
-                        return Err(invalid_pipeline("CLAHE requires one or three channels"));
+                        return Err(invalid_pipeline(format!(
+                            "{} requires one or three channels",
+                            op.name()
+                        )));
                     }
                 }
                 V2Config::Downscale { .. }

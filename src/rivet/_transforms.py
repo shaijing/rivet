@@ -523,6 +523,13 @@ class Transform:
             )
         )
 
+    def median_blur(self) -> Transform:
+        """Apply a 3×3 median per channel to uint8 HWC grayscale or RGB.
+
+        Out-of-bounds neighbors use the nearest border pixel.
+        """
+        return Transform(self._inner.median_blur())
+
     def planckian_jitter(
         self, temperature_range: tuple[float, float] = (3000, 15000)
     ) -> Transform:

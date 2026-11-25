@@ -905,6 +905,12 @@ impl PyTransform {
         })
     }
 
+    fn median_blur(&self) -> Self {
+        Self {
+            inner: self.inner.clone().v2(V2Config::MedianBlur),
+        }
+    }
+
     #[pyo3(signature = (temperature_range=(3000.0, 15000.0)))]
     fn planckian_jitter(&self, temperature_range: (f64, f64)) -> PyResult<Self> {
         let config = V2Config::PlanckianJitter { temperature_range };
@@ -2103,6 +2109,12 @@ impl PyImagePipeline {
         Ok(Self {
             inner: self.inner.clone().letterbox(config),
         })
+    }
+
+    fn median_blur(&self) -> Self {
+        Self {
+            inner: self.inner.clone().v2(V2Config::MedianBlur),
+        }
     }
 
     #[pyo3(signature = (temperature_range=(3000.0, 15000.0)))]

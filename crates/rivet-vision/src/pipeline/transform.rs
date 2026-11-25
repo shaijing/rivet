@@ -58,6 +58,11 @@ impl TransformSequence {
         self.v2(crate::transforms::V2Config::LetterBox(config))
     }
 
+    /// Apply a channel-wise 3×3 median filter with replicated border pixels.
+    pub fn median_blur(self) -> Self {
+        self.v2(crate::transforms::V2Config::MedianBlur)
+    }
+
     /// Sample a blackbody temperature in kelvin to tint an RGB image.
     pub fn planckian_jitter(self, temperature_range: (f64, f64)) -> Self {
         self.v2(crate::transforms::V2Config::PlanckianJitter { temperature_range })

@@ -300,3 +300,51 @@ pub(super) fn unsharp_mask(
         })
     })
 }
+
+pub(super) fn median_blur_3x3(input: &rivet_core::Tensor) -> RivetResult<rivet_core::Tensor> {
+    use rivet_core::{CpuStorageRef, DType, Tensor};
+
+    let [height, width, channels] = *input.dims() else {
+        return Err(invalid_argument("MedianBlur expects a rank-3 HWC image"));
+    };
+    if height == 0 || width == 0 || !matches!(channels, 1 | 3) || input.dtype() != DType::U8 {
+        return Err(invalid_argument(
+            "MedianBlur requires nonempty uint8 HWC grayscale or RGB input",
+        ));
+    }
+    let input = input.contiguous()?;
+    Ok(input.with_cpu_storage(|storage, layout| {
+        let CpuStorageRef::U8(values) = storage else {
+            unreachable!()
+        };
+        let pixels = super::contiguous_values(values, layout)?;
+        let stride = width * channels;
+        Tensor::from_exact_writer(input.dims(), input.device(), |out| {
+            for y in 0..height {
+                let rows = [y.saturating_sub(1), y, (y + 1).min(height - 1)].map(|y| y * stride);
+                for x in 0..width {
+                    let cols =
+                        [x.saturating_sub(1), x, (x + 1).min(width - 1)].map(|x| x * channels);
+                    for c in 0..channels {
+                        let [a, b, d] = rows.map(|row| row + c);
+                        let [l, m, r] = cols;
+                        let mut window = [
+                            pixels[a + l],
+                            pixels[a + m],
+                            pixels[a + r],
+                            pixels[b + l],
+                            pixels[b + m],
+                            pixels[b + r],
+                            pixels[d + l],
+                            pixels[d + m],
+                            pixels[d + r],
+                        ];
+                        let (_, median, _) = window.select_nth_unstable(4);
+                        out.write_next(*median)?;
+                    }
+                }
+            }
+            Ok(())
+        })
+    })?)
+}

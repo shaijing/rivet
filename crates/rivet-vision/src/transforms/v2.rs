@@ -50,6 +50,7 @@ pub enum V2Config {
         grid: (u32, u32),
         clip_limit: f64,
     },
+    MedianBlur,
     PlanckianJitter {
         temperature_range: (f64, f64),
     },
@@ -118,6 +119,7 @@ impl V2Config {
             Self::ShotNoise { .. } => "ShotNoise",
             Self::RandomToneCurve { .. } => "RandomToneCurve",
             Self::Clahe { .. } => "CLAHE",
+            Self::MedianBlur => "MedianBlur",
             Self::PlanckianJitter { .. } => "PlanckianJitter",
             Self::Vignetting { .. } => "Vignetting",
             Self::ChromaticAberration { .. } => "ChromaticAberration",
@@ -147,6 +149,7 @@ impl V2Config {
             Self::ShotNoise { .. } => 60,
             Self::RandomToneCurve { .. } => 69,
             Self::Clahe { .. } => 70,
+            Self::MedianBlur => 74,
             Self::PlanckianJitter { .. } => 73,
             Self::Vignetting { .. } => 72,
             Self::ChromaticAberration { .. } => 71,
@@ -171,11 +174,13 @@ impl V2Config {
                 | Self::ToDtype { .. }
                 | Self::UnsharpMask { .. }
                 | Self::LetterBox(_)
+                | Self::MedianBlur
                 | Self::Clahe { .. }
         )
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::MedianBlur => true,
             Self::RandomChannelPermutation { probability } => {
                 probability.is_finite() && (0.0..=1.0).contains(probability)
             }
@@ -517,6 +522,7 @@ impl V2Config {
             }
             Self::RandomToneCurve { .. }
             | Self::Clahe { .. }
+            | Self::MedianBlur
             | Self::PlanckianJitter { .. }
             | Self::Vignetting { .. }
             | Self::ChromaticAberration { .. }
@@ -526,6 +532,9 @@ impl V2Config {
                     "{} requires nonempty HWC input",
                     self.name()
                 )));
+            }
+            Self::MedianBlur => {
+                s.image = super::blur::median_blur_3x3(&s.image)?;
             }
             Self::RandomToneCurve { scale } => {
                 s = require_u8_hwc(s, self.name())?;
