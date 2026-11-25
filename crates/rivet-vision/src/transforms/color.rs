@@ -123,8 +123,7 @@ impl GammaConfig {
         Self { gamma, gain }
     }
     pub fn validate(&self) -> RivetResult<()> {
-        if !self.gamma.is_finite() || self.gamma < 0.0 || !self.gain.is_finite()
-        {
+        if !self.gamma.is_finite() || self.gamma < 0.0 || !self.gain.is_finite() {
             return Err(invalid_argument(
                 "gamma must be finite and non-negative; gain must be finite",
             ));
@@ -133,11 +132,15 @@ impl GammaConfig {
     }
     pub fn apply(&self, sample: ImageSample) -> RivetResult<ImageSample> {
         self.validate()?;
-        let lut: [u8; 256] = std::array::from_fn(|v| {
+        let lut = self.lut();
+        map_rgb_bytes(sample, "gamma", |v| lut[v as usize])
+    }
+
+    fn lut(&self) -> [u8; 256] {
+        std::array::from_fn(|v| {
             ((256.0 - 1e-3) * self.gain * (v as f64 / 255.0).powf(self.gamma)).clamp(0.0, 255.0)
                 as u8
-        });
-        map_rgb_bytes(sample, "gamma", |v| lut[v as usize])
+        })
     }
 }
 
@@ -654,4 +657,40 @@ mod tests {
             .unwrap();
         assert_eq!(changed.image.dims(), [1, 2, 3]);
     }
+}
+
+pub(super) fn random_gamma(input: &Tensor, exponent: f64) -> RivetResult<Tensor> {
+    use rivet_core::CpuStorageRef;
+
+    if !matches!(input.dims(), [h, w, c] if *h > 0 && *w > 0 && *c > 0)
+        || !matches!(input.dtype(), DType::U8 | DType::F32)
+    {
+        return Err(invalid_argument(
+            "RandomGamma requires nonempty uint8 or float32 HWC input",
+        ));
+    }
+    if exponent == 1.0 {
+        return Ok(input.clone());
+    }
+    let input = input.contiguous()?;
+    Ok(input.with_cpu_storage(|storage, layout| match storage {
+        CpuStorageRef::U8(values) => {
+            let lut = GammaConfig::new(exponent, 1.0).lut();
+            Tensor::from_exact_iter(
+                super::contiguous_values(values, layout)?
+                    .iter()
+                    .map(|&v| lut[v as usize]),
+                input.dims(),
+                input.device(),
+            )
+        }
+        CpuStorageRef::F32(values) => Tensor::from_exact_iter(
+            super::contiguous_values(values, layout)?
+                .iter()
+                .map(|&v| f64::from(v.clamp(0.0, 1.0)).powf(exponent) as f32),
+            input.dims(),
+            input.device(),
+        ),
+        _ => unreachable!(),
+    })?)
 }

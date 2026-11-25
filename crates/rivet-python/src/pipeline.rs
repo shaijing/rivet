@@ -1039,6 +1039,15 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (gamma_range=(80.0, 120.0)))]
+    fn random_gamma(&self, gamma_range: (f64, f64)) -> PyResult<Self> {
+        let config = V2Config::RandomGamma { gamma_range };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (fog_coef_range=(0.3, 1.0), alpha_coef=0.08))]
     fn random_fog(&self, fog_coef_range: (f64, f64), alpha_coef: f64) -> PyResult<Self> {
         let config = V2Config::RandomFog(rivet_vision::transforms::RandomFogConfig {
@@ -2746,6 +2755,15 @@ impl PyImagePipeline {
                 bloom_range,
             },
         ));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (gamma_range=(80.0, 120.0)))]
+    fn random_gamma(&self, gamma_range: (f64, f64)) -> PyResult<Self> {
+        let config = V2Config::RandomGamma { gamma_range };
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

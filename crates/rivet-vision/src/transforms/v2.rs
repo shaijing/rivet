@@ -108,6 +108,9 @@ pub enum V2Config {
         elementwise: bool,
     },
     RandomSunFlare(std::sync::Arc<RandomSunFlareConfig>),
+    RandomGamma {
+        gamma_range: (f64, f64),
+    },
     RandomFog(RandomFogConfig),
     AtmosphericFog(AtmosphericFogConfig),
     Spatter(std::sync::Arc<SpatterConfig>),
@@ -232,6 +235,7 @@ impl V2Config {
             Self::AdditiveNoise(_) => "AdditiveNoise",
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::RandomSunFlare(_) => "RandomSunFlare",
+            Self::RandomGamma { .. } => "RandomGamma",
             Self::RandomFog(_) => "RandomFog",
             Self::AtmosphericFog(_) => "AtmosphericFog",
             Self::Spatter(_) => "Spatter",
@@ -283,6 +287,7 @@ impl V2Config {
             Self::AdditiveNoise(_) => 83,
             Self::MultiplicativeNoise { .. } => 82,
             Self::RandomSunFlare(_) => 88,
+            Self::RandomGamma { .. } => 96,
             Self::RandomFog(_) => 94,
             Self::AtmosphericFog(_) => 95,
             Self::Spatter(_) => 93,
@@ -332,6 +337,9 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::RandomGamma {
+                gamma_range: (lo, hi),
+            } => *lo > 0.0 && lo <= hi && hi.is_finite(),
             Self::RandomFog(config) => config.valid(),
             Self::AtmosphericFog(config) => config.valid(),
             Self::Spatter(config) => config.valid(),
@@ -807,6 +815,7 @@ impl V2Config {
             | Self::AdditiveNoise(_)
             | Self::MultiplicativeNoise { .. }
             | Self::RandomSunFlare(_)
+            | Self::RandomGamma { .. }
             | Self::RandomFog(_)
             | Self::AtmosphericFog(_)
             | Self::Spatter(_)
@@ -1008,6 +1017,12 @@ impl V2Config {
             }
             Self::RandomRain(config) => {
                 s.image = super::weather::random_rain(&s.image, config, rng)?;
+            }
+            Self::RandomGamma {
+                gamma_range: (lo, hi),
+            } => {
+                let exponent = (lo + rng.next_f64() * (hi - lo)) / 100.0;
+                s.image = super::color::random_gamma(&s.image, exponent)?;
             }
             Self::RandomFog(config) => {
                 s.image = super::fog::random_fog(&s.image, config, rng)?;

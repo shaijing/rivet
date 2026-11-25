@@ -715,6 +715,14 @@ class Pipeline:
         inner = self._inner.lens_flare(flare_roi, num_ghosts_range, intensity_range, num_rays_range, bloom_range)
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def random_gamma(self, gamma_range: tuple[float, float] = (80, 120)) -> Pipeline:
+        """Power-law correction for uint8 or normalized float32 HWC.
+
+        Sample once per image and divide by 100 for the exponent. A range
+        of (100, 100) is identity.
+        """
+        return Pipeline(self._inner.random_gamma(gamma_range), as_numpy=self.as_numpy)
+
     def random_fog(
         self, fog_coef_range: tuple[float, float] = (0.3, 1.0), alpha_coef: float = 0.08
     ) -> Pipeline:

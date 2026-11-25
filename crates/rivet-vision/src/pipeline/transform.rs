@@ -100,6 +100,11 @@ impl TransformSequence {
         )))
     }
 
+    /// Apply a power-law exponent sampled from percent units.
+    pub fn random_gamma(self, gamma_range: (f64, f64)) -> Self {
+        self.v2(crate::transforms::V2Config::RandomGamma { gamma_range })
+    }
+
     /// Apply seeded fog to an RGB image.
     pub fn random_fog(self, config: crate::transforms::RandomFogConfig) -> Self {
         self.v2(crate::transforms::V2Config::RandomFog(config))

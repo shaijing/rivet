@@ -1622,3 +1622,27 @@ def test_fog_identity_seed_and_opacity(source):
     assert not np.array_equal(atmospheric, output(root, lambda p: p.atmospheric_fog(), epoch=1))
     with pytest.raises(ValueError, match="AtmosphericFog"):
         output(root, lambda p: p.hwc_to_chw().atmospheric_fog())
+
+
+def test_random_gamma_percent_units_and_seed(source):
+    root, pixels = source
+    identity = output(root, lambda p: p.random_gamma((100, 100)))[0]
+    np.testing.assert_array_equal(identity, pixels)
+    fixed = output(root, lambda p: p.random_gamma((50, 50)), transform=True)[0]
+    assert fixed.dtype == np.uint8 and fixed.shape == pixels.shape
+    np.testing.assert_array_equal(fixed, output(root, lambda p: p.gamma(0.5))[0])
+    float_image = output(
+        root, lambda p: p.grayscale().to_dtype("float32", True).random_gamma((200, 200))
+    )[0]
+    baseline = output(root, lambda p: p.grayscale().to_dtype("float32", True))[0]
+    assert float_image.dtype == np.float32 and float_image.shape[-1] == 1
+    np.testing.assert_allclose(float_image, baseline**2, atol=1e-7)
+    serial = output(root, lambda p: p.random_gamma())
+    np.testing.assert_array_equal(
+        serial, output(root, lambda p: p.random_gamma(), transform=True, workers=3)
+    )
+    assert not np.array_equal(serial, output(root, lambda p: p.random_gamma(), epoch=1))
+    with pytest.raises(ValueError, match="RandomGamma"):
+        output(root, lambda p: p.hwc_to_chw().random_gamma())
+    with pytest.raises(ValueError):
+        rivet.Transform().random_gamma((0, 100))
