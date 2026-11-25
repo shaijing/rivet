@@ -126,6 +126,18 @@ pub(super) fn grid_dropout(
     fill: f32,
     rng: &mut RandomStream,
 ) -> RivetResult<Tensor> {
+    let (rows, cols) = sample_grid_dropout(size, unit_size, ratio, rng)?;
+    apply(input, axis, size.0, size.1, [fill; 2], |y, x| {
+        (rows[y] && cols[x]).then_some(false)
+    })
+}
+
+pub(crate) fn sample_grid_dropout(
+    size: (usize, usize),
+    unit_size: usize,
+    ratio: f64,
+    rng: &mut RandomStream,
+) -> RivetResult<(Vec<bool>, Vec<bool>)> {
     let hole = ((unit_size as f64 * ratio).floor() as usize).clamp(1, unit_size - 1);
     let offsets = 0..unit_size - hole + 1;
     let y_offset = rng.gen_range_usize(offsets.clone())?;
@@ -137,9 +149,7 @@ pub(super) fn grid_dropout(
     };
     let rows = inside(size.0, y_offset);
     let cols = inside(size.1, x_offset);
-    apply(input, axis, size.0, size.1, [fill; 2], |y, x| {
-        (rows[y] && cols[x]).then_some(false)
-    })
+    Ok((rows, cols))
 }
 
 pub(super) fn coarse_dropout(
@@ -152,6 +162,27 @@ pub(super) fn coarse_dropout(
     fill: f32,
     rng: &mut RandomStream,
 ) -> RivetResult<Tensor> {
+    let rectangles = sample_coarse_dropout(size, holes, hole_height, hole_width, rng)?;
+    if rectangles.is_empty() {
+        return Ok(input.clone());
+    }
+    apply(input, axis, size.0, size.1, [fill; 2], |y, x| {
+        rectangles
+            .iter()
+            .any(|(rows, cols)| rows.contains(&y) && cols.contains(&x))
+            .then_some(false)
+    })
+}
+
+type DropoutRectangle = (std::ops::Range<usize>, std::ops::Range<usize>);
+
+pub(crate) fn sample_coarse_dropout(
+    size: (usize, usize),
+    holes: (u32, u32),
+    hole_height: (u32, u32),
+    hole_width: (u32, u32),
+    rng: &mut RandomStream,
+) -> RivetResult<Vec<DropoutRectangle>> {
     let (height, width) = size;
     if height == 0 || width == 0 {
         return Err(invalid_argument("CoarseDropout requires a nonempty image"));
@@ -163,7 +194,7 @@ pub(super) fn coarse_dropout(
     };
     let count = sample(rng, holes, usize::MAX - 1)?;
     if count == 0 {
-        return Ok(input.clone());
+        return Ok(Vec::new());
     }
     let mut rectangles = Vec::new();
     for _ in 0..count {
@@ -173,12 +204,7 @@ pub(super) fn coarse_dropout(
         let x = rng.gen_range_usize(0..width - w + 1)?;
         rectangles.push((y..y + h, x..x + w));
     }
-    apply(input, axis, height, width, [fill; 2], |y, x| {
-        rectangles
-            .iter()
-            .any(|(rows, cols)| rows.contains(&y) && cols.contains(&x))
-            .then_some(false)
-    })
+    Ok(rectangles)
 }
 
 #[cfg(test)]

@@ -1299,3 +1299,33 @@ def test_constrained_dropout_semantic_components_and_empty():
     np.testing.assert_array_equal(result["targets"][0]["masks"], np.where(mask == 5, -1, mask))
     unmatched = next(iter(rivet.StructuredPipeline([sample]).constrained_coarse_dropout(mask_indices=[99]).execute()))
     np.testing.assert_array_equal(unmatched["images"][0], image)
+
+
+@pytest.mark.parametrize("mode", ["coarse", "grid"])
+def test_structured_spatial_dropout_mask_and_visibility(mode):
+    image = np.full((8, 8, 3), 120, dtype=np.uint8)
+    mask = np.full((8, 8), 6, dtype=np.int64)
+    sample = rivet.AnnotatedSample(
+        image, boxes=[[0, 0, 8, 8]], labels=[5], masks=mask, keypoints=[[[2, 3]]]
+    )
+
+    def pipeline(visibility):
+        p = rivet.StructuredPipeline([sample] * 4).seed(17)
+        kwargs = dict(fill=23, fill_mask=-1, min_visibility=visibility)
+        if mode == "coarse":
+            return p.coarse_dropout((1, 1), hole_height=(4, 4), hole_width=(4, 4), **kwargs)
+        return p.grid_dropout(4, ratio=0.5, **kwargs)
+
+    p = pipeline(0.75)
+    for a, b in zip(p.execute(), p.workers(3).execute(), strict=True):
+        np.testing.assert_array_equal(a["images"], b["images"])
+        covered = a["images"][0][..., 0] == 23
+        assert covered.sum() == 16
+        t = a["targets"][0]
+        np.testing.assert_array_equal(t["masks"], np.where(covered, -1, 6))
+        np.testing.assert_array_equal(t["labels"], [5])
+        np.testing.assert_array_equal(t["keypoints"], [[[2, 3]]])
+    removed = next(iter(pipeline(0.8).execute()))["targets"][0]
+    assert removed["boxes"].shape == (0, 4)
+    assert removed["labels"].shape == (0,)
+    assert removed["keypoints"].shape == (0, 1, 2)

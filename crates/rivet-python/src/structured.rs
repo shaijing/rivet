@@ -228,6 +228,56 @@ impl PyStructuredPipeline {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (holes=(1,4), *, hole_height=(4,8), hole_width=(4,8), fill=0.0, fill_mask=None, min_visibility=0.0))]
+    fn coarse_dropout(
+        &self,
+        holes: (u32, u32),
+        hole_height: (u32, u32),
+        hole_width: (u32, u32),
+        fill: f32,
+        fill_mask: Option<i64>,
+        min_visibility: f64,
+    ) -> PyResult<Self> {
+        use rivet_vision::structured::{SpatialDropout, StructuredDropoutConfig};
+        let op = StructuredOp::SpatialDropout(StructuredDropoutConfig {
+            pattern: SpatialDropout::Coarse {
+                holes,
+                hole_height,
+                hole_width,
+            },
+            fill,
+            fill_mask,
+            min_visibility,
+        });
+        op.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().push(op),
+        })
+    }
+
+    #[pyo3(signature = (unit_size, *, ratio=0.5, fill=0.0,fill_mask=None,min_visibility=0.0))]
+    fn grid_dropout(
+        &self,
+        unit_size: usize,
+        ratio: f64,
+        fill: f32,
+        fill_mask: Option<i64>,
+        min_visibility: f64,
+    ) -> PyResult<Self> {
+        use rivet_vision::structured::{SpatialDropout, StructuredDropoutConfig};
+        let op = StructuredOp::SpatialDropout(StructuredDropoutConfig {
+            pattern: SpatialDropout::Grid { unit_size, ratio },
+            fill,
+            fill_mask,
+            min_visibility,
+        });
+        op.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().push(op),
+        })
+    }
+
     #[pyo3(signature = (max_objects_range=(1,1), *, fill=0.0, fill_mask=0))]
     fn mask_dropout(
         &self,

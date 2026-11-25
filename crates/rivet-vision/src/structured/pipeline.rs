@@ -1,5 +1,6 @@
 use super::CropNonEmptyMaskConfig;
 use super::RandomCropNearBBoxConfig;
+use super::StructuredDropoutConfig;
 use super::{
     AtLeastOneBBoxRandomCropConfig, BBoxSafeRandomCropConfig, BBoxSubsetSafeRandomCropConfig,
     BoxFormat, RandomIoUCropConfig, StructuredSample,
@@ -28,6 +29,7 @@ pub enum StructuredOp {
     BBoxSubsetSafeRandomCrop(BBoxSubsetSafeRandomCropConfig),
     AtLeastOneBBoxRandomCrop(AtLeastOneBBoxRandomCropConfig),
     MaskDropout(MaskDropoutConfig),
+    SpatialDropout(StructuredDropoutConfig),
     ConstrainedCoarseDropout(std::sync::Arc<ConstrainedCoarseDropoutConfig>),
     CropNonEmptyMask(CropNonEmptyMaskConfig),
 }
@@ -42,6 +44,7 @@ impl StructuredOp {
             Self::Sanitize { .. } => "SanitizeBoundingBoxes",
             Self::RandomIoUCrop(_) => "RandomIoUCrop",
             Self::ConstrainedCoarseDropout(_) => "ConstrainedCoarseDropout",
+            Self::SpatialDropout(c) => c.name(),
             Self::MaskDropout(_) => "MaskDropout",
             Self::CropNonEmptyMask(_) => "CropNonEmptyMaskIfExists",
             Self::RandomCropNearBBox(_) => "RandomCropNearBBox",
@@ -56,6 +59,7 @@ impl StructuredOp {
             Self::Image(op) => validate_image(op),
             Self::RandomIoUCrop(c) => c.validate(),
             Self::ConstrainedCoarseDropout(c) => c.validate(),
+            Self::SpatialDropout(c) => c.validate(),
             Self::MaskDropout(c) => c.validate(),
             Self::CropNonEmptyMask(c) => c.validate(),
             Self::RandomCropNearBBox(c) => c.validate(),
@@ -200,6 +204,7 @@ impl StructuredPipeline {
                 StructuredOp::ConstrainedCoarseDropout(c) => {
                     sample.constrained_coarse_dropout(c, &mut rng)?
                 }
+                StructuredOp::SpatialDropout(c) => sample.spatial_dropout(c, &mut rng)?,
                 StructuredOp::MaskDropout(c) => sample.mask_dropout(c, &mut rng)?,
                 StructuredOp::CropNonEmptyMask(c) => {
                     sample.crop_non_empty_mask_if_exists(c, &mut rng)?

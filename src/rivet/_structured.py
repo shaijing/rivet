@@ -251,6 +251,34 @@ class StructuredPipeline:
             fill=fill, fill_mask=fill_mask,
         ))
 
+    def coarse_dropout(
+        self, holes: tuple[int, int] = (1, 4), *,
+        hole_height: tuple[int, int] = (4, 8), hole_width: tuple[int, int] = (4, 8),
+        fill: float = 0, fill_mask: int | None = None, min_visibility: float = 0,
+    ) -> StructuredPipeline:
+        """Erase sampled rectangles and optionally fill corresponding mask pixels.
+
+        Remove boxes below the visible pixel fraction and their aligned targets.
+        A completely occluded box is removed even at min_visibility=0.
+        """
+        return self._from_inner(self._inner.coarse_dropout(
+            holes, hole_height=hole_height, hole_width=hole_width, fill=fill,
+            fill_mask=fill_mask, min_visibility=min_visibility,
+        ))
+
+    def grid_dropout(
+        self, unit_size: int, *, ratio: float = 0.5, fill: float = 0,
+        fill_mask: int | None = None, min_visibility: float = 0,
+    ) -> StructuredPipeline:
+        """Erase periodic square holes, optionally filling the same mask pixels.
+
+        The visibility rule matches coarse_dropout.
+        """
+        return self._from_inner(self._inner.grid_dropout(
+            unit_size, ratio=ratio, fill=fill, fill_mask=fill_mask,
+            min_visibility=min_visibility,
+        ))
+
     def mask_dropout(
         self,
         max_objects_range: tuple[int, int] = (1, 1),

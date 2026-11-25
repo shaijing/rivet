@@ -14,8 +14,10 @@ pub use mask_crop::CropNonEmptyMaskConfig;
 pub use mask_dropout::MaskDropoutConfig;
 mod near_bbox;
 mod pipeline;
+mod spatial_dropout;
 pub use annotations::{
     AtLeastOneBBoxRandomCropConfig, BoxFormat, RandomIoUCropConfig, StructuredSample,
 };
 pub use near_bbox::RandomCropNearBBoxConfig;
 pub use pipeline::{StructuredBatch, StructuredLoader, StructuredOp, StructuredPipeline};
+pub use spatial_dropout::{SpatialDropout, StructuredDropoutConfig};

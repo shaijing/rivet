@@ -894,10 +894,21 @@ fn validate_occlusion_fill(s: &StructuredSample, fill: Option<i64>) -> RivetResu
 }
 
 pub(super) fn apply_occlusion(
+    s: StructuredSample,
+    h: usize,
+    w: usize,
+    fill: Option<i64>,
+    covered: impl Fn(usize, usize) -> bool,
+) -> RivetResult<StructuredSample> {
+    apply_occlusion_with_visibility(s, h, w, fill, 0.0, covered)
+}
+
+pub(super) fn apply_occlusion_with_visibility(
     mut s: StructuredSample,
     h: usize,
     w: usize,
     fill: Option<i64>,
+    min_visibility: f64,
     covered: impl Fn(usize, usize) -> bool,
 ) -> RivetResult<StructuredSample> {
     validate_occlusion_fill(&s, fill)?;
@@ -914,10 +925,20 @@ pub(super) fn apply_occlusion(
             .filter_map(|(i, b)| {
                 let xs = (b[0].floor() as usize).min(w)..(b[2].ceil() as usize).min(w);
                 let ys = (b[1].floor() as usize).min(h)..(b[3].ceil() as usize).min(h);
-                (xs.is_empty()
-                    || ys.is_empty()
-                    || ys.into_iter().any(|y| xs.clone().any(|x| !covered(y, x))))
-                .then_some(i)
+                if xs.is_empty() || ys.is_empty() {
+                    return Some(i);
+                }
+                let survives = if min_visibility == 0.0 {
+                    ys.into_iter().any(|y| xs.clone().any(|x| !covered(y, x)))
+                } else {
+                    let area = xs.len() as f64 * ys.len() as f64;
+                    let visible = ys
+                        .flat_map(|y| xs.clone().map(move |x| (y, x)))
+                        .filter(|&(y, x)| !covered(y, x))
+                        .count();
+                    visible > 0 && visible as f64 / area >= min_visibility
+                };
+                survives.then_some(i)
             })
             .collect();
         if keep.len() != boxes.len() / 4 {
