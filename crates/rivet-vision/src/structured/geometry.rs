@@ -703,6 +703,15 @@ pub(super) fn apply(
             let padding = config.sample(h, w, rng)?;
             pad_with_mask_fill(s, &padding, config.fill_mask)
         }
+        ImageOp::V2(V2Config::RandomCropFromBorders { fractions }) => {
+            let [x, y, cw, ch] = crate::transforms::sample_border_crop(h, w, *fractions, rng)?;
+            if (x, y, cw as usize, ch as usize) == (0, 0, w, h) {
+                return Ok(s);
+            }
+            let boxes = s.xyxy()?.map(|b| b.to_vec::<f32>()).transpose()?;
+            let (x, y, cw, ch) = (x as usize, y as usize, cw as usize, ch as usize);
+            crop_visible_instances(s, boxes.as_deref(), [x, y, x + cw, y + ch])
+        }
         ImageOp::V2(V2Config::LetterBox(config)) => {
             let (h, w) = s.size()?;
             let (scale, padding) = config.resolve(w, h)?;

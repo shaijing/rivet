@@ -754,6 +754,11 @@ impl ImagePipeline {
         ))
     }
 
+    /// Randomly remove strips from the left, right, top, and bottom.
+    pub fn random_crop_from_borders(self, fractions: [f64; 4]) -> Self {
+        self.v2(crate::transforms::V2Config::RandomCropFromBorders { fractions })
+    }
+
     pub fn crop(mut self, x: u32, y: u32, width: u32, height: u32) -> Self {
         self.push_image(ImageOp::crop(x, y, width, height));
         self

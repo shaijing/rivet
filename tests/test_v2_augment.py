@@ -2284,3 +2284,26 @@ def test_grid_mask_rotation_layout_and_seed(tmp_path):
     np.testing.assert_array_equal(
         output(tmp_path, lambda p: p.grid_mask(line_width_range=(0, 0)))[0], pixels
     )
+
+
+def test_random_crop_from_borders_layout_seed_and_bounds(source):
+    root, _ = source
+
+    def augment(p):
+        return p.random_crop_from_borders(0.5, 0, 0.5, 0)
+
+    serial = output(root, augment)
+    parallel = output(root, augment, transform=True, workers=3)
+    original = output(root, lambda p: p)
+    for image, other, base in zip(serial, parallel, original, strict=True):
+        np.testing.assert_array_equal(image, other)
+        h, w, _ = image.shape
+        assert 6 <= h <= 12 and 9 <= w <= 18
+        np.testing.assert_array_equal(image, base[-h:, -w:])
+    chw = output(root, lambda p: augment(p.to_dtype("float32", True).hwc_to_chw()))
+    for image, planar in zip(serial, chw, strict=True):
+        np.testing.assert_allclose(planar, image.transpose(2, 0, 1) / 255, atol=1e-7)
+    for image, base in zip(output(root, lambda p: p.random_crop_from_borders(0, 0, 0, 0)), original):
+        np.testing.assert_array_equal(image, base)
+    with pytest.raises(ValueError):
+        rivet.Transform().random_crop_from_borders(1.1)

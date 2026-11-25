@@ -1110,3 +1110,23 @@ def test_random_crop_near_bbox_seed_across_workers(annotated):
         np.testing.assert_array_equal(a["images"], b["images"])
         for key in ("boxes", "labels", "keypoints", "masks"):
             np.testing.assert_array_equal(a["targets"][0][key], b["targets"][0][key])
+
+
+def test_random_crop_from_borders_aligns_structured_targets():
+    y, x = np.indices((10, 12), dtype=np.uint8)
+    image = np.stack([x, y, x+y], axis=-1)
+    sample = rivet.AnnotatedSample(
+        image, boxes=[[6, 5, 12, 10]], masks=np.ones((1, 10, 12), np.uint8),
+        labels=[3], keypoints=[[[9, 7]]],
+    )
+    transform = rivet.Transform().random_crop_from_borders(0.5, 0, 0.5, 0)
+    pipeline = rivet.StructuredPipeline([sample] * 5).compose(transform).seed(23)
+    for a, b in zip(pipeline.execute(), pipeline.workers(3).execute(), strict=True):
+        np.testing.assert_array_equal(a["images"], b["images"])
+        out = a["images"][0]
+        left, top = map(int, out[0, 0, :2])
+        target = a["targets"][0]
+        np.testing.assert_array_equal(target["boxes"], [[6-left, 5-top, 12-left, 10-top]])
+        np.testing.assert_array_equal(target["keypoints"], [[[9-left, 7-top]]])
+        np.testing.assert_array_equal(target["labels"], [3])
+        assert target["masks"].shape == (1, *out.shape[:2])

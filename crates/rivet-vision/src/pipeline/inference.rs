@@ -331,6 +331,12 @@ pub(crate) fn infer_image_op(
                         ShapeDim::Known(config.width as usize),
                     );
                 }
+                V2Config::RandomCropFromBorders { fractions } => {
+                    if fractions.iter().any(|&v| v > 0.0) {
+                        make_spatial_dynamic(&mut output);
+                    }
+                    output.contiguity = Some(Contiguity::Unknown);
+                }
                 V2Config::Blur { .. }
                 | V2Config::AdvancedBlur(_)
                 | V2Config::StochasticConvolution { .. }

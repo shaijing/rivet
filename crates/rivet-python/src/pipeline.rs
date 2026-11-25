@@ -326,6 +326,23 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (crop_left=0.1, crop_right=0.1, crop_top=0.1, crop_bottom=0.1))]
+    fn random_crop_from_borders(
+        &self,
+        crop_left: f64,
+        crop_right: f64,
+        crop_top: f64,
+        crop_bottom: f64,
+    ) -> PyResult<Self> {
+        let config = V2Config::RandomCropFromBorders {
+            fractions: [crop_left, crop_right, crop_top, crop_bottom],
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     fn center_crop(&self, width: u32, height: u32) -> Self {
         Self {
             inner: self.inner.clone().center_crop(width, height),
@@ -2414,6 +2431,23 @@ impl PyImagePipeline {
             fill_channels,
             fill_mask,
         }));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (crop_left=0.1, crop_right=0.1, crop_top=0.1, crop_bottom=0.1))]
+    fn random_crop_from_borders(
+        &self,
+        crop_left: f64,
+        crop_right: f64,
+        crop_top: f64,
+        crop_bottom: f64,
+    ) -> PyResult<Self> {
+        let config = V2Config::RandomCropFromBorders {
+            fractions: [crop_left, crop_right, crop_top, crop_bottom],
+        };
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

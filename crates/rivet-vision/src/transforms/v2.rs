@@ -65,6 +65,9 @@ pub enum V2Config {
         hue: (f32, f32),
         probability: f64,
     },
+    RandomCropFromBorders {
+        fractions: [f64; 4],
+    },
     RandomResize {
         min_size: u32,
         max_size: u32,
@@ -271,6 +274,7 @@ impl V2Config {
             Self::PermuteChannels(_) => "PermuteChannels",
             Self::RandomChannelPermutation { .. } => "RandomChannelPermutation",
             Self::RandomPhotometricDistort { .. } => "RandomPhotometricDistort",
+            Self::RandomCropFromBorders { .. } => "RandomCropFromBorders",
             Self::RandomResize { .. } => "RandomResize",
             Self::RandomShortestSize { .. } => "RandomShortestSize",
             Self::ScaleJitter { .. } => "ScaleJitter",
@@ -342,6 +346,7 @@ impl V2Config {
             Self::PermuteChannels(_) => 49,
             Self::RandomChannelPermutation { .. } => 50,
             Self::RandomPhotometricDistort { .. } => 51,
+            Self::RandomCropFromBorders { .. } => 114,
             Self::RandomResize { .. } => 52,
             Self::RandomShortestSize { .. } => 53,
             Self::ScaleJitter { .. } => 54,
@@ -440,6 +445,9 @@ impl V2Config {
             Self::LongestMaxSize(config) => config.valid(),
             Self::PadIfNeeded(config) => config.valid(),
             Self::GridMask(config) => config.valid(),
+            Self::RandomCropFromBorders { fractions } => {
+                fractions.iter().all(|v| (0.0..=1.0).contains(v))
+            }
             Self::XyMasking(config) => config.valid(),
             Self::ChannelDropout(config) => config.valid(),
             Self::PixelDropout(config) => config.valid(),
@@ -906,6 +914,10 @@ impl V2Config {
                     config.with_fill_channels([fill[0], fill[1], fill[2]])
                 };
                 return config.apply(ImageSample::Decoded(s), axis);
+            }
+            Self::RandomCropFromBorders { fractions } => {
+                let [x, y, w, h] = super::sample_border_crop(h, w, *fractions, rng)?;
+                return CropConfig::new(x, y, w, h).apply(ImageSample::Decoded(s), axis);
             }
             Self::RandomResize {
                 min_size,

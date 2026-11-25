@@ -122,6 +122,18 @@ class Pipeline:
         )
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def random_crop_from_borders(
+        self, crop_left: float = 0.1, crop_right: float = 0.1,
+        crop_top: float = 0.1, crop_bottom: float = 0.1,
+    ) -> Pipeline:
+        """Remove random border strips up to the given fractions of each axis.
+
+        Output dimensions may vary by sample. At least one pixel is kept
+        on each axis. Structured composition crops image and annotations.
+        """
+        inner = self._inner.random_crop_from_borders(crop_left, crop_right, crop_top, crop_bottom)
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def center_crop(self, width: int, height: int) -> Pipeline:
         return Pipeline(self._inner.center_crop(width, height), as_numpy=self.as_numpy)
 
