@@ -100,6 +100,11 @@ impl TransformSequence {
         )))
     }
 
+    /// Scatter seeded gravel particles in a normalized region.
+    pub fn random_gravel(self, config: crate::transforms::RandomGravelConfig) -> Self {
+        self.v2(crate::transforms::V2Config::RandomGravel(config))
+    }
+
     /// Simulate snow using lightness bleaching or a seeded texture.
     pub fn random_snow(self, config: crate::transforms::RandomSnowConfig) -> Self {
         self.v2(crate::transforms::V2Config::RandomSnow(config))

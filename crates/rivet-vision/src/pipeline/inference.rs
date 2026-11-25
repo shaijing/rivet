@@ -337,6 +337,7 @@ pub(crate) fn infer_image_op(
                 | V2Config::RandomSunFlare(..)
                 | V2Config::LensFlare(..)
                 | V2Config::RandomRain(..)
+                | V2Config::RandomGravel(..)
                 | V2Config::RandomSnow(..) => {
                     if !matches!(
                         input_state,

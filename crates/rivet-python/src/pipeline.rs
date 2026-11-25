@@ -1039,6 +1039,22 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (gravel_roi=(0.1, 0.4, 0.9, 0.9), number_of_patches=2))]
+    fn random_gravel(
+        &self,
+        gravel_roi: (f64, f64, f64, f64),
+        number_of_patches: u32,
+    ) -> PyResult<Self> {
+        let config = V2Config::RandomGravel(rivet_vision::transforms::RandomGravelConfig {
+            gravel_roi,
+            number_of_patches,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (snow_point_range=(0.1, 0.3), brightness_coeff=2.5, method="bleach"))]
     fn random_snow(
         &self,
@@ -2655,6 +2671,22 @@ impl PyImagePipeline {
                 bloom_range,
             },
         ));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (gravel_roi=(0.1, 0.4, 0.9, 0.9), number_of_patches=2))]
+    fn random_gravel(
+        &self,
+        gravel_roi: (f64, f64, f64, f64),
+        number_of_patches: u32,
+    ) -> PyResult<Self> {
+        let config = V2Config::RandomGravel(rivet_vision::transforms::RandomGravelConfig {
+            gravel_roi,
+            number_of_patches,
+        });
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

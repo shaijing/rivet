@@ -226,3 +226,80 @@ fn write_weather_rgb(
         }
     })?)
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RandomGravelConfig {
+    pub gravel_roi: (f64, f64, f64, f64),
+    pub number_of_patches: u32,
+}
+
+impl RandomGravelConfig {
+    pub(super) fn valid(&self) -> bool {
+        let (left, top, right, bottom) = self.gravel_roi;
+        0.0 <= left
+            && left < right
+            && right <= 1.0
+            && 0.0 <= top
+            && top < bottom
+            && bottom <= 1.0
+            && self.number_of_patches <= 128
+    }
+}
+
+pub(super) fn random_gravel(
+    input: &Tensor,
+    config: &RandomGravelConfig,
+    rng: &mut RandomStream,
+) -> RivetResult<Tensor> {
+    let [height, width, 3] = *input.dims() else {
+        return Err(invalid_argument("RandomGravel requires HWC RGB input"));
+    };
+    if height == 0 || width == 0 || !matches!(input.dtype(), DType::U8 | DType::F32) {
+        return Err(invalid_argument(
+            "RandomGravel requires nonempty uint8 or float32 HWC RGB input",
+        ));
+    }
+    let (left, top, right, bottom) = config.gravel_roi;
+    let axis = |low: f64, high: f64, length: usize| {
+        let extent = (length - 1) as f64;
+        (low * extent).ceil() as usize..(high * extent).floor() as usize + 1
+    };
+    let xs = axis(left, right, width);
+    let ys = axis(top, bottom, height);
+    if config.number_of_patches == 0 || xs.is_empty() || ys.is_empty() {
+        return Ok(input.clone());
+    }
+    let patch_width = xs.len().div_ceil(4);
+    let patch_height = ys.len().div_ceil(4);
+    let mut overlay = vec![(0.0_f32, 0.0_f32); xs.len() * ys.len()];
+    for _ in 0..config.number_of_patches {
+        let px = rng.gen_range_usize(xs.start..xs.end - patch_width + 1)?;
+        let py = rng.gen_range_usize(ys.start..ys.end - patch_height + 1)?;
+        let particles = (patch_width * patch_height).div_ceil(20).min(1024);
+        for _ in 0..particles {
+            let x = rng.gen_range_usize(px..px + patch_width)?;
+            let y = rng.gen_range_usize(py..py + patch_height)?;
+            let radius = rng.gen_range_usize(1..4)?;
+            let shade = (0.12 + 0.76 * rng.next_f64()) as f32;
+            for gy in y.saturating_sub(radius).max(ys.start)..(y + radius + 1).min(ys.end) {
+                for gx in x.saturating_sub(radius).max(xs.start)..(x + radius + 1).min(xs.end) {
+                    let dist = gx.abs_diff(x).pow(2) + gy.abs_diff(y).pow(2);
+                    if dist <= radius * radius {
+                        let alpha = 0.85f32 * (1.0 - dist as f32 / (radius * radius + 1) as f32);
+                        let (coverage, premultiplied) =
+                            &mut overlay[(gy - ys.start) * xs.len() + gx - xs.start];
+                        *premultiplied = shade * alpha + *premultiplied * (1.0 - alpha);
+                        *coverage += alpha * (1.0 - *coverage);
+                    }
+                }
+            }
+        }
+    }
+    write_weather_rgb(input, |x, y, rgb| {
+        if !xs.contains(&x) || !ys.contains(&y) {
+            return rgb;
+        }
+        let (alpha, shade) = overlay[(y - ys.start) * xs.len() + x - xs.start];
+        rgb.map(|v| v * (1.0 - f64::from(alpha)) + f64::from(shade))
+    })
+}

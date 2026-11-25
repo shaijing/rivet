@@ -715,6 +715,18 @@ class Pipeline:
         inner = self._inner.lens_flare(flare_roi, num_ghosts_range, intensity_range, num_rays_range, bloom_range)
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def random_gravel(
+        self,
+        gravel_roi: tuple[float, float, float, float] = (0.1, 0.4, 0.9, 0.9),
+        number_of_patches: int = 2,
+    ) -> Pipeline:
+        """Scatter seeded clusters of gravel on uint8 or float32 HWC RGB.
+
+        The ROI is (left, top, right, bottom) in normalized coordinates.
+        Zero patches leaves the image unchanged.
+        """
+        return Pipeline(self._inner.random_gravel(gravel_roi, number_of_patches), as_numpy=self.as_numpy)
+
     def random_snow(
         self,
         snow_point_range: tuple[float, float] = (0.1, 0.3),
