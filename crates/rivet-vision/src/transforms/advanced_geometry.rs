@@ -1259,6 +1259,43 @@ fn smooth_field(field: &[f32], width: usize, height: usize, sigma: f32) -> Vec<f
     output
 }
 
+pub(super) fn chromatic_aberration(
+    input: &Tensor,
+    red: f64,
+    blue: f64,
+    interpolation: InterpolationMode,
+) -> RivetResult<Tensor> {
+    super::with_rgb_pixels(input, "ChromaticAberration", |pixels, width, height| {
+        let cx = (width as f64 - 1.0) * 0.5;
+        let cy = (height as f64 - 1.0) * 0.5;
+        let physical_radius_sq = (cx * cx + cy * cy).max(1.0);
+        let read = |channel, y, x| Ok(pixels[(y * width + x) * 3 + channel]);
+        Ok(Tensor::from_exact_writer::<u8, _, _>(
+            input.dims(),
+            input.device(),
+            |out| {
+                for y in 0..height {
+                    let dy = y as f64 - cy;
+                    for x in 0..width {
+                        let dx = x as f64 - cx;
+                        let radius_sq = (dx * dx + dy * dy) / physical_radius_sq;
+                        let sample = |channel, strength: f64| {
+                            let factor = strength * radius_sq;
+                            let sy = (y as f64 + dy * factor).clamp(0.0, height as f64 - 1.0);
+                            let sx = (x as f64 + dx * factor).clamp(0.0, width as f64 - 1.0);
+                            sample_value(&read, channel, sy, sx, width, height, interpolation, 0)
+                        };
+                        out.write_next(sample(0, red)?)?;
+                        out.write_next(read(1, y, x)?)?;
+                        out.write_next(sample(2, blue)?)?;
+                    }
+                }
+                Ok(())
+            },
+        )?)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

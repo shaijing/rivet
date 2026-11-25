@@ -523,6 +523,38 @@ class Transform:
             )
         )
 
+    def random_tone_curve(self, scale: float = 0.1) -> Transform:
+        """Apply one seeded monotone tone curve to all uint8 HWC RGB channels."""
+        return Transform(self._inner.random_tone_curve(scale))
+
+    def clahe(
+        self, clip_limit: float = 2.0, *, grid: tuple[int, int] = (8, 8)
+    ) -> Transform:
+        """Equalize local luminance in uint8 HWC grayscale or RGB images.
+
+        Grid is (columns, rows). Clip limit scales the average histogram
+        bin size, and neighboring tile mappings are blended bilinearly.
+        """
+        return Transform(self._inner.clahe(clip_limit, grid=grid))
+
+    def chromatic_aberration(
+        self,
+        red_range: tuple[float, float] = (0.0, 0.05),
+        blue_range: tuple[float, float] = (-0.05, 0.0),
+        *,
+        interpolation: str = "bilinear",
+    ) -> Transform:
+        """Radially resample red and blue in uint8 HWC RGB, with edge extension.
+
+        Sample one coefficient from each range per image. Positive coefficients
+        sample farther from the center. Green and annotation coordinates are unchanged.
+        """
+        return Transform(
+            self._inner.chromatic_aberration(
+                red_range, blue_range, interpolation=interpolation
+            )
+        )
+
     def defocus(self, radius_range: tuple[int, int] = (1, 3)) -> Transform:
         """Blur uint8 HWC RGB with a uniform disk and reflected borders.
 

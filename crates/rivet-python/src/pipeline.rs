@@ -905,6 +905,42 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (scale=0.1))]
+    fn random_tone_curve(&self, scale: f64) -> PyResult<Self> {
+        let config = V2Config::RandomToneCurve { scale };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (clip_limit=2.0, *, grid=(8, 8)))]
+    fn clahe(&self, clip_limit: f64, grid: (u32, u32)) -> PyResult<Self> {
+        let config = V2Config::Clahe { grid, clip_limit };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (red_range=(0.0, 0.05), blue_range=(-0.05, 0.0), *, interpolation="bilinear"))]
+    fn chromatic_aberration(
+        &self,
+        red_range: (f64, f64),
+        blue_range: (f64, f64),
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        let config = V2Config::ChromaticAberration {
+            red_range,
+            blue_range,
+            interpolation: parse_interpolation(interpolation)?,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (radius_range=(1, 3)))]
     fn defocus(&self, radius_range: (u32, u32)) -> PyResult<Self> {
         let config = V2Config::Defocus { radius_range };
@@ -2045,6 +2081,42 @@ impl PyImagePipeline {
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().letterbox(config),
+        })
+    }
+
+    #[pyo3(signature = (scale=0.1))]
+    fn random_tone_curve(&self, scale: f64) -> PyResult<Self> {
+        let config = V2Config::RandomToneCurve { scale };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (clip_limit=2.0, *, grid=(8, 8)))]
+    fn clahe(&self, clip_limit: f64, grid: (u32, u32)) -> PyResult<Self> {
+        let config = V2Config::Clahe { grid, clip_limit };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (red_range=(0.0, 0.05), blue_range=(-0.05, 0.0), *, interpolation="bilinear"))]
+    fn chromatic_aberration(
+        &self,
+        red_range: (f64, f64),
+        blue_range: (f64, f64),
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        let config = V2Config::ChromaticAberration {
+            red_range,
+            blue_range,
+            interpolation: parse_interpolation(interpolation)?,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

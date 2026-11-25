@@ -21,6 +21,7 @@ mod erase;
 mod flip;
 mod layout;
 mod letterbox;
+mod local_color;
 mod multi_crop;
 mod noise;
 mod normalize;

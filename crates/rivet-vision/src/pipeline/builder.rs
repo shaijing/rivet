@@ -111,6 +111,27 @@ impl ImagePipeline {
         self.v2(crate::transforms::V2Config::LetterBox(config))
     }
 
+    pub fn random_tone_curve(self, scale: f64) -> Self {
+        self.v2(crate::transforms::V2Config::RandomToneCurve { scale })
+    }
+
+    pub fn clahe(self, grid: (u32, u32), clip_limit: f64) -> Self {
+        self.v2(crate::transforms::V2Config::Clahe { grid, clip_limit })
+    }
+
+    pub fn chromatic_aberration(
+        self,
+        red_range: (f64, f64),
+        blue_range: (f64, f64),
+        interpolation: InterpolationMode,
+    ) -> Self {
+        self.v2(crate::transforms::V2Config::ChromaticAberration {
+            red_range,
+            blue_range,
+            interpolation,
+        })
+    }
+
     pub fn defocus(self, radius_range: (u32, u32)) -> Self {
         self.v2(crate::transforms::V2Config::Defocus { radius_range })
     }

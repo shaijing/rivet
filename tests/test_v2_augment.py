@@ -535,6 +535,9 @@ def test_new_augmentations_reject_invalid_parameters(build):
         rivet.Transform().downscale((0.5, 0.5)),
         rivet.Transform().salt_and_pepper(1),
         rivet.Transform().grid_dropout(4),
+        rivet.Transform().random_tone_curve(0.25),
+        rivet.Transform().clahe(grid=(2, 2)),
+        rivet.Transform().chromatic_aberration((0.3, 0.3), (-0.3, -0.3)),
     ],
 )
 def test_degradations_preserve_structured_targets(source, transform):
@@ -667,3 +670,110 @@ def test_coarse_dropout_layout_overlap_and_reproducibility(source):
         lambda p: p.coarse_dropout((1, 1), hole_height=(99, 99), hole_width=(99, 99)),
     )[0]
     assert np.all(covered == 0)
+
+
+@pytest.mark.parametrize("transform", [False, True])
+def test_random_tone_curve_uses_monotone_shared_lut(tmp_path, transform):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    ramp = np.arange(256, dtype=np.uint8).reshape(16, 16)
+    pixels = np.stack((ramp, 255 - ramp, ramp), axis=-1)
+    Image.fromarray(pixels).save(folder / "ramp.png")
+
+    def augment(p):
+        return p.random_tone_curve(0.25)
+
+    image = output(tmp_path, augment, transform=transform, workers=2)[0]
+    lut = image[..., 0].flatten().astype(int)
+    assert lut[0] == 0
+    assert lut[-1] == 255
+    assert np.all(np.diff(lut) >= 0)
+    assert not np.array_equal(lut, np.arange(256))
+    np.testing.assert_array_equal(image[..., 1], lut[pixels[..., 1]])
+    np.testing.assert_array_equal(image, output(tmp_path, augment)[0])
+    assert not np.array_equal(image, output(tmp_path, augment, epoch=1)[0])
+    np.testing.assert_array_equal(
+        output(tmp_path, lambda p: p.random_tone_curve(0))[0], pixels
+    )
+
+
+def test_clahe_grayscale_clip_limit_and_small_rgb_tiles(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.repeat(
+        np.array([[0, 0], [0, 128]], dtype=np.uint8)[..., None], 3, axis=2
+    )
+    Image.fromarray(pixels).save(folder / "tiny.png")
+    clipped = output(tmp_path, lambda p: p.grayscale().clahe(1.0, grid=(1, 1)))[0]
+    unclipped = output(
+        tmp_path, lambda p: p.grayscale().clahe(256.0, grid=(1, 1)), transform=True
+    )[0]
+    np.testing.assert_array_equal(clipped[..., 0], [[128, 128], [128, 255]])
+    np.testing.assert_array_equal(unclipped[..., 0], [[191, 191], [191, 255]])
+    np.testing.assert_array_equal(
+        output(tmp_path, lambda p: p.clahe(grid=(8, 8)))[0], pixels
+    )
+
+
+def test_clahe_blends_neighboring_tile_luminance(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    ramp = np.array([[40, 80, 40, 160]], dtype=np.uint8)
+    pixels = np.repeat(ramp[..., None], 3, axis=2)
+    Image.fromarray(pixels).save(folder / "tiles.png")
+    # Both tiles map 40 to 128; for 80 their LUTs differ by 127.
+    # At x=1, the tile-center weights are 3/4 and 1/4.
+    actual = output(tmp_path, lambda p: p.clahe(256, grid=(2, 1)))[0]
+    expected = np.repeat(np.array([[128, 223, 128, 255]])[..., None], 3, axis=2)
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize("transform", [False, True])
+@pytest.mark.parametrize("interpolation", ["nearest", "bilinear"])
+def test_chromatic_aberration_samples_channels_independently(
+    source, transform, interpolation
+):
+    root, pixels = source
+    actual = output(
+        root,
+        lambda p: p.chromatic_aberration(
+            (0.5, 0.5), (-0.5, -0.5), interpolation=interpolation
+        ),
+        transform=transform,
+    )[0]
+    h, w = pixels.shape[:2]
+    y, x = np.indices((h, w))
+    cx, cy = (w - 1) * 0.5, (h - 1) * 0.5
+    r2 = ((x - cx) ** 2 + (y - cy) ** 2) / (cx**2 + cy**2)
+    expected = pixels.copy()
+    for channel, coefficient in ((0, 0.5), (2, -0.5)):
+        sx = np.clip(x + (x - cx) * coefficient * r2, 0, w - 1)
+        sy = np.clip(y + (y - cy) * coefficient * r2, 0, h - 1)
+        if interpolation == "nearest":
+            expected[..., channel] = pixels[
+                np.floor(sy + 0.5).astype(int), np.floor(sx + 0.5).astype(int), channel
+            ]
+        else:
+            x0, y0 = sx.astype(int), sy.astype(int)
+            x1, y1 = np.minimum(x0 + 1, w - 1), np.minimum(y0 + 1, h - 1)
+            plane = pixels[..., channel].astype(float)
+            top = plane[y0, x0] + (plane[y0, x1] - plane[y0, x0]) * (sx - x0)
+            bottom = plane[y1, x0] + (plane[y1, x1] - plane[y1, x0]) * (sx - x0)
+            expected[..., channel] = top + (bottom - top) * (sy - y0)
+    np.testing.assert_array_equal(actual, expected)
+    assert not np.array_equal(actual, pixels)
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda p: p.random_tone_curve(-0.1),
+        lambda p: p.clahe(grid=(0, 8)),
+        lambda p: p.clahe(0),
+        lambda p: p.chromatic_aberration(red_range=(0.0, 2.0)),
+        lambda p: p.chromatic_aberration(interpolation="bicubic"),
+    ],
+)
+def test_new_color_operators_validate_parameters(build):
+    with pytest.raises(ValueError):
+        build(rivet.Transform())

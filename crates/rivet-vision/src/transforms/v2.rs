@@ -43,6 +43,18 @@ pub enum V2Config {
     ShotNoise {
         intensity: f32,
     },
+    RandomToneCurve {
+        scale: f64,
+    },
+    Clahe {
+        grid: (u32, u32),
+        clip_limit: f64,
+    },
+    ChromaticAberration {
+        red_range: (f64, f64),
+        blue_range: (f64, f64),
+        interpolation: InterpolationMode,
+    },
     LetterBox(LetterBoxConfig),
     Defocus {
         radius_range: (u32, u32),
@@ -97,6 +109,9 @@ impl V2Config {
             Self::RandomZoomOut { .. } => "RandomZoomOut",
             Self::GaussianNoise { .. } => "GaussianNoise",
             Self::ShotNoise { .. } => "ShotNoise",
+            Self::RandomToneCurve { .. } => "RandomToneCurve",
+            Self::Clahe { .. } => "CLAHE",
+            Self::ChromaticAberration { .. } => "ChromaticAberration",
             Self::LetterBox(_) => "LetterBox",
             Self::Defocus { .. } => "Defocus",
             Self::CoarseDropout { .. } => "CoarseDropout",
@@ -121,6 +136,9 @@ impl V2Config {
             Self::RandomZoomOut { .. } => 55,
             Self::GaussianNoise { .. } => 56,
             Self::ShotNoise { .. } => 60,
+            Self::RandomToneCurve { .. } => 69,
+            Self::Clahe { .. } => 70,
+            Self::ChromaticAberration { .. } => 71,
             Self::LetterBox(_) => 66,
             Self::Defocus { .. } => 67,
             Self::CoarseDropout { .. } => 68,
@@ -142,6 +160,7 @@ impl V2Config {
                 | Self::ToDtype { .. }
                 | Self::UnsharpMask { .. }
                 | Self::LetterBox(_)
+                | Self::Clahe { .. }
         )
     }
     pub fn validate(&self) -> RivetResult<()> {
@@ -210,6 +229,23 @@ impl V2Config {
                 return super::noise::validate_gaussian_noise(*mean, *sigma);
             }
             Self::ShotNoise { intensity } => return super::noise::validate_shot_noise(*intensity),
+            Self::RandomToneCurve { scale } => scale.is_finite() && *scale >= 0.0,
+            Self::Clahe { grid, clip_limit } => {
+                grid.0 > 0 && grid.1 > 0 && clip_limit.is_finite() && *clip_limit > 0.0
+            }
+            Self::ChromaticAberration {
+                red_range,
+                blue_range,
+                interpolation,
+            } => {
+                [red_range, blue_range]
+                    .into_iter()
+                    .all(|&(low, high)| low >= -1.0 && low <= high && high <= 1.0)
+                    && matches!(
+                        interpolation,
+                        InterpolationMode::Nearest | InterpolationMode::Bilinear
+                    )
+            }
             Self::LetterBox(config) => return config.validate(),
             Self::Defocus {
                 radius_range: (low, high),
@@ -458,6 +494,38 @@ impl V2Config {
             }
             Self::ShotNoise { intensity } => {
                 s.image = super::shot_noise(&s.image, *intensity, rng)?;
+            }
+            Self::RandomToneCurve { .. }
+            | Self::Clahe { .. }
+            | Self::ChromaticAberration { .. }
+                if axis != ImageAxisOrder::Hwc || h == 0 || w == 0 =>
+            {
+                return Err(invalid_argument(format!(
+                    "{} requires nonempty HWC input",
+                    self.name()
+                )));
+            }
+            Self::RandomToneCurve { scale } => {
+                s = require_u8_hwc(s, self.name())?;
+                s.image = super::local_color::tone_curve(&s.image, *scale, rng)?;
+            }
+            Self::Clahe { grid, clip_limit } => {
+                s.image = super::local_color::clahe(&s.image, *grid, *clip_limit)?;
+            }
+            Self::ChromaticAberration {
+                red_range,
+                blue_range,
+                interpolation,
+            } => {
+                let mut coefficient = |(low, high)| low + rng.next_f64() * (high - low);
+                let red = coefficient(*red_range);
+                let blue = coefficient(*blue_range);
+                s.image = super::advanced_geometry::chromatic_aberration(
+                    &s.image,
+                    red,
+                    blue,
+                    *interpolation,
+                )?;
             }
             Self::LetterBox(config) => {
                 if axis != ImageAxisOrder::Hwc {

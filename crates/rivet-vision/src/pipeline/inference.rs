@@ -306,7 +306,15 @@ pub(crate) fn infer_image_op(
                         ShapeDim::Known(config.width as usize),
                     );
                 }
+                V2Config::Clahe { .. } => {
+                    require_u8_hwc(input_state, op.name())?;
+                    if matches!(channel_dim(input), ShapeDim::Known(c) if c != 1 && c != 3) {
+                        return Err(invalid_pipeline("CLAHE requires one or three channels"));
+                    }
+                }
                 V2Config::Downscale { .. }
+                | V2Config::RandomToneCurve { .. }
+                | V2Config::ChromaticAberration { .. }
                 | V2Config::Defocus { .. }
                 | V2Config::MotionBlur { .. }
                 | V2Config::UnsharpMask { .. } => {
