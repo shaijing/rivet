@@ -47,3 +47,20 @@ def _maybe_numpy_batch(batch: dict[str, Any], as_numpy: bool) -> dict[str, Any]:
         batch["labels"] = labels.tolist()
 
     return batch
+
+
+def _crop_pad_side_ranges(amount: Any) -> list[tuple[Any, Any]] | None:
+    if amount is None:
+        return None
+    if isinstance(amount, (int, float)):
+        sides = [amount] * 4
+    else:
+        sides = list(amount)
+        if len(sides) == 2:
+            sides *= 2
+        elif len(sides) != 4:
+            raise ValueError("CropAndPad expects a scalar, two axis amounts, or four side amounts")
+    return [
+        (side, side) if isinstance(side, (int, float)) else tuple(side)
+        for side in sides
+    ]

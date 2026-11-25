@@ -7,7 +7,7 @@ import math
 from collections.abc import Iterable, Sequence
 
 from ._rivet import _Transform
-from ._utils import _normalize_fill, _normalize_jpeg_quality
+from ._utils import _crop_pad_side_ranges, _normalize_fill, _normalize_jpeg_quality
 
 
 class Transform:
@@ -124,6 +124,37 @@ class Transform:
         on each axis. Structured composition crops image and annotations.
         """
         inner = self._inner.random_crop_from_borders(crop_left, crop_right, crop_top, crop_bottom)
+        return Transform(inner)
+
+    def crop_and_pad(
+        self,
+        *,
+        px: int | Iterable[int | tuple[int, int]] | None = None,
+        percent: float | Iterable[float | tuple[float, float]] | None = None,
+        px_choices: Iterable[int] | None = None,
+        percent_choices: Iterable[float] | None = None,
+        keep_size: bool = True,
+        sample_independently: bool = True,
+        padding_mode: str = "constant",
+        fill: float | Iterable[float] = 0,
+        fill_mask: int = 0,
+        interpolation: str = "bilinear",
+    ) -> Transform:
+        """Crop negative amounts, pad positive amounts, then optionally resize.
+
+        Set exactly one amount source. Two entries specify vertical and
+        horizontal amounts; four specify top, right, bottom, left. Nested
+        pairs are inclusive ranges for pixels and continuous for fractions.
+        With keep_size, uint8 RGB is required and masks resize by nearest neighbor.
+        """
+        inner = self._inner.crop_and_pad(
+            _crop_pad_side_ranges(px), _crop_pad_side_ranges(percent),
+            None if px_choices is None else list(px_choices),
+            None if percent_choices is None else list(percent_choices),
+            keep_size=keep_size, sample_independently=sample_independently,
+            padding_mode=padding_mode, fill=_normalize_fill(fill),
+            fill_mask=fill_mask, interpolation=interpolation,
+        )
         return Transform(inner)
 
     def center_crop(self, width: int, height: int) -> Transform:

@@ -785,6 +785,13 @@ impl TransformSequence {
         self.v2(crate::transforms::V2Config::RandomSizedCrop(config))
     }
 
+    /// Apply sampled signed crop and padding amounts on each side.
+    pub fn crop_and_pad(self, config: crate::transforms::CropAndPadConfig) -> Self {
+        self.v2(crate::transforms::V2Config::CropAndPad(
+            std::sync::Arc::new(config),
+        ))
+    }
+
     pub fn random_resized_crop(mut self, width: u32, height: u32) -> Self {
         self.ops.push(ImageOp::random_resized_crop(width, height));
         self

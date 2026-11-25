@@ -540,6 +540,32 @@ pub(crate) fn infer_image_op(
                         make_spatial_dynamic(&mut output);
                     }
                 }
+                V2Config::CropAndPad(config) => {
+                    if config.keep_size
+                        && (!matches!(
+                            input_state,
+                            Decoded {
+                                dtype: CoreDType::U8,
+                                ..
+                            }
+                        ) || matches!(channel_dim(input), ShapeDim::Known(c) if c != 3))
+                    {
+                        return Err(invalid_pipeline(
+                            "CropAndPad keep_size requires uint8 RGB input",
+                        ));
+                    }
+                    if config.fill.len() == 3
+                        && matches!(channel_dim(input), ShapeDim::Known(c) if c != 3)
+                    {
+                        return Err(invalid_pipeline(
+                            "CropAndPad per-channel fill requires RGB input",
+                        ));
+                    }
+                    if !config.keep_size {
+                        make_spatial_dynamic(&mut output);
+                    }
+                    output.contiguity = Some(Contiguity::Unknown);
+                }
                 V2Config::Jpeg { .. } => {
                     if !matches!(
                         input_state,

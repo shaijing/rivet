@@ -719,6 +719,21 @@ pub(super) fn apply(
             let cropped = crop_visible_instances(s, boxes.as_deref(), [x, y, x + cw, y + ch])?;
             resize(cropped, config.width, config.height, config.interpolation)
         }
+        ImageOp::V2(V2Config::CropAndPad(config)) => {
+            let ([x, y, cw, ch], padding) = config.sample(h, w, rng)?;
+            if (x, y, cw as usize, ch as usize) != (0, 0, w, h) {
+                let boxes = s.xyxy()?.map(|b| b.to_vec::<f32>()).transpose()?;
+                let (x, y, cw, ch) = (x as usize, y as usize, cw as usize, ch as usize);
+                s = crop_visible_instances(s, boxes.as_deref(), [x, y, x + cw, y + ch])?;
+            }
+            if padding.left != 0 || padding.right != 0 || padding.top != 0 || padding.bottom != 0 {
+                s = pad_with_mask_fill(s, &padding, config.fill_mask)?;
+            }
+            if config.keep_size && s.size()? != (h, w) {
+                s = resize(s, w as u32, h as u32, config.interpolation)?;
+            }
+            Ok(s)
+        }
         ImageOp::V2(V2Config::LetterBox(config)) => {
             let (h, w) = s.size()?;
             let (scale, padding) = config.resolve(w, h)?;

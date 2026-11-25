@@ -268,6 +268,7 @@ pub enum V2Config {
     },
     GridMask(std::sync::Arc<GridMaskConfig>),
     RandomSizedCrop(RandomSizedCropConfig),
+    CropAndPad(std::sync::Arc<CropAndPadConfig>),
 }
 impl V2Config {
     pub fn name(&self) -> &'static str {
@@ -338,6 +339,7 @@ impl V2Config {
             Self::GridDropout { .. } => "GridDropout",
             Self::RandomScale { .. } => "RandomScale",
             Self::LongestMaxSize(_) => "LongestMaxSize",
+            Self::CropAndPad(_) => "CropAndPad",
             Self::Jpeg { .. } => "JPEG",
             Self::Rgb => "RGB",
             Self::ToDtype { .. } => "ToDtype",
@@ -411,6 +413,7 @@ impl V2Config {
             Self::GridDropout { .. } => 63,
             Self::RandomScale { .. } => 119,
             Self::LongestMaxSize(_) => 118,
+            Self::CropAndPad(_) => 116,
             Self::Jpeg { .. } => 57,
             Self::Rgb => 58,
             Self::ToDtype { .. } => 59,
@@ -452,6 +455,7 @@ impl V2Config {
                 fractions.iter().all(|v| (0.0..=1.0).contains(v))
             }
             Self::RandomSizedCrop(config) => config.valid(),
+            Self::CropAndPad(config) => config.valid(),
             Self::XyMasking(config) => config.valid(),
             Self::ChannelDropout(config) => config.valid(),
             Self::PixelDropout(config) => config.valid(),
@@ -1504,6 +1508,31 @@ impl V2Config {
                 let (w, h) = config.sample(w, h, rng)?;
                 return ResizeConfig::with_interpolation(w, h, config.interpolation)
                     .apply(ImageSample::Decoded(s));
+            }
+            Self::CropAndPad(config) => {
+                let ([x, y, cw, ch], pad) = config.sample(h, w, rng)?;
+                let mut result = ImageSample::Decoded(s);
+                if (x, y, cw as usize, ch as usize) != (0, 0, w, h) {
+                    result = CropConfig::new(x, y, cw, ch).apply(result, axis)?;
+                }
+                if pad.left != 0 || pad.right != 0 || pad.top != 0 || pad.bottom != 0 {
+                    result = pad.apply(result, axis)?;
+                }
+                if config.keep_size
+                    && (cw as usize + pad.left as usize + pad.right as usize != w
+                        || ch as usize + pad.top as usize + pad.bottom as usize != h)
+                {
+                    if axis == ImageAxisOrder::Chw {
+                        result = LayoutConfig::new(ImageAxisOrder::Hwc).apply(result, axis)?;
+                    }
+                    result =
+                        ResizeConfig::with_interpolation(w as u32, h as u32, config.interpolation)
+                            .apply(result)?;
+                    if axis == ImageAxisOrder::Chw {
+                        result = LayoutConfig::new(axis).apply(result, ImageAxisOrder::Hwc)?;
+                    }
+                }
+                return Ok(result);
             }
             Self::Jpeg {
                 quality: (low, high),

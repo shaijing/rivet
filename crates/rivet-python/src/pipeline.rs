@@ -365,6 +365,48 @@ impl PyTransform {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (px=None, percent=None, px_choices=None, percent_choices=None, *, keep_size=true, sample_independently=true, padding_mode="constant", fill=None, fill_mask=0, interpolation="bilinear"))]
+    fn crop_and_pad(
+        &self,
+        px: Option<[(i32, i32); 4]>,
+        percent: Option<[(f64, f64); 4]>,
+        px_choices: Option<Vec<i32>>,
+        percent_choices: Option<Vec<f64>>,
+        keep_size: bool,
+        sample_independently: bool,
+        padding_mode: &str,
+        fill: Option<&Bound<'_, PyAny>>,
+        fill_mask: i64,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{CropAndPadConfig, CropPadAmounts};
+        let amounts = match (px, percent, px_choices, percent_choices) {
+            (Some(v), None, None, None) => CropPadAmounts::Pixels(v),
+            (None, Some(v), None, None) => CropPadAmounts::Fractions(v),
+            (None, None, Some(v), None) => CropPadAmounts::PixelChoices(v),
+            (None, None, None, Some(v)) => CropPadAmounts::FractionChoices(v),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "set exactly one of px, percent, px_choices, percent_choices",
+                ));
+            }
+        };
+        let config = V2Config::CropAndPad(std::sync::Arc::new(CropAndPadConfig {
+            amounts,
+            keep_size,
+            sample_independently,
+            padding_mode: parse_padding_mode(padding_mode)?,
+            fill: parse_crop_fill(fill)?,
+            fill_mask,
+            interpolation: parse_interpolation(interpolation)?,
+        }));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     fn center_crop(&self, width: u32, height: u32) -> Self {
         Self {
             inner: self.inner.clone().center_crop(width, height),
@@ -2492,6 +2534,48 @@ impl PyImagePipeline {
             w2h_ratio,
             interpolation: parse_interpolation(interpolation)?,
         });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (px=None, percent=None, px_choices=None, percent_choices=None, *, keep_size=true, sample_independently=true, padding_mode="constant", fill=None, fill_mask=0, interpolation="bilinear"))]
+    fn crop_and_pad(
+        &self,
+        px: Option<[(i32, i32); 4]>,
+        percent: Option<[(f64, f64); 4]>,
+        px_choices: Option<Vec<i32>>,
+        percent_choices: Option<Vec<f64>>,
+        keep_size: bool,
+        sample_independently: bool,
+        padding_mode: &str,
+        fill: Option<&Bound<'_, PyAny>>,
+        fill_mask: i64,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{CropAndPadConfig, CropPadAmounts};
+        let amounts = match (px, percent, px_choices, percent_choices) {
+            (Some(v), None, None, None) => CropPadAmounts::Pixels(v),
+            (None, Some(v), None, None) => CropPadAmounts::Fractions(v),
+            (None, None, Some(v), None) => CropPadAmounts::PixelChoices(v),
+            (None, None, None, Some(v)) => CropPadAmounts::FractionChoices(v),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "set exactly one of px, percent, px_choices, percent_choices",
+                ));
+            }
+        };
+        let config = V2Config::CropAndPad(std::sync::Arc::new(CropAndPadConfig {
+            amounts,
+            keep_size,
+            sample_independently,
+            padding_mode: parse_padding_mode(padding_mode)?,
+            fill: parse_crop_fill(fill)?,
+            fill_mask,
+            interpolation: parse_interpolation(interpolation)?,
+        }));
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

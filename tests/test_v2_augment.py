@@ -2323,3 +2323,27 @@ def test_random_sized_crop_samples_fitting_windows(source):
         output(root, lambda p: p.random_sized_crop((10, 12), (5, 7), w2h_ratio=2))
     with pytest.raises(ValueError, match="RandomSizedCrop"):
         output(root, lambda p: p.to_dtype("float32", True).random_sized_crop((4, 6), (5, 7)))
+
+
+def test_crop_and_pad_mixed_sides_layout_and_seed(source):
+    root, pixels = source
+
+    def augment(p):
+        return p.crop_and_pad(px=(-2, 3, 1, -4), keep_size=False, fill=17)
+
+    expected = np.pad(pixels[2:, 4:], ((0, 1), (0, 3), (0, 0)), constant_values=17)
+    actual = output(root, augment, transform=True)[0]
+    np.testing.assert_array_equal(actual, expected)
+    chw = output(root, lambda p: augment(p.hwc_to_chw()))[0]
+    np.testing.assert_array_equal(chw, expected.transpose(2, 0, 1))
+
+    def random(p):
+        return p.crop_and_pad(px_choices=(-2, 0, 2), sample_independently=False)
+
+    serial = output(root, random)
+    np.testing.assert_array_equal(serial, output(root, random, transform=True, workers=3))
+    assert all(img.shape == pixels.shape and img.dtype == np.uint8 for img in serial)
+    one = output(root, lambda p: p.crop_and_pad(percent=-1, keep_size=False))[0]
+    np.testing.assert_array_equal(one, pixels[-1:, -1:])
+    with pytest.raises(ValueError):
+        rivet.Transform().crop_and_pad(px=1, percent=0.1)

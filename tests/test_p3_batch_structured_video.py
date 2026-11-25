@@ -1143,3 +1143,17 @@ def test_random_sized_crop_resizes_structured_fields(annotated):
     np.testing.assert_array_equal(target["labels"], original["labels"])
     np.testing.assert_array_equal(target["keypoints"], original["keypoints"] / 2)
     np.testing.assert_array_equal(target["masks"], original["masks"][:, ::2, ::2])
+
+
+def test_crop_and_pad_synchronizes_structured_annotations(annotated):
+    original = annotated.to_dict()
+    result = annotated.apply(
+        rivet.Transform().crop_and_pad(px=(-2, 3, 1, -5), keep_size=False, fill_mask=7)
+    ).to_dict()
+    np.testing.assert_array_equal(result["boxes"], [[2, 3, 6, 7]])
+    np.testing.assert_array_equal(result["labels"], [9])
+    np.testing.assert_array_equal(result["keypoints"], original["keypoints"][1:] - [5, 2])
+    np.testing.assert_array_equal(
+        result["masks"], np.pad(original["masks"][1:, 2:, 5:], ((0, 0), (0, 1), (0, 3)), constant_values=7)
+    )
+    assert result["image"].shape == (9, 10, 3)
