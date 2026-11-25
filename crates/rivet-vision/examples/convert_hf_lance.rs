@@ -77,9 +77,9 @@ fn default_output_root(input: &std::path::Path) -> PathBuf {
         .rsplit_once("___")
         .map(|(_, name)| name)
         .unwrap_or(raw_name);
-    let base = std::env::var_os("HOME")
+    let base = env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
-        .map(|home| home.join(".cache/rivet/datasets"))
-        .unwrap_or_else(|| PathBuf::from(".cache/rivet/datasets"));
-    base.join(dataset_name)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| env::home_dir().unwrap_or_default().join(".cache"));
+    base.join("rivet/datasets/local/lance").join(dataset_name)
 }

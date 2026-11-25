@@ -1,5 +1,6 @@
 use super::convert::{
-    LanceConversionReport, native_schema, validate_split_name, write_image_manifest,
+    LanceConversionReport, check_output, native_schema, publish_bundle, resolve_directory,
+    validate_split_name, write_image_manifest,
 };
 use crate::datasets::ImageFolderDatasetCore;
 use crate::errors::{RivetResult, invalid_argument};
@@ -10,8 +11,7 @@ use rivet_data::dataset::Dataset;
 use rivet_data::errors::DataError;
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 const BATCH_SIZE: usize = 1024;
@@ -139,48 +139,9 @@ pub fn convert_imagefolder_dataset(
         Some(&classes),
     )?;
 
-    let backup = temp.path().join("previous");
-    let has_output = check_output(&output, overwrite)?;
-    if has_output {
-        fs::rename(&output, &backup).map_err(DataError::from)?;
-    }
-    if let Err(err) = fs::rename(&staging, &output) {
-        if has_output && let Err(restore) = fs::rename(&backup, &output) {
-            let recovery = temp.keep().join("previous");
-            return Err(invalid_argument(format!(
-                "publish failed: {err}; restore failed: {restore}; original output is at {}",
-                recovery.display()
-            )));
-        }
-        return Err(DataError::from(err).into());
-    }
+    publish_bundle(temp, &staging, &output, overwrite)?;
     Ok(LanceConversionReport {
         output_root: output,
         rows_by_split,
     })
-}
-
-fn resolve_directory(path: &Path) -> io::Result<PathBuf> {
-    match path.canonicalize() {
-        Ok(path) => Ok(path),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
-                return Err(err);
-            };
-            Ok(resolve_directory(parent)?.join(name))
-        }
-        Err(err) => Err(err),
-    }
-}
-
-fn check_output(output: &Path, overwrite: bool) -> RivetResult<bool> {
-    match fs::symlink_metadata(output) {
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(DataError::from(err).into()),
-        Ok(metadata) if metadata.is_dir() && overwrite => Ok(true),
-        Ok(_) => Err(invalid_argument(format!(
-            "output already exists: {}; overwrite can replace an existing dataset directory",
-            output.display()
-        ))),
-    }
 }

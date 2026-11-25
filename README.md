@@ -496,13 +496,15 @@ To convert a local Hugging Face Arrow cache into Rivet-native Lance splits:
 ```bash
 cargo run -j 12 -p rivet-vision --features lance \
   --example convert_hf_lance -- \
-  /path/to/huggingface/datasets
+  /path/to/huggingface/dataset-revision /path/to/output
 ```
 
 The converter discovers common `train`, `validation`, and `test` shard names,
-normalizes the image bytes and integer labels, writes one `.lance` directory
-per split under `~/.cache/rivet/datasets/<dataset-name>`, and creates the Rivet
-`dataset.json` manifest. Each physical Lance data file targets a maximum of 2
+writes encoded images and integer labels to one `.lance` directory per split,
+and preserves Hugging Face class names in the Rivet `dataset.json` manifest
+when available. Without an explicit output path, the bundle is written under
+`$XDG_CACHE_HOME/rivet/datasets/local/lance/<dataset-name>`, with `~/.cache`
+as the fallback cache root. Each physical Lance data file targets a maximum of 2
 GiB and 1,048,576 rows by default; Lance checks the byte limit at row-group
 boundaries, so the final file can be slightly larger. Override these settings
 with `--max-bytes-per-file <bytes>` and `--max-rows-per-file <rows>`. Pass an

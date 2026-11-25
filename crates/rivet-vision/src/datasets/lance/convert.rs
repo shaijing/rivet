@@ -12,14 +12,15 @@ use arrow::error::ArrowError;
 use arrow::record_batch::{RecordBatch, RecordBatchIterator};
 use arrow_ipc::reader::StreamReader;
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::BufReader;
+use std::fs::{self, File};
+use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::runtime::Builder;
 use walkdir::WalkDir;
 
 use crate::errors::{RivetResult, invalid_argument};
+use rivet_data::errors::DataError;
 
 /// One Hugging Face split and all Arrow IPC shards belonging to it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -153,7 +154,14 @@ pub fn convert_huggingface_dataset(
             "max_bytes_per_file and max_rows_per_file must be greater than zero",
         ));
     }
-    let output_root = output_root.as_ref().to_path_buf();
+    let output = std::path::absolute(output_root.as_ref()).map_err(DataError::from)?;
+    let name = output
+        .file_name()
+        .ok_or_else(|| invalid_argument("output must name a dataset directory"))?;
+    let parent = resolve_directory(output.parent().expect("absolute path has a parent"))
+        .map_err(DataError::from)?;
+    let output_root = parent.join(name);
+    check_output(&output_root, options.overwrite)?;
     let mut split_map = BTreeMap::new();
     for split in splits {
         validate_split_name(&split.name)?;
@@ -162,6 +170,17 @@ pub fn convert_huggingface_dataset(
                 "Hugging Face split '{}' has no Arrow files",
                 split.name
             )));
+        }
+        for path in &split.arrow_files {
+            if path
+                .canonicalize()
+                .map_err(DataError::from)?
+                .starts_with(&output_root)
+            {
+                return Err(invalid_argument(
+                    "output directory contains an input Arrow file",
+                ));
+            }
         }
         if split_map.insert(split.name.clone(), split).is_some() {
             return Err(invalid_argument("duplicate Hugging Face split name"));
@@ -173,25 +192,30 @@ pub fn convert_huggingface_dataset(
         ));
     }
 
-    prepare_output_root(&output_root, options.overwrite)?;
-    std::fs::create_dir_all(&output_root)
-        .map_err(|error| invalid_argument(format!("create output root: {error}")))?;
-
+    fs::create_dir_all(&parent).map_err(DataError::from)?;
+    let temp = tempfile::Builder::new()
+        .prefix(".rivet-hf-arrow-")
+        .tempdir_in(parent)
+        .map_err(DataError::from)?;
+    let staging = temp.path().join("converted").join(name);
+    fs::create_dir_all(&staging).map_err(DataError::from)?;
     let schema = native_schema(options.keep_path);
     let mut rows_by_split = BTreeMap::new();
+    let mut classes = None;
     for (name, split) in &split_map {
-        let output_path = output_root.join(format!("{name}.lance"));
-        let rows = convert_split(split, &output_path, options, schema.clone())?;
+        let output_path = staging.join(format!("{name}.lance"));
+        let rows = convert_split(split, &output_path, options, schema.clone(), &mut classes)?;
         rows_by_split.insert(name.clone(), rows);
     }
 
     write_image_manifest(
-        &output_root,
+        &staging,
         &rows_by_split,
         options.keep_path,
         "huggingface-arrow",
-        None,
+        classes.as_deref(),
     )?;
+    publish_bundle(temp, &staging, &output_root, options.overwrite)?;
     Ok(LanceConversionReport {
         output_root,
         rows_by_split,
@@ -203,6 +227,7 @@ fn convert_split(
     output_path: &Path,
     options: &HuggingFaceLanceOptions,
     schema: SchemaRef,
+    classes: &mut Option<Vec<String>>,
 ) -> RivetResult<usize> {
     let mut readers = Vec::with_capacity(split.arrow_files.len());
     let mut input_schema: Option<SchemaRef> = None;
@@ -229,6 +254,15 @@ fn convert_split(
             }
         } else {
             validate_input_schema(&reader.schema(), options)?;
+            if let Some(names) = class_names(&reader.schema(), &options.label_column)? {
+                if classes.as_ref().is_some_and(|expected| expected != &names) {
+                    return Err(invalid_argument(format!(
+                        "Hugging Face class names differ in split '{}'",
+                        split.name
+                    )));
+                }
+                *classes = Some(names);
+            }
             input_schema = Some(reader.schema());
         }
         readers.push(reader);
@@ -506,22 +540,68 @@ pub(super) fn validate_split_name(name: &str) -> RivetResult<()> {
     Ok(())
 }
 
-fn prepare_output_root(path: &Path, overwrite: bool) -> RivetResult<()> {
-    if !path.exists() {
-        return Ok(());
+fn class_names(schema: &Schema, label_column: &str) -> RivetResult<Option<Vec<String>>> {
+    let Some(metadata) = schema.metadata().get("huggingface") else {
+        return Ok(None);
+    };
+    let metadata: serde_json::Value = serde_json::from_str(metadata).map_err(|error| {
+        invalid_argument(format!("invalid Hugging Face Arrow metadata: {error}"))
+    })?;
+    let feature = &metadata["info"]["features"][label_column];
+    if feature["_type"] != "ClassLabel" {
+        return Ok(None);
     }
-    if !overwrite {
-        return Err(invalid_argument(format!(
-            "output already exists: {}; enable overwrite to replace it",
-            path.display()
-        )));
+    let names = serde_json::from_value(feature["names"].clone())
+        .map_err(|error| invalid_argument(format!("invalid Hugging Face class names: {error}")))?;
+    Ok(Some(names))
+}
+
+pub(super) fn resolve_directory(path: &Path) -> io::Result<PathBuf> {
+    match path.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+                return Err(err);
+            };
+            Ok(resolve_directory(parent)?.join(name))
+        }
+        Err(err) => Err(err),
     }
-    if path.is_dir() {
-        std::fs::remove_dir_all(path)
-    } else {
-        std::fs::remove_file(path)
+}
+
+pub(super) fn check_output(output: &Path, overwrite: bool) -> RivetResult<bool> {
+    match fs::symlink_metadata(output) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(DataError::from(err).into()),
+        Ok(metadata) if metadata.is_dir() && overwrite => Ok(true),
+        Ok(_) => Err(invalid_argument(format!(
+            "output already exists: {}; overwrite can replace an existing dataset directory",
+            output.display()
+        ))),
     }
-    .map_err(|error| invalid_argument(format!("remove existing output: {error}")))?;
+}
+
+pub(super) fn publish_bundle(
+    temp: tempfile::TempDir,
+    staging: &Path,
+    output: &Path,
+    overwrite: bool,
+) -> RivetResult<()> {
+    let backup = temp.path().join("previous");
+    let has_output = check_output(output, overwrite)?;
+    if has_output {
+        fs::rename(output, &backup).map_err(DataError::from)?;
+    }
+    if let Err(err) = fs::rename(staging, output) {
+        if has_output && let Err(restore) = fs::rename(&backup, output) {
+            let recovery = temp.keep().join("previous");
+            return Err(invalid_argument(format!(
+                "publish failed: {err}; restore failed: {restore}; original output is at {}",
+                recovery.display()
+            )));
+        }
+        return Err(DataError::from(err).into());
+    }
     Ok(())
 }
 
@@ -615,10 +695,19 @@ mod tests {
             Arc::new(Field::new("bytes", DataType::Binary, true)),
             Arc::new(Field::new("path", DataType::Utf8, true)),
         ];
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("img", DataType::Struct(fields.clone().into()), true),
-            Field::new("label", DataType::Int64, false),
-        ]));
+        let metadata = serde_json::json!({
+            "info": {"features": {"label": {
+                "_type": "ClassLabel",
+                "names": ["zero", "one", "two", "three"]
+            }}}
+        });
+        let schema = Arc::new(Schema::new_with_metadata(
+            vec![
+                Field::new("img", DataType::Struct(fields.clone().into()), true),
+                Field::new("label", DataType::Int64, false),
+            ],
+            [("huggingface".to_owned(), metadata.to_string())].into(),
+        ));
         let bytes: ArrayRef = Arc::new(BinaryArray::from(vec![
             Some(&[start as u8][..]),
             Some(&[(start + 1) as u8][..]),
@@ -667,6 +756,12 @@ mod tests {
 
         let manifest = DatasetManifest::read(&output).unwrap();
         assert_eq!(manifest.split("train").unwrap().num_rows, Some(4));
+        let metadata: serde_json::Value =
+            serde_json::from_reader(File::open(output.join("dataset.json")).unwrap()).unwrap();
+        assert_eq!(
+            metadata["features"]["label"]["names"],
+            serde_json::json!(["zero", "one", "two", "three"])
+        );
         let dataset =
             crate::datasets::lance::LanceImageDataset::open_default(output.join("train.lance"))
                 .unwrap();
