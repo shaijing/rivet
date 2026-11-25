@@ -2181,3 +2181,27 @@ def test_channel_swap_fixed_order_and_layout(source):
         output(root, lambda p: p.channel_swap((0, 0, 1)))
     with pytest.raises(ValueError):
         output(root, lambda p: p.channel_swap((0, 1)))
+
+
+def test_longest_max_size_bounds_and_worker_seed(source):
+    root, _ = source
+    image = output(root, lambda p: p.longest_max_size(9))[0]
+    assert image.shape == (6, 9, 3) and image.dtype == np.uint8
+    image = output(root, lambda p: p.longest_max_size(max_size_hw=(8, 9)))[0]
+    assert image.shape == (6, 9, 3)
+    image = output(root, lambda p: p.longest_max_size(max_size_hw=(8, None)))[0]
+    assert image.shape == (8, 12, 3)
+    image = output(root, lambda p: p.longest_max_size(27))[0]
+    assert image.shape == (18, 27, 3)
+
+    def augment(p):
+        return p.longest_max_size([9, 12, 15], interpolation="nearest")
+
+    serial = output(root, augment)
+    parallel = output(root, augment, transform=True, workers=3)
+    for a, b in zip(serial, parallel, strict=True):
+        assert max(a.shape[:2]) in {9, 12, 15}
+        np.testing.assert_array_equal(a, b)
+    for options in [{"max_size": []}, {"max_size_hw": (None, None)}, {"max_size": 0}]:
+        with pytest.raises(ValueError):
+            rivet.Transform().longest_max_size(**options)

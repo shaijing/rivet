@@ -960,3 +960,13 @@ def test_random_sized_bbox_safe_crop_full_image_and_empty_fallback(annotated):
     np.testing.assert_array_equal(target["keypoints"], [[[3, 2]]])
     with pytest.raises(ValueError):
         rivet.StructuredPipeline([full]).bbox_safe_random_crop(1.1)
+
+
+def test_longest_max_size_scales_structured_fields(annotated):
+    original = annotated.to_dict()
+    result = annotated.apply(rivet.Transform().longest_max_size(6, interpolation="nearest")).to_dict()
+    assert result["image"].shape == (5, 6, 3)
+    np.testing.assert_array_equal(result["boxes"], original["boxes"] / 2)
+    np.testing.assert_array_equal(result["labels"], original["labels"])
+    np.testing.assert_array_equal(result["keypoints"], original["keypoints"] / 2)
+    np.testing.assert_array_equal(result["masks"], original["masks"][:, ::2, ::2])

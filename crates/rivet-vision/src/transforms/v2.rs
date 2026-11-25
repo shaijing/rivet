@@ -248,6 +248,7 @@ pub enum V2Config {
         ratio: f64,
         fill: f32,
     },
+    LongestMaxSize(LongestMaxSizeConfig),
     Jpeg {
         quality: (u8, u8),
     },
@@ -320,6 +321,7 @@ impl V2Config {
             Self::Downscale { .. } => "Downscale",
             Self::SaltAndPepper { .. } => "SaltAndPepper",
             Self::GridDropout { .. } => "GridDropout",
+            Self::LongestMaxSize(_) => "LongestMaxSize",
             Self::Jpeg { .. } => "JPEG",
             Self::Rgb => "RGB",
             Self::ToDtype { .. } => "ToDtype",
@@ -387,12 +389,16 @@ impl V2Config {
             Self::Downscale { .. } => 61,
             Self::SaltAndPepper { .. } => 62,
             Self::GridDropout { .. } => 63,
+            Self::LongestMaxSize(_) => 118,
             Self::Jpeg { .. } => 57,
             Self::Rgb => 58,
             Self::ToDtype { .. } => 59,
         }
     }
     pub fn is_random(&self) -> bool {
+        if let Self::LongestMaxSize(config) = self {
+            return config.random();
+        }
         if let Self::Dithering(config) = self {
             return matches!(config.method, DitherMethod::Random { .. });
         }
@@ -410,6 +416,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::LongestMaxSize(config) => config.valid(),
             Self::XyMasking(config) => config.valid(),
             Self::ChannelDropout(config) => config.valid(),
             Self::PixelDropout(config) => config.valid(),
@@ -1424,6 +1431,12 @@ impl V2Config {
                     *fill,
                     rng,
                 )?;
+            }
+            Self::LongestMaxSize(config) => {
+                s = require_u8_hwc(s, self.name())?;
+                let (w, h) = config.sample(w, h, rng)?;
+                return ResizeConfig::with_interpolation(w, h, config.interpolation)
+                    .apply(ImageSample::Decoded(s));
             }
             Self::Jpeg {
                 quality: (low, high),

@@ -54,6 +54,23 @@ class Transform:
         """
         return Transform(self._inner.ten_crop(width, height, vertical_flip))
 
+    def longest_max_size(
+        self,
+        max_size: int | Iterable[int] | None = None,
+        *,
+        max_size_hw: tuple[int | None, int | None] | None = None,
+        interpolation: str = "bilinear",
+    ) -> Transform:
+        """Resize uint8 HWC RGB proportionally to the given bounds.
+
+        Supply a longest side (or seeded choices), or (height, width) limits.
+        None leaves one axis unconstrained. The limiting axis is reached when
+        upscaling or downscaling. Structured masks use nearest sampling.
+        """
+        sizes = None if max_size is None else ([max_size] if isinstance(max_size, int) else list(max_size))
+        inner = self._inner.longest_max_size(sizes, max_size_hw=max_size_hw, interpolation=interpolation)
+        return Transform(inner)
+
     def center_crop(self, width: int, height: int) -> Transform:
         return Transform(self._inner.center_crop(width, height))
 

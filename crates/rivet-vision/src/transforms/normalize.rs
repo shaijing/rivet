@@ -124,24 +124,25 @@ fn write_normalize_contiguous_nhwc_to_nchw(
     let [batch, height, width, channels] = *dims;
     let spatial_size = height * width;
     let image_size = spatial_size * channels;
+    if channels == 3 && image_size > 0 {
+        let table: [[f32; 256]; 3] = std::array::from_fn(|c| {
+            std::array::from_fn(|v| v as f32 * scale[c] + bias[c])
+        });
+        for source in values.chunks_exact(image_size).take(batch) {
+            for pixel in source.chunks_exact(3) {
+                output.write_next(table[0][usize::from(pixel[0])])?;
+            }
+            for pixel in source.chunks_exact(3) {
+                output.write_next(table[1][usize::from(pixel[1])])?;
+            }
+            for pixel in source.chunks_exact(3) {
+                output.write_next(table[2][usize::from(pixel[2])])?;
+            }
+        }
+        return Ok(());
+    }
     for batch_index in 0..batch {
         let source = &values[batch_index * image_size..(batch_index + 1) * image_size];
-        if channels == 3 {
-            // Constant component offsets and hoisted affine parameters preserve
-            // the RGB fast path even when producing planar CHW output.
-            let [red_scale, green_scale, blue_scale] = [scale[0], scale[1], scale[2]];
-            let [red_bias, green_bias, blue_bias] = [bias[0], bias[1], bias[2]];
-            for pixel in source.chunks_exact(3) {
-                output.write_next(pixel[0] as f32 * red_scale + red_bias)?;
-            }
-            for pixel in source.chunks_exact(3) {
-                output.write_next(pixel[1] as f32 * green_scale + green_bias)?;
-            }
-            for pixel in source.chunks_exact(3) {
-                output.write_next(pixel[2] as f32 * blue_scale + blue_bias)?;
-            }
-            continue;
-        }
         for channel in 0..channels {
             for spatial_index in 0..spatial_size {
                 output.write_next(apply_affine(

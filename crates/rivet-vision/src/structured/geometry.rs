@@ -654,6 +654,10 @@ pub(super) fn apply(
                 Ok(s)
             }
         }
+        ImageOp::V2(V2Config::LongestMaxSize(config)) => {
+            let (w, h) = config.sample(w, h, rng)?;
+            resize(s, w, h, config.interpolation)
+        }
         ImageOp::V2(V2Config::LetterBox(config)) => {
             let (h, w) = s.size()?;
             let (scale, padding) = config.resolve(w, h)?;

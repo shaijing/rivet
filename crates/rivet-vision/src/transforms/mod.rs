@@ -26,6 +26,8 @@ mod fog;
 mod layout;
 mod letterbox;
 mod local_color;
+mod longest_size;
+pub use longest_size::{LongestMaxSizeConfig, LongestSizeLimit};
 mod multi_crop;
 mod noise;
 mod normalize;

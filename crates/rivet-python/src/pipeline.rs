@@ -240,6 +240,33 @@ impl PyTransform {
         }
     }
 
+    #[pyo3(signature = (max_size=None, *, max_size_hw=None, interpolation="bilinear"))]
+    fn longest_max_size(
+        &self,
+        max_size: Option<Vec<u32>>,
+        max_size_hw: Option<(Option<u32>, Option<u32>)>,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{LongestMaxSizeConfig, LongestSizeLimit};
+        let limit = match (max_size, max_size_hw) {
+            (Some(sizes), None) => LongestSizeLimit::Longest(sizes),
+            (None, Some((height, width))) => LongestSizeLimit::Axes { height, width },
+            _ => {
+                return Err(PyValueError::new_err(
+                    "set exactly one of max_size or max_size_hw",
+                ));
+            }
+        };
+        let config = V2Config::LongestMaxSize(LongestMaxSizeConfig {
+            limit,
+            interpolation: parse_interpolation(interpolation)?,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     fn center_crop(&self, width: u32, height: u32) -> Self {
         Self {
             inner: self.inner.clone().center_crop(width, height),
@@ -2222,6 +2249,33 @@ impl PyImagePipeline {
         Self {
             inner: self.inner.clone().ten_crop(width, height, vertical_flip),
         }
+    }
+
+    #[pyo3(signature = (max_size=None, *, max_size_hw=None, interpolation="bilinear"))]
+    fn longest_max_size(
+        &self,
+        max_size: Option<Vec<u32>>,
+        max_size_hw: Option<(Option<u32>, Option<u32>)>,
+        interpolation: &str,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{LongestMaxSizeConfig, LongestSizeLimit};
+        let limit = match (max_size, max_size_hw) {
+            (Some(sizes), None) => LongestSizeLimit::Longest(sizes),
+            (None, Some((height, width))) => LongestSizeLimit::Axes { height, width },
+            _ => {
+                return Err(PyValueError::new_err(
+                    "set exactly one of max_size or max_size_hw",
+                ));
+            }
+        };
+        let config = V2Config::LongestMaxSize(LongestMaxSizeConfig {
+            limit,
+            interpolation: parse_interpolation(interpolation)?,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
     }
 
     fn center_crop(&self, width: u32, height: u32) -> Self {

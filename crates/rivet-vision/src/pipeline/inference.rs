@@ -476,6 +476,26 @@ pub(crate) fn infer_image_op(
                         )));
                     }
                 }
+                V2Config::LongestMaxSize(config) => {
+                    require_u8_hwc(input_state, op.name())?;
+                    if matches!(channel_dim(input), ShapeDim::Known(c) if c != 3) {
+                        return Err(invalid_pipeline("LongestMaxSize requires RGB input"));
+                    }
+                    if let (ShapeDim::Known(h), ShapeDim::Known(w)) = spatial_dims(input)? {
+                        if config.random() {
+                            make_spatial_dynamic(&mut output);
+                        } else {
+                            let (w, h) = config.dimensions(w, h, 0)?;
+                            set_spatial_shape(
+                                &mut output,
+                                ShapeDim::Known(h as usize),
+                                ShapeDim::Known(w as usize),
+                            );
+                        }
+                    } else {
+                        make_spatial_dynamic(&mut output);
+                    }
+                }
                 V2Config::Jpeg { .. } => {
                     if !matches!(
                         input_state,

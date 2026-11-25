@@ -721,6 +721,11 @@ impl ImagePipeline {
         self
     }
 
+    /// Resize proportionally to the longest side or explicit axis limits.
+    pub fn longest_max_size(self, config: crate::transforms::LongestMaxSizeConfig) -> Self {
+        self.v2(crate::transforms::V2Config::LongestMaxSize(config))
+    }
+
     pub fn crop(mut self, x: u32, y: u32, width: u32, height: u32) -> Self {
         self.push_image(ImageOp::crop(x, y, width, height));
         self
