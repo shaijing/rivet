@@ -108,6 +108,7 @@ pub enum V2Config {
         elementwise: bool,
     },
     RandomSunFlare(std::sync::Arc<RandomSunFlareConfig>),
+    RgbShift(std::sync::Arc<[(f64, f64); 3]>),
     RandomGamma {
         gamma_range: (f64, f64),
     },
@@ -235,6 +236,7 @@ impl V2Config {
             Self::AdditiveNoise(_) => "AdditiveNoise",
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::RandomSunFlare(_) => "RandomSunFlare",
+            Self::RgbShift(_) => "RGBShift",
             Self::RandomGamma { .. } => "RandomGamma",
             Self::RandomFog(_) => "RandomFog",
             Self::AtmosphericFog(_) => "AtmosphericFog",
@@ -287,6 +289,7 @@ impl V2Config {
             Self::AdditiveNoise(_) => 83,
             Self::MultiplicativeNoise { .. } => 82,
             Self::RandomSunFlare(_) => 88,
+            Self::RgbShift(_) => 97,
             Self::RandomGamma { .. } => 96,
             Self::RandomFog(_) => 94,
             Self::AtmosphericFog(_) => 95,
@@ -337,6 +340,9 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::RgbShift(ranges) => ranges
+                .iter()
+                .all(|&(lo, hi)| lo >= -255.0 && lo <= hi && hi <= 255.0),
             Self::RandomGamma {
                 gamma_range: (lo, hi),
             } => *lo > 0.0 && lo <= hi && hi.is_finite(),
@@ -815,6 +821,7 @@ impl V2Config {
             | Self::AdditiveNoise(_)
             | Self::MultiplicativeNoise { .. }
             | Self::RandomSunFlare(_)
+            | Self::RgbShift(_)
             | Self::RandomGamma { .. }
             | Self::RandomFog(_)
             | Self::AtmosphericFog(_)
@@ -1017,6 +1024,9 @@ impl V2Config {
             }
             Self::RandomRain(config) => {
                 s.image = super::weather::random_rain(&s.image, config, rng)?;
+            }
+            Self::RgbShift(ranges) => {
+                s.image = super::noise::rgb_shift(&s.image, ranges, rng)?;
             }
             Self::RandomGamma {
                 gamma_range: (lo, hi),

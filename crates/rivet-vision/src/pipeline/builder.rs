@@ -153,6 +153,13 @@ impl ImagePipeline {
         )))
     }
 
+    /// Add independent seeded RGB offsets in 8-bit intensity units.
+    pub fn rgb_shift(self, ranges: [(f64, f64); 3]) -> Self {
+        self.v2(crate::transforms::V2Config::RgbShift(std::sync::Arc::new(
+            ranges,
+        )))
+    }
+
     /// Apply a power-law exponent sampled from percent units.
     pub fn random_gamma(self, gamma_range: (f64, f64)) -> Self {
         self.v2(crate::transforms::V2Config::RandomGamma { gamma_range })

@@ -715,6 +715,20 @@ class Pipeline:
         inner = self._inner.lens_flare(flare_roi, num_ghosts_range, intensity_range, num_rays_range, bloom_range)
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def rgb_shift(
+        self,
+        r_shift_range: tuple[float, float] = (-20, 20),
+        g_shift_range: tuple[float, float] = (-20, 20),
+        b_shift_range: tuple[float, float] = (-20, 20),
+    ) -> Pipeline:
+        """Sample one offset per RGB channel for uint8 or float32 HWC RGB.
+
+        Ranges use 8-bit intensity units in [-255, 255] for both dtypes.
+        Float32 offsets are divided by 255, then output is clipped.
+        """
+        inner = self._inner.rgb_shift(r_shift_range, g_shift_range, b_shift_range)
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def random_gamma(self, gamma_range: tuple[float, float] = (80, 120)) -> Pipeline:
         """Power-law correction for uint8 or normalized float32 HWC.
 

@@ -334,6 +334,7 @@ pub(crate) fn infer_image_op(
                     }
                 }
                 V2Config::PlanckianJitter { .. }
+                | V2Config::RgbShift(_)
                 | V2Config::IsoNoise { .. }
                 | V2Config::RandomSunFlare(..)
                 | V2Config::LensFlare(..)

@@ -1646,3 +1646,28 @@ def test_random_gamma_percent_units_and_seed(source):
         output(root, lambda p: p.hwc_to_chw().random_gamma())
     with pytest.raises(ValueError):
         rivet.Transform().random_gamma((0, 100))
+
+
+def test_rgb_shift_units_clipping_and_seed(source):
+    root, pixels = source
+
+    def fixed(p):
+        return p.rgb_shift((23, 23), (-17, -17), (0, 0))
+
+    expected = (pixels.astype(int) + [23, -17, 0]).clip(0, 255)
+    result = output(root, fixed, transform=True, workers=2)[0]
+    assert result.shape == pixels.shape and result.dtype == np.uint8
+    np.testing.assert_array_equal(result, expected)
+    floats = output(root, lambda p: fixed(p.to_dtype("float32", True)))[0]
+    assert floats.dtype == np.float32
+    np.testing.assert_allclose(floats * 255, expected, atol=3e-5)
+
+    serial = output(root, lambda p: p.rgb_shift())
+    np.testing.assert_array_equal(
+        serial, output(root, lambda p: p.rgb_shift(), transform=True, workers=3)
+    )
+    assert not np.array_equal(serial, output(root, lambda p: p.rgb_shift(), epoch=1))
+    with pytest.raises(ValueError, match="RGBShift"):
+        output(root, lambda p: p.grayscale().rgb_shift())
+    with pytest.raises(ValueError):
+        rivet.Transform().rgb_shift((0, 256))

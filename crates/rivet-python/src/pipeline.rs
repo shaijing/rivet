@@ -1039,6 +1039,24 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (r_shift_range=(-20.0, 20.0), g_shift_range=(-20.0, 20.0), b_shift_range=(-20.0, 20.0)))]
+    fn rgb_shift(
+        &self,
+        r_shift_range: (f64, f64),
+        g_shift_range: (f64, f64),
+        b_shift_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let config = V2Config::RgbShift(std::sync::Arc::new([
+            r_shift_range,
+            g_shift_range,
+            b_shift_range,
+        ]));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (gamma_range=(80.0, 120.0)))]
     fn random_gamma(&self, gamma_range: (f64, f64)) -> PyResult<Self> {
         let config = V2Config::RandomGamma { gamma_range };
@@ -2755,6 +2773,24 @@ impl PyImagePipeline {
                 bloom_range,
             },
         ));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (r_shift_range=(-20.0, 20.0), g_shift_range=(-20.0, 20.0), b_shift_range=(-20.0, 20.0)))]
+    fn rgb_shift(
+        &self,
+        r_shift_range: (f64, f64),
+        g_shift_range: (f64, f64),
+        b_shift_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let config = V2Config::RgbShift(std::sync::Arc::new([
+            r_shift_range,
+            g_shift_range,
+            b_shift_range,
+        ]));
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

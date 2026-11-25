@@ -652,3 +652,26 @@ pub(super) fn additive_noise(
         |value, offset| value + offset,
     )
 }
+
+pub(super) fn rgb_shift(
+    input: &Tensor,
+    ranges: &[(f64, f64); 3],
+    rng: &mut RandomStream,
+) -> RivetResult<Tensor> {
+    if !matches!(input.dims(), [_, _, 3]) {
+        return Err(invalid_argument("RGBShift requires HWC RGB input"));
+    }
+    apply_sampled_noise(
+        input,
+        "RGBShift",
+        true,
+        false,
+        ranges.iter().all(|&range| range == (0.0, 0.0)),
+        |_, _| true,
+        |c| {
+            let (lo, hi) = ranges[c];
+            (lo + rng.next_f64() * (hi - lo)) / 255.0
+        },
+        |value, shift| value + shift,
+    )
+}
