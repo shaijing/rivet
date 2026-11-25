@@ -80,6 +80,17 @@ pub enum V2Config {
         per_channel: bool,
         elementwise: bool,
     },
+    PlasmaShadow {
+        shadow_intensity_range: (f64, f64),
+        plasma_size: u32,
+        roughness: f64,
+    },
+    PlasmaBrightnessContrast {
+        brightness_range: (f64, f64),
+        contrast_range: (f64, f64),
+        plasma_size: u32,
+        roughness: f64,
+    },
     Illumination {
         intensity_range: (f64, f64),
         mode: IlluminationMode,
@@ -184,6 +195,8 @@ impl V2Config {
             Self::Clahe { .. } => "CLAHE",
             Self::AdditiveNoise(_) => "AdditiveNoise",
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
+            Self::PlasmaShadow { .. } => "PlasmaShadow",
+            Self::PlasmaBrightnessContrast { .. } => "PlasmaBrightnessContrast",
             Self::Illumination { .. } => "Illumination",
             Self::FilmGrain { .. } => "FilmGrain",
             Self::IsoNoise { .. } => "ISONoise",
@@ -224,6 +237,8 @@ impl V2Config {
             Self::Clahe { .. } => 70,
             Self::AdditiveNoise(_) => 83,
             Self::MultiplicativeNoise { .. } => 82,
+            Self::PlasmaShadow { .. } => 85,
+            Self::PlasmaBrightnessContrast { .. } => 86,
             Self::Illumination { .. } => 84,
             Self::FilmGrain { .. } => 81,
             Self::IsoNoise { .. } => 80,
@@ -263,6 +278,34 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::PlasmaBrightnessContrast {
+                brightness_range,
+                contrast_range,
+                plasma_size,
+                roughness,
+            } => {
+                brightness_range.0 >= -1.0
+                    && brightness_range.0 <= brightness_range.1
+                    && brightness_range.1 <= 1.0
+                    && contrast_range.0 >= -1.0
+                    && contrast_range.0 <= contrast_range.1
+                    && contrast_range.1 <= 1.0
+                    && (2..=1024).contains(plasma_size)
+                    && roughness.is_finite()
+                    && *roughness > 0.0
+            }
+            Self::PlasmaShadow {
+                shadow_intensity_range,
+                plasma_size,
+                roughness,
+            } => {
+                shadow_intensity_range.0 >= 0.0
+                    && shadow_intensity_range.0 <= shadow_intensity_range.1
+                    && shadow_intensity_range.1 <= 1.0
+                    && (2..=1024).contains(plasma_size)
+                    && roughness.is_finite()
+                    && *roughness > 0.0
+            }
             Self::Illumination {
                 intensity_range: (low, high),
                 ..
@@ -684,6 +727,8 @@ impl V2Config {
             | Self::Clahe { .. }
             | Self::AdditiveNoise(_)
             | Self::MultiplicativeNoise { .. }
+            | Self::PlasmaShadow { .. }
+            | Self::PlasmaBrightnessContrast { .. }
             | Self::Illumination { .. }
             | Self::FilmGrain { .. }
             | Self::IsoNoise { .. }
@@ -827,6 +872,41 @@ impl V2Config {
                     *mode,
                     *effect,
                     rng,
+                )?;
+            }
+            Self::PlasmaShadow {
+                shadow_intensity_range,
+                plasma_size,
+                roughness,
+            } => {
+                let mut sample = |(a, b)| a + rng.next_f64() * (b - a);
+                let amount = sample(*shadow_intensity_range);
+                s.image = super::local_color::apply_plasma(
+                    &s.image,
+                    self.name(),
+                    *plasma_size as usize,
+                    *roughness,
+                    amount == 0.0,
+                    rng,
+                    |t| (1.0 - t * amount, 0.0),
+                )?;
+            }
+            Self::PlasmaBrightnessContrast {
+                brightness_range,
+                contrast_range,
+                plasma_size,
+                roughness,
+            } => {
+                let mut sample = |(a, b)| a + rng.next_f64() * (b - a);
+                let (brightness, contrast) = (sample(*brightness_range), sample(*contrast_range));
+                s.image = super::local_color::apply_plasma(
+                    &s.image,
+                    self.name(),
+                    *plasma_size as usize,
+                    *roughness,
+                    brightness == 0.0 && contrast == 0.0,
+                    rng,
+                    |t| (1.0 + t * contrast, t * (brightness - 0.5 * contrast)),
                 )?;
             }
             Self::MedianBlur => {

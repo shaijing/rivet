@@ -1337,3 +1337,36 @@ def test_illumination_seed_and_gain_bounds(source, mode):
     assert bright[0].dtype == np.float32
     assert np.all(np.asarray(bright) >= expected / 255 - 1e-7)
     assert np.max(bright) <= 1
+
+
+@pytest.mark.parametrize("shadow", [False, True])
+def test_plasma_light_fields_preserve_layout_and_seed(tmp_path, shadow):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.full((12, 17, 3), 128, dtype=np.uint8)
+    for i in range(4):
+        Image.fromarray(pixels).save(folder / f"{i}.png")
+
+    def augment(p, amount=0.3):
+        if shadow:
+            return p.plasma_shadow((amount, amount), plasma_size=8)
+        return p.plasma_brightness_contrast(
+            (amount, amount), (0.2, 0.2) if amount else (0, 0), plasma_size=8
+        )
+
+    serial = output(tmp_path, augment)
+    parallel = output(tmp_path, augment, transform=True, workers=3)
+    np.testing.assert_array_equal(serial, parallel)
+    assert not np.array_equal(serial, output(tmp_path, augment, epoch=1))
+    np.testing.assert_array_equal(output(tmp_path, lambda p: augment(p, 0))[0], pixels)
+    result = serial[0]
+    assert result.dtype == np.uint8 and result.shape == pixels.shape
+    assert np.ptp(result) > 0
+    np.testing.assert_array_equal(result[..., 0], result[..., 2])
+    if shadow:
+        assert np.min(result) >= 90 and np.max(result) <= 128
+    else:
+        assert np.min(result) >= 128
+    floats = output(tmp_path, lambda p: augment(p.grayscale().to_dtype("float32", True)))
+    assert floats[0].shape == (12, 17, 1) and floats[0].dtype == np.float32
+    np.testing.assert_allclose(floats[0][..., 0] * 255, result[..., 0], atol=0.51)

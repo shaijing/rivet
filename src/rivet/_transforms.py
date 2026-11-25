@@ -572,6 +572,28 @@ class Transform:
         )
         return Transform(inner)
 
+    def plasma_shadow(
+        self, shadow_intensity_range: tuple[float, float] = (0.3, 0.7),
+        plasma_size: int = 256, roughness: float = 3.0,
+    ) -> Transform:
+        """Darken pixels proportionally to a seeded plasma field.
+
+        Accepts uint8 or normalized float32 HWC. Plasma size sets the field
+        resolution (2–1024), and larger roughness preserves more fine detail.
+        """
+        return Transform(self._inner.plasma_shadow(shadow_intensity_range, plasma_size, roughness))
+
+    def plasma_brightness_contrast(
+        self, brightness_range: tuple[float, float] = (-0.3, 0.3), contrast_range: tuple[float, float] = (-0.3, 0.3),
+        plasma_size: int = 256, roughness: float = 3.0,
+    ) -> Transform:
+        """Vary brightness and contrast about midgray using a seeded plasma field.
+
+        Accepts uint8 or normalized float32 HWC. Plasma size sets the field
+        resolution (2–1024), and larger roughness preserves more fine detail.
+        """
+        return Transform(self._inner.plasma_brightness_contrast(brightness_range, contrast_range, plasma_size, roughness))
+
     def illumination(
         self, mode: str = "linear", intensity_range: tuple[float, float] = (0.01, 0.2),
         effect_type: str = "both",

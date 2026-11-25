@@ -139,6 +139,36 @@ impl ImagePipeline {
         })
     }
 
+    /// Apply a seeded plasma light field.
+    pub fn plasma_shadow(
+        self,
+        shadow_intensity_range: (f64, f64),
+        plasma_size: u32,
+        roughness: f64,
+    ) -> Self {
+        self.v2(crate::transforms::V2Config::PlasmaShadow {
+            shadow_intensity_range,
+            plasma_size,
+            roughness,
+        })
+    }
+
+    /// Apply a seeded plasma light field.
+    pub fn plasma_brightness_contrast(
+        self,
+        brightness_range: (f64, f64),
+        contrast_range: (f64, f64),
+        plasma_size: u32,
+        roughness: f64,
+    ) -> Self {
+        self.v2(crate::transforms::V2Config::PlasmaBrightnessContrast {
+            brightness_range,
+            contrast_range,
+            plasma_size,
+            roughness,
+        })
+    }
+
     /// Apply a smooth, seeded illumination field.
     pub fn illumination(
         self,

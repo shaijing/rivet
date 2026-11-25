@@ -682,6 +682,28 @@ class Pipeline:
         )
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def plasma_shadow(
+        self, shadow_intensity_range: tuple[float, float] = (0.3, 0.7),
+        plasma_size: int = 256, roughness: float = 3.0,
+    ) -> Pipeline:
+        """Darken pixels proportionally to a seeded plasma field.
+
+        Accepts uint8 or normalized float32 HWC. Plasma size sets the field
+        resolution (2–1024), and larger roughness preserves more fine detail.
+        """
+        return Pipeline(self._inner.plasma_shadow(shadow_intensity_range, plasma_size, roughness), as_numpy=self.as_numpy)
+
+    def plasma_brightness_contrast(
+        self, brightness_range: tuple[float, float] = (-0.3, 0.3), contrast_range: tuple[float, float] = (-0.3, 0.3),
+        plasma_size: int = 256, roughness: float = 3.0,
+    ) -> Pipeline:
+        """Vary brightness and contrast about midgray using a seeded plasma field.
+
+        Accepts uint8 or normalized float32 HWC. Plasma size sets the field
+        resolution (2–1024), and larger roughness preserves more fine detail.
+        """
+        return Pipeline(self._inner.plasma_brightness_contrast(brightness_range, contrast_range, plasma_size, roughness), as_numpy=self.as_numpy)
+
     def illumination(
         self, mode: str = "linear", intensity_range: tuple[float, float] = (0.01, 0.2),
         effect_type: str = "both",

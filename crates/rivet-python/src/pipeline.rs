@@ -987,6 +987,44 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (shadow_intensity_range=(0.3, 0.7), plasma_size=256, roughness=3.0))]
+    fn plasma_shadow(
+        &self,
+        shadow_intensity_range: (f64, f64),
+        plasma_size: u32,
+        roughness: f64,
+    ) -> PyResult<Self> {
+        let config = V2Config::PlasmaShadow {
+            shadow_intensity_range,
+            plasma_size,
+            roughness,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (brightness_range=(-0.3, 0.3), contrast_range=(-0.3, 0.3), plasma_size=256, roughness=3.0))]
+    fn plasma_brightness_contrast(
+        &self,
+        brightness_range: (f64, f64),
+        contrast_range: (f64, f64),
+        plasma_size: u32,
+        roughness: f64,
+    ) -> PyResult<Self> {
+        let config = V2Config::PlasmaBrightnessContrast {
+            brightness_range,
+            contrast_range,
+            plasma_size,
+            roughness,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (mode="linear", intensity_range=(0.01, 0.2), effect_type="both"))]
     fn illumination(
         &self,
@@ -2426,6 +2464,44 @@ impl PyImagePipeline {
             multiplier,
             per_channel,
             elementwise,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (shadow_intensity_range=(0.3, 0.7), plasma_size=256, roughness=3.0))]
+    fn plasma_shadow(
+        &self,
+        shadow_intensity_range: (f64, f64),
+        plasma_size: u32,
+        roughness: f64,
+    ) -> PyResult<Self> {
+        let config = V2Config::PlasmaShadow {
+            shadow_intensity_range,
+            plasma_size,
+            roughness,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (brightness_range=(-0.3, 0.3), contrast_range=(-0.3, 0.3), plasma_size=256, roughness=3.0))]
+    fn plasma_brightness_contrast(
+        &self,
+        brightness_range: (f64, f64),
+        contrast_range: (f64, f64),
+        plasma_size: u32,
+        roughness: f64,
+    ) -> PyResult<Self> {
+        let config = V2Config::PlasmaBrightnessContrast {
+            brightness_range,
+            contrast_range,
+            plasma_size,
+            roughness,
         };
         config.validate().map_err(to_py_err)?;
         Ok(Self {

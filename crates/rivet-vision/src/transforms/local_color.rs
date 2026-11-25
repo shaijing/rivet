@@ -339,7 +339,7 @@ pub(super) fn illumination(
         _ => (0.1 + 0.8 * rng.next_f64(), 0.1 + 0.8 * rng.next_f64()),
     };
     let sigma = 0.2 + 0.8 * rng.next_f64();
-    apply_light_gain(input, "Illumination", signed == 0.0, |x, y| {
+    apply_light_field(input, "Illumination", signed == 0.0, |x, y| {
         let weight = match mode {
             IlluminationMode::Linear => {
                 0.5 + ((x - 0.5) * dx + (y - 0.5) * dy) / (dx.abs() + dy.abs())
@@ -351,15 +351,15 @@ pub(super) fn illumination(
                 (-((x - cx).powi(2) + (y - cy).powi(2)) / (2.0 * sigma * sigma)).exp()
             }
         };
-        1.0 + signed * weight.clamp(0.0, 1.0)
+        (1.0 + signed * weight.clamp(0.0, 1.0), 0.0)
     })
 }
 
-fn apply_light_gain(
+fn apply_light_field(
     input: &Tensor,
     name: &str,
     identity: bool,
-    gain: impl Fn(f64, f64) -> f64,
+    field: impl Fn(f64, f64) -> (f64, f64),
 ) -> RivetResult<Tensor> {
     let [height, width, channels] = *input.dims() else {
         return Err(invalid_argument(format!("{name} expects HWC input")));
@@ -381,7 +381,7 @@ fn apply_light_gain(
     let dy = 1.0 / (height - 1).max(1) as f64;
     Ok(input.with_cpu_storage(|storage, layout| {
         macro_rules! write_gain {
-            ($values:expr, $finish:expr) => {{
+            ($values:expr, $max:expr, $finish:expr) => {{
                 let pixels = super::contiguous_values($values, layout)?;
                 let finish = $finish;
                 Tensor::from_exact_writer(input.dims(), input.device(), |out| {
@@ -389,9 +389,10 @@ fn apply_light_gain(
                         let y = if height == 1 { 0.5 } else { y as f64 * dy };
                         for (x, pixel) in row.chunks_exact(channels).enumerate() {
                             let x = if width == 1 { 0.5 } else { x as f64 * dx };
-                            let gain = gain(x, y);
+                            let (gain, offset) = field(x, y);
+                            let offset = offset * $max;
                             for &v in pixel {
-                                out.write_next(finish(f64::from(v) * gain))?;
+                                out.write_next(finish(f64::from(v) * gain + offset))?;
                             }
                         }
                     }
@@ -400,9 +401,81 @@ fn apply_light_gain(
             }};
         }
         match storage {
-            CpuStorageRef::U8(values) => write_gain!(values, |v: f64| v.round() as u8),
-            CpuStorageRef::F32(values) => write_gain!(values, |v: f64| v.clamp(0.0, 1.0) as f32),
+            CpuStorageRef::U8(values) => write_gain!(values, 255.0, |v: f64| v.round() as u8),
+            CpuStorageRef::F32(values) => {
+                write_gain!(values, 1.0, |v: f64| v.clamp(0.0, 1.0) as f32)
+            }
             _ => unreachable!(),
         }
     })?)
+}
+
+pub(super) fn apply_plasma(
+    input: &Tensor,
+    name: &str,
+    size: usize,
+    roughness: f64,
+    identity: bool,
+    rng: &mut RandomStream,
+    affine: impl Fn(f64) -> (f64, f64),
+) -> RivetResult<Tensor> {
+    if identity {
+        return apply_light_field(input, name, true, |_, _| (1.0, 0.0));
+    }
+    let edge = (size - 1).next_power_of_two();
+    let stride = edge + 1;
+    let mut field = vec![0.0_f64; stride * stride];
+    let mut noise = || 2.0 * rng.next_f64() - 1.0;
+    for (x, y) in [(0, 0), (edge, 0), (0, edge), (edge, edge)] {
+        field[y * stride + x] = noise();
+    }
+    let mut step = edge;
+    let mut amplitude = 1.0;
+    let decay = (-roughness.recip()).exp();
+    while step > 1 {
+        let half = step / 2;
+        for y in (half..edge).step_by(step) {
+            for x in (half..edge).step_by(step) {
+                let top = (y - half) * stride;
+                let bottom = (y + half) * stride;
+                field[y * stride + x] = (field[top + x - half]
+                    + field[top + x + half]
+                    + field[bottom + x - half]
+                    + field[bottom + x + half])
+                    * 0.25
+                    + amplitude * noise();
+            }
+        }
+        for (row, y) in (0..=edge).step_by(half).enumerate() {
+            let start = if row % 2 == 0 { half } else { 0 };
+            for x in (start..=edge).step_by(step) {
+                let neighbors = [
+                    x.checked_sub(half).map(|x| y * stride + x),
+                    (x + half <= edge).then_some(y * stride + x + half),
+                    y.checked_sub(half).map(|y| y * stride + x),
+                    (y + half <= edge).then_some((y + half) * stride + x),
+                ];
+                let (sum, count) = neighbors
+                    .into_iter()
+                    .flatten()
+                    .fold((0.0, 0), |(sum, count), i| (sum + field[i], count + 1));
+                field[y * stride + x] = sum / f64::from(count) + amplitude * noise();
+            }
+        }
+        amplitude *= decay;
+        step = half;
+    }
+    let min = field.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = field.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let span = (max - min).max(f64::EPSILON);
+    apply_light_field(input, name, false, |x, y| {
+        let (x, y) = (x * edge as f64, y * edge as f64);
+        let (left, top) = (x as usize, y as usize);
+        let (right, bottom) = ((left + 1).min(edge), (top + 1).min(edge));
+        let (fx, fy) = (x - left as f64, y - top as f64);
+        let upper = field[top * stride + left] * (1.0 - fx) + field[top * stride + right] * fx;
+        let lower =
+            field[bottom * stride + left] * (1.0 - fx) + field[bottom * stride + right] * fx;
+        affine(((upper * (1.0 - fy) + lower * fy - min) / span).clamp(0.0, 1.0))
+    })
 }
