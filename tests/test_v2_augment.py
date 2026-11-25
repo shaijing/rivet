@@ -455,3 +455,100 @@ def test_jpeg_low_quality_integer_quantization_ties(tmp_path):
     np.testing.assert_allclose(
         actual.astype(np.int16), expected.astype(np.int16), atol=1
     )
+
+
+@pytest.mark.parametrize("transform", [False, True])
+def test_downscale_restores_original_shape(source, transform):
+    root, _ = source
+    actual = output(
+        root,
+        lambda p: p.downscale((0.5, 0.5), up_interpolation="bilinear"),
+        transform=transform,
+    )
+    expected = output(
+        root, lambda p: p.resize(9, 6, "nearest").resize(18, 12, "bilinear")
+    )
+    for image, reference in zip(actual, expected, strict=True):
+        assert image.dtype == np.uint8
+        np.testing.assert_array_equal(image, reference)
+
+
+def test_salt_and_pepper_synchronizes_channels_and_layouts(source):
+    root, pixels = source
+
+    def aug(p):
+        return p.salt_and_pepper(1.0, salt_ratio=0.5)
+
+    hwc = output(root, aug, transform=True, workers=2)[0]
+    chw = output(root, lambda p: aug(p.to_dtype("float32", True).hwc_to_chw()))[0]
+    assert chw.dtype == np.float32
+    assert set(np.unique(hwc)) == {0, 255}
+    np.testing.assert_array_equal(hwc, np.broadcast_to(hwc[..., :1], hwc.shape))
+    np.testing.assert_array_equal(chw.transpose(1, 2, 0), hwc / 255)
+    np.testing.assert_array_equal(
+        output(root, lambda p: p.salt_and_pepper(0))[0], pixels
+    )
+
+
+def test_grid_dropout_is_regular_and_worker_independent(source):
+    root, pixels = source
+
+    def augment(p):
+        return p.to_dtype("float32", True).grid_dropout(6, ratio=0.5, fill=-1)
+
+    actual = output(root, augment, workers=0)
+    parallel = output(root, augment, transform=True, workers=2)
+    for index, (image, reference) in enumerate(zip(actual, parallel, strict=True)):
+        np.testing.assert_array_equal(image, reference)
+        mask = image[..., 0] == -1
+        np.testing.assert_array_equal(
+            image == -1, np.broadcast_to(mask[..., None], image.shape)
+        )
+        unit = mask[:6, :6]
+        assert unit.sum() == 9
+        ys, xs = np.nonzero(unit)
+        assert ys.max() - ys.min() == xs.max() - xs.min() == 2
+        np.testing.assert_array_equal(mask, np.tile(unit, (2, 3)))
+        original = np.roll(pixels, index, axis=0).astype(np.float32) / 255
+        np.testing.assert_allclose(image[~mask], original[~mask], rtol=1e-7)
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda p: p.downscale((0.0, 0.5)),
+        lambda p: p.downscale((0.5, 1.1)),
+        lambda p: p.salt_and_pepper(float("nan")),
+        lambda p: p.salt_and_pepper(0.5, salt_ratio=-0.1),
+        lambda p: p.grid_dropout(1),
+        lambda p: p.grid_dropout(4, ratio=1.0),
+    ],
+)
+def test_new_augmentations_reject_invalid_parameters(build):
+    with pytest.raises(ValueError):
+        build(rivet.Transform())
+
+
+@pytest.mark.parametrize(
+    "transform",
+    [
+        rivet.Transform().downscale((0.5, 0.5)),
+        rivet.Transform().salt_and_pepper(1),
+        rivet.Transform().grid_dropout(4),
+    ],
+)
+def test_degradations_preserve_structured_targets(source, transform):
+    _, pixels = source
+    sample = rivet.AnnotatedSample(
+        pixels,
+        boxes=[[1, 1, 6, 6]],
+        labels=[2],
+        masks=np.ones(pixels.shape[:2], dtype=np.uint8),
+        keypoints=[[[2, 2]]],
+    )
+    original = sample.to_dict()
+    result = sample.apply(transform, seed=19).to_dict()
+    assert result["image"].shape == pixels.shape
+    assert not np.array_equal(result["image"], pixels)
+    for name in ("boxes", "labels", "masks", "keypoints"):
+        np.testing.assert_array_equal(result[name], original[name])

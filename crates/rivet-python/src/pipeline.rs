@@ -882,6 +882,46 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (scale_range=(0.25, 0.5), *, down_interpolation="nearest", up_interpolation="nearest"))]
+    fn downscale(
+        &self,
+        scale_range: (f64, f64),
+        down_interpolation: &str,
+        up_interpolation: &str,
+    ) -> PyResult<Self> {
+        let config = V2Config::Downscale {
+            scale_range,
+            down_interpolation: parse_interpolation(down_interpolation)?,
+            up_interpolation: parse_interpolation(up_interpolation)?,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (amount=0.05, *, salt_ratio=0.5))]
+    fn salt_and_pepper(&self, amount: f64, salt_ratio: f64) -> PyResult<Self> {
+        let config = V2Config::SaltAndPepper { amount, salt_ratio };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (unit_size, *, ratio=0.5, fill=0.0))]
+    fn grid_dropout(&self, unit_size: usize, ratio: f64, fill: f32) -> PyResult<Self> {
+        let config = V2Config::GridDropout {
+            unit_size,
+            ratio,
+            fill,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (intensity=0.2))]
     fn shot_noise(&self, intensity: f32) -> PyResult<Self> {
         V2Config::ShotNoise { intensity }
@@ -1903,6 +1943,46 @@ impl PyImagePipeline {
     #[pyo3(signature = (mean=0.0, sigma=0.1, clip=true))]
     fn gaussian_noise(&self, mean: f64, sigma: f64, clip: bool) -> PyResult<Self> {
         let config = V2Config::GaussianNoise { mean, sigma, clip };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (scale_range=(0.25, 0.5), *, down_interpolation="nearest", up_interpolation="nearest"))]
+    fn downscale(
+        &self,
+        scale_range: (f64, f64),
+        down_interpolation: &str,
+        up_interpolation: &str,
+    ) -> PyResult<Self> {
+        let config = V2Config::Downscale {
+            scale_range,
+            down_interpolation: parse_interpolation(down_interpolation)?,
+            up_interpolation: parse_interpolation(up_interpolation)?,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (amount=0.05, *, salt_ratio=0.5))]
+    fn salt_and_pepper(&self, amount: f64, salt_ratio: f64) -> PyResult<Self> {
+        let config = V2Config::SaltAndPepper { amount, salt_ratio };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (unit_size, *, ratio=0.5, fill=0.0))]
+    fn grid_dropout(&self, unit_size: usize, ratio: f64, fill: f32) -> PyResult<Self> {
+        let config = V2Config::GridDropout {
+            unit_size,
+            ratio,
+            fill,
+        };
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

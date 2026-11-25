@@ -499,6 +499,47 @@ class Transform:
         """
         return Transform(self._inner.gaussian_noise(mean, sigma, clip))
 
+    def downscale(
+        self,
+        scale_range: tuple[float, float] = (0.25, 0.5),
+        *,
+        down_interpolation: str = "nearest",
+        up_interpolation: str = "nearest",
+    ) -> Transform:
+        """Reduce and restore the resolution of a uint8 HWC RGB image.
+
+        A single scale is sampled per image from the given range in (0, 1].
+        The output keeps the input dimensions.
+        """
+        return Transform(
+            self._inner.downscale(
+                scale_range,
+                down_interpolation=down_interpolation,
+                up_interpolation=up_interpolation,
+            )
+        )
+
+    def salt_and_pepper(
+        self, amount: float = 0.05, *, salt_ratio: float = 0.5
+    ) -> Transform:
+        """Replace each pixel with probability ``amount``, across all channels.
+
+        Of the replaced pixels, ``salt_ratio`` is the probability of white
+        (255 for uint8 or 1.0 for float32). The other replacements are black.
+        """
+        return Transform(self._inner.salt_and_pepper(amount, salt_ratio=salt_ratio))
+
+    def grid_dropout(
+        self, unit_size: int, *, ratio: float = 0.5, fill: float = 0.0
+    ) -> Transform:
+        """Fill one square per grid cell at a shared random offset.
+
+        The hole side is floor(unit_size * ratio), clamped to [1, unit_size - 1].
+        The grid starts at the image origin and partial cells are clipped.
+        Only image pixels are modified.
+        """
+        return Transform(self._inner.grid_dropout(unit_size, ratio=ratio, fill=fill))
+
     def shot_noise(self, intensity: float = 0.2) -> Transform:
         """Add Gaussian noise scaled by intensity * sqrt(max(pixel, 0) + 0.5).
 

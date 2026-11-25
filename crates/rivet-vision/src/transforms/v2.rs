@@ -43,6 +43,20 @@ pub enum V2Config {
     ShotNoise {
         intensity: f32,
     },
+    Downscale {
+        scale_range: (f64, f64),
+        down_interpolation: InterpolationMode,
+        up_interpolation: InterpolationMode,
+    },
+    SaltAndPepper {
+        amount: f64,
+        salt_ratio: f64,
+    },
+    GridDropout {
+        unit_size: usize,
+        ratio: f64,
+        fill: f32,
+    },
     Jpeg {
         quality: (u8, u8),
     },
@@ -64,6 +78,9 @@ impl V2Config {
             Self::RandomZoomOut { .. } => "RandomZoomOut",
             Self::GaussianNoise { .. } => "GaussianNoise",
             Self::ShotNoise { .. } => "ShotNoise",
+            Self::Downscale { .. } => "Downscale",
+            Self::SaltAndPepper { .. } => "SaltAndPepper",
+            Self::GridDropout { .. } => "GridDropout",
             Self::Jpeg { .. } => "JPEG",
             Self::Rgb => "RGB",
             Self::ToDtype { .. } => "ToDtype",
@@ -80,6 +97,9 @@ impl V2Config {
             Self::RandomZoomOut { .. } => 55,
             Self::GaussianNoise { .. } => 56,
             Self::ShotNoise { .. } => 60,
+            Self::Downscale { .. } => 61,
+            Self::SaltAndPepper { .. } => 62,
+            Self::GridDropout { .. } => 63,
             Self::Jpeg { .. } => 57,
             Self::Rgb => 58,
             Self::ToDtype { .. } => 59,
@@ -157,6 +177,18 @@ impl V2Config {
                 return super::noise::validate_gaussian_noise(*mean, *sigma);
             }
             Self::ShotNoise { intensity } => return super::noise::validate_shot_noise(*intensity),
+            Self::Downscale {
+                scale_range: (a, b),
+                ..
+            } => *a > 0.0 && b >= a && *b <= 1.0,
+            Self::SaltAndPepper { amount, salt_ratio } => {
+                (0.0..=1.0).contains(amount) && (0.0..=1.0).contains(salt_ratio)
+            }
+            Self::GridDropout {
+                unit_size,
+                ratio,
+                fill,
+            } => *unit_size >= 2 && *ratio > 0.0 && *ratio < 1.0 && fill.is_finite(),
             Self::Jpeg { quality: (a, b) } => *a >= 1 && b >= a && *b <= 100,
             Self::ToDtype { dtype, .. } => matches!(dtype, DType::U8 | DType::F32),
             _ => true,
@@ -359,6 +391,58 @@ impl V2Config {
             }
             Self::ShotNoise { intensity } => {
                 s.image = super::shot_noise(&s.image, *intensity, rng)?;
+            }
+            Self::Downscale {
+                scale_range: (low, high),
+                down_interpolation,
+                up_interpolation,
+            } => {
+                let s = require_u8_hwc(s, self.name())?;
+                if axis != ImageAxisOrder::Hwc || c != 3 || w == 0 || h == 0 {
+                    return Err(invalid_argument(
+                        "Downscale requires a nonempty uint8 HWC RGB image",
+                    ));
+                }
+                let width =
+                    u32::try_from(w).map_err(|_| invalid_shape("Downscale width exceeds u32"))?;
+                let height =
+                    u32::try_from(h).map_err(|_| invalid_shape("Downscale height exceeds u32"))?;
+                let scale = low + rng.next_f64() * (high - low);
+                let small_width = (f64::from(width) * scale) as u32;
+                let small_height = (f64::from(height) * scale) as u32;
+                let reduced = ResizeConfig::with_interpolation(
+                    small_width.max(1),
+                    small_height.max(1),
+                    *down_interpolation,
+                )
+                .apply(ImageSample::Decoded(s))?;
+                return ResizeConfig::with_interpolation(width, height, *up_interpolation)
+                    .apply(reduced);
+            }
+            Self::SaltAndPepper { amount, salt_ratio } => {
+                s.image = super::pixel_mask::salt_and_pepper(
+                    &s.image,
+                    axis,
+                    (h, w),
+                    *amount,
+                    *salt_ratio,
+                    rng,
+                )?;
+            }
+            Self::GridDropout {
+                unit_size,
+                ratio,
+                fill,
+            } => {
+                s.image = super::pixel_mask::grid_dropout(
+                    &s.image,
+                    axis,
+                    (h, w),
+                    *unit_size,
+                    *ratio,
+                    *fill,
+                    rng,
+                )?;
             }
             Self::Jpeg {
                 quality: (low, high),

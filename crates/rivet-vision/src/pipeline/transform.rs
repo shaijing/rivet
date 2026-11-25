@@ -54,6 +54,31 @@ impl TransformSequence {
     }
 
     /// Add signal-dependent Gaussian noise to a normalized float32 image.
+    pub fn downscale(
+        self,
+        scale_range: (f64, f64),
+        down_interpolation: InterpolationMode,
+        up_interpolation: InterpolationMode,
+    ) -> Self {
+        self.v2(crate::transforms::V2Config::Downscale {
+            scale_range,
+            down_interpolation,
+            up_interpolation,
+        })
+    }
+
+    pub fn salt_and_pepper(self, amount: f64, salt_ratio: f64) -> Self {
+        self.v2(crate::transforms::V2Config::SaltAndPepper { amount, salt_ratio })
+    }
+
+    pub fn grid_dropout(self, unit_size: usize, ratio: f64, fill: f32) -> Self {
+        self.v2(crate::transforms::V2Config::GridDropout {
+            unit_size,
+            ratio,
+            fill,
+        })
+    }
+
     pub fn shot_noise(self, intensity: f32) -> Self {
         self.v2(crate::transforms::V2Config::ShotNoise { intensity })
     }

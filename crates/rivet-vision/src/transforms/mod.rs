@@ -24,6 +24,7 @@ mod multi_crop;
 mod noise;
 mod normalize;
 mod pad;
+mod pixel_mask;
 mod resize;
 mod resized_crop;
 mod rotate;
