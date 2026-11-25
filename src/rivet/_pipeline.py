@@ -633,6 +633,26 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def grid_elastic_deform(
+        self,
+        num_grid_xy: tuple[int, int],
+        magnitude: int,
+        *,
+        interpolation: str = "bilinear",
+        fill: int = 0,
+        fill_mask: int = 0,
+    ) -> Pipeline:
+        """Warp uint8 HWC or CHW with a fixed-boundary elastic control grid.
+
+        Grid counts are in X, Y order. Magnitude is the maximum displacement
+        in pixels; the triangle foldover guard can reduce it. Zero is identity.
+        Structured masks and keypoints use the same control grid.
+        """
+        inner = self._inner.grid_elastic_deform(
+            num_grid_xy, magnitude, interpolation=interpolation, fill=fill, fill_mask=fill_mask
+        )
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def piecewise_affine(
         self,
         scale_range: tuple[float, float] = (0.03, 0.05),

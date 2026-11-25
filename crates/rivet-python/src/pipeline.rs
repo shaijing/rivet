@@ -936,6 +936,29 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (num_grid_xy,magnitude,*,interpolation="bilinear",fill=0,fill_mask=0))]
+    fn grid_elastic_deform(
+        &self,
+        num_grid_xy: (u32, u32),
+        magnitude: u32,
+        interpolation: &str,
+        fill: u8,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        let config =
+            V2Config::GridElasticDeform(rivet_vision::transforms::GridElasticDeformConfig {
+                num_grid_xy,
+                magnitude,
+                interpolation: parse_interpolation(interpolation)?,
+                fill,
+                fill_mask,
+            });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (scale_range=(0.03,0.05),nb_rows_range=(4,4),nb_cols_range=(4,4),*,absolute_scale=false,interpolation="bilinear",fill=0,fill_mask=0))]
     fn piecewise_affine(
@@ -3325,6 +3348,29 @@ impl PyImagePipeline {
         };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (num_grid_xy,magnitude,*,interpolation="bilinear",fill=0,fill_mask=0))]
+    fn grid_elastic_deform(
+        &self,
+        num_grid_xy: (u32, u32),
+        magnitude: u32,
+        interpolation: &str,
+        fill: u8,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        let config =
+            V2Config::GridElasticDeform(rivet_vision::transforms::GridElasticDeformConfig {
+                num_grid_xy,
+                magnitude,
+                interpolation: parse_interpolation(interpolation)?,
+                fill,
+                fill_mask,
+            });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

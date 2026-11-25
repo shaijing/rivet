@@ -1405,3 +1405,16 @@ def test_piecewise_affine_uses_one_map_for_semantic_mask_and_image():
     np.testing.assert_array_equal(result["image"][..., 0], result["masks"])
     assert np.isfinite(result["keypoints"]).all()
     np.testing.assert_array_equal(result["labels"], [3])
+
+
+def test_grid_elastic_deform_uses_shared_remap_for_targets():
+    mask = np.arange(1, 100, dtype=np.uint8).reshape(9, 11)
+    image = np.repeat(mask[..., None], 3, axis=-1)
+    sample = rivet.AnnotatedSample(image, masks=mask, boxes=[[0, 0, 11, 9]], labels=[3], keypoints=[[[0, 0], [6, 5]]])
+    transform = rivet.Transform().grid_elastic_deform((2, 2), 10, interpolation="nearest")
+    result = sample.apply(transform).to_dict()
+    np.testing.assert_array_equal(result["image"][..., 0], result["masks"])
+    np.testing.assert_array_equal(result["boxes"], [[0, 0, 11, 9]])
+    np.testing.assert_allclose(result["keypoints"][0, 0], [0, 0], atol=1e-6)
+    assert np.isfinite(result["keypoints"]).all()
+    np.testing.assert_array_equal(result["labels"], [3])

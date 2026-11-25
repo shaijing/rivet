@@ -2487,3 +2487,20 @@ def test_piecewise_affine_seed_identity_and_layout(source):
     assert serial[0].shape == pixels.shape and serial[0].dtype == np.uint8
     np.testing.assert_array_equal(output(root, lambda p: augment(p.hwc_to_chw()))[0],
                                   serial[0].transpose(2, 0, 1))
+
+
+def test_grid_elastic_deform_identity_edges_and_seed(source):
+    root, pixels = source
+    np.testing.assert_array_equal(output(root, lambda p: p.grid_elastic_deform((3, 2), 0))[0], pixels)
+
+    def augment(p):
+        return p.grid_elastic_deform((3, 2), 10, interpolation="nearest")
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert serial[0].shape == pixels.shape and serial[0].dtype == np.uint8
+    assert not np.array_equal(serial[0], pixels)
+    np.testing.assert_array_equal(serial[0][[0, -1]], pixels[[0, -1]])
+    np.testing.assert_array_equal(serial[0][:, [0, -1]], pixels[:, [0, -1]])
+    with pytest.raises(ValueError):
+        rivet.Transform().grid_elastic_deform((1, 3), 1)

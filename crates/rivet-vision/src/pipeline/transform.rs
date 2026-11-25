@@ -123,6 +123,11 @@ impl TransformSequence {
         ))
     }
 
+    /// Apply elastic displacements on a fixed-boundary control grid.
+    pub fn grid_elastic_deform(self, config: crate::transforms::GridElasticDeformConfig) -> Self {
+        self.v2(crate::transforms::V2Config::GridElasticDeform(config))
+    }
+
     /// Apply a seeded triangulated control-grid deformation.
     pub fn piecewise_affine(self, config: crate::transforms::PiecewiseAffineConfig) -> Self {
         self.v2(crate::transforms::V2Config::PiecewiseAffine(config))

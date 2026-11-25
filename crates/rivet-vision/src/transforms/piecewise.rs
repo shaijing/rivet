@@ -203,3 +203,50 @@ mod tests {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GridElasticDeformConfig {
+    pub num_grid_xy: (u32, u32),
+    pub magnitude: u32,
+    pub interpolation: InterpolationMode,
+    pub fill: u8,
+    pub fill_mask: i64,
+}
+
+impl GridElasticDeformConfig {
+    pub(super) fn valid(&self) -> bool {
+        [self.num_grid_xy.0, self.num_grid_xy.1]
+            .into_iter()
+            .all(|v| (2..=127).contains(&v))
+            && matches!(
+                self.interpolation,
+                InterpolationMode::Nearest | InterpolationMode::Bilinear
+            )
+    }
+
+    pub(crate) fn sample(&self, h: usize, w: usize, rng: &mut RandomStream) -> TriangleGrid {
+        let (cols, rows) = (
+            self.num_grid_xy.0 as usize + 1,
+            self.num_grid_xy.1 as usize + 1,
+        );
+        let (right, bottom) = (w.saturating_sub(1) as f64, h.saturating_sub(1) as f64);
+        let magnitude = f64::from(self.magnitude);
+        TriangleGrid::new(
+            h,
+            w,
+            rows,
+            cols,
+            |[x, y]| {
+                if x < 1e-8 || y < 1e-8 || right - x < 1e-8 || bottom - y < 1e-8 {
+                    [0.0; 2]
+                } else {
+                    [
+                        (2.0 * rng.next_f64() - 1.0) * magnitude,
+                        (2.0 * rng.next_f64() - 1.0) * magnitude,
+                    ]
+                }
+            },
+            self.magnitude == 0,
+        )
+    }
+}
