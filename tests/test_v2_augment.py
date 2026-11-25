@@ -888,3 +888,46 @@ def test_median_blur_rejects_incompatible_inputs(source):
         output(root, lambda p: p.to_dtype("float32", True).median_blur())
     with pytest.raises(ValueError, match="MedianBlur"):
         output(root, lambda p: p.hwc_to_chw().median_blur())
+
+
+@pytest.mark.parametrize("shape", [(5, 7, 3), (1, 4, 1), (1, 1, 3)])
+@pytest.mark.parametrize("floating", [False, True])
+def test_box_blur_reflects_without_repeating_edges(tmp_path, shape, floating):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.random.default_rng(27).integers(0, 256, shape, dtype=np.uint8)
+    gray = shape[-1] == 1
+    Image.fromarray(np.repeat(pixels, 3, axis=-1) if gray else pixels).save(
+        folder / "image.png"
+    )
+
+    def augment(p):
+        if gray:
+            p = p.grayscale()
+        if floating:
+            p = p.to_dtype("float32", True)
+        return p.blur((5, 5))
+
+    padded = np.pad(pixels, ((2, 2), (2, 2), (0, 0)), mode="reflect")
+    windows = np.lib.stride_tricks.sliding_window_view(padded, (5, 5), axis=(0, 1))
+    expected = windows.mean(axis=(-2, -1))
+    actual = output(tmp_path, augment, transform=True, workers=2)[0]
+    if floating:
+        assert actual.dtype == np.float32
+        np.testing.assert_allclose(actual, expected / 255, atol=1e-7)
+    else:
+        assert actual.dtype == np.uint8
+        np.testing.assert_array_equal(actual, expected.round().astype(np.uint8))
+
+
+def test_box_blur_seed_and_validation(source):
+    root, _ = source
+    serial = output(root, lambda p: p.blur())
+    parallel = output(root, lambda p: p.blur(), transform=True, workers=3)
+    np.testing.assert_array_equal(serial, parallel)
+    assert not np.array_equal(serial, output(root, lambda p: p.blur(), epoch=1))
+    for bounds in [(2, 5), (3, 4), (7, 3), (3, 129)]:
+        with pytest.raises(ValueError):
+            rivet.Transform().blur(bounds)
+    with pytest.raises(ValueError, match="Blur"):
+        output(root, lambda p: p.hwc_to_chw().blur())

@@ -50,6 +50,9 @@ pub enum V2Config {
         grid: (u32, u32),
         clip_limit: f64,
     },
+    Blur {
+        kernel_range: (u32, u32),
+    },
     MedianBlur,
     PlanckianJitter {
         temperature_range: (f64, f64),
@@ -119,6 +122,7 @@ impl V2Config {
             Self::ShotNoise { .. } => "ShotNoise",
             Self::RandomToneCurve { .. } => "RandomToneCurve",
             Self::Clahe { .. } => "CLAHE",
+            Self::Blur { .. } => "Blur",
             Self::MedianBlur => "MedianBlur",
             Self::PlanckianJitter { .. } => "PlanckianJitter",
             Self::Vignetting { .. } => "Vignetting",
@@ -149,6 +153,7 @@ impl V2Config {
             Self::ShotNoise { .. } => 60,
             Self::RandomToneCurve { .. } => 69,
             Self::Clahe { .. } => 70,
+            Self::Blur { .. } => 75,
             Self::MedianBlur => 74,
             Self::PlanckianJitter { .. } => 73,
             Self::Vignetting { .. } => 72,
@@ -174,12 +179,16 @@ impl V2Config {
                 | Self::ToDtype { .. }
                 | Self::UnsharpMask { .. }
                 | Self::LetterBox(_)
+                | Self::Blur { .. }
                 | Self::MedianBlur
                 | Self::Clahe { .. }
         )
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::Blur {
+                kernel_range: (low, high),
+            } => *low >= 3 && low <= high && *high <= 127 && low % 2 == 1 && high % 2 == 1,
             Self::MedianBlur => true,
             Self::RandomChannelPermutation { probability } => {
                 probability.is_finite() && (0.0..=1.0).contains(probability)
@@ -522,6 +531,7 @@ impl V2Config {
             }
             Self::RandomToneCurve { .. }
             | Self::Clahe { .. }
+            | Self::Blur { .. }
             | Self::MedianBlur
             | Self::PlanckianJitter { .. }
             | Self::Vignetting { .. }
@@ -532,6 +542,13 @@ impl V2Config {
                     "{} requires nonempty HWC input",
                     self.name()
                 )));
+            }
+            Self::Blur {
+                kernel_range: (low, high),
+            } => {
+                let size =
+                    low + 2 * rng.gen_range_usize(0..((high - low) / 2 + 1) as usize)? as u32;
+                s.image = super::blur::box_blur(&s.image, size as usize)?;
             }
             Self::MedianBlur => {
                 s.image = super::blur::median_blur_3x3(&s.image)?;

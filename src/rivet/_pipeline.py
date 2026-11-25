@@ -633,6 +633,14 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def blur(self, kernel_range: tuple[int, int] = (3, 7)) -> Pipeline:
+        """Average uint8 or float32 HWC pixels using a seeded square box filter.
+
+        Sample an odd size from the inclusive range (odd endpoints in 3–127).
+        Reflect neighbors at the border without repeating the edge pixel.
+        """
+        return Pipeline(self._inner.blur(kernel_range), as_numpy=self.as_numpy)
+
     def median_blur(self) -> Pipeline:
         """Apply a 3×3 median per channel to uint8 HWC grayscale or RGB.
 

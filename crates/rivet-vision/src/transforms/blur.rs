@@ -222,18 +222,6 @@ fn convolve_uniform(
 ) -> RivetResult<rivet_core::Tensor> {
     let count = taps.len() as u64;
     with_rgb_pixels(input, name, |pixels, width, height| {
-        let reflect = |index: i64, len: usize| {
-            let len = len as i64;
-            if (0..len).contains(&index) {
-                return index as usize;
-            }
-            if len <= 1 {
-                return 0;
-            }
-            let period = 2 * (len - 1);
-            let index = index.rem_euclid(period);
-            index.min(period - index) as usize
-        };
         Ok(rivet_core::Tensor::from_exact_writer::<u8, _, _>(
             [height, width, 3],
             input.device(),
@@ -242,8 +230,8 @@ fn convolve_uniform(
                     for x in 0..width {
                         let mut sums = [0u64; 3];
                         for &(dy, dx) in taps {
-                            let sy = reflect(y as i64 + dy, height);
-                            let sx = reflect(x as i64 + dx, width);
+                            let sy = reflect101(y as i64 + dy, height);
+                            let sx = reflect101(x as i64 + dx, width);
                             let offset = (sy * width + sx) * 3;
                             sums[0] += u64::from(pixels[offset]);
                             sums[1] += u64::from(pixels[offset + 1]);
@@ -347,4 +335,107 @@ pub(super) fn median_blur_3x3(input: &rivet_core::Tensor) -> RivetResult<rivet_c
             Ok(())
         })
     })?)
+}
+
+fn reflect101(index: i64, len: usize) -> usize {
+    let len = len as i64;
+    if (0..len).contains(&index) {
+        return index as usize;
+    }
+    if len <= 1 {
+        return 0;
+    }
+    let period = 2 * (len - 1);
+    let index = index.rem_euclid(period);
+    index.min(period - index) as usize
+}
+
+pub(super) fn box_blur(input: &rivet_core::Tensor, size: usize) -> RivetResult<rivet_core::Tensor> {
+    let weights = vec![1.0 / (size * size) as f64; size * size];
+    convolve_square(input, "Blur", size, &weights)
+}
+
+fn convolve_square(
+    input: &rivet_core::Tensor,
+    name: &str,
+    size: usize,
+    weights: &[f64],
+) -> RivetResult<rivet_core::Tensor> {
+    use rivet_core::{CpuStorageRef, DType};
+
+    let [height, width, channels] = *input.dims() else {
+        return Err(invalid_argument(format!("{name} expects rank-3 HWC input")));
+    };
+    if height == 0
+        || width == 0
+        || channels == 0
+        || !matches!(input.dtype(), DType::U8 | DType::F32)
+    {
+        return Err(invalid_argument(format!(
+            "{name} requires nonempty uint8 or float32 HWC input"
+        )));
+    }
+
+    let axis_offsets = |length, stride| {
+        let radius = (size / 2) as i64;
+        (0..length)
+            .flat_map(|i| {
+                (-radius..=radius).map(move |d| reflect101(i as i64 + d, length) * stride)
+            })
+            .collect::<Vec<_>>()
+    };
+    let rows = axis_offsets(height, width * channels);
+    let cols = axis_offsets(width, channels);
+    let input = input.contiguous()?;
+    Ok(input.with_cpu_storage(|storage, layout| match storage {
+        CpuStorageRef::U8(values) => write_square(
+            &input,
+            super::contiguous_values(values, layout)?,
+            &rows,
+            &cols,
+            channels,
+            size,
+            weights,
+            |sum| sum.round().clamp(0.0, 255.0) as u8,
+        ),
+        CpuStorageRef::F32(values) => write_square(
+            &input,
+            super::contiguous_values(values, layout)?,
+            &rows,
+            &cols,
+            channels,
+            size,
+            weights,
+            |sum| sum as f32,
+        ),
+        _ => unreachable!(),
+    })?)
+}
+
+fn write_square<T: rivet_core::WithDType + Into<f64>>(
+    input: &rivet_core::Tensor,
+    pixels: &[T],
+    rows: &[usize],
+    cols: &[usize],
+    channels: usize,
+    size: usize,
+    weights: &[f64],
+    finish: impl Fn(f64) -> T,
+) -> rivet_core::Result<rivet_core::Tensor> {
+    rivet_core::Tensor::from_exact_writer(input.dims(), input.device(), |out| {
+        for ys in rows.chunks_exact(size) {
+            for xs in cols.chunks_exact(size) {
+                for c in 0..channels {
+                    let mut sum = 0.0;
+                    for (&y, weights) in ys.iter().zip(weights.chunks_exact(size)) {
+                        for (&x, &weight) in xs.iter().zip(weights) {
+                            sum += pixels[y + x + c].into() * weight;
+                        }
+                    }
+                    out.write_next(finish(sum))?;
+                }
+            }
+        }
+        Ok(())
+    })
 }

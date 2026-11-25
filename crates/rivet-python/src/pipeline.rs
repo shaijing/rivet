@@ -905,6 +905,15 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (kernel_range=(3, 7)))]
+    fn blur(&self, kernel_range: (u32, u32)) -> PyResult<Self> {
+        let config = V2Config::Blur { kernel_range };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     fn median_blur(&self) -> Self {
         Self {
             inner: self.inner.clone().v2(V2Config::MedianBlur),
@@ -2108,6 +2117,15 @@ impl PyImagePipeline {
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().letterbox(config),
+        })
+    }
+
+    #[pyo3(signature = (kernel_range=(3, 7)))]
+    fn blur(&self, kernel_range: (u32, u32)) -> PyResult<Self> {
+        let config = V2Config::Blur { kernel_range };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

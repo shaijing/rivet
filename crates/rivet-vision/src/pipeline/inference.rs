@@ -306,6 +306,20 @@ pub(crate) fn infer_image_op(
                         ShapeDim::Known(config.width as usize),
                     );
                 }
+                V2Config::Blur { .. } => {
+                    if !matches!(
+                        input_state,
+                        PipelineImageState::Decoded {
+                            dtype: CoreDType::U8 | CoreDType::F32,
+                            axis_order: ImageAxisOrder::Hwc,
+                        }
+                    ) || matches!(channel_dim(input), ShapeDim::Known(0))
+                    {
+                        return Err(invalid_pipeline(
+                            "Blur requires uint8 or float32 HWC input with at least one channel",
+                        ));
+                    }
+                }
                 V2Config::PlanckianJitter { .. } => {
                     if !matches!(
                         input_state,

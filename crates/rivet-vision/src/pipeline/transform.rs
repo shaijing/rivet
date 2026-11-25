@@ -58,6 +58,11 @@ impl TransformSequence {
         self.v2(crate::transforms::V2Config::LetterBox(config))
     }
 
+    /// Apply a box filter with a seeded odd kernel width.
+    pub fn blur(self, kernel_range: (u32, u32)) -> Self {
+        self.v2(crate::transforms::V2Config::Blur { kernel_range })
+    }
+
     /// Apply a channel-wise 3×3 median filter with replicated border pixels.
     pub fn median_blur(self) -> Self {
         self.v2(crate::transforms::V2Config::MedianBlur)
