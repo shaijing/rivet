@@ -6,6 +6,8 @@ mod bbox_subset;
 pub use bbox_safe::BBoxSafeRandomCropConfig;
 pub use bbox_subset::BBoxSubsetSafeRandomCropConfig;
 mod geometry;
+mod mask_crop;
+pub use mask_crop::CropNonEmptyMaskConfig;
 mod pipeline;
 pub use annotations::{
     AtLeastOneBBoxRandomCropConfig, BoxFormat, RandomIoUCropConfig, StructuredSample,

@@ -1,3 +1,4 @@
+use super::CropNonEmptyMaskConfig;
 use super::{
     AtLeastOneBBoxRandomCropConfig, BBoxSafeRandomCropConfig, BBoxSubsetSafeRandomCropConfig,
     BoxFormat, RandomIoUCropConfig, StructuredSample,
@@ -23,6 +24,7 @@ pub enum StructuredOp {
     BBoxSafeRandomCrop(BBoxSafeRandomCropConfig),
     BBoxSubsetSafeRandomCrop(BBoxSubsetSafeRandomCropConfig),
     AtLeastOneBBoxRandomCrop(AtLeastOneBBoxRandomCropConfig),
+    CropNonEmptyMask(CropNonEmptyMaskConfig),
 }
 impl StructuredOp {
     fn name(&self) -> &'static str {
@@ -34,6 +36,7 @@ impl StructuredOp {
             Self::SanitizeKeypoints => "SanitizeKeyPoints",
             Self::Sanitize { .. } => "SanitizeBoundingBoxes",
             Self::RandomIoUCrop(_) => "RandomIoUCrop",
+            Self::CropNonEmptyMask(_) => "CropNonEmptyMaskIfExists",
             Self::BBoxSafeRandomCrop(c) if c.output.is_some() => "RandomSizedBBoxSafeCrop",
             Self::BBoxSafeRandomCrop(_) => "BBoxSafeRandomCrop",
             Self::BBoxSubsetSafeRandomCrop(_) => "BBoxSubsetSafeRandomCrop",
@@ -44,6 +47,7 @@ impl StructuredOp {
         match self {
             Self::Image(op) => validate_image(op),
             Self::RandomIoUCrop(c) => c.validate(),
+            Self::CropNonEmptyMask(c) => c.validate(),
             Self::BBoxSafeRandomCrop(c) => c.validate(),
             Self::BBoxSubsetSafeRandomCrop(c) => c.validate(),
             Self::AtLeastOneBBoxRandomCrop(c) => c.validate(),
@@ -181,6 +185,9 @@ impl StructuredPipeline {
                 StructuredOp::RandomIoUCrop(c) => sample.random_iou_crop(c, &mut rng)?,
                 StructuredOp::BBoxSubsetSafeRandomCrop(c) => {
                     sample.bbox_subset_safe_random_crop(c, &mut rng)?
+                }
+                StructuredOp::CropNonEmptyMask(c) => {
+                    sample.crop_non_empty_mask_if_exists(c, &mut rng)?
                 }
                 StructuredOp::BBoxSafeRandomCrop(c) => sample.bbox_safe_random_crop(c, &mut rng)?,
                 StructuredOp::AtLeastOneBBoxRandomCrop(c) => {

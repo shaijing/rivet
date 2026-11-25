@@ -1043,3 +1043,43 @@ def test_bbox_subset_safe_crop_selects_intact_box_and_synchronizes():
     np.testing.assert_array_equal(next(iter(fallback.execute()))["images"][0], image)
     with pytest.raises(ValueError):
         rivet.StructuredPipeline([sample]).bbox_subset_safe_random_crop((0, 1))
+
+
+@pytest.mark.parametrize("instance", [False, True])
+def test_crop_non_empty_mask_selects_eligible_corner(instance):
+    y, x = np.indices((9, 11), dtype=np.uint8)
+    image = np.stack((x, y, x + y), axis=-1)
+    mask = np.zeros((9, 11), dtype=np.int64)
+    mask[8, 10] = 7
+    mask[0, 0] = 5
+    if instance:
+        ignored = np.zeros_like(mask)
+        ignored[0, 0] = 42
+        mask = np.stack([ignored, mask])
+    sample = rivet.AnnotatedSample(image, masks=mask)
+    pipeline = rivet.StructuredPipeline([sample] * 4).crop_non_empty_mask_if_exists(
+        4, 3, ignore_values=[5], ignore_channels=[0] if instance else [],
+    ).seed(41)
+    serial = next(iter(pipeline.batch(4).execute()))
+    parallel = next(iter(pipeline.workers(3).batch(4).execute()))
+    np.testing.assert_array_equal(serial["images"], parallel["images"])
+    for actual, target in zip(serial["images"], serial["targets"], strict=True):
+        np.testing.assert_array_equal(actual, image[6:9, 7:11])
+        np.testing.assert_array_equal(target["masks"], mask[..., 6:9, 7:11])
+
+
+def test_crop_non_empty_mask_missing_and_ignored_fallback():
+    y, x = np.indices((6, 8), dtype=np.uint8)
+    image = np.stack((x, y, x + y), axis=-1)
+    missing = rivet.AnnotatedSample(image)
+    ignored = rivet.AnnotatedSample(image, masks=np.full((6, 8), 4, np.uint8))
+
+    def crop(sample):
+        return next(iter(rivet.StructuredPipeline([sample]).seed(13)
+            .crop_non_empty_mask_if_exists(4, 4, ignore_values=[4]).execute()))
+
+    a = crop(missing)
+    b = crop(ignored)
+    assert a["images"].shape == (1, 4, 4, 3)
+    np.testing.assert_array_equal(a["images"], b["images"])
+    np.testing.assert_array_equal(b["targets"][0]["masks"], 4)

@@ -10,6 +10,7 @@ use rivet_vision::api::{
     BatchMixConfig, BoxFormat, ImageAxisOrder, ImageBatch, RandomIoUCropConfig, StructuredBatch,
     StructuredLoader, StructuredOp, StructuredPipeline, StructuredSample, VideoLayout, VideoSample,
 };
+use rivet_vision::structured::CropNonEmptyMaskConfig;
 
 pub(crate) fn tensor_from_numpy(value: &Bound<'_, PyAny>) -> PyResult<Tensor> {
     macro_rules! read {
@@ -191,6 +192,26 @@ impl PyStructuredPipeline {
             subset_fraction_range,
             erosion_rate,
             aspect_ratio_range,
+        });
+        op.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().push(op),
+        })
+    }
+
+    #[pyo3(signature = (width, height, *, ignore_values=Vec::new(), ignore_channels=Vec::new()))]
+    fn crop_non_empty_mask_if_exists(
+        &self,
+        width: u32,
+        height: u32,
+        ignore_values: Vec<i64>,
+        ignore_channels: Vec<usize>,
+    ) -> PyResult<Self> {
+        let op = StructuredOp::CropNonEmptyMask(CropNonEmptyMaskConfig {
+            width,
+            height,
+            ignore_values,
+            ignore_channels,
         });
         op.validate().map_err(to_py_err)?;
         Ok(Self {

@@ -226,6 +226,24 @@ class StructuredPipeline:
             subset_fraction_range, erosion_rate, aspect_ratio_range
         ))
 
+    def crop_non_empty_mask_if_exists(
+        self,
+        width: int,
+        height: int,
+        *,
+        ignore_values: Iterable[int] = (),
+        ignore_channels: Iterable[int] = (),
+    ) -> StructuredPipeline:
+        """Crop around an eligible mask pixel, or crop uniformly without one.
+
+        Zero and ignore_values are skipped. For instance masks, ignore_channels
+        skips specified planes during sampling. Indices are zero-based.
+        """
+        return self._from_inner(self._inner.crop_non_empty_mask_if_exists(
+            _positive_integer(width, "width"), _positive_integer(height, "height"),
+            ignore_values=list(ignore_values), ignore_channels=list(ignore_channels),
+        ))
+
     def bbox_safe_random_crop(self, erosion_rate: float = 0.0) -> StructuredPipeline:
         """Sample a crop containing the union of visible boxes at zero erosion.
 
