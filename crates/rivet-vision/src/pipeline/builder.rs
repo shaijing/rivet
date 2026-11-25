@@ -176,6 +176,13 @@ impl ImagePipeline {
         ))
     }
 
+    /// Transfer low-frequency amplitudes from a seeded reference.
+    pub fn fda(self, config: crate::transforms::FdaConfig) -> Self {
+        self.v2(crate::transforms::V2Config::Fda(std::sync::Arc::new(
+            config,
+        )))
+    }
+
     /// Transfer color-distribution statistics from a seeded reference.
     pub fn pixel_distribution_adaptation(
         self,

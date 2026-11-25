@@ -635,6 +635,17 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def fda(
+        self, references: Iterable[NDArray], beta_range: tuple[float, float] = (0, 0.1)
+    ) -> Pipeline:
+        """Transfer low-frequency amplitudes while retaining the source phase.
+
+        Seeded references are resized to the input size. Accepts uint8 or
+        normalized float32 HWC with matching reference channels. Beta in
+        [0, 0.5] controls the frequency window; zero keeps the input.
+        """
+        return Pipeline(self._inner.fda(list(references), beta_range), as_numpy=self.as_numpy)
+
     def pixel_distribution_adaptation(
         self,
         references: Iterable[NDArray],

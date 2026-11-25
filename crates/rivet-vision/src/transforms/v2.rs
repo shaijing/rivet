@@ -267,6 +267,7 @@ pub enum V2Config {
         scale: bool,
     },
     SquareSymmetry(Option<SquareSymmetry>),
+    Fda(std::sync::Arc<FdaConfig>),
     PixelDistributionAdaptation(std::sync::Arc<PixelDistributionAdaptationConfig>),
     HistogramMatching(std::sync::Arc<HistogramMatchingConfig>),
     WaterRefraction(WaterRefractionConfig),
@@ -345,6 +346,7 @@ impl V2Config {
             Self::Defocus { .. } => "Defocus",
             Self::ChannelDropout(_) => "ChannelDropout",
             Self::SquareSymmetry(_) => "SquareSymmetry",
+            Self::Fda(_) => "FDA",
             Self::PixelDistributionAdaptation(_) => "PixelDistributionAdaptation",
             Self::HistogramMatching(_) => "HistogramMatching",
             Self::WaterRefraction(_) => "WaterRefraction",
@@ -435,6 +437,7 @@ impl V2Config {
             Self::Defocus { .. } => 67,
             Self::ChannelDropout(_) => 111,
             Self::SquareSymmetry(_) => 122,
+            Self::Fda(_) => 137,
             Self::PixelDistributionAdaptation(_) => 136,
             Self::HistogramMatching(_) => 135,
             Self::WaterRefraction(_) => 133,
@@ -494,6 +497,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::Fda(config) => config.valid(),
             Self::PixelDistributionAdaptation(config) => config.valid(),
             Self::HistogramMatching(config) => config.valid(),
             Self::WaterRefraction(config) => config.valid(),
@@ -1543,6 +1547,12 @@ impl V2Config {
                     s.image = s.image.permute(&order)?;
                 }
                 s.image = super::quarter_turn(&s.image, axis, turns)?;
+            }
+            Self::Fda(config) => {
+                if axis != ImageAxisOrder::Hwc {
+                    return Err(invalid_argument("FDA requires HWC input"));
+                }
+                s.image = config.apply(&s.image, rng)?;
             }
             Self::PixelDistributionAdaptation(config) => {
                 if axis != ImageAxisOrder::Hwc {

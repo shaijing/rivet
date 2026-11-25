@@ -542,6 +542,17 @@ class Transform:
             )
         )
 
+    def fda(
+        self, references: Iterable[NDArray], beta_range: tuple[float, float] = (0, 0.1)
+    ) -> Transform:
+        """Transfer low-frequency amplitudes while retaining the source phase.
+
+        Seeded references are resized to the input size. Accepts uint8 or
+        normalized float32 HWC with matching reference channels. Beta in
+        [0, 0.5] controls the frequency window; zero keeps the input.
+        """
+        return Transform(self._inner.fda(list(references), beta_range))
+
     def pixel_distribution_adaptation(
         self,
         references: Iterable[NDArray],

@@ -936,6 +936,20 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (references,beta_range=(0.0,0.1)))]
+    fn fda(&self, references: Vec<Bound<'_, PyAny>>, beta_range: (f64, f64)) -> PyResult<Self> {
+        use rivet_vision::transforms::{FdaConfig, ReferenceImages};
+        let tensors = references
+            .iter()
+            .map(crate::structured::tensor_from_numpy)
+            .collect::<PyResult<_>>()?;
+        let refs = ReferenceImages::new(tensors).map_err(to_py_err)?;
+        let config = FdaConfig::new(refs, beta_range).map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().fda(config),
+        })
+    }
+
     #[pyo3(signature = (references,blend_range=(0.25,1.0),transform_type="pca"))]
     fn pixel_distribution_adaptation(
         &self,
@@ -3474,6 +3488,20 @@ impl PyImagePipeline {
         };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (references,beta_range=(0.0,0.1)))]
+    fn fda(&self, references: Vec<Bound<'_, PyAny>>, beta_range: (f64, f64)) -> PyResult<Self> {
+        use rivet_vision::transforms::{FdaConfig, ReferenceImages};
+        let tensors = references
+            .iter()
+            .map(crate::structured::tensor_from_numpy)
+            .collect::<PyResult<_>>()?;
+        let refs = ReferenceImages::new(tensors).map_err(to_py_err)?;
+        let config = FdaConfig::new(refs, beta_range).map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().fda(config),
         })
     }
 

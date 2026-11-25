@@ -2631,3 +2631,41 @@ def test_pixel_distribution_adaptation_reference_seed_and_identity(source):
     np.testing.assert_array_equal(identity, pixels)
     with pytest.raises(ValueError):
         rivet.Transform().pixel_distribution_adaptation(references, transform_type="bad")
+
+
+def test_fda_matches_numpy_low_frequency_amplitude_replacement(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    rng = np.random.default_rng(71)
+    pixels = rng.integers(50, 205, (5, 7, 3), dtype=np.uint8)
+    reference = rng.integers(50, 205, pixels.shape, dtype=np.uint8)
+    Image.fromarray(pixels).save(folder / "image.png")
+    amp = np.fft.fft2(reference / 255, axes=(0, 1))
+    source = np.fft.fft2(pixels / 255, axes=(0, 1))
+    low = (np.abs(np.fft.fftfreq(5) * 5)[:, None] <= 1) & (np.abs(np.fft.fftfreq(7) * 7)[None, :] <= 1)
+    source[low] = np.abs(amp[low]) * np.exp(1j * np.angle(source[low]))
+    expected = np.fft.ifft2(source, axes=(0, 1)).real.clip(0, 1)
+
+    def augment(p):
+        return p.fda([reference], (0.25, 0.25))
+
+    floats = output(tmp_path, lambda p: augment(p.to_dtype("float32", True)), transform=True)[0]
+    assert floats.dtype == np.float32 and floats.shape == pixels.shape
+    np.testing.assert_allclose(floats, expected, atol=1e-7)
+    np.testing.assert_allclose(output(tmp_path, augment)[0], expected * 255, atol=0.5)
+
+
+def test_fda_reference_seed_resize_and_identity(source):
+    root, pixels = source
+    refs = [np.full((2, 3, 3), level, dtype=np.uint8) for level in [50, 100, 150, 200]]
+
+    def augment(p):
+        return p.fda(refs, (0.001, 0.001))
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(root, augment, epoch=1))
+    assert serial[0].shape == pixels.shape
+    np.testing.assert_array_equal(output(root, lambda p: p.fda(refs, (0, 0)))[0], pixels)
+    with pytest.raises(ValueError):
+        rivet.Transform().fda(refs, (0, 0.6))
