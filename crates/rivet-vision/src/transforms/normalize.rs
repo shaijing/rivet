@@ -112,8 +112,8 @@ fn write_normalize_contiguous_batch(
     Ok(())
 }
 
-// Keep the static output writer visible for RGB specialization and bounds elimination.
-#[inline(always)]
+// Compile the bulk RGB writer independently of each caller.
+#[inline(never)]
 fn write_normalize_contiguous_nhwc_to_nchw(
     values: &[u8],
     dims: &[usize; 4],

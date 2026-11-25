@@ -1918,6 +1918,30 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (num_grid_range=(3,7), line_width_range=(0.2,0.5), rotation_range=(0.0,0.0), *, fill=0.0, fill_mask=None))]
+    fn grid_mask(
+        &self,
+        num_grid_range: (u32, u32),
+        line_width_range: (f64, f64),
+        rotation_range: (f64, f64),
+        fill: f32,
+        fill_mask: Option<i64>,
+    ) -> PyResult<Self> {
+        let config = V2Config::GridMask(std::sync::Arc::new(
+            rivet_vision::transforms::GridMaskConfig {
+                num_grid_range,
+                line_width_range,
+                rotation_range,
+                fill,
+                fill_mask,
+            },
+        ));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (num_masks_x_range=(0,0), num_masks_y_range=(0,0), mask_x_length_range=None, mask_y_length_range=None, *, fill=0.0, fill_mask=None))]
     fn xy_masking(
         &self,
@@ -4025,6 +4049,30 @@ impl PyImagePipeline {
             dropout_ratio,
             fill,
         }));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (num_grid_range=(3,7), line_width_range=(0.2,0.5), rotation_range=(0.0,0.0), *, fill=0.0, fill_mask=None))]
+    fn grid_mask(
+        &self,
+        num_grid_range: (u32, u32),
+        line_width_range: (f64, f64),
+        rotation_range: (f64, f64),
+        fill: f32,
+        fill_mask: Option<i64>,
+    ) -> PyResult<Self> {
+        let config = V2Config::GridMask(std::sync::Arc::new(
+            rivet_vision::transforms::GridMaskConfig {
+                num_grid_range,
+                line_width_range,
+                rotation_range,
+                fill,
+                fill_mask,
+            },
+        ));
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

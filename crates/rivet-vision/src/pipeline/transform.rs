@@ -135,6 +135,13 @@ impl TransformSequence {
         ))
     }
 
+    /// Fill lines of a seeded rotated grid.
+    pub fn grid_mask(self, config: crate::transforms::GridMaskConfig) -> Self {
+        self.v2(crate::transforms::V2Config::GridMask(std::sync::Arc::new(
+            config,
+        )))
+    }
+
     /// Fill seeded horizontal and vertical strips.
     pub fn xy_masking(self, config: crate::transforms::XyMaskingConfig) -> Self {
         self.v2(crate::transforms::V2Config::XyMasking(std::sync::Arc::new(

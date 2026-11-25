@@ -3,7 +3,7 @@ use crate::sample::image::ImageAxisOrder;
 use rivet_core::{CpuStorageRef, DType, Tensor, WithDType};
 use rivet_data::random::RandomStream;
 
-fn apply(
+pub(super) fn apply(
     input: &Tensor,
     axis: ImageAxisOrder,
     height: usize,

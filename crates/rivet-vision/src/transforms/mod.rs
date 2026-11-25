@@ -23,6 +23,8 @@ mod erase;
 mod flare;
 mod flip;
 mod fog;
+mod grid_mask;
+pub use grid_mask::GridMaskConfig;
 mod layout;
 mod letterbox;
 mod local_color;

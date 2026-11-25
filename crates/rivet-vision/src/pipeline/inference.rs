@@ -484,6 +484,7 @@ pub(crate) fn infer_image_op(
                     }
                 }
                 V2Config::SaltAndPepper { .. }
+                | V2Config::GridMask(_)
                 | V2Config::XyMasking(_)
                 | V2Config::PixelDropout(_)
                 | V2Config::GridDropout { .. }

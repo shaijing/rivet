@@ -316,6 +316,7 @@ def test_structured_geometry_torchvision(annotated, case):
         rivet.Transform().random_zoom_out(probability=1).center_crop(24, 24),
         rivet.Transform().pixel_dropout(0.3, mask_drop_value=0),
         rivet.Transform().xy_masking((1, 2), (1, 2), (2, 3), (1, 2), fill_mask=0),
+        rivet.Transform().grid_mask(fill_mask=0),
         rivet.Transform().random_apply(1, rivet.Transform().horizontal_flip()),
     ],
 )
@@ -995,3 +996,15 @@ def test_pad_if_needed_keeps_structured_annotations_aligned(annotated):
     np.testing.assert_array_equal(
         result["masks"], np.pad(original["masks"], ((0, 0), (2, 0), (2, 0)), constant_values=7)
     )
+
+
+def test_grid_mask_semantic_fill_uses_rotated_pixels():
+    image = np.full((7, 9, 3), 120, dtype=np.uint8)
+    mask = np.full((7, 9), 3, dtype=np.int64)
+    sample = rivet.AnnotatedSample(image, masks=mask)
+    result = sample.apply(
+        rivet.Transform().grid_mask((2, 2), (0.25, 0.25), (0.3, 0.3), fill_mask=-1)
+    ).to_dict()
+    covered = result["image"][..., 0] == 0
+    assert 0 < covered.sum() < covered.size
+    np.testing.assert_array_equal(result["masks"], np.where(covered, -1, 3))

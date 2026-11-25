@@ -263,6 +263,7 @@ pub enum V2Config {
         dtype: DType,
         scale: bool,
     },
+    GridMask(std::sync::Arc<GridMaskConfig>),
 }
 impl V2Config {
     pub fn name(&self) -> &'static str {
@@ -320,6 +321,7 @@ impl V2Config {
             Self::LetterBox(_) => "LetterBox",
             Self::Defocus { .. } => "Defocus",
             Self::ChannelDropout(_) => "ChannelDropout",
+            Self::GridMask(_) => "GridMask",
             Self::XyMasking(_) => "XYMasking",
             Self::PixelDropout(_) => "PixelDropout",
             Self::CoarseDropout { .. } => "CoarseDropout",
@@ -390,6 +392,7 @@ impl V2Config {
             Self::LetterBox(_) => 66,
             Self::Defocus { .. } => 67,
             Self::ChannelDropout(_) => 111,
+            Self::GridMask(_) => 113,
             Self::XyMasking(_) => 112,
             Self::PixelDropout(_) => 110,
             Self::CoarseDropout { .. } => 68,
@@ -436,6 +439,7 @@ impl V2Config {
 
             Self::LongestMaxSize(config) => config.valid(),
             Self::PadIfNeeded(config) => config.valid(),
+            Self::GridMask(config) => config.valid(),
             Self::XyMasking(config) => config.valid(),
             Self::ChannelDropout(config) => config.valid(),
             Self::PixelDropout(config) => config.valid(),
@@ -1433,6 +1437,9 @@ impl V2Config {
             }
             Self::ChannelDropout(config) => {
                 s.image = config.apply(&s.image, axis, rng)?;
+            }
+            Self::GridMask(config) => {
+                s.image = config.apply(&s.image, axis, config.sample(h, w, rng)?)?;
             }
             Self::XyMasking(config) => {
                 s.image = config.apply(&s.image, axis, &config.sample(h, w, rng)?)?;

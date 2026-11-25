@@ -2250,3 +2250,37 @@ def test_pad_if_needed_minimum_divisors_layout_and_seed(source):
     assert not np.array_equal(serial, output(root, random, epoch=1))
     with pytest.raises(ValueError):
         rivet.Transform().pad_if_needed(pad_height_divisor=0)
+
+
+def test_grid_mask_rotation_layout_and_seed(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.full((11, 15, 3), 120, dtype=np.uint8)
+    for i in range(4):
+        Image.fromarray(pixels).save(folder / f"{i}.png")
+
+    def fixed(p, angle=0):
+        return p.grid_mask((2, 2), (0.25, 0.25), (angle, angle), fill=7)
+
+    y, x = np.mgrid[-5:6, -7:8]
+    u, v = x * 2 / 11, y * 2 / 11
+    covered = (abs(u - np.round(u)) < 0.125) | (abs(v - np.round(v)) < 0.125)
+    image = output(tmp_path, fixed, transform=True)[0]
+    assert image.shape == pixels.shape and image.dtype == np.uint8
+    np.testing.assert_array_equal(image[..., 0], np.where(covered, 7, 120))
+    rotated = output(tmp_path, lambda p: fixed(p, np.pi / 6))[0]
+    assert not np.array_equal(rotated, image)
+    chw = output(tmp_path, lambda p: fixed(p.hwc_to_chw(), np.pi / 6))[0]
+    np.testing.assert_array_equal(chw, rotated.transpose(2, 0, 1))
+    floats = output(tmp_path, lambda p: p.to_dtype("float32", True).grid_mask(
+        (2, 2), (0.25, 0.25), fill=0.25
+    ))[0]
+    assert floats.dtype == np.float32
+    np.testing.assert_allclose(floats[..., 0], np.where(covered, 0.25, 120 / 255), atol=1e-7)
+    serial = output(tmp_path, lambda p: p.grid_mask())
+    np.testing.assert_array_equal(
+        serial, output(tmp_path, lambda p: p.grid_mask(), transform=True, workers=3)
+    )
+    np.testing.assert_array_equal(
+        output(tmp_path, lambda p: p.grid_mask(line_width_range=(0, 0)))[0], pixels
+    )

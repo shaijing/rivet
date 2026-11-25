@@ -1294,6 +1294,26 @@ class Pipeline:
         eligible = None if channels_to_drop is None else list(channels_to_drop)
         return Pipeline(self._inner.channel_dropout(eligible, dropout_ratio, fill), as_numpy=self.as_numpy)
 
+    def grid_mask(
+        self,
+        num_grid_range: tuple[int, int] = (3, 7),
+        line_width_range: tuple[float, float] = (0.2, 0.5),
+        rotation_range: tuple[float, float] = (0, 0),
+        *,
+        fill: float = 0,
+        fill_mask: int | None = None,
+    ) -> Pipeline:
+        """Fill rotated grid lines on uint8 or float32 HWC or CHW images.
+
+        The shorter side defines the grid period. Width is the fraction of
+        each period covered by a line. Rotation is in radians about the
+        image center. Structured masks can share the covered region.
+        """
+        inner = self._inner.grid_mask(
+            num_grid_range, line_width_range, rotation_range, fill=fill, fill_mask=fill_mask
+        )
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def xy_masking(
         self,
         num_masks_x_range: tuple[int, int] = (0, 0),

@@ -636,6 +636,11 @@ pub(super) fn apply(
             }
             Ok(s)
         }
+        ImageOp::V2(V2Config::GridMask(config)) => {
+            let mask = config.sample(h, w, rng)?;
+            s.image = config.apply(&s.image, s.axis_order, mask)?;
+            apply_occlusion(s, h, w, config.fill_mask, |y, x| mask.covers(y, x))
+        }
         ImageOp::V2(V2Config::XyMasking(config)) => {
             let mask = config.sample(h, w, rng)?;
             s.image = config.apply(&s.image, s.axis_order, &mask)?;
