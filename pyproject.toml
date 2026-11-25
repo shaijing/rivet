@@ -25,6 +25,9 @@ dependencies = [
     "pyarrow>=18.0.0",
 ]
 
+[project.scripts]
+rivet = "rivet._cli:main"
+
 [project.urls]
 Repository = "https://github.com/shaijing/rivet"
 Issues = "https://github.com/shaijing/rivet/issues"

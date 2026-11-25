@@ -273,3 +273,44 @@ def test_torchvision_download_preserves_native_root(
         (False, False),
         (False, True),
     ]
+
+
+def test_list_datasets_includes_completed_downloads_and_lance(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    cache = tmp_path / "rivet" / "datasets"
+    assert rivet.list_datasets() == []
+
+    source = "https://example.test/data.parquet"
+    requests = serve(monkeypatch, b"file")
+    raw = download_dataset(source)
+    index = cache / "manifests"
+    index.mkdir()
+    (index / "import.json").write_text(
+        json.dumps({"datasets": {"named": {"path": str(raw), "source": source}}})
+    )
+    derived = cache / "derived" / "lance" / "converted" / "snapshot"
+    (derived / "train.lance").mkdir(parents=True)
+    (derived / "dataset.json").write_text(
+        json.dumps({"format_version": 1, "splits": {"train": {"path": "train.lance"}}})
+    )
+    local = cache / "local" / "lance" / "single.lance"
+    (local / "_versions").mkdir(parents=True)
+    pending = cache / "hf" / ".download-in-progress"
+    (pending / "data").mkdir(parents=True)
+    (pending / "artifact").write_text("data")
+    incomplete = cache / "git" / "missing"
+    incomplete.mkdir(parents=True)
+    (incomplete / "artifact").write_text("data")
+
+    entries = rivet.vision.list_datasets(cache)
+    assert [(entry["name"], entry["kind"], entry["path"]) for entry in entries] == [
+        ("converted", "derived", derived),
+        ("named", "download", raw),
+        ("single.lance", "local", local),
+    ]
+    assert entries[0]["splits"] == ["train"]
+    assert entries[1]["provider"] == "http"
+    assert entries[1]["source"] == source
+    assert requests == [source]

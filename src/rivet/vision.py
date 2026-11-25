@@ -18,7 +18,7 @@ from ._datasets import (
     scan_image_folder,
     scan_lance,
 )
-from ._download import download_dataset
+from ._download import download_dataset, list_datasets
 from ._io import (
     hf_arrow_files,
     load_hf_arrow_files,
@@ -60,6 +60,7 @@ __all__ = [
     "dataset",
     "download_dataset",
     "hf_arrow_files",
+    "list_datasets",
     "load_dataset",
     "load_hf_arrow_files",
     "load_hf_image_batch",

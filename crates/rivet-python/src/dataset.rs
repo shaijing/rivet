@@ -356,3 +356,24 @@ pub(crate) fn _convert_torch_images(
     })
     .map_err(to_py_err)
 }
+
+#[pyfunction]
+pub(crate) fn _list_datasets(py: Python<'_>, cache_dir: PathBuf) -> PyResult<Vec<Py<PyDict>>> {
+    let entries = py
+        .detach(move || rivet_data::dataset::list_datasets(cache_dir))
+        .map_err(to_py_err)?;
+    entries
+        .into_iter()
+        .map(|entry| {
+            let result = PyDict::new(py);
+            result.set_item("name", entry.name)?;
+            result.set_item("path", entry.path)?;
+            result.set_item("kind", entry.kind)?;
+            result.set_item("provider", entry.provider)?;
+            result.set_item("source", entry.source)?;
+            result.set_item("revision", entry.revision)?;
+            result.set_item("splits", entry.splits)?;
+            Ok(result.unbind())
+        })
+        .collect()
+}

@@ -52,6 +52,43 @@ contents contain a Lance dataset or split bundle. It recognizes
 other formats, use the path returned by `download_dataset()` with the reader
 for that format.
 
+### List cached datasets
+
+`rivet.list_datasets()` inventories completed downloads, derived Lance
+datasets and local Lance datasets under the XDG cache. Pass `cache_dir`
+to scan a different root. The scan reads cache metadata and works offline.
+
+```python
+import rivet
+
+for item in rivet.list_datasets():
+    print(item["name"], item["kind"], item["path"], item["splits"])
+```
+
+Each cached variant has its own entry. A download's source and revision
+are included when an import manifest records them.
+
+### Use the command line
+
+The wheel installs a `rivet` command. Build and install it in the target
+Python environment.
+
+```bash
+maturin build --release -j 12
+python -m pip install /path/to/rivet.whl
+
+rivet list
+rivet list --json
+rivet download hf:SetFit/sst5 --format lance
+rivet download torch:CIFAR10 --format lance --offline
+```
+
+`rivet list` prints one row per dataset name, preferring Lance datasets and
+extracted directories. Use `--all` to inspect every cache entry and `--json`
+when consuming the output in scripts.
+Both commands accept `--cache-dir`. Run `rivet download --help` for
+revision, archive extraction, and split selection options.
+
 ### Download torchvision datasets
 
 With torchvision installed, use `torch:<class-name>` to download original

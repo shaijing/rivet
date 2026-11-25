@@ -24,6 +24,14 @@ def _dataset_cache() -> Path:
     return base / "rivet" / "datasets"
 
 
+def list_datasets(cache_dir: str | Path | None = None) -> list[dict]:
+    """List downloaded, derived Lance, and local Lance datasets in the cache."""
+    from ._rivet import _list_datasets
+
+    root = _dataset_cache() if cache_dir is None else Path(cache_dir).expanduser()
+    return _list_datasets(root)
+
+
 def _is_remote(source: str | Path) -> bool:
     return isinstance(source, str) and source.startswith(
         ("hf:", "git:", "github:", "torch:", "http://", "https://")
@@ -259,6 +267,12 @@ def _download_raw(
             _download_torch(location, payload)
         else:
             artifact = _download_http(location, payload, extract)
+        if provider == "hf":
+            (staging / "dataset-name").write_text(location, encoding="utf-8")
+        elif provider in {"git", "http"}:
+            name = PurePosixPath(urlsplit(location).path).name.removesuffix(".git")
+            if name:
+                (staging / "dataset-name").write_text(name, encoding="utf-8")
         (staging / "artifact").write_text(
             str(artifact.relative_to(staging)), encoding="utf-8"
         )

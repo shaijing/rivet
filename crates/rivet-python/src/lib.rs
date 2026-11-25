@@ -36,5 +36,6 @@ fn _rivet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dataset::_convert_imagefolder_lance, m)?)?;
     #[cfg(feature = "lance")]
     m.add_function(wrap_pyfunction!(dataset::_convert_torch_images, m)?)?;
+    m.add_function(wrap_pyfunction!(dataset::_list_datasets, m)?)?;
     Ok(())
 }

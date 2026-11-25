@@ -1,5 +1,6 @@
 pub mod arrow;
 pub mod bundle;
+pub mod catalog;
 pub mod manifest;
 pub mod memory;
 pub mod source;
@@ -8,6 +9,7 @@ pub mod source;
 pub mod lance;
 
 pub use bundle::{DatasetBundle, DatasetLoadResult};
+pub use catalog::{DatasetEntry, list_datasets};
 pub use manifest::{
     ClassLabelFeature, DatasetManifest, Feature, ImageFeature, ImageRepresentation,
     LEGACY_MANIFEST_FILE_NAME, MANIFEST_FILE_NAME, SplitManifest, manifest_path,
