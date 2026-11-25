@@ -2,7 +2,9 @@
 //! fast path. All instance fields share the first dimension.
 mod annotations;
 mod bbox_safe;
+mod bbox_subset;
 pub use bbox_safe::BBoxSafeRandomCropConfig;
+pub use bbox_subset::BBoxSubsetSafeRandomCropConfig;
 mod geometry;
 mod pipeline;
 pub use annotations::{

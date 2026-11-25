@@ -1008,3 +1008,38 @@ def test_grid_mask_semantic_fill_uses_rotated_pixels():
     covered = result["image"][..., 0] == 0
     assert 0 < covered.sum() < covered.size
     np.testing.assert_array_equal(result["masks"], np.where(covered, -1, 3))
+
+
+def test_bbox_subset_safe_crop_selects_intact_box_and_synchronizes():
+    h, w = 12, 24
+    y, x = np.indices((h, w), dtype=np.uint8)
+    image = np.stack((x, y, x + y), axis=-1)
+    original = np.array([[1, 2, 4, 6], [20, 5, 23, 9]], dtype=np.float32)
+    points = np.array([[[2, 3]], [[21, 7]]], dtype=np.float32)
+    masks = np.stack([(x < 4) & (y < 6), (x >= 20) & (y >= 5)]).astype(np.uint8)
+    sample = rivet.AnnotatedSample(image, boxes=original, labels=[0, 1], masks=masks, keypoints=points)
+    pipeline = rivet.StructuredPipeline([sample] * 9).bbox_subset_safe_random_crop(
+        (0.5, 0.5), aspect_ratio_range=(1, 1)
+    ).seed(31)
+    seen = set()
+    for a, b in zip(pipeline.execute(), pipeline.workers(3).execute(), strict=True):
+        actual = a["images"][0]
+        np.testing.assert_array_equal(actual, b["images"][0])
+        top, left = int(actual[0, 0, 1]), int(actual[0, 0, 0])
+        oh, ow = actual.shape[:2]
+        assert oh == ow
+        target = a["targets"][0]
+        labels = target["labels"]
+        np.testing.assert_array_equal(labels, b["targets"][0]["labels"])
+        assert labels.shape == (1,)
+        seen.add(int(labels[0]))
+        np.testing.assert_array_equal(target["boxes"], original[labels] - [left, top, left, top])
+        np.testing.assert_array_equal(target["masks"], masks[labels, top:top + oh, left:left + ow])
+        np.testing.assert_array_equal(target["keypoints"], points[labels] - [left, top])
+    assert seen == {0, 1}
+    fallback = rivet.StructuredPipeline([sample]).bbox_subset_safe_random_crop(
+        (1, 1), aspect_ratio_range=(30, 31)
+    )
+    np.testing.assert_array_equal(next(iter(fallback.execute()))["images"][0], image)
+    with pytest.raises(ValueError):
+        rivet.StructuredPipeline([sample]).bbox_subset_safe_random_crop((0, 1))

@@ -209,6 +209,23 @@ class StructuredPipeline:
         """Remove invalid boxes and corresponding labels, masks and keypoints."""
         return self._from_inner(self._inner.sanitize_bounding_boxes(min_size, min_area))
 
+    def bbox_subset_safe_random_crop(
+        self,
+        subset_fraction_range: tuple[float, float] = (0.5, 1.0),
+        erosion_rate: float = 0.0,
+        aspect_ratio_range: tuple[float, float] = (0.5, 2.0),
+    ) -> StructuredPipeline:
+        """Crop around a seeded subset of visible boxes.
+
+        At zero erosion the selected boxes fit completely. Other boxes
+        are clipped or removed with their associated annotations. Aspect
+        is height divided by width. If no feasible integer crop exists,
+        keep the full image. Empty samples use the all-box crop fallback.
+        """
+        return self._from_inner(self._inner.bbox_subset_safe_random_crop(
+            subset_fraction_range, erosion_rate, aspect_ratio_range
+        ))
+
     def bbox_safe_random_crop(self, erosion_rate: float = 0.0) -> StructuredPipeline:
         """Sample a crop containing the union of visible boxes at zero erosion.
 

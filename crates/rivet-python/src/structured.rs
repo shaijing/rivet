@@ -6,9 +6,9 @@ use numpy::{PyArrayDyn, PyArrayMethods};
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 use rivet_core::{Device, Tensor};
 use rivet_vision::api::{
-    AtLeastOneBBoxRandomCropConfig, BBoxSafeRandomCropConfig, BatchMixConfig, BoxFormat,
-    ImageAxisOrder, ImageBatch, RandomIoUCropConfig, StructuredBatch, StructuredLoader,
-    StructuredOp, StructuredPipeline, StructuredSample, VideoLayout, VideoSample,
+    AtLeastOneBBoxRandomCropConfig, BBoxSafeRandomCropConfig, BBoxSubsetSafeRandomCropConfig,
+    BatchMixConfig, BoxFormat, ImageAxisOrder, ImageBatch, RandomIoUCropConfig, StructuredBatch,
+    StructuredLoader, StructuredOp, StructuredPipeline, StructuredSample, VideoLayout, VideoSample,
 };
 
 pub(crate) fn tensor_from_numpy(value: &Bound<'_, PyAny>) -> PyResult<Tensor> {
@@ -180,6 +180,24 @@ impl PyStructuredPipeline {
             inner: self.inner.clone().push(op),
         })
     }
+    #[pyo3(signature = (subset_fraction_range=(0.5,1.0), erosion_rate=0.0, aspect_ratio_range=(0.5,2.0)))]
+    fn bbox_subset_safe_random_crop(
+        &self,
+        subset_fraction_range: (f64, f64),
+        erosion_rate: f64,
+        aspect_ratio_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let op = StructuredOp::BBoxSubsetSafeRandomCrop(BBoxSubsetSafeRandomCropConfig {
+            subset_fraction_range,
+            erosion_rate,
+            aspect_ratio_range,
+        });
+        op.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().push(op),
+        })
+    }
+
     #[pyo3(signature = (erosion_rate=0.0))]
     fn bbox_safe_random_crop(&self, erosion_rate: f64) -> PyResult<Self> {
         let op = StructuredOp::BBoxSafeRandomCrop(BBoxSafeRandomCropConfig {
