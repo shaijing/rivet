@@ -976,3 +976,55 @@ def test_advanced_blur_seed_and_validation(source):
             rivet.Transform().advanced_blur(**params)
     with pytest.raises(ValueError, match="AdvancedBlur"):
         output(root, lambda p: p.hwc_to_chw().advanced_blur())
+
+
+@pytest.mark.parametrize("floating", [False, True])
+def test_stochastic_convolution_channel_sharing_and_identity(tmp_path, floating):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    gray = np.random.default_rng(83).integers(64, 192, (8, 9), dtype=np.uint8)
+    pixels = np.repeat(gray[..., None], 3, axis=-1)
+    Image.fromarray(pixels).save(folder / "image.png")
+
+    def apply(strength, per_channel=False):
+        def augment(p):
+            if floating:
+                p = p.to_dtype("float32", True)
+            return p.stochastic_convolution((3, 3), (strength, strength), per_channel=per_channel)
+
+        return output(tmp_path, augment, transform=True, workers=2)[0]
+
+    identity = apply(0)
+    shared = apply(0.35)
+    independent = apply(0.35, per_channel=True)
+    if floating:
+        assert identity.dtype == shared.dtype == independent.dtype == np.float32
+        np.testing.assert_allclose(identity, pixels / 255, atol=1e-7)
+        assert 0 <= independent.min() <= independent.max() <= 1
+    else:
+        assert identity.dtype == shared.dtype == independent.dtype == np.uint8
+        np.testing.assert_array_equal(identity, pixels)
+    np.testing.assert_array_equal(shared[..., 0], shared[..., 1])
+    assert not np.array_equal(identity, shared)
+    assert not np.array_equal(independent[..., 0], independent[..., 1])
+
+
+def test_stochastic_convolution_seed_and_padding(source):
+    root, _ = source
+
+    def augment(p, padding="reflect"):
+        return p.stochastic_convolution((3, 3), (0.25, 0.25), padding_mode=padding)
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(root, augment, epoch=1))
+    for padding in ["constant", "edge", "symmetric"]:
+        alternate = output(root, lambda p: augment(p, padding))
+        for a, b in zip(serial, alternate):
+            np.testing.assert_array_equal(a[1:-1, 1:-1], b[1:-1, 1:-1])
+        assert not np.array_equal(serial, alternate)
+    for bounds in [(-0.1, 1), (1, 0), (0, float("inf"))]:
+        with pytest.raises(ValueError):
+            rivet.Transform().stochastic_convolution(strength_range=bounds)
+    with pytest.raises(ValueError, match="StochasticConvolution"):
+        output(root, lambda p: augment(p.hwc_to_chw()))

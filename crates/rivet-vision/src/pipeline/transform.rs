@@ -58,6 +58,22 @@ impl TransformSequence {
         self.v2(crate::transforms::V2Config::LetterBox(config))
     }
 
+    /// Apply a seeded Gaussian perturbation of the identity kernel.
+    pub fn stochastic_convolution(
+        self,
+        kernel_range: (u32, u32),
+        strength_range: (f32, f32),
+        per_channel: bool,
+        padding_mode: crate::transforms::PaddingMode,
+    ) -> Self {
+        self.v2(crate::transforms::V2Config::StochasticConvolution {
+            kernel_range,
+            strength_range,
+            per_channel,
+            padding_mode,
+        })
+    }
+
     /// Apply a seeded, rotated generalized Gaussian blur.
     #[allow(clippy::too_many_arguments)]
     pub fn advanced_blur(

@@ -60,6 +60,12 @@ pub enum V2Config {
         grid: (u32, u32),
         clip_limit: f64,
     },
+    StochasticConvolution {
+        kernel_range: (u32, u32),
+        strength_range: (f32, f32),
+        per_channel: bool,
+        padding_mode: PaddingMode,
+    },
     AdvancedBlur(std::sync::Arc<AdvancedBlurConfig>),
     Blur {
         kernel_range: (u32, u32),
@@ -133,6 +139,7 @@ impl V2Config {
             Self::ShotNoise { .. } => "ShotNoise",
             Self::RandomToneCurve { .. } => "RandomToneCurve",
             Self::Clahe { .. } => "CLAHE",
+            Self::StochasticConvolution { .. } => "StochasticConvolution",
             Self::AdvancedBlur(_) => "AdvancedBlur",
             Self::Blur { .. } => "Blur",
             Self::MedianBlur => "MedianBlur",
@@ -165,6 +172,7 @@ impl V2Config {
             Self::ShotNoise { .. } => 60,
             Self::RandomToneCurve { .. } => 69,
             Self::Clahe { .. } => 70,
+            Self::StochasticConvolution { .. } => 77,
             Self::AdvancedBlur(_) => 76,
             Self::Blur { .. } => 75,
             Self::MedianBlur => 74,
@@ -198,6 +206,20 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::StochasticConvolution {
+                kernel_range,
+                strength_range: (low, high),
+                ..
+            } => {
+                Self::Blur {
+                    kernel_range: *kernel_range,
+                }
+                .validate()
+                .is_ok()
+                    && *low >= 0.0
+                    && low <= high
+                    && high.is_finite()
+            }
             Self::AdvancedBlur(config) => {
                 let AdvancedBlurConfig {
                     kernel_range,
@@ -566,6 +588,7 @@ impl V2Config {
             }
             Self::RandomToneCurve { .. }
             | Self::Clahe { .. }
+            | Self::StochasticConvolution { .. }
             | Self::AdvancedBlur(_)
             | Self::Blur { .. }
             | Self::MedianBlur
@@ -609,6 +632,25 @@ impl V2Config {
                     angle,
                     beta,
                     *noise_range,
+                    rng,
+                )?;
+            }
+            Self::StochasticConvolution {
+                kernel_range: (low, high),
+                strength_range,
+                per_channel,
+                padding_mode,
+            } => {
+                let size =
+                    low + 2 * rng.gen_range_usize(0..((high - low) / 2 + 1) as usize)? as u32;
+                let (low, high) = (f64::from(strength_range.0), f64::from(strength_range.1));
+                let strength = low + rng.next_f64() * (high - low);
+                s.image = super::blur::stochastic_convolution(
+                    &s.image,
+                    size as usize,
+                    strength,
+                    *per_channel,
+                    *padding_mode,
                     rng,
                 )?;
             }

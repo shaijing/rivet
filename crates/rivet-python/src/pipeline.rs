@@ -905,6 +905,26 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (kernel_range=(3, 7), strength_range=(0.0, 1.0), *, per_channel=false, padding_mode="reflect"))]
+    fn stochastic_convolution(
+        &self,
+        kernel_range: (u32, u32),
+        strength_range: (f32, f32),
+        per_channel: bool,
+        padding_mode: &str,
+    ) -> PyResult<Self> {
+        let config = V2Config::StochasticConvolution {
+            kernel_range,
+            strength_range,
+            per_channel,
+            padding_mode: parse_padding_mode(padding_mode)?,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (kernel_range=(3, 7), sigma_x_range=(0.2, 1.0), sigma_y_range=(0.2, 1.0), rotate_range=(-90.0, 90.0), beta_range=(0.5, 8.0), noise_range=(0.75, 1.25)))]
     fn advanced_blur(
@@ -2144,6 +2164,26 @@ impl PyImagePipeline {
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().letterbox(config),
+        })
+    }
+
+    #[pyo3(signature = (kernel_range=(3, 7), strength_range=(0.0, 1.0), *, per_channel=false, padding_mode="reflect"))]
+    fn stochastic_convolution(
+        &self,
+        kernel_range: (u32, u32),
+        strength_range: (f32, f32),
+        per_channel: bool,
+        padding_mode: &str,
+    ) -> PyResult<Self> {
+        let config = V2Config::StochasticConvolution {
+            kernel_range,
+            strength_range,
+            per_channel,
+            padding_mode: parse_padding_mode(padding_mode)?,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

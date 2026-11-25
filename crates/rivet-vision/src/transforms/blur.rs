@@ -352,17 +352,11 @@ fn reflect101(index: i64, len: usize) -> usize {
 
 pub(super) fn box_blur(input: &rivet_core::Tensor, size: usize) -> RivetResult<rivet_core::Tensor> {
     let weights = vec![1.0 / (size * size) as f64; size * size];
-    convolve_square(input, "Blur", size, &weights)
+    convolve_square(input, "Blur", size, &weights, super::PaddingMode::Reflect)
 }
 
-fn convolve_square(
-    input: &rivet_core::Tensor,
-    name: &str,
-    size: usize,
-    weights: &[f64],
-) -> RivetResult<rivet_core::Tensor> {
-    use rivet_core::{CpuStorageRef, DType};
-
+fn convolution_shape(input: &rivet_core::Tensor, name: &str) -> RivetResult<[usize; 3]> {
+    use rivet_core::DType;
     let [height, width, channels] = *input.dims() else {
         return Err(invalid_argument(format!("{name} expects rank-3 HWC input")));
     };
@@ -375,12 +369,38 @@ fn convolve_square(
             "{name} requires nonempty uint8 or float32 HWC input"
         )));
     }
+    Ok([height, width, channels])
+}
 
+fn convolve_square(
+    input: &rivet_core::Tensor,
+    name: &str,
+    size: usize,
+    weights: &[f64],
+    padding: super::PaddingMode,
+) -> RivetResult<rivet_core::Tensor> {
+    use rivet_core::CpuStorageRef;
+
+    let [height, width, channels] = convolution_shape(input, name)?;
+    let coordinate = |i: i64, length: usize| {
+        use super::PaddingMode::*;
+        let len = length as i64;
+        match padding {
+            Reflect => Some(reflect101(i, length)),
+            Edge => Some(i.clamp(0, len - 1) as usize),
+            Symmetric => {
+                let index = i.rem_euclid(2 * len);
+                Some(index.min(2 * len - 1 - index) as usize)
+            }
+            Constant => (0..len).contains(&i).then_some(i as usize),
+        }
+    };
     let axis_offsets = |length, stride| {
         let radius = (size / 2) as i64;
         (0..length)
             .flat_map(|i| {
-                (-radius..=radius).map(move |d| reflect101(i as i64 + d, length) * stride)
+                (-radius..=radius)
+                    .map(move |d| coordinate(i as i64 + d, length).map(|offset| offset * stride))
             })
             .collect::<Vec<_>>()
     };
@@ -406,7 +426,13 @@ fn convolve_square(
             channels,
             size,
             weights,
-            |sum| sum as f32,
+            |sum| {
+                if name == "StochasticConvolution" {
+                    sum.clamp(0.0, 1.0) as f32
+                } else {
+                    sum as f32
+                }
+            },
         ),
         _ => unreachable!(),
     })?)
@@ -415,21 +441,31 @@ fn convolve_square(
 fn write_square<T: rivet_core::WithDType + Into<f64>>(
     input: &rivet_core::Tensor,
     pixels: &[T],
-    rows: &[usize],
-    cols: &[usize],
+    rows: &[Option<usize>],
+    cols: &[Option<usize>],
     channels: usize,
     size: usize,
     weights: &[f64],
     finish: impl Fn(f64) -> T,
 ) -> rivet_core::Result<rivet_core::Tensor> {
+    let area = size * size;
+    let channel_stride = if weights.len() == area { 0 } else { area };
     rivet_core::Tensor::from_exact_writer(input.dims(), input.device(), |out| {
         for ys in rows.chunks_exact(size) {
             for xs in cols.chunks_exact(size) {
                 for c in 0..channels {
                     let mut sum = 0.0;
-                    for (&y, weights) in ys.iter().zip(weights.chunks_exact(size)) {
-                        for (&x, &weight) in xs.iter().zip(weights) {
-                            sum += pixels[y + x + c].into() * weight;
+                    let start = c * channel_stride;
+                    for (&y, weights) in ys
+                        .iter()
+                        .zip(weights[start..start + area].chunks_exact(size))
+                    {
+                        if let Some(y) = y {
+                            for (&x, &weight) in xs.iter().zip(weights) {
+                                if let Some(x) = x {
+                                    sum += pixels[y + x + c].into() * weight;
+                                }
+                            }
                         }
                     }
                     out.write_next(finish(sum))?;
@@ -470,5 +506,47 @@ pub(super) fn advanced_blur(
     for weight in &mut weights {
         *weight /= sum;
     }
-    convolve_square(input, "AdvancedBlur", size, &weights)
+    convolve_square(
+        input,
+        "AdvancedBlur",
+        size,
+        &weights,
+        super::PaddingMode::Reflect,
+    )
+}
+
+pub(super) fn stochastic_convolution(
+    input: &rivet_core::Tensor,
+    size: usize,
+    strength: f64,
+    per_channel: bool,
+    padding: super::PaddingMode,
+    rng: &mut rivet_data::random::RandomStream,
+) -> RivetResult<rivet_core::Tensor> {
+    let name = "StochasticConvolution";
+    let [_, _, channels] = convolution_shape(input, name)?;
+    if strength == 0.0 {
+        return Ok(input.clone());
+    }
+    let area = size * size;
+    let kernel_count = if per_channel { channels } else { 1 };
+    let count = area
+        .checked_mul(kernel_count)
+        .ok_or_else(|| invalid_argument("convolution kernel is too large"))?;
+    let mut weights = Vec::new();
+    weights
+        .try_reserve_exact(count)
+        .map_err(|_| invalid_argument("convolution kernel is too large"))?;
+    let sigma = strength / size as f64;
+    for _ in 0..count.div_ceil(2) {
+        let (a, b) = super::noise::normal_pair(rng);
+        weights.push(a * sigma);
+        if weights.len() < count {
+            weights.push(b * sigma);
+        }
+    }
+    for kernel in weights.chunks_exact_mut(area) {
+        kernel[area / 2] += 1.0;
+    }
+    convolve_square(input, name, size, &weights, padding)
 }

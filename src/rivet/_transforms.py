@@ -523,6 +523,26 @@ class Transform:
             )
         )
 
+    def stochastic_convolution(
+        self,
+        kernel_range: tuple[int, int] = (3, 7),
+        strength_range: tuple[float, float] = (0.0, 1.0),
+        *,
+        per_channel: bool = False,
+        padding_mode: str = "reflect",
+    ) -> Transform:
+        """Apply an identity kernel plus Gaussian tap noise to uint8 or float32 HWC.
+
+        The sampled strength divided by the kernel width is the noise standard
+        deviation. Kernels are shared across channels by default. Padding modes
+        are constant (zero), edge, reflect, and symmetric. Float32 inputs use
+        the normalized [0, 1] range. Zero strength gives exact identity.
+        """
+        inner = self._inner.stochastic_convolution(
+            kernel_range, strength_range, per_channel=per_channel, padding_mode=padding_mode
+        )
+        return Transform(inner)
+
     def advanced_blur(
         self,
         kernel_range: tuple[int, int] = (3, 7),
