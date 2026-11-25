@@ -109,6 +109,7 @@ pub enum V2Config {
     },
     RandomSunFlare(std::sync::Arc<RandomSunFlareConfig>),
     HueSaturationValue(std::sync::Arc<[(f64, f64); 3]>),
+    Dithering(DitheringConfig),
     RingingOvershoot {
         blur_range: (u32, u32),
         cutoff_range: (f64, f64),
@@ -267,6 +268,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::RandomSunFlare(_) => "RandomSunFlare",
             Self::HueSaturationValue(_) => "HueSaturationValue",
+            Self::Dithering(_) => "Dithering",
             Self::RingingOvershoot { .. } => "RingingOvershoot",
             Self::Enhance { .. } => "Enhance",
             Self::Emboss { .. } => "Emboss",
@@ -329,6 +331,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => 82,
             Self::RandomSunFlare(_) => 88,
             Self::HueSaturationValue(_) => 99,
+            Self::Dithering(_) => 107,
             Self::RingingOvershoot { .. } => 106,
             Self::Enhance { .. } => 105,
             Self::Emboss { .. } => 104,
@@ -375,6 +378,9 @@ impl V2Config {
         }
     }
     pub fn is_random(&self) -> bool {
+        if let Self::Dithering(config) = self {
+            return matches!(config.method, DitherMethod::Random { .. });
+        }
         !matches!(
             self,
             Self::PermuteChannels(_)
@@ -389,6 +395,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::Dithering(config) => config.valid(),
             Self::RingingOvershoot {
                 blur_range: (lo, hi),
                 cutoff_range: (min, max),
@@ -922,6 +929,7 @@ impl V2Config {
             | Self::MultiplicativeNoise { .. }
             | Self::RandomSunFlare(_)
             | Self::HueSaturationValue(_)
+            | Self::Dithering(_)
             | Self::RingingOvershoot { .. }
             | Self::Enhance { .. }
             | Self::Emboss { .. }
@@ -1185,6 +1193,9 @@ impl V2Config {
                     *lo as usize + 2 * rng.gen_range_usize(0..((hi - lo) / 2 + 1) as usize)?;
                 let cutoff = min + rng.next_f64() * (max - min);
                 s.image = super::blur::ringing_overshoot(&s.image, size, cutoff)?;
+            }
+            Self::Dithering(config) => {
+                s.image = config.apply(&s.image, rng)?;
             }
             Self::FancyPca { alpha } => {
                 s.image = super::pca::fancy_pca(&s.image, *alpha, rng)?;

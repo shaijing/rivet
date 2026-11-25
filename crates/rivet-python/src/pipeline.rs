@@ -1077,6 +1077,67 @@ impl PyTransform {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (method="error_diffusion", n_colors=2, color_mode="grayscale", error_diffusion_algorithm="floyd_steinberg", bayer_matrix_size=4, serpentine=false, noise_range=(-0.5,0.5)))]
+    fn dithering(
+        &self,
+        method: &str,
+        n_colors: u16,
+        color_mode: &str,
+        error_diffusion_algorithm: &str,
+        bayer_matrix_size: u8,
+        serpentine: bool,
+        noise_range: (f64, f64),
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{DiffusionAlgorithm, DitherMethod, DitheringConfig};
+        let grayscale = match color_mode {
+            "grayscale" => true,
+            "per_channel" => false,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "color_mode must be grayscale or per_channel",
+                ));
+            }
+        };
+        let method = match method {
+            "random" => DitherMethod::Random { noise_range },
+            "ordered" => DitherMethod::Ordered {
+                size: bayer_matrix_size,
+            },
+            "error_diffusion" => {
+                let algorithm = match error_diffusion_algorithm {
+                    "floyd_steinberg" => DiffusionAlgorithm::FloydSteinberg,
+                    "jarvis" => DiffusionAlgorithm::Jarvis,
+                    "stucki" => DiffusionAlgorithm::Stucki,
+                    "atkinson" => DiffusionAlgorithm::Atkinson,
+                    "burkes" => DiffusionAlgorithm::Burkes,
+                    "sierra" => DiffusionAlgorithm::Sierra,
+                    "sierra_2row" => DiffusionAlgorithm::Sierra2Row,
+                    "sierra_lite" => DiffusionAlgorithm::SierraLite,
+                    _ => return Err(PyValueError::new_err("unknown error diffusion algorithm")),
+                };
+                DitherMethod::ErrorDiffusion {
+                    algorithm,
+                    serpentine,
+                }
+            }
+            _ => {
+                return Err(PyValueError::new_err(
+                    "method must be random, ordered or error_diffusion",
+                ));
+            }
+        };
+        let config = V2Config::Dithering(DitheringConfig {
+            method,
+            n_colors,
+            grayscale,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (blur_range=(7,15), cutoff_range=(std::f64::consts::FRAC_PI_4,std::f64::consts::FRAC_PI_2)))]
     fn ringing_overshoot(
         &self,
@@ -2947,6 +3008,67 @@ impl PyImagePipeline {
             sat_shift_range,
             val_shift_range,
         ]));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (method="error_diffusion", n_colors=2, color_mode="grayscale", error_diffusion_algorithm="floyd_steinberg", bayer_matrix_size=4, serpentine=false, noise_range=(-0.5,0.5)))]
+    fn dithering(
+        &self,
+        method: &str,
+        n_colors: u16,
+        color_mode: &str,
+        error_diffusion_algorithm: &str,
+        bayer_matrix_size: u8,
+        serpentine: bool,
+        noise_range: (f64, f64),
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{DiffusionAlgorithm, DitherMethod, DitheringConfig};
+        let grayscale = match color_mode {
+            "grayscale" => true,
+            "per_channel" => false,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "color_mode must be grayscale or per_channel",
+                ));
+            }
+        };
+        let method = match method {
+            "random" => DitherMethod::Random { noise_range },
+            "ordered" => DitherMethod::Ordered {
+                size: bayer_matrix_size,
+            },
+            "error_diffusion" => {
+                let algorithm = match error_diffusion_algorithm {
+                    "floyd_steinberg" => DiffusionAlgorithm::FloydSteinberg,
+                    "jarvis" => DiffusionAlgorithm::Jarvis,
+                    "stucki" => DiffusionAlgorithm::Stucki,
+                    "atkinson" => DiffusionAlgorithm::Atkinson,
+                    "burkes" => DiffusionAlgorithm::Burkes,
+                    "sierra" => DiffusionAlgorithm::Sierra,
+                    "sierra_2row" => DiffusionAlgorithm::Sierra2Row,
+                    "sierra_lite" => DiffusionAlgorithm::SierraLite,
+                    _ => return Err(PyValueError::new_err("unknown error diffusion algorithm")),
+                };
+                DitherMethod::ErrorDiffusion {
+                    algorithm,
+                    serpentine,
+                }
+            }
+            _ => {
+                return Err(PyValueError::new_err(
+                    "method must be random, ordered or error_diffusion",
+                ));
+            }
+        };
+        let config = V2Config::Dithering(DitheringConfig {
+            method,
+            n_colors,
+            grayscale,
+        });
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

@@ -176,6 +176,11 @@ impl ImagePipeline {
         ))
     }
 
+    /// Apply palette quantization with the configured dithering method.
+    pub fn dithering(self, config: crate::transforms::DitheringConfig) -> Self {
+        self.v2(crate::transforms::V2Config::Dithering(config))
+    }
+
     /// Apply a radial sinc filter to simulate ringing at edges.
     pub fn ringing_overshoot(self, blur_range: (u32, u32), cutoff_range: (f64, f64)) -> Self {
         self.v2(crate::transforms::V2Config::RingingOvershoot {

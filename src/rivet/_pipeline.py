@@ -755,6 +755,28 @@ class Pipeline:
         )
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def dithering(
+        self,
+        method: str = "error_diffusion",
+        n_colors: int = 2,
+        color_mode: str = "grayscale",
+        error_diffusion_algorithm: str = "floyd_steinberg",
+        bayer_matrix_size: int = 4,
+        serpentine: bool = False,
+        noise_range: tuple[float, float] = (-0.5, 0.5),
+    ) -> Pipeline:
+        """Quantize uint8 or normalized float32 HWC to 2–256 levels per channel.
+
+        Ordered uses a Bayer threshold, random adds seeded noise in palette
+        step units, and error_diffusion propagates quantization residuals.
+        Grayscale repeats dithered luma across the input channels.
+        """
+        inner = self._inner.dithering(
+            method, n_colors, color_mode, error_diffusion_algorithm,
+            bayer_matrix_size, serpentine, noise_range,
+        )
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def ringing_overshoot(
         self,
         blur_range: tuple[int, int] = (7, 15),

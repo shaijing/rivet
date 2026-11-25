@@ -1995,3 +1995,58 @@ def test_ringing_overshoot_preserves_single_pixel(tmp_path):
     actual = output(tmp_path, lambda p: p.grayscale().ringing_overshoot())[0]
     assert actual.shape == (1, 1, 1)
     np.testing.assert_array_equal(actual, 120)
+
+
+def test_dithering_ordered_bayer_and_float_levels(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    Image.fromarray(np.full((4, 4, 3), 128, dtype=np.uint8)).save(folder / "image.png")
+
+    def ordered(p):
+        return p.dithering("ordered", bayer_matrix_size=2)
+
+    actual = output(tmp_path, ordered, transform=True)[0]
+    expected = np.tile([[0, 255], [255, 0]], (2, 2))
+    assert actual.dtype == np.uint8 and actual.shape == (4, 4, 3)
+    np.testing.assert_array_equal(actual[..., 0], expected)
+    np.testing.assert_array_equal(actual[..., 0], actual[..., 2])
+    floats = output(tmp_path, lambda p: ordered(p.grayscale().to_dtype("float32", True)))[0]
+    assert floats.shape == (4, 4, 1) and floats.dtype == np.float32
+    np.testing.assert_array_equal(floats[..., 0], expected / 255)
+
+
+@pytest.mark.parametrize("serpentine", [False, True])
+def test_dithering_floyd_steinberg_reference(source, serpentine):
+    root, pixels = source
+    data = pixels.astype(float) / 255
+    height, width, _ = data.shape
+    expected = np.empty_like(pixels)
+    for y in range(height):
+        direction = -1 if serpentine and y % 2 else 1
+        columns = range(width) if direction == 1 else range(width - 1, -1, -1)
+        for x in columns:
+            level = (data[y, x] >= 0.5).astype(float)
+            expected[y, x] = level * 255
+            error = data[y, x] - level
+            for dx, dy, weight in [(1, 0, 7), (-1, 1, 3), (0, 1, 5), (1, 1, 1)]:
+                nx, ny = x + direction * dx, y + dy
+                if 0 <= nx < width and ny < height:
+                    data[ny, nx] += error * weight / 16
+    actual = output(root, lambda p: p.dithering(color_mode="per_channel", serpentine=serpentine))[0]
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_dithering_random_seed_and_validation(source):
+    root, _ = source
+
+    def augment(p):
+        return p.dithering("random", 4, "per_channel")
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(root, augment, epoch=1))
+    assert set(np.unique(serial)) <= {0, 85, 170, 255}
+    with pytest.raises(ValueError):
+        rivet.Transform().dithering("ordered", bayer_matrix_size=3)
+    with pytest.raises(ValueError, match="Dithering"):
+        output(root, lambda p: p.hwc_to_chw().dithering())
