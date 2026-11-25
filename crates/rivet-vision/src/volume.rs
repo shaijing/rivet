@@ -226,3 +226,194 @@ impl IntoVolumeFloat for i64 {
         self as f64
     }
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pad3DConfig {
+    /// Front/back, top/bottom, left/right.
+    pub padding: [usize; 6],
+    pub fill: Vec<f32>,
+    pub fill_mask: i64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PadIfNeeded3DConfig {
+    pub min_zyx: Option<[usize; 3]>,
+    pub pad_divisor_zyx: Option<[usize; 3]>,
+    pub random_position: bool,
+    pub fill: Vec<f32>,
+    pub fill_mask: i64,
+}
+
+impl VolumeSample {
+    pub fn pad_if_needed(
+        self,
+        config: &PadIfNeeded3DConfig,
+        rng: &mut rivet_data::random::RandomStream,
+    ) -> RivetResult<Self> {
+        let shape = self.spatial_shape()?;
+        if config.min_zyx.is_none() && config.pad_divisor_zyx.is_none()
+            || config.min_zyx.is_some_and(|s| s.contains(&0))
+            || config.pad_divisor_zyx.is_some_and(|s| s.contains(&0))
+        {
+            return Err(invalid_argument(
+                "PadIfNeeded3D requires positive minimum axes or divisors",
+            ));
+        }
+        let mins = config.min_zyx.unwrap_or([1; 3]);
+        let divisors = config.pad_divisor_zyx.unwrap_or([1; 3]);
+        let mut padding = [0; 6];
+        for i in 0..3 {
+            let size = shape[i].max(mins[i]);
+            let output = size
+                .div_ceil(divisors[i])
+                .checked_mul(divisors[i])
+                .ok_or_else(|| invalid_shape("PadIfNeeded3D axis overflow"))?;
+            let extra = output - shape[i];
+            let before = if config.random_position && extra > 0 {
+                let end = extra
+                    .checked_add(1)
+                    .ok_or_else(|| invalid_shape("PadIfNeeded3D axis overflow"))?;
+                rng.gen_range_usize(0..end)?
+            } else {
+                extra / 2
+            };
+            padding[i * 2] = before;
+            padding[i * 2 + 1] = extra - before;
+        }
+        self.pad(&Pad3DConfig {
+            padding,
+            fill: config.fill.clone(),
+            fill_mask: config.fill_mask,
+        })
+    }
+
+    pub fn pad(mut self, config: &Pad3DConfig) -> RivetResult<Self> {
+        self.validate()?;
+        let old = self.spatial_shape()?;
+        let channels = self.volume.dims().get(3).copied().unwrap_or(1);
+        if (config.fill.len() != 1 && config.fill.len() != channels)
+            || config.fill.iter().any(|v| !v.is_finite())
+        {
+            return Err(invalid_argument(
+                "Pad3D fill requires a finite scalar or one value per channel",
+            ));
+        }
+        if config.padding == [0; 6] {
+            return Ok(self);
+        }
+        let before = [config.padding[0], config.padding[2], config.padding[4]];
+        let after = [config.padding[1], config.padding[3], config.padding[5]];
+        let mut new = [0; 3];
+        for i in 0..3 {
+            new[i] = old[i]
+                .checked_add(before[i])
+                .and_then(|n| n.checked_add(after[i]))
+                .ok_or_else(|| invalid_shape("Pad3D axis overflow"))?;
+        }
+        self.volume = pad_tensor(&self.volume, old, new, before, &config.fill, None)?;
+        if let Some(mask) = &self.mask {
+            if mask.dtype() == DType::U8 && u8::try_from(config.fill_mask).is_err() {
+                return Err(invalid_argument(
+                    "Pad3D uint8 mask fill must be in [0, 255]",
+                ));
+            }
+            self.mask = Some(pad_tensor(
+                mask,
+                old,
+                new,
+                before,
+                &[],
+                Some(config.fill_mask),
+            )?);
+        }
+        if let Some(points) = &self.keypoints {
+            let delta = [before[2] as f64, before[1] as f64, before[0] as f64];
+            let coords = points.to_vec::<f32>()?;
+            self.keypoints = Some(Tensor::from_exact_iter(
+                coords
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &v)| (f64::from(v) + delta[i % 3]) as f32),
+                points.dims(),
+                points.device(),
+            )?);
+        }
+        Ok(self)
+    }
+}
+
+fn pad_tensor(
+    input: &Tensor,
+    old: [usize; 3],
+    new: [usize; 3],
+    before: [usize; 3],
+    fill: &[f32],
+    mask_fill: Option<i64>,
+) -> RivetResult<Tensor> {
+    let channels = input.dims().get(3).copied().unwrap_or(1);
+    let mut shape = new.to_vec();
+    if input.rank() == 4 {
+        shape.push(channels);
+    }
+    let input = input.contiguous()?;
+    Ok(input.with_cpu_storage(|storage, layout| {
+        let start = layout.start_offset();
+        let fill_index = |c| if fill.len() == 1 { 0 } else { c };
+        macro_rules! run {
+            ($values:expr,$value:expr) => {{
+                let value = $value;
+                let fill: Vec<_> = (0..channels).map(value).collect();
+                write_pad(
+                    shape.as_slice(),
+                    input.device(),
+                    &$values[start..],
+                    &fill,
+                    old,
+                    new,
+                    before,
+                )
+            }};
+        }
+        match storage {
+            CpuStorageRef::U8(v) => run!(v, |c| mask_fill
+                .map_or_else(|| fill[fill_index(c)].round() as u8, |v| v as u8)),
+            CpuStorageRef::F32(v) => run!(v, |c| fill[fill_index(c)]),
+            CpuStorageRef::I64(v) => run!(v, |_| mask_fill.expect("validated int64 mask")),
+            _ => unreachable!("validated padding dtype"),
+        }
+    })?)
+}
+
+fn write_pad<T: WithDType>(
+    shape: &[usize],
+    device: &rivet_core::Device,
+    pixels: &[T],
+    fill: &[T],
+    [d, h, w]: [usize; 3],
+    [nd, nh, nw]: [usize; 3],
+    [z0, y0, x0]: [usize; 3],
+) -> rivet_core::Result<Tensor> {
+    let c = fill.len();
+    let source_row = w * c;
+    Tensor::from_exact_writer(shape, device, |out| {
+        for z in 0..nd {
+            for y in 0..nh {
+                if (z0..z0 + d).contains(&z) && (y0..y0 + h).contains(&y) {
+                    for _ in 0..x0 {
+                        out.extend_from_slice(fill)?;
+                    }
+                    let first = ((z - z0) * h + y - y0) * source_row;
+                    out.extend_from_slice(&pixels[first..first + source_row])?;
+                    for _ in x0 + w..nw {
+                        out.extend_from_slice(fill)?;
+                    }
+                } else {
+                    for _ in 0..nw {
+                        out.extend_from_slice(fill)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    })
+}

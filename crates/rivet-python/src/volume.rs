@@ -1,6 +1,8 @@
 use crate::{error::to_py_err, numpy::tensor_to_numpy, structured::tensor_from_numpy};
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
-use rivet_vision::volume::{Resize3DConfig, VolumeInterpolation, VolumeSample};
+use rivet_vision::volume::{
+    Pad3DConfig, PadIfNeeded3DConfig, Resize3DConfig, VolumeInterpolation, VolumeSample,
+};
 
 #[pyclass(name = "_VolumeSample")]
 pub(crate) struct PyVolumeSample {
@@ -45,6 +47,58 @@ impl PyVolumeSample {
                 size,
                 interpolation,
             })
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
+    #[pyo3(signature=(padding,fill,fill_mask=0))]
+    fn pad3d(&self, padding: [usize; 6], fill: Vec<f32>, fill_mask: i64) -> PyResult<Self> {
+        let inner = self
+            .inner
+            .clone()
+            .pad(&Pad3DConfig {
+                padding,
+                fill,
+                fill_mask,
+            })
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature=(min_zyx,pad_divisor_zyx,position,fill,fill_mask=0,seed=0))]
+    fn pad_if_needed3d(
+        &self,
+        min_zyx: Option<[usize; 3]>,
+        pad_divisor_zyx: Option<[usize; 3]>,
+        position: &str,
+        fill: Vec<f32>,
+        fill_mask: i64,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let random_position = match position {
+            "center" => false,
+            "random" => true,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "PadIfNeeded3D position must be center or random",
+                ));
+            }
+        };
+        let mut rng = rivet_vision::RandomStream::from_seed(seed);
+        let inner = self
+            .inner
+            .clone()
+            .pad_if_needed(
+                &PadIfNeeded3DConfig {
+                    min_zyx,
+                    pad_divisor_zyx,
+                    random_position,
+                    fill,
+                    fill_mask,
+                },
+                &mut rng,
+            )
             .map_err(to_py_err)?;
         Ok(Self { inner })
     }
