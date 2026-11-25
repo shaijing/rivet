@@ -1370,3 +1370,30 @@ def test_plasma_light_fields_preserve_layout_and_seed(tmp_path, shadow):
     floats = output(tmp_path, lambda p: augment(p.grayscale().to_dtype("float32", True)))
     assert floats[0].shape == (12, 17, 1) and floats[0].dtype == np.float32
     np.testing.assert_allclose(floats[0][..., 0] * 255, result[..., 0], atol=0.51)
+
+
+def test_random_shadow_roi_transmission_and_seed(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.full((31, 32, 3), 160, dtype=np.uint8)
+    for i in range(4):
+        Image.fromarray(pixels).save(folder / f"{i}.png")
+
+    def darken(p, intensity=0.5):
+        return p.random_shadow((0, 0.5, 1, 1), (3, 3), 5, (intensity, intensity))
+
+    serial = output(tmp_path, darken)
+    np.testing.assert_array_equal(serial, output(tmp_path, darken, transform=True, workers=3))
+    assert not np.array_equal(serial, output(tmp_path, darken, epoch=1))
+    image = serial[0]
+    assert image.dtype == np.uint8 and image.shape == pixels.shape
+    np.testing.assert_array_equal(image[:15], pixels[:15])
+    np.testing.assert_array_equal(image[..., 0], image[..., 1])
+    assert set(np.unique(image)) <= {160, 80, 40, 20}
+    assert np.min(image) < 80
+    np.testing.assert_array_equal(output(tmp_path, lambda p: darken(p, 0))[0], pixels)
+    gray = output(tmp_path, lambda p: darken(p.grayscale().to_dtype("float32", True)))[0]
+    assert gray.shape == (31, 32, 1) and gray.dtype == np.float32
+    np.testing.assert_allclose(gray[..., 0] * 255, image[..., 0], atol=1e-5)
+    with pytest.raises(ValueError):
+        rivet.Transform().random_shadow(shadow_roi=(0, 1, 1, 0))

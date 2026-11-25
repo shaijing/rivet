@@ -987,6 +987,28 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (shadow_roi=(0.0, 0.5, 1.0, 1.0), num_shadows_range=(1, 2), shadow_dimension=5, shadow_intensity_range=(0.5, 0.5)))]
+    fn random_shadow(
+        &self,
+        shadow_roi: (f64, f64, f64, f64),
+        num_shadows_range: (u32, u32),
+        shadow_dimension: u32,
+        shadow_intensity_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let config = V2Config::RandomShadow(std::sync::Arc::new(
+            rivet_vision::transforms::RandomShadowConfig {
+                shadow_roi,
+                num_shadows_range,
+                shadow_dimension,
+                shadow_intensity_range,
+            },
+        ));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (shadow_intensity_range=(0.3, 0.7), plasma_size=256, roughness=3.0))]
     fn plasma_shadow(
         &self,
@@ -2465,6 +2487,28 @@ impl PyImagePipeline {
             per_channel,
             elementwise,
         };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (shadow_roi=(0.0, 0.5, 1.0, 1.0), num_shadows_range=(1, 2), shadow_dimension=5, shadow_intensity_range=(0.5, 0.5)))]
+    fn random_shadow(
+        &self,
+        shadow_roi: (f64, f64, f64, f64),
+        num_shadows_range: (u32, u32),
+        shadow_dimension: u32,
+        shadow_intensity_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let config = V2Config::RandomShadow(std::sync::Arc::new(
+            rivet_vision::transforms::RandomShadowConfig {
+                shadow_roi,
+                num_shadows_range,
+                shadow_dimension,
+                shadow_intensity_range,
+            },
+        ));
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

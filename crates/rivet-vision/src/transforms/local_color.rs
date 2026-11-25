@@ -479,3 +479,61 @@ pub(super) fn apply_plasma(
         affine(((upper * (1.0 - fy) + lower * fy - min) / span).clamp(0.0, 1.0))
     })
 }
+
+pub(super) fn random_shadow(
+    input: &Tensor,
+    config: &super::RandomShadowConfig,
+    rng: &mut RandomStream,
+) -> RivetResult<Tensor> {
+    let (min, max) = config.num_shadows_range;
+    let (low, high) = config.shadow_intensity_range;
+    let count = rng.gen_range_usize(min as usize..max as usize + 1)?;
+    let (x0, y0, x1, y1) = config.shadow_roi;
+    let mut shadows = Vec::with_capacity(count);
+    if high > 0.0 {
+        for _ in 0..count {
+            let gain = 1.0 - (low + rng.next_f64() * (high - low));
+            let mut vertices: Vec<_> = (0..config.shadow_dimension)
+                .map(|_| {
+                    (
+                        x0 + rng.next_f64() * (x1 - x0),
+                        y0 + rng.next_f64() * (y1 - y0),
+                    )
+                })
+                .collect();
+            let (cx, cy) = vertices
+                .iter()
+                .fold((0.0, 0.0), |(cx, cy), &(x, y)| (cx + x, cy + y));
+            let count = f64::from(config.shadow_dimension);
+            let (cx, cy) = (cx / count, cy / count);
+            vertices.sort_by(|&(ax, ay), &(bx, by)| {
+                (ay - cy)
+                    .atan2(ax - cx)
+                    .total_cmp(&(by - cy).atan2(bx - cx))
+            });
+            let edges = vertices
+                .iter()
+                .zip(vertices.iter().cycle().skip(1))
+                .filter_map(|(&(ax, ay), &(bx, by))| {
+                    (ay != by).then(|| (ax, ay, by, (bx - ax) / (by - ay)))
+                })
+                .collect::<Vec<_>>();
+            shadows.push((gain, edges));
+        }
+    }
+    apply_light_field(input, "RandomShadow", shadows.is_empty(), |x, y| {
+        if x < x0 || y < y0 || x > x1 || y > y1 {
+            return (1.0, 0.0);
+        }
+        let mut gain = 1.0;
+        for (transmission, edges) in &shadows {
+            let inside = edges.iter().fold(false, |inside, &(ax, ay, by, slope)| {
+                inside ^ (((ay > y) != (by > y)) && x < ax + (y - ay) * slope)
+            });
+            if inside {
+                gain *= transmission;
+            }
+        }
+        (gain, 0.0)
+    })
+}

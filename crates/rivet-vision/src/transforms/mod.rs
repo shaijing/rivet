@@ -270,7 +270,9 @@ mod tests {
 }
 
 mod v2;
-pub use v2::{AdvancedBlurConfig, IlluminationEffect, IlluminationMode, V2Config};
+pub use v2::{
+    AdvancedBlurConfig, IlluminationEffect, IlluminationMode, RandomShadowConfig, V2Config,
+};
 
 mod v2_jpeg;
 mod v2_numeric;

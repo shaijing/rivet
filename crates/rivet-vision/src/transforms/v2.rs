@@ -26,6 +26,14 @@ pub enum IlluminationEffect {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct RandomShadowConfig {
+    pub shadow_roi: (f64, f64, f64, f64),
+    pub num_shadows_range: (u32, u32),
+    pub shadow_dimension: u32,
+    pub shadow_intensity_range: (f64, f64),
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum V2Config {
     PermuteChannels(Vec<usize>),
     RandomChannelPermutation {
@@ -80,6 +88,7 @@ pub enum V2Config {
         per_channel: bool,
         elementwise: bool,
     },
+    RandomShadow(std::sync::Arc<RandomShadowConfig>),
     PlasmaShadow {
         shadow_intensity_range: (f64, f64),
         plasma_size: u32,
@@ -195,6 +204,7 @@ impl V2Config {
             Self::Clahe { .. } => "CLAHE",
             Self::AdditiveNoise(_) => "AdditiveNoise",
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
+            Self::RandomShadow(_) => "RandomShadow",
             Self::PlasmaShadow { .. } => "PlasmaShadow",
             Self::PlasmaBrightnessContrast { .. } => "PlasmaBrightnessContrast",
             Self::Illumination { .. } => "Illumination",
@@ -237,6 +247,7 @@ impl V2Config {
             Self::Clahe { .. } => 70,
             Self::AdditiveNoise(_) => 83,
             Self::MultiplicativeNoise { .. } => 82,
+            Self::RandomShadow(_) => 87,
             Self::PlasmaShadow { .. } => 85,
             Self::PlasmaBrightnessContrast { .. } => 86,
             Self::Illumination { .. } => 84,
@@ -278,6 +289,23 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::RandomShadow(config) => {
+                let (x0, y0, x1, y1) = config.shadow_roi;
+                let (min, max) = config.num_shadows_range;
+                let (low, high) = config.shadow_intensity_range;
+                x0 >= 0.0
+                    && x0 < x1
+                    && x1 <= 1.0
+                    && y0 >= 0.0
+                    && y0 < y1
+                    && y1 <= 1.0
+                    && min <= max
+                    && max <= 64
+                    && (3..=64).contains(&config.shadow_dimension)
+                    && low >= 0.0
+                    && low <= high
+                    && high <= 1.0
+            }
             Self::PlasmaBrightnessContrast {
                 brightness_range,
                 contrast_range,
@@ -727,6 +755,7 @@ impl V2Config {
             | Self::Clahe { .. }
             | Self::AdditiveNoise(_)
             | Self::MultiplicativeNoise { .. }
+            | Self::RandomShadow(_)
             | Self::PlasmaShadow { .. }
             | Self::PlasmaBrightnessContrast { .. }
             | Self::Illumination { .. }
@@ -908,6 +937,9 @@ impl V2Config {
                     rng,
                     |t| (1.0 + t * contrast, t * (brightness - 0.5 * contrast)),
                 )?;
+            }
+            Self::RandomShadow(config) => {
+                s.image = super::local_color::random_shadow(&s.image, config, rng)?;
             }
             Self::MedianBlur => {
                 s.image = super::blur::median_blur_3x3(&s.image)?;

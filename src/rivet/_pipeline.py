@@ -682,6 +682,23 @@ class Pipeline:
         )
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def random_shadow(
+        self,
+        shadow_roi: tuple[float, float, float, float] = (0, 0.5, 1, 1),
+        num_shadows_range: tuple[int, int] = (1, 2),
+        shadow_dimension: int = 5,
+        shadow_intensity_range: tuple[float, float] = (0.5, 0.5),
+    ) -> Pipeline:
+        """Darken random polygons in a normalized ROI on uint8 or float32 HWC.
+
+        The ROI is (left, top, right, bottom). A polygon transmits one minus
+        its sampled intensity. Transmittance multiplies where shadows overlap.
+        """
+        inner = self._inner.random_shadow(
+            shadow_roi, num_shadows_range, shadow_dimension, shadow_intensity_range
+        )
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def plasma_shadow(
         self, shadow_intensity_range: tuple[float, float] = (0.3, 0.7),
         plasma_size: int = 256, roughness: float = 3.0,

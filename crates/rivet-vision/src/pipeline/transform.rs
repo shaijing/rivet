@@ -86,6 +86,13 @@ impl TransformSequence {
         })
     }
 
+    /// Darken seeded polygonal regions of the image.
+    pub fn random_shadow(self, config: crate::transforms::RandomShadowConfig) -> Self {
+        self.v2(crate::transforms::V2Config::RandomShadow(
+            std::sync::Arc::new(config),
+        ))
+    }
+
     /// Apply a seeded plasma light field.
     pub fn plasma_shadow(
         self,

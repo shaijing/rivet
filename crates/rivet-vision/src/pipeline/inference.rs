@@ -311,6 +311,7 @@ pub(crate) fn infer_image_op(
                 | V2Config::StochasticConvolution { .. }
                 | V2Config::ZoomBlur { .. }
                 | V2Config::GlassBlur { .. }
+                | V2Config::RandomShadow(_)
                 | V2Config::PlasmaShadow { .. }
                 | V2Config::PlasmaBrightnessContrast { .. }
                 | V2Config::Illumination { .. }
