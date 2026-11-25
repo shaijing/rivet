@@ -337,6 +337,8 @@ pub(crate) fn infer_image_op(
                 | V2Config::RandomSunFlare(..)
                 | V2Config::LensFlare(..)
                 | V2Config::RandomRain(..)
+                | V2Config::RandomFog(..)
+                | V2Config::AtmosphericFog(..)
                 | V2Config::Spatter(..)
                 | V2Config::RandomGravel(..)
                 | V2Config::RandomSnow(..) => {

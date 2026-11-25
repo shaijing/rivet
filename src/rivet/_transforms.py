@@ -605,6 +605,28 @@ class Transform:
         inner = self._inner.lens_flare(flare_roi, num_ghosts_range, intensity_range, num_rays_range, bloom_range)
         return Transform(inner)
 
+    def random_fog(
+        self, fog_coef_range: tuple[float, float] = (0.3, 1.0), alpha_coef: float = 0.08
+    ) -> Transform:
+        """Blend seeded soft white fog patches into uint8 or float32 HWC RGB.
+
+        Both coefficients are in [0, 1]. Zero intensity or opacity is identity.
+        """
+        return Transform(self._inner.random_fog(fog_coef_range, alpha_coef))
+
+    def atmospheric_fog(
+        self,
+        density_range: tuple[float, float] = (1.0, 3.0),
+        fog_color: tuple[int, int, int] = (200, 200, 200),
+        depth_mode: str = "linear",
+    ) -> Transform:
+        """Blend fog using exponential attenuation on uint8 or float32 HWC RGB.
+
+        Density is finite and nonnegative. Synthetic depth increases toward
+        the top (linear), top-left (diagonal), or corners (radial).
+        """
+        return Transform(self._inner.atmospheric_fog(density_range, fog_color, depth_mode))
+
     def spatter(
         self,
         mean_range: tuple[float, float] = (0.65, 0.65),

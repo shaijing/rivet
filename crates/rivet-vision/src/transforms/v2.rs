@@ -108,6 +108,8 @@ pub enum V2Config {
         elementwise: bool,
     },
     RandomSunFlare(std::sync::Arc<RandomSunFlareConfig>),
+    RandomFog(RandomFogConfig),
+    AtmosphericFog(AtmosphericFogConfig),
     Spatter(std::sync::Arc<SpatterConfig>),
     RandomGravel(RandomGravelConfig),
     RandomSnow(RandomSnowConfig),
@@ -230,6 +232,8 @@ impl V2Config {
             Self::AdditiveNoise(_) => "AdditiveNoise",
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::RandomSunFlare(_) => "RandomSunFlare",
+            Self::RandomFog(_) => "RandomFog",
+            Self::AtmosphericFog(_) => "AtmosphericFog",
             Self::Spatter(_) => "Spatter",
             Self::RandomGravel(_) => "RandomGravel",
             Self::RandomSnow(_) => "RandomSnow",
@@ -279,6 +283,8 @@ impl V2Config {
             Self::AdditiveNoise(_) => 83,
             Self::MultiplicativeNoise { .. } => 82,
             Self::RandomSunFlare(_) => 88,
+            Self::RandomFog(_) => 94,
+            Self::AtmosphericFog(_) => 95,
             Self::Spatter(_) => 93,
             Self::RandomGravel(_) => 92,
             Self::RandomSnow(_) => 91,
@@ -326,6 +332,8 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::RandomFog(config) => config.valid(),
+            Self::AtmosphericFog(config) => config.valid(),
             Self::Spatter(config) => config.valid(),
             Self::RandomGravel(config) => config.valid(),
             Self::RandomSnow(config) => config.valid(),
@@ -799,6 +807,8 @@ impl V2Config {
             | Self::AdditiveNoise(_)
             | Self::MultiplicativeNoise { .. }
             | Self::RandomSunFlare(_)
+            | Self::RandomFog(_)
+            | Self::AtmosphericFog(_)
             | Self::Spatter(_)
             | Self::RandomGravel(_)
             | Self::RandomSnow(_)
@@ -998,6 +1008,12 @@ impl V2Config {
             }
             Self::RandomRain(config) => {
                 s.image = super::weather::random_rain(&s.image, config, rng)?;
+            }
+            Self::RandomFog(config) => {
+                s.image = super::fog::random_fog(&s.image, config, rng)?;
+            }
+            Self::AtmosphericFog(config) => {
+                s.image = super::fog::atmospheric_fog(&s.image, config, rng)?;
             }
             Self::Spatter(config) => {
                 s.image = super::weather::spatter(&s.image, config, rng)?;

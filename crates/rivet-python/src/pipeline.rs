@@ -1039,6 +1039,48 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (fog_coef_range=(0.3, 1.0), alpha_coef=0.08))]
+    fn random_fog(&self, fog_coef_range: (f64, f64), alpha_coef: f64) -> PyResult<Self> {
+        let config = V2Config::RandomFog(rivet_vision::transforms::RandomFogConfig {
+            fog_coef_range,
+            alpha_coef,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (density_range=(1.0, 3.0), fog_color=(200, 200, 200), depth_mode="linear"))]
+    fn atmospheric_fog(
+        &self,
+        density_range: (f64, f64),
+        fog_color: (u8, u8, u8),
+        depth_mode: &str,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{AtmosphericFogConfig, FogDepthMode};
+        let depth_mode = match depth_mode {
+            "linear" => FogDepthMode::Linear,
+            "diagonal" => FogDepthMode::Diagonal,
+            "radial" => FogDepthMode::Radial,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "depth_mode must be linear, diagonal or radial",
+                ));
+            }
+        };
+        let (r, g, b) = fog_color;
+        let config = V2Config::AtmosphericFog(AtmosphericFogConfig {
+            density_range,
+            fog_color: [r, g, b],
+            depth_mode,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (mean_range=(0.65, 0.65), std_range=(0.3, 0.3), gauss_sigma_range=(2.0, 3.0), cutout_threshold_range=(0.68, 0.68), intensity_range=(0.6, 0.6), mode="rain", color=None))]
     fn spatter(
@@ -2704,6 +2746,48 @@ impl PyImagePipeline {
                 bloom_range,
             },
         ));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (fog_coef_range=(0.3, 1.0), alpha_coef=0.08))]
+    fn random_fog(&self, fog_coef_range: (f64, f64), alpha_coef: f64) -> PyResult<Self> {
+        let config = V2Config::RandomFog(rivet_vision::transforms::RandomFogConfig {
+            fog_coef_range,
+            alpha_coef,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (density_range=(1.0, 3.0), fog_color=(200, 200, 200), depth_mode="linear"))]
+    fn atmospheric_fog(
+        &self,
+        density_range: (f64, f64),
+        fog_color: (u8, u8, u8),
+        depth_mode: &str,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{AtmosphericFogConfig, FogDepthMode};
+        let depth_mode = match depth_mode {
+            "linear" => FogDepthMode::Linear,
+            "diagonal" => FogDepthMode::Diagonal,
+            "radial" => FogDepthMode::Radial,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "depth_mode must be linear, diagonal or radial",
+                ));
+            }
+        };
+        let (r, g, b) = fog_color;
+        let config = V2Config::AtmosphericFog(AtmosphericFogConfig {
+            density_range,
+            fog_color: [r, g, b],
+            depth_mode,
+        });
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

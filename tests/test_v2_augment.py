@@ -1576,3 +1576,49 @@ def test_spatter_mud_full_and_empty_coverage(tmp_path):
     assert full.dtype == np.uint8 and full.shape == pixels.shape
     np.testing.assert_array_equal(full[0, 0], [20, 30, 40])
     np.testing.assert_array_equal(output(tmp_path, lambda p: augment(p, 1))[0], pixels)
+
+
+@pytest.mark.parametrize("mode, near", [("linear", (4, 0)), ("diagonal", (4, 6)), ("radial", (2, 3))])
+def test_atmospheric_fog_depth_formula(tmp_path, mode, near):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.full((5, 7, 3), 50, dtype=np.uint8)
+    Image.fromarray(pixels).save(folder / "image.png")
+
+    def augment(p):
+        return p.atmospheric_fog((1, 1), (200, 100, 25), mode)
+
+    image = output(tmp_path, augment, transform=True, workers=2)[0]
+    assert image.dtype == np.uint8 and image.shape == pixels.shape
+    np.testing.assert_array_equal(image[near], pixels[near])
+    expected = (50 + (1 - np.exp(-1)) * (np.array([200, 100, 25]) - 50))
+    np.testing.assert_array_equal(image[0, 0], expected.round())
+    floats = output(tmp_path, lambda p: augment(p.to_dtype("float32", True)))[0]
+    assert floats.dtype == np.float32
+    np.testing.assert_allclose(floats * 255, image, atol=0.51)
+
+
+def test_fog_identity_seed_and_opacity(source):
+    root, pixels = source
+
+    def augment(p):
+        return p.random_fog((0.8, 0.8), 0.2)
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(root, augment, epoch=1))
+    assert np.all(serial[0] >= pixels)
+    assert np.any(serial[0] > pixels)
+    for identity in [
+        lambda p: p.random_fog((0, 0)),
+        lambda p: p.random_fog(alpha_coef=0),
+        lambda p: p.atmospheric_fog((0, 0)),
+    ]:
+        np.testing.assert_array_equal(output(root, identity)[0], pixels)
+    atmospheric = output(root, lambda p: p.atmospheric_fog())
+    np.testing.assert_array_equal(
+        atmospheric, output(root, lambda p: p.atmospheric_fog(), transform=True, workers=3)
+    )
+    assert not np.array_equal(atmospheric, output(root, lambda p: p.atmospheric_fog(), epoch=1))
+    with pytest.raises(ValueError, match="AtmosphericFog"):
+        output(root, lambda p: p.hwc_to_chw().atmospheric_fog())

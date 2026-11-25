@@ -193,7 +193,7 @@ pub(super) fn random_snow(
     }
 }
 
-fn write_weather_rgb(
+pub(super) fn write_weather_rgb(
     input: &Tensor,
     mut pixel: impl FnMut(usize, usize, [f64; 3]) -> [f64; 3],
 ) -> RivetResult<Tensor> {

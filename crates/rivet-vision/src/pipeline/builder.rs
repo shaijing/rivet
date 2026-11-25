@@ -153,6 +153,16 @@ impl ImagePipeline {
         )))
     }
 
+    /// Apply seeded fog to an RGB image.
+    pub fn random_fog(self, config: crate::transforms::RandomFogConfig) -> Self {
+        self.v2(crate::transforms::V2Config::RandomFog(config))
+    }
+
+    /// Apply seeded fog to an RGB image.
+    pub fn atmospheric_fog(self, config: crate::transforms::AtmosphericFogConfig) -> Self {
+        self.v2(crate::transforms::V2Config::AtmosphericFog(config))
+    }
+
     /// Overlay seeded rain or mud on the lens.
     pub fn spatter(self, config: crate::transforms::SpatterConfig) -> Self {
         self.v2(crate::transforms::V2Config::Spatter(std::sync::Arc::new(

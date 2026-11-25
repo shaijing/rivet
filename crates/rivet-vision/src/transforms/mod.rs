@@ -20,6 +20,7 @@ mod dtype;
 mod erase;
 mod flare;
 mod flip;
+mod fog;
 mod layout;
 mod letterbox;
 mod local_color;
@@ -33,6 +34,7 @@ mod resized_crop;
 mod rotate;
 mod u8_color;
 mod weather;
+pub use fog::{AtmosphericFogConfig, FogDepthMode, RandomFogConfig};
 pub use weather::{
     RainType, RandomGravelConfig, RandomRainConfig, RandomSnowConfig, SnowMethod, SpatterConfig,
     SpatterMode,
