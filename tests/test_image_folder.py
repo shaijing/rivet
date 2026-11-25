@@ -94,3 +94,52 @@ def test_image_folder_pipeline_returns_readonly_zero_copy_numpy_views(
     assert normalized.dtype == np.float32
     assert not normalized.flags.owndata
     assert not normalized.flags.writeable
+
+
+def test_convert_imagefolder_lance_preserves_classes_and_encoded_images(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    root = tmp_path / "imagefolder"
+    for split in ("train", "val"):
+        for name in ("zebra", "ant"):
+            folder = root / split / name / "nested"
+            folder.mkdir(parents=True)
+            (folder / "sample.png").write_bytes(PNG_1X1)
+            (folder / "ignore.txt").write_text("ignored")
+
+    output = tmp_path / "exports" / "images.lance"
+    assert rivet.vision.convert_imagefolder_lance(root, output) == output
+    manifest = json.loads((output / "dataset.json").read_text())
+    assert manifest["features"]["label"]["names"] == ["ant", "zebra"]
+    assert manifest["created_by"]["source_format"] == "imagefolder"
+    assert rivet.load_dataset(output).keys() == ["train", "val"]
+    dataset = rivet.load_dataset(output, split="train")
+    assert [dataset.get_encoded(i)["label"] for i in range(len(dataset))] == [0, 1]
+    assert bytes(dataset.get_encoded(0)["image"]) == PNG_1X1
+
+    with pytest.raises(ValueError, match="already exists"):
+        rivet.convert_imagefolder_lance(root, output)
+    (root / "val" / "zebra").rename(root / "val" / "cat")
+    with pytest.raises(ValueError, match="class directories differ"):
+        rivet.convert_imagefolder_lance(root, output, overwrite=True)
+    assert rivet.load_dataset(output).keys() == ["train", "val"]
+
+
+def test_convert_single_imagefolder_lance_and_overwrite(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    cat = root / "cat"
+    cat.mkdir(parents=True)
+    (cat / "one.png").write_bytes(PNG_1X1)
+    output = tmp_path / "previous"
+
+    with pytest.raises(ValueError, match="outside the ImageFolder"):
+        rivet.convert_imagefolder_lance(root, root / "nested" / "out", split="test")
+    assert not (root / "nested").exists()
+    assert rivet.convert_imagefolder_lance(root, output, split="test") == output
+    assert len(rivet.load_dataset(output, split="test")) == 1
+
+    (cat / "two.png").write_bytes(PNG_1X1)
+    rivet.convert_imagefolder_lance(root, output, split="test", overwrite=True)
+    assert len(rivet.load_dataset(output, split="test")) == 2

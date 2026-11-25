@@ -258,12 +258,45 @@ def scan_lance(
     ).pipeline()
 
 
+def convert_imagefolder_lance(
+    root: str | Path,
+    output: str | Path,
+    *,
+    split: str | None = None,
+    overwrite: bool = False,
+) -> Path:
+    """Convert an ImageFolder to a Lance bundle and return its path.
+
+    By default, each immediate directory under root is a split containing
+    class directories. For a single ImageFolder, pass its split name.
+    Nonempty splits must have the same class names. Images stay encoded.
+    """
+    try:
+        from ._rivet import _convert_imagefolder_lance
+    except ImportError as exc:
+        raise RuntimeError(
+            "Lance support is disabled; rebuild rivet-python with the 'lance' feature"
+        ) from exc
+    return _convert_imagefolder_lance(root, output, split=split, overwrite=overwrite)
+
+
+def _lance_manifest(root: Path) -> Path | None:
+    for name in ("dataset.json", "dataset.rivet.json"):
+        path = root / name
+        if path.is_file():
+            return path
+    return None
+
+
 def _downloaded_lance_root(payload: Path) -> Path:
     candidates = []
     for root, dirs, files in payload.walk():
         if (
             root.suffix == ".lance"
-            or any(name.endswith(".lance") for name in dirs)
+            or any(
+                name.endswith(".lance") and _lance_manifest(root / name) is None
+                for name in dirs
+            )
             or "dataset.json" in files
             or "dataset.rivet.json" in files
         ):
@@ -276,22 +309,18 @@ def _downloaded_lance_root(payload: Path) -> Path:
 
     root = candidates[0]
     cache_root = payload.resolve()
-    if root.suffix != ".lance":
-        for name in ("dataset.json", "dataset.rivet.json"):
-            manifest = root / name
-            if not manifest.is_file():
-                continue
-            data = json.loads(manifest.read_bytes())
-            field = "path" if data.get("format_version") == 1 else "uri"
-            for split in data.get("splits", {}).values():
-                target = split.get(field)
-                if isinstance(target, str):
-                    path = Path(target.removeprefix("file://"))
-                    if not (root / path).resolve().is_relative_to(cache_root):
-                        raise ValueError(
-                            f"downloaded manifest split leaves the cache: {target!r}"
-                        )
-            break
+    manifest = _lance_manifest(root)
+    if manifest is not None:
+        data = json.loads(manifest.read_bytes())
+        field = "path" if data.get("format_version") == 1 else "uri"
+        for split in data.get("splits", {}).values():
+            target = split.get(field)
+            if isinstance(target, str):
+                path = Path(target.removeprefix("file://"))
+                if not (root / path).resolve().is_relative_to(cache_root):
+                    raise ValueError(
+                        f"downloaded manifest split leaves the cache: {target!r}"
+                    )
     return root
 
 
@@ -307,11 +336,10 @@ def load_dataset(
 ) -> LanceDataset | DatasetDict:
     """Load one physical Lance dataset or a logical multi-split dataset.
 
-    A path ending in .lance is one physical dataset. A directory is resolved
-    as a split collection using dataset.json when present (with legacy
-    dataset.rivet.json support), or immediate *.lance child directories
-    otherwise. Remote source strings are downloaded to the dataset cache
-    before opening the Lance dataset.
+    A dataset.json or legacy dataset.rivet.json manifest identifies a split
+    collection. Otherwise a .lance path is a physical dataset, and a directory
+    can contain immediate *.lance splits. Remote source strings are downloaded
+    to the dataset cache before opening the Lance dataset.
     """
     _, lance_dataset_dict, load_lance_split = _require_lance()
     if _is_remote(path):
@@ -323,7 +351,7 @@ def load_dataset(
         if revision is not None:
             raise ValueError("revision requires a remote dataset source")
         path = Path(path)
-    is_physical = path.name.endswith(".lance")
+    is_physical = path.name.endswith(".lance") and _lance_manifest(path) is None
 
     if split is None:
         if is_physical:

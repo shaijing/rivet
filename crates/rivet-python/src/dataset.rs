@@ -325,3 +325,20 @@ pub(crate) fn _convert_lance_files(
     })
     .map_err(to_py_err)
 }
+
+#[cfg(feature = "lance")]
+#[pyfunction]
+#[pyo3(signature = (root, output, *, split=None, overwrite=false))]
+pub(crate) fn _convert_imagefolder_lance(
+    py: Python<'_>,
+    root: PathBuf,
+    output: PathBuf,
+    split: Option<String>,
+    overwrite: bool,
+) -> PyResult<PathBuf> {
+    py.detach(move || {
+        rivet_vision::api::convert_imagefolder_dataset(root, output, split.as_deref(), overwrite)
+            .map(|report| report.output_root)
+    })
+    .map_err(to_py_err)
+}

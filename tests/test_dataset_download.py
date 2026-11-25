@@ -108,7 +108,7 @@ def test_remote_lance_archive_keeps_legacy_manifest(
     import pyarrow as pa
 
     lance = pytest.importorskip("lance")
-    bundle = tmp_path / "bundle"
+    bundle = tmp_path / ("bundle.lance" if extension == "zip" else "bundle")
     train = bundle / "train.lance"
     lance.write_dataset(
         pa.table({"image": [b"encoded"], "label": pa.array([7], type=pa.int32())}),

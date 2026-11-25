@@ -1,5 +1,6 @@
 mod convert;
 mod dataset;
+mod imagefolder_convert;
 mod loader;
 mod row;
 mod schema;
@@ -10,6 +11,7 @@ pub use convert::{
     discover_huggingface_splits,
 };
 pub use dataset::LanceImageDataset;
+pub use imagefolder_convert::convert_imagefolder_dataset;
 pub use loader::load_lance_image_dataset;
 #[cfg(test)]
 pub(super) use schema::validate_schema;

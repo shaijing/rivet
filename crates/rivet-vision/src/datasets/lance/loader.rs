@@ -23,7 +23,8 @@ pub fn load_lance_image_dataset(
     let image_column = image_column.into();
     let label_column = label_column.into();
 
-    if is_lance_path(path) {
+    let has_manifest = manifest_path(path).is_some();
+    if is_lance_path(path) && !has_manifest {
         let dataset = Arc::new(LanceImageDataset::open(path, image_column, label_column)?);
         return Ok(DatasetLoadResult::Single(ImageSource::from_encoded(
             dataset,
@@ -42,7 +43,7 @@ pub fn load_lance_image_dataset(
         )));
     }
 
-    let split_paths = if manifest_path(path).is_some() {
+    let split_paths = if has_manifest {
         manifest_split_paths(path, &image_column, &label_column)?
     } else {
         discover_split_paths(path)?

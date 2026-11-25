@@ -185,7 +185,13 @@ pub fn convert_huggingface_dataset(
         rows_by_split.insert(name.clone(), rows);
     }
 
-    write_manifest(&output_root, &rows_by_split, options.keep_path)?;
+    write_image_manifest(
+        &output_root,
+        &rows_by_split,
+        options.keep_path,
+        "huggingface-arrow",
+        None,
+    )?;
     Ok(LanceConversionReport {
         output_root,
         rows_by_split,
@@ -296,7 +302,7 @@ fn convert_batch(
     RecordBatch::try_new(native_schema(options.keep_path), columns)
 }
 
-fn native_schema(keep_path: bool) -> SchemaRef {
+pub(super) fn native_schema(keep_path: bool) -> SchemaRef {
     let mut fields = vec![
         Field::new("image", DataType::Binary, false),
         Field::new("label", DataType::Int32, false),
@@ -486,7 +492,7 @@ fn infer_split_name(path: &Path) -> Option<String> {
     None
 }
 
-fn validate_split_name(name: &str) -> RivetResult<()> {
+pub(super) fn validate_split_name(name: &str) -> RivetResult<()> {
     let path = Path::new(name);
     if name.is_empty()
         || path.is_absolute()
@@ -519,10 +525,12 @@ fn prepare_output_root(path: &Path, overwrite: bool) -> RivetResult<()> {
     Ok(())
 }
 
-fn write_manifest(
+pub(super) fn write_image_manifest(
     output_root: &Path,
     rows_by_split: &BTreeMap<String, usize>,
     keep_path: bool,
+    source_format: &str,
+    classes: Option<&[String]>,
 ) -> RivetResult<()> {
     let mut features = serde_json::json!({
         "image": {
@@ -536,6 +544,9 @@ fn write_manifest(
             "dtype": "int32"
         }
     });
+    if let Some(classes) = classes {
+        features["label"]["names"] = serde_json::json!(classes);
+    }
     if keep_path {
         features["path"] = serde_json::json!({
             "type": "text",
@@ -568,7 +579,7 @@ fn write_manifest(
         "created_by": {
             "tool": "rivet",
             "version": env!("CARGO_PKG_VERSION"),
-            "source_format": "huggingface-arrow"
+            "source_format": source_format
         }
     });
     let contents = serde_json::to_vec_pretty(&manifest)

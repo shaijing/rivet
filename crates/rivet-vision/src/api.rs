@@ -10,9 +10,11 @@ pub use crate::cache::{
     CacheConfig, CacheLevel, CachePolicy, DEFAULT_DECODED_CHUNK_SIZE, DEFAULT_DECODED_SLAB_BYTES,
     DEFAULT_ENCODED_CHUNK_SIZE,
 };
-pub use crate::datasets::{ArrowImageDataset, ImageFolderDatasetCore, ImageFolderSample};
 #[cfg(feature = "lance")]
-pub use crate::datasets::{LanceImageDataset, load_lance_image_dataset};
+pub use crate::datasets::lance::{
+    LanceConversionReport, LanceImageDataset, convert_imagefolder_dataset, load_lance_image_dataset,
+};
+pub use crate::datasets::{ArrowImageDataset, ImageFolderDatasetCore, ImageFolderSample};
 pub use crate::errors::{
     RivetError, RivetResult, VisionError, VisionResult, invalid_argument, invalid_pipeline,
     invalid_shape,

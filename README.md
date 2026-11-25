@@ -95,6 +95,26 @@ and reused for the same source, revision, and conversion options.
 With `offline=True`, Rivet can open a completed conversion or build one
 from a cached raw download.
 
+### Convert an ImageFolder to Lance
+
+Use `rivet.vision.convert_imagefolder_lance()` with a torchvision-style
+`root/<split>/<class>/<image>` directory tree. For a single
+`root/<class>/<image>` tree, provide a split name.
+
+```python
+from rivet.vision import convert_imagefolder_lance, load_dataset
+
+bundle = convert_imagefolder_lance("images", "images.lance")
+train = load_dataset(bundle, split="train")
+
+bundle = convert_imagefolder_lance("images/train", "train-only.lance", split="train")
+```
+
+The Rust converter copies encoded JPEG, PNG, BMP, and WebP files into
+Lance splits and records the sorted class names in `dataset.json`.
+Nonempty splits must use the same class names. Pass `overwrite=True` to
+replace an existing output directory after conversion succeeds.
+
 ## Image result compatibility
 
 Rust image kernels follow torchvision's **PIL/RGB uint8** path for resize,
