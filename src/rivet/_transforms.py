@@ -1647,6 +1647,24 @@ class Transform:
         """Inject conjugate-paired spikes into the spatial Fourier spectrum."""
         return Transform(self._inner.k_space_spike_noise(num_spikes_range, intensity_range, per_channel))
 
+    def he_stain(
+        self,
+        *,
+        method: str = "random_preset",
+        preset: str | None = None,
+        stain_matrix=None,
+        intensity_scale_range: tuple[float, float] = (0.7, 1.3),
+        intensity_shift_range: tuple[float, float] = (-0.2, 0.2),
+        augment_background: bool = False,
+        residual_mode: str = "project",
+    ) -> Transform:
+        """Perturb hematoxylin and eosin concentrations in RGB optical density."""
+        inner = self._inner.he_stain(
+            method, preset, stain_matrix, intensity_scale_range, intensity_shift_range,
+            augment_background, residual_mode,
+        )
+        return Transform(inner)
+
     def gibbs_ringing(
         self, retained_fraction_range: tuple[float, float] = (0.5, 0.9)
     ) -> Transform:

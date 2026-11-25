@@ -2731,3 +2731,16 @@ def test_k_space_spike_noise_image_pipeline_and_workers(source, transform):
     assert one[0].dtype == np.uint8 and not np.array_equal(one[0], pixels)
     zero = output(root, lambda p: p.k_space_spike_noise(intensity_range=(0, 0)), transform=transform)
     np.testing.assert_array_equal(zero[0], pixels)
+
+
+@pytest.mark.parametrize("transform", [False, True])
+def test_he_stain_image_pipeline_and_workers(source, transform):
+    root, pixels = source
+
+    def build(p):
+        return p.he_stain(augment_background=True)
+
+    one = output(root, build, transform=transform)
+    many = output(root, build, transform=transform, workers=3)
+    np.testing.assert_array_equal(one, many)
+    assert one[0].dtype == np.uint8 and not np.array_equal(one[0], pixels)

@@ -337,3 +337,6 @@ mod v2_numeric;
 pub(crate) use advanced_geometry::{homography, pillow_affine_map, rotation_inverse};
 
 pub use letterbox::LetterBoxConfig;
+
+mod stain;
+pub use stain::{HEStainConfig, StainBasis, StainResidual};

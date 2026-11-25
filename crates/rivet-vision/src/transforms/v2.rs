@@ -96,6 +96,7 @@ pub enum V2Config {
     },
     BiasField(crate::volume::BiasFieldConfig),
     GibbsRinging(crate::volume::GibbsRingingConfig),
+    HEStain(super::HEStainConfig),
     KSpaceSpikeNoise(crate::volume::KSpaceSpikeNoiseConfig),
     RicianNoise {
         std_range: [f64; 2],
@@ -309,6 +310,7 @@ impl V2Config {
             Self::GaussianNoise { .. } => "GaussianNoise",
             Self::BiasField(_) => "BiasField",
             Self::GibbsRinging(_) => "GibbsRinging",
+            Self::HEStain(_) => "HEStain",
             Self::KSpaceSpikeNoise(_) => "KSpaceSpikeNoise",
             Self::RicianNoise { .. } => "RicianNoise",
             Self::ShotNoise { .. } => "ShotNoise",
@@ -404,6 +406,7 @@ impl V2Config {
             Self::GaussianNoise { .. } => 56,
             Self::BiasField(_) => 139,
             Self::GibbsRinging(_) => 140,
+            Self::HEStain(_) => 142,
             Self::KSpaceSpikeNoise(_) => 141,
             Self::RicianNoise { .. } => 138,
             Self::ShotNoise { .. } => 60,
@@ -800,6 +803,7 @@ impl V2Config {
             }
             Self::BiasField(config) => return config.validate(),
             Self::GibbsRinging(config) => return config.validate(),
+            Self::HEStain(config) => return config.validate(),
             Self::KSpaceSpikeNoise(config) => return config.validate(),
             Self::RicianNoise { std_range, .. } => {
                 return super::noise::validate_rician_std(*std_range);
@@ -1109,6 +1113,17 @@ impl V2Config {
                     ImageAxisOrder::Chw => s.image.permute(&[1, 2, 0])?,
                 };
                 let image = config.apply(&input, [1, h, w], c, rng)?;
+                s.image = match axis {
+                    ImageAxisOrder::Hwc => image,
+                    ImageAxisOrder::Chw => image.permute(&[2, 0, 1])?,
+                };
+            }
+            Self::HEStain(config) => {
+                let input = match axis {
+                    ImageAxisOrder::Hwc => s.image,
+                    ImageAxisOrder::Chw => s.image.permute(&[1, 2, 0])?,
+                };
+                let image = config.apply(&input, rng)?;
                 s.image = match axis {
                     ImageAxisOrder::Hwc => image,
                     ImageAxisOrder::Chw => image.permute(&[2, 0, 1])?,

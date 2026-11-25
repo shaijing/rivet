@@ -1020,3 +1020,18 @@ pub use bias::BiasFieldConfig;
 
 mod spectral;
 pub use spectral::{GhostingArtifactConfig, GibbsRingingConfig, KSpaceSpikeNoiseConfig};
+
+impl VolumeSample {
+    pub fn he_stain(
+        mut self,
+        config: crate::transforms::HEStainConfig,
+        rng: &mut crate::RandomStream,
+    ) -> RivetResult<Self> {
+        self.validate()?;
+        if self.volume.rank() != 4 {
+            return Err(invalid_argument("HEStain requires DHWC RGB volume"));
+        }
+        self.volume = config.apply(&self.volume, rng)?;
+        Ok(self)
+    }
+}

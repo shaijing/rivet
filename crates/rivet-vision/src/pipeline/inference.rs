@@ -707,6 +707,20 @@ pub(crate) fn infer_image_op(
                 V2Config::ToDtype { dtype, .. } => {
                     output.dtype = Some(core_dtype(*dtype));
                 }
+                V2Config::HEStain(_) => {
+                    if !matches!(
+                        input_state,
+                        Decoded {
+                            dtype: CoreDType::U8 | CoreDType::F32,
+                            ..
+                        }
+                    ) || matches!(channel_dim(input), ShapeDim::Known(c) if c != 3)
+                    {
+                        return Err(invalid_pipeline(
+                            "HEStain requires uint8 or float32 RGB input",
+                        ));
+                    }
+                }
                 V2Config::KSpaceSpikeNoise(_)
                 | V2Config::GibbsRinging(_)
                 | V2Config::BiasField(_)

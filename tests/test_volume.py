@@ -544,3 +544,37 @@ def test_k_space_spike_noise_adds_one_hermitian_pair():
     np.testing.assert_array_equal(sample.k_space_spike_noise((0, 0)).to_dict()["volume"], image)
     with pytest.raises(ValueError):
         sample.k_space_spike_noise(intensity_range=(-1, 0))
+
+
+def test_he_stain_custom_concentration_and_background():
+    image = np.array([[[[0.25, 0.5, 0.75], [1, 1, 1]]]], dtype=np.float32)
+    sample = VolumeSample(image, mask=np.array([[[5, 7]]], dtype=np.uint8), label=89)
+    args = dict(
+        method="custom", stain_matrix=[[1, 0, 0], [0, 1, 0]],
+        intensity_scale_range=(2, 2), intensity_shift_range=(0, 0),
+    )
+    for mode, expected in (
+        ("project", [0.0625, 0.25, 1]),
+        ("preserve", [0.0625, 0.25, 0.75]),
+        ("augment", [0.0625, 0.25, 0.5625]),
+    ):
+        out = sample.he_stain(**args, residual_mode=mode).to_dict()
+        np.testing.assert_allclose(out["volume"][0, 0], [expected, [1, 1, 1]])
+        np.testing.assert_array_equal(out["mask"], [[[5, 7]]])
+        assert out["label"] == 89
+    with pytest.raises(ValueError):
+        sample.he_stain(method="custom", stain_matrix=[[1, 0, 0], [2, 0, 0]])
+
+
+def test_he_stain_estimated_bases_on_synthetic_histology():
+    rng = np.random.default_rng(13)
+    concentrations = rng.uniform(0, 1, (2, 12, 14, 2))
+    basis = np.array([[0.65, 0.70, 0.29], [0.07, 0.99, 0.11]])
+    image = np.exp(-(concentrations @ basis)).astype(np.float32)
+    source = VolumeSample(image)
+    for method in ("random_preset", "preset", "macenko", "vahadane"):
+        args = dict(method=method, intensity_scale_range=(1.2, 1.2), seed=7)
+        out = source.he_stain(**args).to_dict()["volume"]
+        assert out.shape == image.shape and not np.array_equal(out, image)
+        assert np.isfinite(out).all()
+        np.testing.assert_array_equal(out, source.he_stain(**args).to_dict()["volume"])

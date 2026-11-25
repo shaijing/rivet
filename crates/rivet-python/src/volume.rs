@@ -379,6 +379,37 @@ impl PyVolumeSample {
         Ok(Self { inner })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature=(method, preset, matrix, scale, shift, augment_background, residual, seed))]
+    fn he_stain(
+        &self,
+        method: &str,
+        preset: Option<&str>,
+        matrix: Option<Vec<[f64; 3]>>,
+        scale: [f64; 2],
+        shift: [f64; 2],
+        augment_background: bool,
+        residual: &str,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let config = stain_config(
+            method,
+            preset,
+            matrix,
+            scale,
+            shift,
+            augment_background,
+            residual,
+        )?;
+        let mut rng = rivet_vision::RandomStream::from_seed(seed);
+        let inner = self
+            .inner
+            .clone()
+            .he_stain(config, &mut rng)
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
     fn gibbs_ringing(&self, retained_fraction_range: [f64; 2], seed: u64) -> PyResult<Self> {
         let mut rng = rivet_vision::RandomStream::from_seed(seed);
         let config = rivet_vision::volume::GibbsRingingConfig {
@@ -460,4 +491,66 @@ fn warp_modes(
         }
     };
     Ok((interpolation, border))
+}
+
+pub(crate) fn stain_config(
+    method: &str,
+    preset: Option<&str>,
+    matrix: Option<Vec<[f64; 3]>>,
+    scale: [f64; 2],
+    shift: [f64; 2],
+    augment_background: bool,
+    residual: &str,
+) -> PyResult<rivet_vision::transforms::HEStainConfig> {
+    use rivet_vision::transforms::{HEStainConfig, StainBasis, StainResidual};
+    let basis = match (method, matrix) {
+        ("preset", None) => {
+            let names = [
+                "ruifrok",
+                "macenko",
+                "standard",
+                "high_contrast",
+                "h_heavy",
+                "e_heavy",
+                "dark",
+                "light",
+            ];
+            let index = names
+                .iter()
+                .position(|&s| s == preset.unwrap_or("standard"))
+                .ok_or_else(|| PyValueError::new_err("unknown HEStain preset"))?;
+            StainBasis::Preset(index)
+        }
+        ("random_preset", None) => StainBasis::RandomPreset,
+        ("macenko", None) => StainBasis::Macenko,
+        ("vahadane", None) => StainBasis::Vahadane,
+        ("custom", Some(matrix)) if (2..=3).contains(&matrix.len()) => {
+            let mut rows = [[0.0; 3]; 3];
+            rows[..matrix.len()].copy_from_slice(&matrix);
+            StainBasis::Custom {
+                rows,
+                count: matrix.len(),
+            }
+        }
+        _ => {
+            return Err(PyValueError::new_err(
+                "invalid HEStain method or custom matrix",
+            ));
+        }
+    };
+    let residual = match residual {
+        "project" => StainResidual::Project,
+        "preserve" => StainResidual::Preserve,
+        "augment" => StainResidual::Augment,
+        _ => return Err(PyValueError::new_err("invalid HEStain residual mode")),
+    };
+    let config = HEStainConfig {
+        basis,
+        scale,
+        shift,
+        augment_background,
+        residual,
+    };
+    config.validate().map_err(to_py_err)?;
+    Ok(config)
 }

@@ -2442,6 +2442,32 @@ impl PyTransform {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature=(method, preset, matrix, scale, shift, augment_background, residual))]
+    fn he_stain(
+        &self,
+        method: &str,
+        preset: Option<&str>,
+        matrix: Option<Vec<[f64; 3]>>,
+        scale: [f64; 2],
+        shift: [f64; 2],
+        augment_background: bool,
+        residual: &str,
+    ) -> PyResult<Self> {
+        let config = V2Config::HEStain(crate::volume::stain_config(
+            method,
+            preset,
+            matrix,
+            scale,
+            shift,
+            augment_background,
+            residual,
+        )?);
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     fn gibbs_ringing(&self, retained_fraction_range: [f64; 2]) -> PyResult<Self> {
         let config = V2Config::GibbsRinging(rivet_vision::volume::GibbsRingingConfig {
             retained_fraction_range,
@@ -5048,6 +5074,32 @@ impl PyImagePipeline {
             per_channel,
         });
         config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature=(method, preset, matrix, scale, shift, augment_background, residual))]
+    fn he_stain(
+        &self,
+        method: &str,
+        preset: Option<&str>,
+        matrix: Option<Vec<[f64; 3]>>,
+        scale: [f64; 2],
+        shift: [f64; 2],
+        augment_background: bool,
+        residual: &str,
+    ) -> PyResult<Self> {
+        let config = V2Config::HEStain(crate::volume::stain_config(
+            method,
+            preset,
+            matrix,
+            scale,
+            shift,
+            augment_background,
+            residual,
+        )?);
         Ok(Self {
             inner: self.inner.clone().v2(config),
         })

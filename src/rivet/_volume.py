@@ -280,6 +280,26 @@ class VolumeSample:
         result._inner = self._inner.k_space_spike_noise(num_spikes_range, intensity_range, per_channel, seed)
         return result
 
+    def he_stain(
+        self,
+        *,
+        method: str = "random_preset",
+        preset: str | None = None,
+        stain_matrix=None,
+        intensity_scale_range: tuple[float, float] = (0.7, 1.3),
+        intensity_shift_range: tuple[float, float] = (-0.2, 0.2),
+        augment_background: bool = False,
+        residual_mode: str = "project",
+        seed: int = 0,
+    ) -> VolumeSample:
+        """Perturb hematoxylin and eosin concentrations in RGB optical density."""
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.he_stain(
+            method, preset, stain_matrix, intensity_scale_range, intensity_shift_range,
+            augment_background, residual_mode, seed,
+        )
+        return result
+
     def gibbs_ringing(
         self, retained_fraction_range: tuple[float, float] = (0.5, 0.9), *, seed: int = 0
     ) -> VolumeSample:
