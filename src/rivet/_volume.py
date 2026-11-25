@@ -80,5 +80,41 @@ class VolumeSample:
         )
         return result
 
+    def center_crop3d(
+        self,
+        size: tuple[int, int, int],
+        *,
+        pad_if_needed: bool = False,
+        fill: float | Iterable[float] = 0,
+        fill_mask: int = 0,
+    ) -> VolumeSample:
+        """Take a centered DHW crop and translate all XYZ points."""
+        return self._crop3d(size, pad_if_needed, fill, fill_mask, None)
+
+    def random_crop3d(
+        self,
+        size: tuple[int, int, int],
+        *,
+        pad_if_needed: bool = False,
+        fill: float | Iterable[float] = 0,
+        fill_mask: int = 0,
+        seed: int = 0,
+    ) -> VolumeSample:
+        """Take a seeded DHW crop and translate all XYZ points."""
+        return self._crop3d(size, pad_if_needed, fill, fill_mask, seed)
+
+    def _crop3d(
+        self,
+        size: tuple[int, int, int],
+        pad_if_needed: bool,
+        fill: float | Iterable[float],
+        fill_mask: int,
+        seed: int | None,
+    ) -> VolumeSample:
+        values = [fill] if isinstance(fill, Real) else list(fill)
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.crop3d(size, pad_if_needed, values, fill_mask, seed)
+        return result
+
     def to_dict(self) -> dict[str, Any]:
         return self._inner.to_dict()

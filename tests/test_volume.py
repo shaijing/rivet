@@ -65,3 +65,46 @@ def test_pad_if_needed3d_minimum_divisor_and_random_seed():
         sample.pad_if_needed3d(pad_divisor_zyx=(0, 1, 2))
     with pytest.raises(ValueError):
         sample.pad3d(1, fill_mask=-1)
+
+
+def test_center_crop3d_mixed_padding_and_crop():
+    volume = np.arange(2 * 5 * 7 * 2, dtype=np.uint8).reshape(2, 5, 7, 2)
+    mask = volume[..., 0].astype(np.int64) + 2**53
+    sample = VolumeSample(volume, mask=mask, keypoints=[[2, 1, 0], [0, 0, 0]], label=17)
+    out = sample.center_crop3d((4, 3, 3), pad_if_needed=True, fill=[1, 2], fill_mask=-3).to_dict()
+    expected = np.empty((4, 3, 3, 2), dtype=np.uint8)
+    expected[:] = [1, 2]
+    expected[1:3] = volume[:, 1:4, 2:5]
+    np.testing.assert_array_equal(out["volume"], expected)
+    np.testing.assert_array_equal(out["mask"], np.pad(mask[:, 1:4, 2:5], ((1, 1), (0, 0), (0, 0)), constant_values=-3))
+    np.testing.assert_array_equal(out["keypoints"], [[0, 0, 1], [-2, -1, 1]])
+    assert out["label"] == 17
+    with pytest.raises(ValueError):
+        sample.center_crop3d((4, 3, 3))
+    with pytest.raises(ValueError):
+        sample.center_crop3d((0, 3, 3))
+
+
+def test_random_crop3d_seeded_window_and_mask():
+    from concurrent.futures import ThreadPoolExecutor
+
+    volume = np.arange(4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6)
+    mask = volume.astype(np.uint8)
+    sample = VolumeSample(volume, mask=mask, keypoints=[[0, 0, 0]], label=23)
+
+    def crop(seed):
+        return sample.random_crop3d((2, 3, 4), seed=seed).to_dict()
+
+    offsets = set()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for seed, out in enumerate(pool.map(crop, range(12))):
+            x, y, z = -out["keypoints"][0].astype(int)
+            offsets.add((x, y, z))
+            np.testing.assert_array_equal(out["volume"], volume[z:z+2, y:y+3, x:x+4])
+            np.testing.assert_array_equal(out["mask"], mask[z:z+2, y:y+3, x:x+4])
+            np.testing.assert_array_equal(out["volume"], crop(seed)["volume"])
+            assert out["label"] == 23
+    assert len(offsets) > 1
+    padded = sample.random_crop3d((6, 7, 8), pad_if_needed=True, seed=3).to_dict()
+    x, y, z = padded["keypoints"][0].astype(int)
+    np.testing.assert_array_equal(padded["volume"][z:z+4, y:y+5, x:x+6], volume)

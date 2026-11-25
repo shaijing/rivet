@@ -1,7 +1,8 @@
 use crate::{error::to_py_err, numpy::tensor_to_numpy, structured::tensor_from_numpy};
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 use rivet_vision::volume::{
-    Pad3DConfig, PadIfNeeded3DConfig, Resize3DConfig, VolumeInterpolation, VolumeSample,
+    Crop3DConfig, Pad3DConfig, PadIfNeeded3DConfig, Resize3DConfig, VolumeInterpolation,
+    VolumeSample,
 };
 
 #[pyclass(name = "_VolumeSample")]
@@ -98,6 +99,32 @@ impl PyVolumeSample {
                     fill_mask,
                 },
                 &mut rng,
+            )
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
+    #[pyo3(signature=(size,pad_if_needed,fill,fill_mask,seed=None))]
+    fn crop3d(
+        &self,
+        size: [usize; 3],
+        pad_if_needed: bool,
+        fill: Vec<f32>,
+        fill_mask: i64,
+        seed: Option<u64>,
+    ) -> PyResult<Self> {
+        let mut rng = seed.map(rivet_vision::RandomStream::from_seed);
+        let inner = self
+            .inner
+            .clone()
+            .crop(
+                &Crop3DConfig {
+                    size,
+                    pad_if_needed,
+                    fill,
+                    fill_mask,
+                },
+                rng.as_mut(),
             )
             .map_err(to_py_err)?;
         Ok(Self { inner })

@@ -417,3 +417,89 @@ fn write_pad<T: WithDType>(
         Ok(())
     })
 }
+
+#[derive(Clone, Debug)]
+pub struct Crop3DConfig {
+    pub size: [usize; 3],
+    pub pad_if_needed: bool,
+    pub fill: Vec<f32>,
+    pub fill_mask: i64,
+}
+
+impl VolumeSample {
+    /// Crop around the center, or use the supplied stream for random placement.
+    /// Keypoints are translated and retained, including points outside the crop.
+    pub fn crop(
+        mut self,
+        config: &Crop3DConfig,
+        mut rng: Option<&mut rivet_data::random::RandomStream>,
+    ) -> RivetResult<Self> {
+        self.validate()?;
+        if config.size.contains(&0) {
+            return Err(invalid_shape("Crop3D axes must be positive"));
+        }
+        let shape = self.spatial_shape()?;
+        let mut padding = [0; 6];
+        let mut start = [0; 3];
+        for axis in 0..3 {
+            let input = shape[axis];
+            let output = config.size[axis];
+            if input < output {
+                if !config.pad_if_needed {
+                    return Err(invalid_shape("Crop3D size exceeds input volume"));
+                }
+                let extra = output - input;
+                let before = crop_offset(extra, rng.as_deref_mut())?;
+                padding[axis * 2] = before;
+                padding[axis * 2 + 1] = extra - before;
+            } else {
+                start[axis] = crop_offset(input - output, rng.as_deref_mut())?;
+            }
+        }
+        let unpadded_size = std::array::from_fn(|i| shape[i].min(config.size[i]));
+        self = self.crop_window(start, unpadded_size)?;
+        if padding != [0; 6] {
+            self = self.pad(&Pad3DConfig {
+                padding,
+                fill: config.fill.clone(),
+                fill_mask: config.fill_mask,
+            })?;
+        }
+        Ok(self)
+    }
+
+    fn crop_window(mut self, start: [usize; 3], size: [usize; 3]) -> RivetResult<Self> {
+        let crop = |mut t: Tensor| -> rivet_core::Result<Tensor> {
+            for axis in 0..3 {
+                t = t.narrow(axis, start[axis], size[axis])?;
+            }
+            Ok(t)
+        };
+        self.volume = crop(self.volume)?;
+        self.mask = self.mask.map(crop).transpose()?;
+        if let Some(points) = &self.keypoints
+            && start != [0; 3]
+        {
+            let coords = points.to_vec::<f32>()?;
+            self.keypoints = Some(Tensor::from_exact_iter(
+                coords
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &v)| (f64::from(v) - start[2 - i % 3] as f64) as f32),
+                points.dims(),
+                points.device(),
+            )?);
+        }
+        Ok(self)
+    }
+}
+
+fn crop_offset(
+    extra: usize,
+    rng: Option<&mut rivet_data::random::RandomStream>,
+) -> RivetResult<usize> {
+    match rng {
+        Some(rng) if extra > 0 => Ok(rng.gen_range_usize(0..extra + 1)?),
+        _ => Ok(extra / 2),
+    }
+}
