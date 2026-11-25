@@ -905,6 +905,19 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (sigma=0.7, max_delta=4, iterations=2))]
+    fn glass_blur(&self, sigma: f64, max_delta: u32, iterations: u32) -> PyResult<Self> {
+        let config = V2Config::GlassBlur {
+            sigma,
+            max_delta,
+            iterations,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (max_factor_range=(1.0, 1.31), step_factor_range=(0.01, 0.03)))]
     fn zoom_blur(
         &self,
@@ -2180,6 +2193,19 @@ impl PyImagePipeline {
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().letterbox(config),
+        })
+    }
+
+    #[pyo3(signature = (sigma=0.7, max_delta=4, iterations=2))]
+    fn glass_blur(&self, sigma: f64, max_delta: u32, iterations: u32) -> PyResult<Self> {
+        let config = V2Config::GlassBlur {
+            sigma,
+            max_delta,
+            iterations,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

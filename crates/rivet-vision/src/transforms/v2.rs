@@ -60,6 +60,11 @@ pub enum V2Config {
         grid: (u32, u32),
         clip_limit: f64,
     },
+    GlassBlur {
+        sigma: f64,
+        max_delta: u32,
+        iterations: u32,
+    },
     ZoomBlur {
         max_factor_range: (f64, f64),
         step_factor_range: (f64, f64),
@@ -143,6 +148,7 @@ impl V2Config {
             Self::ShotNoise { .. } => "ShotNoise",
             Self::RandomToneCurve { .. } => "RandomToneCurve",
             Self::Clahe { .. } => "CLAHE",
+            Self::GlassBlur { .. } => "GlassBlur",
             Self::ZoomBlur { .. } => "ZoomBlur",
             Self::StochasticConvolution { .. } => "StochasticConvolution",
             Self::AdvancedBlur(_) => "AdvancedBlur",
@@ -177,6 +183,7 @@ impl V2Config {
             Self::ShotNoise { .. } => 60,
             Self::RandomToneCurve { .. } => 69,
             Self::Clahe { .. } => 70,
+            Self::GlassBlur { .. } => 79,
             Self::ZoomBlur { .. } => 78,
             Self::StochasticConvolution { .. } => 77,
             Self::AdvancedBlur(_) => 76,
@@ -212,6 +219,11 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::GlassBlur {
+                sigma,
+                max_delta,
+                iterations,
+            } => (0.0..=10.0).contains(sigma) && *max_delta > 0 && (1..=32).contains(iterations),
             Self::ZoomBlur {
                 max_factor_range: (low, high),
                 step_factor_range: (step_low, step_high),
@@ -606,6 +618,7 @@ impl V2Config {
             }
             Self::RandomToneCurve { .. }
             | Self::Clahe { .. }
+            | Self::GlassBlur { .. }
             | Self::ZoomBlur { .. }
             | Self::StochasticConvolution { .. }
             | Self::AdvancedBlur(_)
@@ -681,6 +694,19 @@ impl V2Config {
                 let max_factor = sample(*max_factor_range);
                 let step = sample(*step_factor_range);
                 s.image = super::blur::zoom_blur(&s.image, max_factor, step)?;
+            }
+            Self::GlassBlur {
+                sigma,
+                max_delta,
+                iterations,
+            } => {
+                s.image = super::blur::glass_blur(
+                    &s.image,
+                    *sigma,
+                    *max_delta as usize,
+                    *iterations,
+                    rng,
+                )?;
             }
             Self::MedianBlur => {
                 s.image = super::blur::median_blur_3x3(&s.image)?;

@@ -309,7 +309,8 @@ pub(crate) fn infer_image_op(
                 V2Config::Blur { .. }
                 | V2Config::AdvancedBlur(_)
                 | V2Config::StochasticConvolution { .. }
-                | V2Config::ZoomBlur { .. } => {
+                | V2Config::ZoomBlur { .. }
+                | V2Config::GlassBlur { .. } => {
                     if !matches!(
                         input_state,
                         PipelineImageState::Decoded {

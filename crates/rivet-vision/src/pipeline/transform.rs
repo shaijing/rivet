@@ -58,6 +58,15 @@ impl TransformSequence {
         self.v2(crate::transforms::V2Config::LetterBox(config))
     }
 
+    /// Apply Gaussian smoothing around seeded local pixel exchanges.
+    pub fn glass_blur(self, sigma: f64, max_delta: u32, iterations: u32) -> Self {
+        self.v2(crate::transforms::V2Config::GlassBlur {
+            sigma,
+            max_delta,
+            iterations,
+        })
+    }
+
     /// Average an image with centered, bilinearly zoomed samples.
     pub fn zoom_blur(self, max_factor_range: (f64, f64), step_factor_range: (f64, f64)) -> Self {
         self.v2(crate::transforms::V2Config::ZoomBlur {

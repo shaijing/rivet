@@ -643,3 +643,74 @@ fn write_zoom<T: rivet_core::WithDType + Into<f64>>(
         Ok(())
     })
 }
+
+pub(super) fn glass_blur(
+    input: &rivet_core::Tensor,
+    sigma: f64,
+    max_delta: usize,
+    iterations: u32,
+    rng: &mut rivet_data::random::RandomStream,
+) -> RivetResult<rivet_core::Tensor> {
+    use rivet_core::CpuStorageRef;
+
+    let name = "GlassBlur";
+    let [height, width, channels] = convolution_shape(input, name)?;
+    if (height, width) == (1, 1) {
+        return Ok(input.clone());
+    }
+    let radius = (3.0 * sigma).ceil() as i32;
+    let size = (2 * radius + 1) as usize;
+    let mut weights = Vec::new();
+    if sigma > 0.0 {
+        let axis: Vec<_> = (-radius..=radius)
+            .map(|d| (-0.5 * (f64::from(d) / sigma).powi(2)).exp())
+            .collect();
+        let total = axis.iter().sum::<f64>().powi(2);
+        weights.extend(
+            axis.iter()
+                .flat_map(|&y| axis.iter().map(move |&x| x * y / total)),
+        );
+    }
+    let smooth = |image: &rivet_core::Tensor| {
+        if weights.is_empty() {
+            Ok(image.clone())
+        } else {
+            convolve_square(image, name, size, &weights, super::PaddingMode::Reflect)
+        }
+    };
+    let image = smooth(input)?.contiguous()?;
+    let mut offsets: Vec<_> = (0..height * width).map(|i| i * channels).collect();
+    let neighborhood = |i: usize, len: usize| {
+        i.saturating_sub(max_delta)..i.saturating_add(max_delta).min(len - 1) + 1
+    };
+    for _ in 0..iterations {
+        for y in 0..height {
+            for x in 0..width {
+                let other_y = rng.gen_range_usize(neighborhood(y, height))?;
+                let other_x = rng.gen_range_usize(neighborhood(x, width))?;
+                offsets.swap(y * width + x, other_y * width + other_x);
+            }
+        }
+    }
+    let shuffled = image.with_cpu_storage(|storage, layout| {
+        macro_rules! permute {
+            ($values:expr) => {{
+                let values = super::contiguous_values($values, layout)?;
+                rivet_core::Tensor::from_exact_writer(image.dims(), image.device(), |out| {
+                    for &offset in &offsets {
+                        for &value in &values[offset..offset + channels] {
+                            out.write_next(value)?;
+                        }
+                    }
+                    Ok(())
+                })
+            }};
+        }
+        match storage {
+            CpuStorageRef::U8(values) => permute!(values),
+            CpuStorageRef::F32(values) => permute!(values),
+            _ => unreachable!(),
+        }
+    })?;
+    smooth(&shuffled)
+}

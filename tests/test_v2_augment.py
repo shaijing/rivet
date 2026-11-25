@@ -1071,3 +1071,45 @@ def test_zoom_blur_identity_seed_and_validation(source):
             rivet.Transform().zoom_blur(max_factor, step)
     with pytest.raises(ValueError, match="ZoomBlur"):
         output(root, lambda p: p.hwc_to_chw().zoom_blur())
+
+
+def test_glass_blur_swaps_whole_pixels_reproducibly(source):
+    root, pixels = source
+
+    def augment(p):
+        return p.glass_blur(sigma=0, max_delta=2, iterations=2)
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(root, augment, epoch=1))
+    assert not np.array_equal(serial[0], pixels)
+    for i, image in enumerate(serial):
+        original = np.roll(pixels, i, axis=0)
+        assert image.shape == original.shape and image.dtype == np.uint8
+        assert sorted(map(tuple, image.reshape(-1, 3))) == sorted(
+            map(tuple, original.reshape(-1, 3))
+        )
+    smoothed = output(root, lambda p: p.glass_blur())[0]
+    assert not np.array_equal(smoothed, serial[0])
+    assert not np.array_equal(smoothed, pixels)
+
+
+@pytest.mark.parametrize("shape", [(1, 1, 3), (1, 5, 3), (5, 1, 3)])
+def test_glass_blur_preserves_uniform_small_float_images(tmp_path, shape):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    Image.fromarray(np.full(shape, 115, dtype=np.uint8)).save(folder / "uniform.png")
+    result = output(
+        tmp_path, lambda p: p.grayscale().to_dtype("float32", True).glass_blur()
+    )[0]
+    assert result.dtype == np.float32 and result.shape == (*shape[:2], 1)
+    np.testing.assert_allclose(result, 115 / 255, atol=1e-7)
+
+
+def test_glass_blur_validation(source):
+    root, _ = source
+    for kwargs in [{"sigma": -0.1}, {"sigma": float("nan")}, {"max_delta": 0}, {"iterations": 0}]:
+        with pytest.raises(ValueError):
+            rivet.Transform().glass_blur(**kwargs)
+    with pytest.raises(ValueError, match="GlassBlur"):
+        output(root, lambda p: p.hwc_to_chw().glass_blur())

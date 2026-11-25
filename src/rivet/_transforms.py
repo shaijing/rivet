@@ -523,6 +523,17 @@ class Transform:
             )
         )
 
+    def glass_blur(
+        self, sigma: float = 0.7, max_delta: int = 4, iterations: int = 2
+    ) -> Transform:
+        """Smooth, exchange nearby pixels, then smooth uint8 or float32 HWC again.
+
+        Each pass exchanges whole pixels with partners within max_delta on
+        each axis, clipped to the image. Sigma is in [0, 10]; zero skips
+        smoothing. Use a positive max_delta and 1–32 passes.
+        """
+        return Transform(self._inner.glass_blur(sigma, max_delta, iterations))
+
     def zoom_blur(
         self,
         max_factor_range: tuple[float, float] = (1.0, 1.31),
