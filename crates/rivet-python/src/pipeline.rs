@@ -936,6 +936,24 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (p_replace_range=(0.1,0.3), n_segments_range=(15,120), max_size=Some(128)))]
+    fn superpixels(
+        &self,
+        p_replace_range: (f64, f64),
+        n_segments_range: (u32, u32),
+        max_size: Option<u32>,
+    ) -> PyResult<Self> {
+        let config = V2Config::Superpixels(rivet_vision::transforms::SuperpixelsConfig {
+            p_replace_range,
+            n_segments_range,
+            max_size,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (scale=(2,3), operation="dilation"))]
     fn morphological(&self, scale: (u32, u32), operation: &str) -> PyResult<Self> {
         use rivet_vision::transforms::{MorphologicalConfig, MorphologicalOperation};
@@ -3228,6 +3246,24 @@ impl PyImagePipeline {
         };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (p_replace_range=(0.1,0.3), n_segments_range=(15,120), max_size=Some(128)))]
+    fn superpixels(
+        &self,
+        p_replace_range: (f64, f64),
+        n_segments_range: (u32, u32),
+        max_size: Option<u32>,
+    ) -> PyResult<Self> {
+        let config = V2Config::Superpixels(rivet_vision::transforms::SuperpixelsConfig {
+            p_replace_range,
+            n_segments_range,
+            max_size,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

@@ -284,6 +284,20 @@ pub(crate) fn infer_image_op(
                     }
                     output.contiguity = Some(Contiguity::Unknown);
                 }
+                V2Config::Superpixels(_) => {
+                    if !matches!(
+                        input_state,
+                        Decoded {
+                            axis_order: ImageAxisOrder::Hwc,
+                            ..
+                        }
+                    ) || matches!(channel_dim(input),ShapeDim::Known(c) if c != 1 && c != 3)
+                    {
+                        return Err(invalid_pipeline(
+                            "Superpixels requires HWC grayscale or RGB",
+                        ));
+                    }
+                }
                 V2Config::Morphological(_) => {
                     output.contiguity = Some(Contiguity::Unknown);
                 }

@@ -2417,3 +2417,31 @@ def test_morphological_cross_reference_and_layout(source, operation):
     planar = output(root, lambda p: p.to_dtype("float32", True).hwc_to_chw().morphological(3, operation))[0]
     assert planar.dtype == np.float32
     np.testing.assert_allclose(planar, expected.transpose(2, 0, 1) / 255, atol=1e-7)
+
+
+def test_superpixels_single_region_means_and_identity(source):
+    root, pixels = source
+    one = output(root, lambda p: p.superpixels((1, 1), (1, 1), 7), transform=True)[0]
+    assert one.dtype == np.uint8 and one.shape == pixels.shape
+    expected = np.floor(pixels.mean(axis=(0, 1)) + 0.5)
+    np.testing.assert_array_equal(one, np.broadcast_to(expected, pixels.shape))
+    identity = output(root, lambda p: p.superpixels((0, 0), (1, 30), 2))[0]
+    np.testing.assert_array_equal(identity, pixels)
+
+    def augment(p):
+        return p.superpixels((0.5, 1), (3, 10), None)
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(root, augment, epoch=1))
+    with pytest.raises(ValueError, match="Superpixels"):
+        output(root, lambda p: p.hwc_to_chw().superpixels())
+
+
+def test_superpixels_single_pixel_grayscale_float(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    Image.fromarray(np.full((1, 1, 3), 55, np.uint8)).save(folder / "image.png")
+    image = output(tmp_path, lambda p: p.grayscale().to_dtype("float32", True).superpixels((1, 1)))[0]
+    assert image.dtype == np.float32 and image.shape == (1, 1, 1)
+    np.testing.assert_allclose(image, 55 / 255, atol=1e-7)

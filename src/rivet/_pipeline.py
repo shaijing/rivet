@@ -633,6 +633,21 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def superpixels(
+        self,
+        p_replace_range: tuple[float, float] = (0.1, 0.3),
+        n_segments_range: tuple[int, int] = (15, 120),
+        max_size: int | None = 128,
+    ) -> Pipeline:
+        """Replace sampled connected color-and-position clusters by their means.
+
+        Accepts uint8 or normalized float32 HWC grayscale or RGB. max_size
+        caps the segmentation resolution. Means use original-resolution
+        pixels, and pixels outside selected regions retain their values.
+        """
+        inner = self._inner.superpixels(p_replace_range, n_segments_range, max_size)
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def morphological(
         self, scale: int | tuple[int, int] = (2, 3), operation: str = "dilation"
     ) -> Pipeline:

@@ -36,6 +36,8 @@ mod longest_size;
 pub(crate) use longest_size::sample_scale;
 pub use longest_size::{LongestMaxSizeConfig, LongestSizeLimit};
 mod morphology;
+mod superpixels;
+pub use superpixels::SuperpixelsConfig;
 mod multi_crop;
 pub use morphology::{MorphologicalConfig, MorphologicalOperation};
 mod noise;

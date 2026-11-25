@@ -176,6 +176,11 @@ impl ImagePipeline {
         ))
     }
 
+    /// Segment and replace seeded regions by their mean pixel values.
+    pub fn superpixels(self, config: crate::transforms::SuperpixelsConfig) -> Self {
+        self.v2(crate::transforms::V2Config::Superpixels(config))
+    }
+
     /// Apply an elliptical erosion or dilation kernel.
     pub fn morphological(self, config: crate::transforms::MorphologicalConfig) -> Self {
         self.v2(crate::transforms::V2Config::Morphological(config))

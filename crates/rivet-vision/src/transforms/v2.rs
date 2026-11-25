@@ -267,6 +267,7 @@ pub enum V2Config {
         scale: bool,
     },
     SquareSymmetry(Option<SquareSymmetry>),
+    Superpixels(SuperpixelsConfig),
     Morphological(MorphologicalConfig),
     SafeRotate(SafeRotateConfig),
     RandomRotate90,
@@ -334,6 +335,7 @@ impl V2Config {
             Self::Defocus { .. } => "Defocus",
             Self::ChannelDropout(_) => "ChannelDropout",
             Self::SquareSymmetry(_) => "SquareSymmetry",
+            Self::Superpixels(_) => "Superpixels",
             Self::Morphological(_) => "Morphological",
             Self::SafeRotate(_) => "SafeRotate",
             Self::RandomRotate90 => "RandomRotate90",
@@ -413,6 +415,7 @@ impl V2Config {
             Self::Defocus { .. } => 67,
             Self::ChannelDropout(_) => 111,
             Self::SquareSymmetry(_) => 122,
+            Self::Superpixels(_) => 125,
             Self::Morphological(_) => 124,
             Self::SafeRotate(_) => 123,
             Self::RandomRotate90 => 121,
@@ -461,6 +464,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::Superpixels(config) => config.valid(),
             Self::Morphological(config) => config.valid(),
             Self::SafeRotate(config) => return config.validate(),
             Self::RandomScale { range, y, .. } => {
@@ -1499,6 +1503,12 @@ impl V2Config {
                     s.image = s.image.permute(&order)?;
                 }
                 s.image = super::quarter_turn(&s.image, axis, turns)?;
+            }
+            Self::Superpixels(config) => {
+                if axis != ImageAxisOrder::Hwc {
+                    return Err(invalid_argument("Superpixels requires HWC input"));
+                }
+                s.image = config.apply(&s.image, rng)?;
             }
             Self::Morphological(config) => {
                 s.image = config.apply(&s.image, axis)?;
