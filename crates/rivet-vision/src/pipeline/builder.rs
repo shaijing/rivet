@@ -176,6 +176,11 @@ impl ImagePipeline {
         ))
     }
 
+    /// Map grayscale intensities to a seeded RGB ramp.
+    pub fn colorize(self, config: crate::transforms::ColorizeConfig) -> Self {
+        self.v2(crate::transforms::V2Config::Colorize(config))
+    }
+
     /// Apply a fixed sepia color matrix blended with the original RGB.
     pub fn to_sepia(self, alpha: f64) -> Self {
         self.v2(crate::transforms::V2Config::ToSepia { alpha })

@@ -109,6 +109,7 @@ pub enum V2Config {
     },
     RandomSunFlare(std::sync::Arc<RandomSunFlareConfig>),
     HueSaturationValue(std::sync::Arc<[(f64, f64); 3]>),
+    Colorize(ColorizeConfig),
     ToSepia {
         alpha: f64,
     },
@@ -247,6 +248,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::RandomSunFlare(_) => "RandomSunFlare",
             Self::HueSaturationValue(_) => "HueSaturationValue",
+            Self::Colorize(_) => "Colorize",
             Self::ToSepia { .. } => "ToSepia",
             Self::RgbShift(_) => "RGBShift",
             Self::RandomBrightnessContrast { .. } => "RandomBrightnessContrast",
@@ -303,6 +305,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => 82,
             Self::RandomSunFlare(_) => 88,
             Self::HueSaturationValue(_) => 99,
+            Self::Colorize(_) => 101,
             Self::ToSepia { .. } => 100,
             Self::RgbShift(_) => 97,
             Self::RandomBrightnessContrast { .. } => 98,
@@ -357,6 +360,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::Colorize(config) => config.valid(),
             Self::ToSepia { alpha } => (0.0..=1.0).contains(alpha),
             Self::HueSaturationValue(ranges) => ranges
                 .iter()
@@ -851,6 +855,7 @@ impl V2Config {
             | Self::MultiplicativeNoise { .. }
             | Self::RandomSunFlare(_)
             | Self::HueSaturationValue(_)
+            | Self::Colorize(_)
             | Self::ToSepia { .. }
             | Self::RgbShift(_)
             | Self::RandomBrightnessContrast { .. }
@@ -1077,6 +1082,9 @@ impl V2Config {
             Self::HueSaturationValue(ranges) => {
                 let shifts = ranges.map(|(lo, hi)| lo + rng.next_f64() * (hi - lo));
                 s.image = super::color::hue_saturation_value(&s.image, shifts)?;
+            }
+            Self::Colorize(config) => {
+                s.image = config.apply(&s.image, rng)?;
             }
             Self::ToSepia { alpha } => {
                 s.image = super::color::to_sepia(&s.image, *alpha)?;

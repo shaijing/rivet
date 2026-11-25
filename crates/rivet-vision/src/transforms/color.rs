@@ -908,3 +908,92 @@ pub(super) fn to_sepia(input: &Tensor, alpha: f64) -> RivetResult<Tensor> {
         })
     })
 }
+
+type AnchorRange = ([u8; 3], [u8; 3]);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ColorizeConfig {
+    pub black_range: AnchorRange,
+    pub white_range: AnchorRange,
+    pub mid_range: Option<AnchorRange>,
+    pub mid_value_range: (u8, u8),
+}
+
+impl ColorizeConfig {
+    pub(super) fn valid(&self) -> bool {
+        let ordered = |(lo, hi): AnchorRange| lo.into_iter().zip(hi).all(|(lo, hi)| lo <= hi);
+        ordered(self.black_range)
+            && ordered(self.white_range)
+            && self.mid_range.is_none_or(|range| {
+                let (lo, hi) = self.mid_value_range;
+                ordered(range) && lo > 0 && lo <= hi && hi < 255
+            })
+    }
+
+    pub(super) fn apply(&self, input: &Tensor, rng: &mut RandomStream) -> RivetResult<Tensor> {
+        use rivet_core::CpuStorageRef;
+
+        let [h, w, 1] = *input.dims() else {
+            return Err(invalid_argument("Colorize requires HWC grayscale input"));
+        };
+        if h == 0 || w == 0 || !matches!(input.dtype(), DType::U8 | DType::F32) {
+            return Err(invalid_argument(
+                "Colorize requires nonempty uint8 or float32 HWC grayscale input",
+            ));
+        }
+        let sample_rgb = |(lo, hi): AnchorRange, rng: &mut RandomStream| -> RivetResult<[f64; 3]> {
+            let mut rgb = [0.0; 3];
+            for (i, value) in rgb.iter_mut().enumerate() {
+                *value = rng.gen_range_usize(lo[i] as usize..hi[i] as usize + 1)? as f64;
+            }
+            Ok(rgb)
+        };
+        let black = sample_rgb(self.black_range, rng)?;
+        let white = sample_rgb(self.white_range, rng)?;
+        let mid = if let Some(range) = self.mid_range {
+            let (lo, hi) = self.mid_value_range;
+            Some((
+                rng.gen_range_usize(lo as usize..hi as usize + 1)? as f64,
+                sample_rgb(range, rng)?,
+            ))
+        } else {
+            None
+        };
+        let map = |value: f64| {
+            let (a, b, t) = match mid {
+                Some((pivot, rgb)) if value <= pivot => (black, rgb, value / pivot),
+                Some((pivot, rgb)) => (rgb, white, (value - pivot) / (255.0 - pivot)),
+                None => (black, white, value / 255.0),
+            };
+            std::array::from_fn::<_, 3, _>(|i| a[i] + t * (b[i] - a[i]))
+        };
+        let input = input.contiguous()?;
+        Ok(input.with_cpu_storage(|storage, layout| match storage {
+            CpuStorageRef::U8(values) => {
+                let lut: [[u8; 3]; 256] =
+                    std::array::from_fn(|v| map(v as f64).map(|c| c.round() as u8));
+                let values = super::contiguous_values(values, layout)?;
+                Tensor::from_exact_writer([h, w, 3], input.device(), |out| {
+                    for &value in values {
+                        for v in lut[value as usize] {
+                            out.write_next(v)?;
+                        }
+                    }
+                    Ok(())
+                })
+            }
+            CpuStorageRef::F32(values) => {
+                let values = super::contiguous_values(values, layout)?;
+                Tensor::from_exact_writer([h, w, 3], input.device(), |out| {
+                    for &value in values {
+                        for v in map(f64::from(value.clamp(0.0, 1.0)) * 255.0) {
+                            out.write_next((v / 255.0) as f32)?;
+                        }
+                    }
+                    Ok(())
+                })
+            }
+            _ => unreachable!(),
+        })?)
+    }
+}

@@ -1077,6 +1077,27 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (black_range=((0,0,0),(0,0,0)), white_range=((255,255,255),(255,255,255)), mid_range=None, mid_value_range=(127,127)))]
+    fn colorize(
+        &self,
+        black_range: ((u8, u8, u8), (u8, u8, u8)),
+        white_range: ((u8, u8, u8), (u8, u8, u8)),
+        mid_range: Option<((u8, u8, u8), (u8, u8, u8))>,
+        mid_value_range: (u8, u8),
+    ) -> PyResult<Self> {
+        let anchors = |((r0, g0, b0), (r1, g1, b1))| ([r0, g0, b0], [r1, g1, b1]);
+        let config = V2Config::Colorize(rivet_vision::transforms::ColorizeConfig {
+            black_range: anchors(black_range),
+            white_range: anchors(white_range),
+            mid_range: mid_range.map(anchors),
+            mid_value_range,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (alpha=1.0))]
     fn to_sepia(&self, alpha: f64) -> PyResult<Self> {
         let config = V2Config::ToSepia { alpha };
@@ -2858,6 +2879,27 @@ impl PyImagePipeline {
             sat_shift_range,
             val_shift_range,
         ]));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (black_range=((0,0,0),(0,0,0)), white_range=((255,255,255),(255,255,255)), mid_range=None, mid_value_range=(127,127)))]
+    fn colorize(
+        &self,
+        black_range: ((u8, u8, u8), (u8, u8, u8)),
+        white_range: ((u8, u8, u8), (u8, u8, u8)),
+        mid_range: Option<((u8, u8, u8), (u8, u8, u8))>,
+        mid_value_range: (u8, u8),
+    ) -> PyResult<Self> {
+        let anchors = |((r0, g0, b0), (r1, g1, b1))| ([r0, g0, b0], [r1, g1, b1]);
+        let config = V2Config::Colorize(rivet_vision::transforms::ColorizeConfig {
+            black_range: anchors(black_range),
+            white_range: anchors(white_range),
+            mid_range: mid_range.map(anchors),
+            mid_value_range,
+        });
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

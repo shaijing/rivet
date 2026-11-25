@@ -55,9 +55,9 @@ pub use advanced_geometry::{
 };
 pub use blur::GaussianBlurConfig;
 pub use color::{
-    AutocontrastConfig, BrightnessConfig, ColorJitterConfig, ColorJitterParams, ContrastConfig,
-    EqualizeConfig, GammaConfig, GrayscaleConfig, HueConfig, InvertConfig, PosterizeConfig,
-    RandomGrayscaleConfig, SaturationConfig, SharpnessConfig, SolarizeConfig,
+    AutocontrastConfig, BrightnessConfig, ColorJitterConfig, ColorJitterParams, ColorizeConfig,
+    ContrastConfig, EqualizeConfig, GammaConfig, GrayscaleConfig, HueConfig, InvertConfig,
+    PosterizeConfig, RandomGrayscaleConfig, SaturationConfig, SharpnessConfig, SolarizeConfig,
 };
 pub use erase::{EraseConfig, EraseRegion, ErasingValue, RandomErasingConfig};
 pub use geometry::{

@@ -753,6 +753,21 @@ class Pipeline:
         )
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def colorize(
+        self,
+        black_range: tuple[tuple[int, int, int], tuple[int, int, int]] = ((0, 0, 0), (0, 0, 0)),
+        white_range: tuple[tuple[int, int, int], tuple[int, int, int]] = ((255, 255, 255), (255, 255, 255)),
+        mid_range: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None,
+        mid_value_range: tuple[int, int] = (127, 127),
+    ) -> Pipeline:
+        """Map one-channel uint8 or normalized float32 HWC to three-channel RGB.
+
+        RGB anchors and the optional midpoint use inclusive 8-bit ranges.
+        Each anchor is sampled per image, then interpolated by intensity.
+        """
+        inner = self._inner.colorize(black_range, white_range, mid_range, mid_value_range)
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def to_sepia(self, alpha: float = 1.0) -> Pipeline:
         """Apply a sepia matrix to uint8 or normalized float32 HWC RGB.
 

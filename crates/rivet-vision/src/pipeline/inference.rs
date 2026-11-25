@@ -359,6 +359,21 @@ pub(crate) fn infer_image_op(
                         )));
                     }
                 }
+                V2Config::Colorize(_) => {
+                    if !matches!(
+                        input_state,
+                        PipelineImageState::Decoded {
+                            dtype: CoreDType::U8 | CoreDType::F32,
+                            axis_order: ImageAxisOrder::Hwc,
+                        }
+                    ) || matches!(channel_dim(input), ShapeDim::Known(c) if c != 1)
+                    {
+                        return Err(invalid_pipeline(
+                            "Colorize requires uint8 or float32 HWC grayscale input",
+                        ));
+                    }
+                    set_channel_dim(&mut output, ShapeDim::Known(3));
+                }
                 V2Config::HueSaturationValue(_) | V2Config::ToSepia { .. } => {
                     if !matches!(
                         input_state,

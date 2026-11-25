@@ -1774,3 +1774,42 @@ def test_to_sepia_validation(source):
         rivet.Transform().to_sepia(1.1)
     with pytest.raises(ValueError, match="ToSepia"):
         output(root, lambda p: p.hwc_to_chw().to_sepia())
+
+
+def test_colorize_piecewise_anchors_and_shape(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    gray = np.array([[0, 64, 128, 192, 255]], dtype=np.uint8)
+    Image.fromarray(np.repeat(gray[..., None], 3, axis=-1)).save(folder / "image.png")
+    black, mid, white = (0, 0, 64), (128, 32, 0), (255, 255, 192)
+
+    def augment(p):
+        return p.colorize((black, black), (white, white), (mid, mid), (128, 128))
+
+    actual = output(tmp_path, lambda p: augment(p.grayscale()), transform=True)[0]
+    expected = np.stack(
+        [np.interp(gray, [0, 128, 255], [black[c], mid[c], white[c]]) for c in range(3)],
+        axis=-1,
+    )
+    assert actual.shape == (1, 5, 3) and actual.dtype == np.uint8
+    np.testing.assert_allclose(actual, expected, atol=0.5)
+    floats = output(
+        tmp_path, lambda p: augment(p.grayscale().to_dtype("float32", True)).hwc_to_chw()
+    )[0]
+    assert floats.shape == (3, 1, 5) and floats.dtype == np.float32
+    np.testing.assert_allclose(floats * 255, expected.transpose(2, 0, 1), atol=3e-5)
+
+
+def test_colorize_seed_and_validation(source):
+    root, _ = source
+
+    def augment(p):
+        return p.grayscale().colorize(((0, 0, 10), (50, 100, 120)))
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(root, augment, epoch=1))
+    with pytest.raises(ValueError, match="Colorize"):
+        output(root, lambda p: p.colorize())
+    with pytest.raises(ValueError):
+        rivet.Transform().colorize(mid_range=((0, 0, 0), (1, 1, 1)), mid_value_range=(0, 127))
