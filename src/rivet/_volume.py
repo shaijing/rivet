@@ -227,5 +227,29 @@ class VolumeSample:
         )
         return result
 
+    def elastic_transform3d(
+        self,
+        *,
+        displacement_range: tuple[float, float] = (0.02, 0.05),
+        control_grid_shape: tuple[int, int] = (7, 7),
+        interpolation: str = "linear",
+        border_mode: str = "constant",
+        fill: float | Iterable[float] = 0,
+        fill_mask: int = 0,
+        seed: int = 0,
+    ) -> VolumeSample:
+        """Apply a seeded cubic displacement field on the original voxel grid.
+
+        Mask IDs use nearest-neighbor sampling. XYZ keypoints follow the inverse
+        of the lookup used to sample voxels.
+        """
+        values = [fill] if isinstance(fill, Real) else list(fill)
+        result = self.__class__.__new__(self.__class__)
+        result._inner = self._inner.elastic_transform3d(
+            displacement_range, control_grid_shape, interpolation, border_mode,
+            values, fill_mask, seed,
+        )
+        return result
+
     def to_dict(self) -> dict[str, Any]:
         return self._inner.to_dict()

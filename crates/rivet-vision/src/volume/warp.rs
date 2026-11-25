@@ -120,7 +120,7 @@ impl VolumeSample {
     }
 }
 
-fn validate_fill(
+pub(super) fn validate_fill(
     sample: &VolumeSample,
     fill: &[f32],
     mask_fill: i64,
@@ -143,7 +143,7 @@ fn validate_fill(
     Ok(())
 }
 
-fn warp(
+pub(super) fn warp(
     input: &Tensor,
     interpolation: VolumeInterpolation,
     border: VolumeBorder,

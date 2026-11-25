@@ -1,9 +1,9 @@
 use crate::{error::to_py_err, numpy::tensor_to_numpy, structured::tensor_from_numpy};
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 use rivet_vision::volume::{
-    Affine3DConfig, Anisotropy3DConfig, CoarseDropout3DConfig, Crop3DConfig, Pad3DConfig,
-    PadIfNeeded3DConfig, Resize3DConfig, VolumeBorder, VolumeInterpolation, VolumeSample,
-    volume_axis_mask,
+    Affine3DConfig, Anisotropy3DConfig, CoarseDropout3DConfig, Crop3DConfig,
+    ElasticTransform3DConfig, Pad3DConfig, PadIfNeeded3DConfig, Resize3DConfig, VolumeBorder,
+    VolumeInterpolation, VolumeSample, volume_axis_mask,
 };
 
 #[pyclass(name = "_VolumeSample")]
@@ -287,24 +287,7 @@ impl PyVolumeSample {
         fill_mask: i64,
         seed: u64,
     ) -> PyResult<Self> {
-        let interpolation = match interpolation {
-            "nearest" => VolumeInterpolation::Nearest,
-            "linear" | "trilinear" => VolumeInterpolation::Linear,
-            _ => {
-                return Err(PyValueError::new_err(
-                    "Affine3D interpolation must be linear or nearest",
-                ));
-            }
-        };
-        let border = match border_mode {
-            "constant" => VolumeBorder::Constant,
-            "replicate" => VolumeBorder::Replicate,
-            _ => {
-                return Err(PyValueError::new_err(
-                    "Affine3D border mode must be constant or replicate",
-                ));
-            }
-        };
+        let (interpolation, border) = warp_modes(interpolation, border_mode)?;
         let config = Affine3DConfig {
             rotate_range,
             scale_range,
@@ -323,6 +306,35 @@ impl PyVolumeSample {
         Ok(Self { inner })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn elastic_transform3d(
+        &self,
+        displacement_range: [f64; 2],
+        control_grid_shape: [usize; 2],
+        interpolation: &str,
+        border_mode: &str,
+        fill: Vec<f32>,
+        fill_mask: i64,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let (interpolation, border) = warp_modes(interpolation, border_mode)?;
+        let config = ElasticTransform3DConfig {
+            displacement_range,
+            control_grid_shape,
+            interpolation,
+            border,
+            fill,
+            fill_mask,
+        };
+        let mut rng = rivet_vision::RandomStream::from_seed(seed);
+        let inner = self
+            .inner
+            .clone()
+            .elastic_transform(&config, &mut rng)
+            .map_err(to_py_err)?;
+        Ok(Self { inner })
+    }
+
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
         out.set_item("volume", tensor_to_numpy(py, self.inner.volume.clone())?)?;
@@ -335,4 +347,29 @@ impl PyVolumeSample {
         out.set_item("label", self.inner.label)?;
         Ok(out)
     }
+}
+
+fn warp_modes(
+    interpolation: &str,
+    border_mode: &str,
+) -> PyResult<(VolumeInterpolation, VolumeBorder)> {
+    let interpolation = match interpolation {
+        "nearest" => VolumeInterpolation::Nearest,
+        "linear" | "trilinear" => VolumeInterpolation::Linear,
+        _ => {
+            return Err(PyValueError::new_err(
+                "3D warp interpolation must be linear or nearest",
+            ));
+        }
+    };
+    let border = match border_mode {
+        "constant" => VolumeBorder::Constant,
+        "replicate" => VolumeBorder::Replicate,
+        _ => {
+            return Err(PyValueError::new_err(
+                "3D warp border mode must be constant or replicate",
+            ));
+        }
+    };
+    Ok((interpolation, border))
 }

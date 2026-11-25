@@ -326,3 +326,55 @@ def test_affine3d_rotation_and_random_reproducibility():
             np.testing.assert_array_equal(result["keypoints"], serial["keypoints"])
     with pytest.raises(ValueError):
         sample.affine3d(scale_range={"x": (0, 1), "y": (1, 1), "z": (1, 1)})
+
+
+def test_elastic_transform3d_shared_smooth_geometry():
+    from concurrent.futures import ThreadPoolExecutor
+    from itertools import product
+
+    z, y, x = np.indices((17, 18, 19))
+    grid = np.stack([x, y, z], axis=-1).astype(np.float32)
+    mask = ((z * 18 + y) * 19 + x).astype(np.int64) + 2**53
+    source = np.array([8, 7, 9], np.float32)
+    sample = VolumeSample(grid, mask=mask, keypoints=[source], label=59)
+
+    def run(seed):
+        return sample.elastic_transform3d(
+            displacement_range=(0.1, 0.1), control_grid_shape=(5, 5),
+            border_mode="replicate", seed=seed,
+        ).to_dict()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for seed, out in enumerate(pool.map(run, range(4))):
+            xyz = np.floor(out["volume"] + 0.5).astype(int)
+            np.testing.assert_array_equal(out["mask"], mask[xyz[..., 2], xyz[..., 1], xyz[..., 0]])
+            destination = out["keypoints"][0]
+            assert not np.array_equal(destination, source)
+            base = np.floor(destination).astype(int)
+            fraction = destination - base
+            back = np.zeros(3)
+            for dx, dy, dz in product(range(2), repeat=3):
+                corner = np.array([dx, dy, dz])
+                xx, yy, zz = base + corner
+                weight = np.prod(np.where(corner, fraction, 1 - fraction))
+                back += weight * out["volume"][zz, yy, xx]
+            np.testing.assert_allclose(back, source, atol=0.01)
+            np.testing.assert_array_equal(out["volume"], run(seed)["volume"])
+            assert out["label"] == 59
+
+
+def test_elastic_transform3d_identity_singleton_and_validation():
+    image = np.full((1, 3, 5), 9, dtype=np.uint8)
+    sample = VolumeSample(image, keypoints=[[2, 1, 0]])
+    np.testing.assert_array_equal(
+        sample.elastic_transform3d(displacement_range=(0, 0)).to_dict()["volume"], image
+    )
+    singleton = VolumeSample(np.full((1, 1, 1), 99, dtype=np.uint8))
+    np.testing.assert_array_equal(singleton.elastic_transform3d().to_dict()["volume"], 99)
+    flat = sample.elastic_transform3d(border_mode="replicate").to_dict()
+    np.testing.assert_array_equal(flat["volume"], image)
+    assert flat["keypoints"][0, 2] == 0
+    with pytest.raises(ValueError):
+        sample.elastic_transform3d(control_grid_shape=(3, 7))
+    with pytest.raises(ValueError):
+        sample.elastic_transform3d(displacement_range=(0.1, 1))
