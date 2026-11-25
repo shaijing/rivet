@@ -2504,3 +2504,16 @@ def test_grid_elastic_deform_identity_edges_and_seed(source):
     np.testing.assert_array_equal(serial[0][:, [0, -1]], pixels[:, [0, -1]])
     with pytest.raises(ValueError):
         rivet.Transform().grid_elastic_deform((1, 3), 1)
+
+
+def test_thin_plate_spline_identity_and_seed(source):
+    root, pixels = source
+    np.testing.assert_array_equal(output(root, lambda p: p.thin_plate_spline((0, 0)))[0], pixels)
+    serial = output(root, lambda p: p.thin_plate_spline())
+    np.testing.assert_array_equal(
+        serial, output(root, lambda p: p.thin_plate_spline(), transform=True, workers=3)
+    )
+    assert not np.array_equal(serial[0], pixels)
+    assert serial[0].shape == pixels.shape and serial[0].dtype == np.uint8
+    with pytest.raises(ValueError):
+        rivet.Transform().thin_plate_spline(num_control_points=1)

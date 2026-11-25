@@ -1418,3 +1418,16 @@ def test_grid_elastic_deform_uses_shared_remap_for_targets():
     np.testing.assert_allclose(result["keypoints"][0, 0], [0, 0], atol=1e-6)
     assert np.isfinite(result["keypoints"]).all()
     np.testing.assert_array_equal(result["labels"], [3])
+
+
+def test_thin_plate_spline_matches_nearest_masks_and_preserves_degenerate_image():
+    mask = np.arange(1, 100, dtype=np.uint8).reshape(9, 11)
+    image = np.repeat(mask[..., None], 3, axis=-1)
+    t = rivet.Transform().thin_plate_spline(interpolation="nearest", fill=200, fill_mask=200)
+    sample = rivet.AnnotatedSample(image, masks=mask, boxes=[[2, 2, 9, 7]], labels=[4], keypoints=[[[5, 4]]])
+    result = sample.apply(t).to_dict()
+    np.testing.assert_array_equal(result["image"][..., 0], result["masks"])
+    np.testing.assert_array_equal(result["labels"], [4])
+    assert np.isfinite(result["keypoints"]).all()
+    one_row = rivet.AnnotatedSample(image[:1], masks=mask[:1])
+    np.testing.assert_array_equal(one_row.apply(t).to_dict()["image"], image[:1])

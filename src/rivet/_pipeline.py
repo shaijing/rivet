@@ -633,6 +633,28 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def thin_plate_spline(
+        self,
+        scale_range: tuple[float, float] = (0.2, 0.4),
+        num_control_points: int = 4,
+        *,
+        interpolation: str = "bilinear",
+        fill: int = 0,
+        fill_mask: int = 0,
+    ) -> Pipeline:
+        """Apply a smooth seeded spline warp to uint8 HWC or CHW.
+
+        Control points per axis are in [2, 12]. Normalized displacements
+        are reduced when necessary to prevent foldover. Degenerate axes
+        keep the input. Masks use nearest sampling and keypoints invert
+        the same spline used for image sampling.
+        """
+        inner = self._inner.thin_plate_spline(
+            scale_range, num_control_points, interpolation=interpolation,
+            fill=fill, fill_mask=fill_mask,
+        )
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def grid_elastic_deform(
         self,
         num_grid_xy: tuple[int, int],

@@ -176,6 +176,11 @@ impl ImagePipeline {
         ))
     }
 
+    /// Apply a smooth seeded thin-plate spline remap.
+    pub fn thin_plate_spline(self, config: crate::transforms::ThinPlateSplineConfig) -> Self {
+        self.v2(crate::transforms::V2Config::ThinPlateSpline(config))
+    }
+
     /// Apply elastic displacements on a fixed-boundary control grid.
     pub fn grid_elastic_deform(self, config: crate::transforms::GridElasticDeformConfig) -> Self {
         self.v2(crate::transforms::V2Config::GridElasticDeform(config))

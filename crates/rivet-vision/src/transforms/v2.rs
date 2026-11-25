@@ -267,6 +267,7 @@ pub enum V2Config {
         scale: bool,
     },
     SquareSymmetry(Option<SquareSymmetry>),
+    ThinPlateSpline(ThinPlateSplineConfig),
     GridElasticDeform(GridElasticDeformConfig),
     PiecewiseAffine(PiecewiseAffineConfig),
     GridDistortion(GridDistortionConfig),
@@ -339,6 +340,7 @@ impl V2Config {
             Self::Defocus { .. } => "Defocus",
             Self::ChannelDropout(_) => "ChannelDropout",
             Self::SquareSymmetry(_) => "SquareSymmetry",
+            Self::ThinPlateSpline(_) => "ThinPlateSpline",
             Self::GridElasticDeform(_) => "GridElasticDeform",
             Self::PiecewiseAffine(_) => "PiecewiseAffine",
             Self::GridDistortion(_) => "GridDistortion",
@@ -423,6 +425,7 @@ impl V2Config {
             Self::Defocus { .. } => 67,
             Self::ChannelDropout(_) => 111,
             Self::SquareSymmetry(_) => 122,
+            Self::ThinPlateSpline(_) => 130,
             Self::GridElasticDeform(_) => 129,
             Self::PiecewiseAffine(_) => 128,
             Self::GridDistortion(_) => 127,
@@ -476,6 +479,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::ThinPlateSpline(config) => config.valid(),
             Self::GridElasticDeform(config) => config.valid(),
             Self::PiecewiseAffine(config) => config.valid(),
             Self::GridDistortion(config) => config.valid(),
@@ -1519,6 +1523,25 @@ impl V2Config {
                     s.image = s.image.permute(&order)?;
                 }
                 s.image = super::quarter_turn(&s.image, axis, turns)?;
+            }
+            Self::ThinPlateSpline(config) => {
+                use super::remap::SpatialRemap;
+                if s.image.dtype() != DType::U8 || h == 0 || w == 0 {
+                    return Err(invalid_argument(
+                        "ThinPlateSpline requires nonempty uint8 input",
+                    ));
+                }
+                let map = config.sample(h, w, rng);
+                if !map.is_identity() {
+                    return super::remap::remap_image(
+                        ImageSample::Decoded(s),
+                        axis,
+                        (h, w),
+                        config.interpolation,
+                        config.fill,
+                        |x, y| map.source([x as f64, y as f64]),
+                    );
+                }
             }
             Self::GridElasticDeform(config) => {
                 use super::remap::SpatialRemap;

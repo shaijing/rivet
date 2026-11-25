@@ -936,6 +936,28 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (scale_range=(0.2,0.4), num_control_points=4, *, interpolation="bilinear", fill=0, fill_mask=0))]
+    fn thin_plate_spline(
+        &self,
+        scale_range: (f64, f64),
+        num_control_points: u32,
+        interpolation: &str,
+        fill: u8,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        let config = V2Config::ThinPlateSpline(rivet_vision::transforms::ThinPlateSplineConfig {
+            scale_range,
+            num_control_points,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+            fill_mask,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (num_grid_xy,magnitude,*,interpolation="bilinear",fill=0,fill_mask=0))]
     fn grid_elastic_deform(
         &self,
@@ -3348,6 +3370,28 @@ impl PyImagePipeline {
         };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (scale_range=(0.2,0.4), num_control_points=4, *, interpolation="bilinear", fill=0, fill_mask=0))]
+    fn thin_plate_spline(
+        &self,
+        scale_range: (f64, f64),
+        num_control_points: u32,
+        interpolation: &str,
+        fill: u8,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        let config = V2Config::ThinPlateSpline(rivet_vision::transforms::ThinPlateSplineConfig {
+            scale_range,
+            num_control_points,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+            fill_mask,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 
