@@ -17,6 +17,84 @@ multi-worker loading, deterministic sampling, and Lance-backed dataset support.
 The Rust [pipeline IR](docs/pipeline-ir.md) supports executable DAGs with shared
 inputs and image branch joins, while retaining the CPU linear fast path.
 
+## Downloading datasets
+
+`rivet.download_dataset()` returns a local `Path` for a Hugging Face dataset
+repository, Git checkout, HTTP(S) file, or extracted HTTP(S) archive.
+
+```python
+import rivet
+
+snapshot = rivet.download_dataset("hf:ylecun/mnist")
+checkout = rivet.download_dataset("git:owner/dataset", revision="v1")
+archive = rivet.download_dataset("https://example.org/dataset.tar.gz")
+train = rivet.load_dataset("https://example.org/images-lance.zip", split="train")
+```
+
+`git:owner/repo` and `github:owner/repo` resolve to GitHub. Use
+`git:https://host/owner/repo.git` or `git:ssh://git@host/owner/repo.git` for
+other hosts. Git downloads require the `git` executable. Hugging Face uses
+the Hub client's authentication, including `HF_TOKEN` for private datasets.
+Pass `revision` for a Git or Hugging Face branch, tag, or commit.
+
+Downloads are stored in `$XDG_CACHE_HOME/rivet/datasets`, defaulting to
+`~/.cache/rivet/datasets`. Pass `cache_dir` to override the dataset cache
+directory or `offline=True` to use only a completed cache entry. The first
+successful download is reused for the same source and revision. Pin a commit
+for reproducibility or remove the corresponding cache entry to update a
+moving branch. HTTP(S) ZIP and TAR archives are extracted by default. Pass
+`extract=False` to keep the downloaded file.
+
+`rivet.load_dataset()` also accepts these source strings when the downloaded
+contents contain a Lance dataset or split bundle. It recognizes
+`dataset.json`, legacy `dataset.rivet.json`, and directories containing
+`*.lance` splits. Existing local Lance paths work with the same API. For
+other formats, use the path returned by `download_dataset()` with the reader
+for that format.
+
+### Convert downloads to Lance
+
+Pass `format="lance"` to download and convert supported tabular files.
+Conversion runs in the Rivet Rust extension with the default `lance` build
+feature. The example uses `pylance` to read the resulting text table.
+
+```python
+import lance
+import rivet
+
+root = rivet.download_dataset("hf:SetFit/sst5", format="lance")
+print(lance.dataset(root / "train.lance").count_rows())
+
+root = rivet.download_dataset(
+    "git:clinc/oos-eval",
+    revision="828f8093932c8fe6ca7936c3d2e52903b1c523de",
+    format="lance",
+    data_files="data/data_full.json",
+    json_columns=("text", "label"),
+)
+```
+
+Conversion supports Parquet, Arrow IPC, CSV, TSV, JSON Lines, and JSON
+record arrays. It infers common split names from filenames or directory
+names. Pass `data_files="relative/file.json"` to select a single file,
+including a JSON object whose keys are splits and whose values are record
+arrays. For repositories with multiple variants, pass a mapping such as
+`data_files={"train": "data/variant/train-*.parquet", "test": "data/variant/test-*.parquet"}`.
+Files selected for the same split are combined. Use `json_columns` to name
+the fields of positional JSON records.
+
+The returned directory contains `dataset.json` and one `<split>.lance`
+directory per split. Text and other tabular datasets can be read with
+`lance.dataset()`. Image tables with encoded image bytes and an integer
+class label can also be opened through `rivet.load_dataset()` with the
+appropriate column names.
+
+Raw downloads stay in the provider directories. Converted datasets are
+stored under `derived/lance/<dataset>/<cache-key>` in the same XDG cache
+and reused for the same source, revision, and conversion options.
+With `offline=True`, Rivet can open a completed conversion or build one
+from a cached raw download.
+
 ## Image result compatibility
 
 Rust image kernels follow torchvision's **PIL/RGB uint8** path for resize,

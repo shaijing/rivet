@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from ._download import _is_remote, download_dataset
 from ._io import hf_arrow_files
 from ._pipeline import Pipeline
 from ._rivet import _ArrowDataset, _ImageFolderDataset
@@ -256,10 +258,50 @@ def scan_lance(
     ).pipeline()
 
 
+def _downloaded_lance_root(payload: Path) -> Path:
+    candidates = []
+    for root, dirs, files in payload.walk():
+        if (
+            root.suffix == ".lance"
+            or any(name.endswith(".lance") for name in dirs)
+            or "dataset.json" in files
+            or "dataset.rivet.json" in files
+        ):
+            candidates.append(root)
+            dirs.clear()
+
+    if len(candidates) != 1:
+        reason = "no Lance dataset" if not candidates else "multiple Lance dataset roots"
+        raise ValueError(f"downloaded source contains {reason}; inspect {payload}")
+
+    root = candidates[0]
+    cache_root = payload.resolve()
+    if root.suffix != ".lance":
+        for name in ("dataset.json", "dataset.rivet.json"):
+            manifest = root / name
+            if not manifest.is_file():
+                continue
+            data = json.loads(manifest.read_bytes())
+            field = "path" if data.get("format_version") == 1 else "uri"
+            for split in data.get("splits", {}).values():
+                target = split.get(field)
+                if isinstance(target, str):
+                    path = Path(target.removeprefix("file://"))
+                    if not (root / path).resolve().is_relative_to(cache_root):
+                        raise ValueError(
+                            f"downloaded manifest split leaves the cache: {target!r}"
+                        )
+            break
+    return root
+
+
 def load_dataset(
     path: str | Path,
     *,
     split: str | None = None,
+    revision: str | None = None,
+    cache_dir: str | Path | None = None,
+    offline: bool = False,
     image_column: str = "image",
     label_column: str = "label",
 ) -> LanceDataset | DatasetDict:
@@ -268,10 +310,19 @@ def load_dataset(
     A path ending in .lance is one physical dataset. A directory is resolved
     as a split collection using dataset.json when present (with legacy
     dataset.rivet.json support), or immediate *.lance child directories
-    otherwise.
+    otherwise. Remote source strings are downloaded to the dataset cache
+    before opening the Lance dataset.
     """
-    path = Path(path)
     _, lance_dataset_dict, load_lance_split = _require_lance()
+    if _is_remote(path):
+        payload = download_dataset(
+            str(path), revision=revision, cache_dir=cache_dir, offline=offline
+        )
+        path = _downloaded_lance_root(payload)
+    else:
+        if revision is not None:
+            raise ValueError("revision requires a remote dataset source")
+        path = Path(path)
     is_physical = path.name.endswith(".lance")
 
     if split is None:

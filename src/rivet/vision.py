@@ -17,6 +17,7 @@ from ._datasets import (
     scan_image_folder,
     scan_lance,
 )
+from ._download import download_dataset
 from ._io import (
     hf_arrow_files,
     load_hf_arrow_files,
@@ -55,6 +56,7 @@ __all__ = [
     "UniformTemporalSubsample",
     "VideoSample",
     "dataset",
+    "download_dataset",
     "hf_arrow_files",
     "load_dataset",
     "load_hf_arrow_files",

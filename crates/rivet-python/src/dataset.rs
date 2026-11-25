@@ -303,3 +303,25 @@ fn encoded_sample_to_py(py: Python<'_>, image: Buffer, label: i64) -> PyResult<P
     out.set_item("label", label)?;
     Ok(out.into())
 }
+
+#[cfg(feature = "lance")]
+#[pyfunction]
+pub(crate) fn _convert_lance_files(
+    py: Python<'_>,
+    output: PathBuf,
+    name: String,
+    files: std::collections::BTreeMap<String, Vec<PathBuf>>,
+    json_columns: Option<Vec<String>>,
+    detect_json_splits: bool,
+) -> PyResult<()> {
+    py.detach(move || {
+        rivet_data::dataset::lance::convert_files_to_lance(
+            &output,
+            &name,
+            files,
+            json_columns.as_deref(),
+            detect_json_splits,
+        )
+    })
+    .map_err(to_py_err)
+}

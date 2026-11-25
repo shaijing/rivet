@@ -13,7 +13,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["lance"]
-lance = ["rivet-vision/lance"]
+lance = ["rivet-data/lance", "rivet-vision/lance"]
 blas = ["rivet-vision/blas"]
 
 [dependencies]

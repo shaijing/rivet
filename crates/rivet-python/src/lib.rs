@@ -30,5 +30,7 @@ fn _rivet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(loader::read_image_batch, m)?)?;
     #[cfg(feature = "lance")]
     m.add_function(wrap_pyfunction!(dataset::load_lance_split, m)?)?;
+    #[cfg(feature = "lance")]
+    m.add_function(wrap_pyfunction!(dataset::_convert_lance_files, m)?)?;
     Ok(())
 }
