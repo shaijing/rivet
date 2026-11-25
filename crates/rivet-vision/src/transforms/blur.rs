@@ -550,3 +550,96 @@ pub(super) fn stochastic_convolution(
     }
     convolve_square(input, name, size, &weights, padding)
 }
+
+pub(super) fn zoom_blur(
+    input: &rivet_core::Tensor,
+    max_factor: f64,
+    step: f64,
+) -> RivetResult<rivet_core::Tensor> {
+    use rivet_core::CpuStorageRef;
+
+    let [height, width, channels] = convolution_shape(input, "ZoomBlur")?;
+    let scales: Vec<_> = (1..=128)
+        .map(|i| 1.0 + f64::from(i) * step)
+        .take_while(|&factor| factor <= max_factor)
+        .filter(|&factor| factor > 1.0)
+        .map(f64::recip)
+        .collect();
+    if scales.is_empty() || (height, width) == (1, 1) {
+        return Ok(input.clone());
+    }
+
+    let axis = |len: usize, stride: usize| {
+        let center = (len - 1) as f64 * 0.5;
+        (0..len)
+            .flat_map(|i| {
+                scales.iter().map(move |&scale| {
+                    let source =
+                        (center + (i as f64 - center) * scale).clamp(0.0, (len - 1) as f64);
+                    let low = source as usize;
+                    (
+                        low * stride,
+                        (low + 1).min(len - 1) * stride,
+                        source - low as f64,
+                    )
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let rows = axis(height, width * channels);
+    let cols = axis(width, channels);
+    let input = input.contiguous()?;
+    Ok(input.with_cpu_storage(|storage, layout| match storage {
+        CpuStorageRef::U8(values) => write_zoom(
+            &input,
+            super::contiguous_values(values, layout)?,
+            &rows,
+            &cols,
+            scales.len(),
+            |value| value.round() as u8,
+        ),
+        CpuStorageRef::F32(values) => write_zoom(
+            &input,
+            super::contiguous_values(values, layout)?,
+            &rows,
+            &cols,
+            scales.len(),
+            |value| value as f32,
+        ),
+        _ => unreachable!(),
+    })?)
+}
+
+fn write_zoom<T: rivet_core::WithDType + Into<f64>>(
+    input: &rivet_core::Tensor,
+    pixels: &[T],
+    rows: &[(usize, usize, f64)],
+    cols: &[(usize, usize, f64)],
+    samples: usize,
+    finish: impl Fn(f64) -> T,
+) -> rivet_core::Result<rivet_core::Tensor> {
+    let channels = input.dims()[2];
+    let mean = 1.0 / (1 + samples) as f64;
+    let mut pixel = 0;
+    rivet_core::Tensor::from_exact_writer(input.dims(), input.device(), |out| {
+        for ys in rows.chunks_exact(samples) {
+            for xs in cols.chunks_exact(samples) {
+                for c in 0..channels {
+                    let mut sum = pixels[pixel + c].into();
+                    for (&(top, bottom, wy), &(left, right, wx)) in ys.iter().zip(xs) {
+                        let a = pixels[top + left + c].into();
+                        let b = pixels[top + right + c].into();
+                        let d = pixels[bottom + left + c].into();
+                        let e = pixels[bottom + right + c].into();
+                        let upper = a + wx * (b - a);
+                        let lower = d + wx * (e - d);
+                        sum += upper + wy * (lower - upper);
+                    }
+                    out.write_next(finish(sum * mean))?;
+                }
+                pixel += channels;
+            }
+        }
+        Ok(())
+    })
+}

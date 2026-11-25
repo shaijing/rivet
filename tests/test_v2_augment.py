@@ -1028,3 +1028,46 @@ def test_stochastic_convolution_seed_and_padding(source):
             rivet.Transform().stochastic_convolution(strength_range=bounds)
     with pytest.raises(ValueError, match="StochasticConvolution"):
         output(root, lambda p: augment(p.hwc_to_chw()))
+
+
+@pytest.mark.parametrize("floating", [False, True])
+def test_zoom_blur_averages_centered_samples(tmp_path, floating):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    ramp = np.arange(5, dtype=np.uint8) * 40
+    pixels = np.tile(ramp[None, :, None], (1, 1, 3))
+    Image.fromarray(pixels).save(folder / "ramp.png")
+
+    def augment(p):
+        p = p.grayscale()
+        if floating:
+            p = p.to_dtype("float32", True)
+        return p.zoom_blur((2, 2), (0.5, 0.5))
+
+    actual = output(tmp_path, augment, transform=True, workers=2)[0]
+    # For a linear ramp, bilinear interpolation evaluates the ramp at the
+    # mean of the original, 1.5x, and 2x source coordinates.
+    expected = 80 + (ramp.astype(float) - 80) * (1 + 1 / 1.5 + 1 / 2) / 3
+    assert actual.shape == (1, 5, 1)
+    if floating:
+        assert actual.dtype == np.float32
+        np.testing.assert_allclose(actual[0, :, 0], expected / 255, atol=1e-7)
+    else:
+        assert actual.dtype == np.uint8
+        np.testing.assert_array_equal(actual[0, :, 0], expected.round())
+
+
+def test_zoom_blur_identity_seed_and_validation(source):
+    root, pixels = source
+    identity = output(root, lambda p: p.zoom_blur((1, 1)))
+    np.testing.assert_array_equal(identity[0], pixels)
+    serial = output(root, lambda p: p.zoom_blur())
+    np.testing.assert_array_equal(
+        serial, output(root, lambda p: p.zoom_blur(), transform=True, workers=3)
+    )
+    assert not np.array_equal(serial, output(root, lambda p: p.zoom_blur(), epoch=1))
+    for max_factor, step in [((0.9, 1), (0.1, 0.2)), ((1, 2), (0, 0.1)), ((1, 3), (0.001, 0.01))]:
+        with pytest.raises(ValueError):
+            rivet.Transform().zoom_blur(max_factor, step)
+    with pytest.raises(ValueError, match="ZoomBlur"):
+        output(root, lambda p: p.hwc_to_chw().zoom_blur())

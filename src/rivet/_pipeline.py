@@ -633,6 +633,19 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def zoom_blur(
+        self,
+        max_factor_range: tuple[float, float] = (1.0, 1.31),
+        step_factor_range: tuple[float, float] = (0.01, 0.03),
+    ) -> Pipeline:
+        """Average uint8 or float32 HWC with bilinear zooms about the pixel center.
+
+        Sample a maximum factor and a positive step per image, then average
+        the original with factors 1 + n * step up to the maximum. The ranges
+        may allow at most 128 zoomed samples per image.
+        """
+        return Pipeline(self._inner.zoom_blur(max_factor_range, step_factor_range), as_numpy=self.as_numpy)
+
     def stochastic_convolution(
         self,
         kernel_range: tuple[int, int] = (3, 7),

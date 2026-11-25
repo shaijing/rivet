@@ -111,6 +111,14 @@ impl ImagePipeline {
         self.v2(crate::transforms::V2Config::LetterBox(config))
     }
 
+    /// Average an image with centered, bilinearly zoomed samples.
+    pub fn zoom_blur(self, max_factor_range: (f64, f64), step_factor_range: (f64, f64)) -> Self {
+        self.v2(crate::transforms::V2Config::ZoomBlur {
+            max_factor_range,
+            step_factor_range,
+        })
+    }
+
     /// Apply a seeded Gaussian perturbation of the identity kernel.
     pub fn stochastic_convolution(
         self,

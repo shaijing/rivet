@@ -60,6 +60,10 @@ pub enum V2Config {
         grid: (u32, u32),
         clip_limit: f64,
     },
+    ZoomBlur {
+        max_factor_range: (f64, f64),
+        step_factor_range: (f64, f64),
+    },
     StochasticConvolution {
         kernel_range: (u32, u32),
         strength_range: (f32, f32),
@@ -139,6 +143,7 @@ impl V2Config {
             Self::ShotNoise { .. } => "ShotNoise",
             Self::RandomToneCurve { .. } => "RandomToneCurve",
             Self::Clahe { .. } => "CLAHE",
+            Self::ZoomBlur { .. } => "ZoomBlur",
             Self::StochasticConvolution { .. } => "StochasticConvolution",
             Self::AdvancedBlur(_) => "AdvancedBlur",
             Self::Blur { .. } => "Blur",
@@ -172,6 +177,7 @@ impl V2Config {
             Self::ShotNoise { .. } => 60,
             Self::RandomToneCurve { .. } => 69,
             Self::Clahe { .. } => 70,
+            Self::ZoomBlur { .. } => 78,
             Self::StochasticConvolution { .. } => 77,
             Self::AdvancedBlur(_) => 76,
             Self::Blur { .. } => 75,
@@ -206,6 +212,18 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::ZoomBlur {
+                max_factor_range: (low, high),
+                step_factor_range: (step_low, step_high),
+            } => {
+                *low >= 1.0
+                    && low <= high
+                    && high.is_finite()
+                    && *step_low > 0.0
+                    && step_low <= step_high
+                    && step_high.is_finite()
+                    && (high - 1.0) / step_low <= 128.0
+            }
             Self::StochasticConvolution {
                 kernel_range,
                 strength_range: (low, high),
@@ -588,6 +606,7 @@ impl V2Config {
             }
             Self::RandomToneCurve { .. }
             | Self::Clahe { .. }
+            | Self::ZoomBlur { .. }
             | Self::StochasticConvolution { .. }
             | Self::AdvancedBlur(_)
             | Self::Blur { .. }
@@ -653,6 +672,15 @@ impl V2Config {
                     *padding_mode,
                     rng,
                 )?;
+            }
+            Self::ZoomBlur {
+                max_factor_range,
+                step_factor_range,
+            } => {
+                let mut sample = |(low, high)| low + rng.next_f64() * (high - low);
+                let max_factor = sample(*max_factor_range);
+                let step = sample(*step_factor_range);
+                s.image = super::blur::zoom_blur(&s.image, max_factor, step)?;
             }
             Self::MedianBlur => {
                 s.image = super::blur::median_blur_3x3(&s.image)?;

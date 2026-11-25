@@ -905,6 +905,22 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (max_factor_range=(1.0, 1.31), step_factor_range=(0.01, 0.03)))]
+    fn zoom_blur(
+        &self,
+        max_factor_range: (f64, f64),
+        step_factor_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let config = V2Config::ZoomBlur {
+            max_factor_range,
+            step_factor_range,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (kernel_range=(3, 7), strength_range=(0.0, 1.0), *, per_channel=false, padding_mode="reflect"))]
     fn stochastic_convolution(
         &self,
@@ -2164,6 +2180,22 @@ impl PyImagePipeline {
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().letterbox(config),
+        })
+    }
+
+    #[pyo3(signature = (max_factor_range=(1.0, 1.31), step_factor_range=(0.01, 0.03)))]
+    fn zoom_blur(
+        &self,
+        max_factor_range: (f64, f64),
+        step_factor_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let config = V2Config::ZoomBlur {
+            max_factor_range,
+            step_factor_range,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 
