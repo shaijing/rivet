@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import re
 import sys
 from collections.abc import Sequence
 from importlib.metadata import version
@@ -15,7 +17,7 @@ from zipfile import BadZipFile
 
 from httpx import HTTPError
 
-from ._download import download_dataset, list_datasets
+from ._download import _dataset_cache, download_dataset, list_datasets
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -84,32 +86,57 @@ def _preferred_datasets(entries: list[dict]) -> list[dict]:
     return [preferred[name] for name in sorted(preferred)]
 
 
-def _print_datasets(entries: list[dict]) -> None:
+def _display_path(path: Path, cache_root: Path) -> str:
+    if not path.is_relative_to(cache_root):
+        return str(path)
+    relative = path.relative_to(cache_root)
+    parts = (
+        re.sub(r"(^|[-_])([0-9a-f]{8})[0-9a-f]{56}$", r"\1\2…", part)
+        for part in relative.parts
+    )
+    return str(Path(*parts))
+
+
+def _print_datasets(entries: list[dict], cache_dir: Path) -> None:
     if not entries:
         print("No cached datasets found.")
         return
 
-    headers = ("NAME", "KIND", "PROVIDER", "SPLITS", "PATH")
+    cache_root = cache_dir.resolve()
+    headers = ("NAME", "KIND", "PROVIDER", "SPLITS", "PATH (CACHE RELATIVE)")
     rows = [
         (
             entry["name"],
             entry["kind"],
             entry["provider"] or "-",
             ", ".join(entry["splits"]) or "-",
-            str(entry["path"]),
+            _display_path(entry["path"], cache_root),
         )
         for entry in entries
     ]
     widths = [max(map(len, column)) for column in zip(headers, *rows, strict=True)]
-    for row in (headers, tuple("-" * width for width in widths), *rows):
-        print(
-            "  ".join(
-                value.ljust(width)
-                for value, width in zip(row[:-1], widths[:-1], strict=True)
-            ),
-            row[-1],
-            sep="  ",
-        )
+    use_color = (
+        sys.stdout.isatty()
+        and not os.environ.get("NO_COLOR")
+        and os.environ.get("TERM") != "dumb"
+    )
+
+    def color(value: str, style: str) -> str:
+        return f"\033[{style}m{value}\033[0m" if use_color else value
+
+    def cells(row: tuple[str, ...]) -> list[str]:
+        return [
+            value.ljust(width) if index < len(row) - 1 else value
+            for index, (value, width) in enumerate(zip(row, widths, strict=True))
+        ]
+
+    print(color("  ".join(cells(headers)), "1"))
+    print(color("  ".join("-" * width for width in widths), "2"))
+    kind_colors = {"derived": "32", "local": "36", "download": "33"}
+    for row in rows:
+        columns = cells(row)
+        columns[1] = color(columns[1], kind_colors[row[1]])
+        print("  ".join(columns))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -117,13 +144,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "list":
-            entries = list_datasets(args.cache_dir)
+            cache_dir = args.cache_dir.expanduser() if args.cache_dir else _dataset_cache()
+            entries = list_datasets(cache_dir)
             if not args.all:
                 entries = _preferred_datasets(entries)
             if args.json:
                 print(json.dumps(entries, default=str, ensure_ascii=False))
             else:
-                _print_datasets(entries)
+                _print_datasets(entries, cache_dir)
         else:
             data_files = args.data_file
             if args.split_file:
