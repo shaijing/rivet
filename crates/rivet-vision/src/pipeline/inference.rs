@@ -306,6 +306,20 @@ pub(crate) fn infer_image_op(
                         ShapeDim::Known(config.width as usize),
                     );
                 }
+                V2Config::PlanckianJitter { .. } => {
+                    if !matches!(
+                        input_state,
+                        PipelineImageState::Decoded {
+                            dtype: CoreDType::U8 | CoreDType::F32,
+                            axis_order: ImageAxisOrder::Hwc,
+                        }
+                    ) || matches!(channel_dim(input), ShapeDim::Known(c) if c != 3)
+                    {
+                        return Err(invalid_pipeline(
+                            "PlanckianJitter requires uint8 or float32 HWC RGB input",
+                        ));
+                    }
+                }
                 V2Config::Vignetting { .. } => {
                     if !matches!(
                         input_state,

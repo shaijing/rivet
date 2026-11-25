@@ -814,3 +814,48 @@ def test_vignetting_is_seeded_across_workers(source):
     parallel = output(root, augment, transform=True, workers=3)
     np.testing.assert_array_equal(serial, parallel)
     assert not np.array_equal(serial, output(root, augment, epoch=1))
+
+
+def test_planckian_jitter_white_point_and_clipping(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.array([[[128, 128, 128], [255, 255, 255], [0, 0, 0]]], dtype=np.uint8)
+    Image.fromarray(pixels).save(folder / "image.png")
+
+    def tint(kelvin, floating=False):
+        def build(p):
+            if floating:
+                p = p.to_dtype("float32", True)
+            return p.planckian_jitter((kelvin, kelvin))
+
+        return output(tmp_path, build, transform=True)[0]
+
+    np.testing.assert_array_equal(tint(6500), pixels)
+    warm, cool = tint(3000), tint(15000)
+    assert warm[0, 0, 0] > 128 > warm[0, 0, 2]
+    assert cool[0, 0, 2] > 128 > cool[0, 0, 0]
+    assert warm[0, 1, 0] == cool[0, 1, 2] == 255
+    for kelvin, result in [(3000, warm), (15000, cool)]:
+        np.testing.assert_array_equal(result[..., 1], pixels[..., 1])
+        np.testing.assert_array_equal(result[0, 2], 0)
+        floating = tint(kelvin, floating=True)
+        assert floating.dtype == np.float32
+        np.testing.assert_allclose(floating * 255, result, atol=0.5)
+
+
+def test_planckian_jitter_seed_and_validation(source):
+    root, _ = source
+
+    def augment(p):
+        return p.planckian_jitter()
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(root, augment, epoch=1))
+    for interval in [(2999, 6500), (6500, 15001), (6500, 3000), (float("nan"), 6500)]:
+        with pytest.raises(ValueError):
+            rivet.Transform().planckian_jitter(interval)
+    with pytest.raises(ValueError, match="PlanckianJitter"):
+        output(root, lambda p: p.grayscale().planckian_jitter())
+    with pytest.raises(ValueError, match="PlanckianJitter"):
+        output(root, lambda p: p.hwc_to_chw().planckian_jitter())

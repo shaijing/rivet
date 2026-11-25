@@ -111,6 +111,11 @@ impl ImagePipeline {
         self.v2(crate::transforms::V2Config::LetterBox(config))
     }
 
+    /// Sample a blackbody temperature in kelvin to tint an RGB image.
+    pub fn planckian_jitter(self, temperature_range: (f64, f64)) -> Self {
+        self.v2(crate::transforms::V2Config::PlanckianJitter { temperature_range })
+    }
+
     /// Apply seeded radial darkening with intensity and center fractions in [0, 1].
     pub fn vignetting(self, intensity_range: (f64, f64), center_range: (f64, f64)) -> Self {
         self.v2(crate::transforms::V2Config::Vignetting {

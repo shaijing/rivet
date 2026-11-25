@@ -905,6 +905,15 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (temperature_range=(3000.0, 15000.0)))]
+    fn planckian_jitter(&self, temperature_range: (f64, f64)) -> PyResult<Self> {
+        let config = V2Config::PlanckianJitter { temperature_range };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (intensity_range=(0.2, 0.5), center_range=(0.3, 0.7)))]
     fn vignetting(&self, intensity_range: (f64, f64), center_range: (f64, f64)) -> PyResult<Self> {
         let config = V2Config::Vignetting {
@@ -2093,6 +2102,15 @@ impl PyImagePipeline {
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().letterbox(config),
+        })
+    }
+
+    #[pyo3(signature = (temperature_range=(3000.0, 15000.0)))]
+    fn planckian_jitter(&self, temperature_range: (f64, f64)) -> PyResult<Self> {
+        let config = V2Config::PlanckianJitter { temperature_range };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

@@ -523,6 +523,17 @@ class Transform:
             )
         )
 
+    def planckian_jitter(
+        self, temperature_range: tuple[float, float] = (3000, 15000)
+    ) -> Transform:
+        """Sample a blackbody temperature uniformly in kelvin, from 3000 to 15000.
+
+        Apply linear-sRGB gains relative to a neutral 6500 K blackbody,
+        keeping green fixed. Inputs are uint8 or normalized float32 sRGB
+        in HWC order. Output is clipped to the input's nominal range.
+        """
+        return Transform(self._inner.planckian_jitter(temperature_range))
+
     def vignetting(
         self,
         intensity_range: tuple[float, float] = (0.2, 0.5),

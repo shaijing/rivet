@@ -220,3 +220,96 @@ pub(super) fn vignette(input: &Tensor, intensity: f64, center: (f64, f64)) -> Ri
         }
     })?)
 }
+
+fn blackbody_rgb(kelvin: f64) -> [f64; 3] {
+    // Kang et al. (2002), Planckian locus in CIE 1931 xy.
+    let t = 1000.0 / kelvin;
+    let (x, y) = if kelvin <= 4000.0 {
+        let x = ((-0.2661239 * t - 0.2343580) * t + 0.8776956) * t + 0.179910;
+        (
+            x,
+            ((-0.9549476 * x - 1.37418593) * x + 2.09137015) * x - 0.16748867,
+        )
+    } else {
+        let x = ((-3.0258469 * t + 2.1070379) * t + 0.2226347) * t + 0.240390;
+        (
+            x,
+            ((3.0817580 * x - 5.87338670) * x + 3.75112997) * x - 0.37001483,
+        )
+    };
+    // XYZ with Y = 1, converted to linear sRGB.
+    let (x, z) = (x / y, (1.0 - x - y) / y);
+    [
+        3.2404542 * x - 1.5371385 - 0.4985314 * z,
+        -0.9692660 * x + 1.8760108 + 0.0415560 * z,
+        0.0556434 * x - 0.2040259 + 1.0572252 * z,
+    ]
+}
+
+pub(super) fn planckian_jitter(input: &Tensor, kelvin: f64) -> RivetResult<Tensor> {
+    if !matches!(input.dims(), [h, w, 3] if *h > 0 && *w > 0)
+        || !matches!(input.dtype(), DType::U8 | DType::F32)
+    {
+        return Err(invalid_argument(
+            "PlanckianJitter requires nonempty uint8 or float32 HWC RGB input",
+        ));
+    }
+    if kelvin == 6500.0 {
+        return Ok(input.clone());
+    }
+    let [r, g, b] = blackbody_rgb(kelvin);
+    let [white_r, white_g, white_b] = blackbody_rgb(6500.0);
+    let red = (r / g) / (white_r / white_g);
+    let blue = (b / g) / (white_b / white_g);
+    let adjust = |value: f64, gain: f64| {
+        let value = value.clamp(0.0, 1.0);
+        let linear = if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        };
+        let linear = (linear * gain).clamp(0.0, 1.0);
+        if linear <= 0.0031308 {
+            12.92 * linear
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        }
+    };
+    if input.dtype() == DType::U8 {
+        let lut = |gain| {
+            std::array::from_fn::<_, 256, _>(|i| {
+                (255.0 * adjust(i as f64 / 255.0, gain)).round() as u8
+            })
+        };
+        let (red_lut, blue_lut) = (lut(red), lut(blue));
+        return super::with_rgb_pixels(input, "PlanckianJitter", |pixels, _, _| {
+            Ok(Tensor::from_exact_writer(
+                input.dims(),
+                input.device(),
+                |out| {
+                    for p in pixels.chunks_exact(3) {
+                        out.write_next(red_lut[p[0] as usize])?;
+                        out.write_next(p[1])?;
+                        out.write_next(blue_lut[p[2] as usize])?;
+                    }
+                    Ok(())
+                },
+            )?)
+        });
+    }
+    let input = input.contiguous()?;
+    Ok(input.with_cpu_storage(|storage, layout| {
+        let CpuStorageRef::F32(values) = storage else {
+            unreachable!()
+        };
+        let pixels = super::contiguous_values(values, layout)?;
+        Tensor::from_exact_writer(input.dims(), input.device(), |out| {
+            for p in pixels.chunks_exact(3) {
+                out.write_next(adjust(f64::from(p[0]), red) as f32)?;
+                out.write_next(p[1].clamp(0.0, 1.0))?;
+                out.write_next(adjust(f64::from(p[2]), blue) as f32)?;
+            }
+            Ok(())
+        })
+    })?)
+}

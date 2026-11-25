@@ -50,6 +50,9 @@ pub enum V2Config {
         grid: (u32, u32),
         clip_limit: f64,
     },
+    PlanckianJitter {
+        temperature_range: (f64, f64),
+    },
     Vignetting {
         intensity_range: (f64, f64),
         center_range: (f64, f64),
@@ -115,6 +118,7 @@ impl V2Config {
             Self::ShotNoise { .. } => "ShotNoise",
             Self::RandomToneCurve { .. } => "RandomToneCurve",
             Self::Clahe { .. } => "CLAHE",
+            Self::PlanckianJitter { .. } => "PlanckianJitter",
             Self::Vignetting { .. } => "Vignetting",
             Self::ChromaticAberration { .. } => "ChromaticAberration",
             Self::LetterBox(_) => "LetterBox",
@@ -143,6 +147,7 @@ impl V2Config {
             Self::ShotNoise { .. } => 60,
             Self::RandomToneCurve { .. } => 69,
             Self::Clahe { .. } => 70,
+            Self::PlanckianJitter { .. } => 73,
             Self::Vignetting { .. } => 72,
             Self::ChromaticAberration { .. } => 71,
             Self::LetterBox(_) => 66,
@@ -167,7 +172,6 @@ impl V2Config {
                 | Self::UnsharpMask { .. }
                 | Self::LetterBox(_)
                 | Self::Clahe { .. }
-                | Self::Vignetting { .. }
         )
     }
     pub fn validate(&self) -> RivetResult<()> {
@@ -236,6 +240,9 @@ impl V2Config {
                 return super::noise::validate_gaussian_noise(*mean, *sigma);
             }
             Self::ShotNoise { intensity } => return super::noise::validate_shot_noise(*intensity),
+            Self::PlanckianJitter {
+                temperature_range: (low, high),
+            } => *low >= 3000.0 && low <= high && *high <= 15000.0,
             Self::Vignetting {
                 intensity_range,
                 center_range,
@@ -510,6 +517,7 @@ impl V2Config {
             }
             Self::RandomToneCurve { .. }
             | Self::Clahe { .. }
+            | Self::PlanckianJitter { .. }
             | Self::Vignetting { .. }
             | Self::ChromaticAberration { .. }
                 if axis != ImageAxisOrder::Hwc || h == 0 || w == 0 =>
@@ -531,6 +539,12 @@ impl V2Config {
                 let intensity = sample(*intensity_range);
                 let center = (sample(*center_range), sample(*center_range));
                 s.image = super::local_color::vignette(&s.image, intensity, center)?;
+            }
+            Self::PlanckianJitter {
+                temperature_range: (low, high),
+            } => {
+                let kelvin = low + rng.next_f64() * (high - low);
+                s.image = super::local_color::planckian_jitter(&s.image, kelvin)?;
             }
             Self::Clahe { grid, clip_limit } => {
                 s.image = super::local_color::clahe(&s.image, *grid, *clip_limit)?;
