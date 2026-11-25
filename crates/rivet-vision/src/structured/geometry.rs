@@ -636,6 +636,52 @@ pub(super) fn apply(
             }
             Ok(s)
         }
+        ImageOp::V2(V2Config::PixelDropout(config)) => {
+            let fill = config.mask_drop_value;
+            if fill.is_some_and(|v| u8::try_from(v).is_err())
+                && s.masks
+                    .as_ref()
+                    .is_some_and(|mask| mask.dtype() == rivet_core::DType::U8)
+            {
+                return Err(invalid_argument(
+                    "PixelDropout mask fill must be in [0, 255] for uint8 masks",
+                ));
+            }
+            let mut dropped = Vec::new();
+            let record =
+                !config.per_channel && (s.boxes.is_some() || (fill.is_some() && s.masks.is_some()));
+            s.image = config.apply(&s.image, s.axis_order, rng, record.then_some(&mut dropped))?;
+            if record && config.dropout_prob > 0.0 {
+                if let (Some(mask), Some(fill)) = (&s.masks, fill) {
+                    s.masks = Some(masks_map_fill(mask, h, w, fill, |y, x| {
+                        (!dropped[y * w + x]).then_some((y, x))
+                    })?);
+                }
+                if let Some(boxes) = s.xyxy()? {
+                    let boxes = boxes.to_vec::<f32>()?;
+                    let keep: Vec<_> = boxes
+                        .chunks_exact(4)
+                        .enumerate()
+                        .filter_map(|(i, b)| {
+                            let xs = (b[0].floor() as usize).min(w)..(b[2].ceil() as usize).min(w);
+                            let ys = (b[1].floor() as usize).min(h)..(b[3].ceil() as usize).min(h);
+                            (xs.is_empty()
+                                || ys.is_empty()
+                                || ys.into_iter().any(|y| {
+                                    dropped[y * w + xs.start..y * w + xs.end]
+                                        .iter()
+                                        .any(|&drop| !drop)
+                                }))
+                            .then_some(i)
+                        })
+                        .collect();
+                    if keep.len() != boxes.len() / 4 {
+                        s = s.retain_instances(&keep)?;
+                    }
+                }
+            }
+            Ok(s)
+        }
         ImageOp::V2(V2Config::LetterBox(config)) => {
             let (h, w) = s.size()?;
             let (scale, padding) = config.resolve(w, h)?;

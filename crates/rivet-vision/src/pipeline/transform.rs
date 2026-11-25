@@ -123,6 +123,13 @@ impl TransformSequence {
         ))
     }
 
+    /// Replace independently sampled pixels or channel elements.
+    pub fn pixel_dropout(self, config: crate::transforms::PixelDropoutConfig) -> Self {
+        self.v2(crate::transforms::V2Config::PixelDropout(
+            std::sync::Arc::new(config),
+        ))
+    }
+
     /// Render luminance-dependent dots with seeded cell size and blend.
     pub fn halftone(self, dot_size_range: (u32, u32), blend_range: (f64, f64)) -> Self {
         self.v2(crate::transforms::V2Config::Halftone {

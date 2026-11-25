@@ -1792,6 +1792,32 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (dropout_prob=0.01, *, per_channel=false, drop_value=None, mask_drop_value=None))]
+    fn pixel_dropout(
+        &self,
+        dropout_prob: f64,
+        per_channel: bool,
+        drop_value: Option<Bound<'_, PyAny>>,
+        mask_drop_value: Option<i64>,
+    ) -> PyResult<Self> {
+        let drop_value = drop_value
+            .as_ref()
+            .map(|v| parse_crop_fill(Some(v)))
+            .transpose()?;
+        let config = V2Config::PixelDropout(std::sync::Arc::new(
+            rivet_vision::transforms::PixelDropoutConfig {
+                dropout_prob,
+                per_channel,
+                drop_value,
+                mask_drop_value,
+            },
+        ));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (unit_size, *, ratio=0.5, fill=0.0))]
     fn grid_dropout(&self, unit_size: usize, ratio: f64, fill: f32) -> PyResult<Self> {
         let config = V2Config::GridDropout {
@@ -3735,6 +3761,32 @@ impl PyImagePipeline {
     #[pyo3(signature = (amount=0.05, *, salt_ratio=0.5))]
     fn salt_and_pepper(&self, amount: f64, salt_ratio: f64) -> PyResult<Self> {
         let config = V2Config::SaltAndPepper { amount, salt_ratio };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (dropout_prob=0.01, *, per_channel=false, drop_value=None, mask_drop_value=None))]
+    fn pixel_dropout(
+        &self,
+        dropout_prob: f64,
+        per_channel: bool,
+        drop_value: Option<Bound<'_, PyAny>>,
+        mask_drop_value: Option<i64>,
+    ) -> PyResult<Self> {
+        let drop_value = drop_value
+            .as_ref()
+            .map(|v| parse_crop_fill(Some(v)))
+            .transpose()?;
+        let config = V2Config::PixelDropout(std::sync::Arc::new(
+            rivet_vision::transforms::PixelDropoutConfig {
+                dropout_prob,
+                per_channel,
+                drop_value,
+                mask_drop_value,
+            },
+        ));
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

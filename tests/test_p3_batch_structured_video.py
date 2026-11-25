@@ -314,6 +314,7 @@ def test_structured_geometry_torchvision(annotated, case):
         rivet.Transform().random_shortest_size([6, 8]).center_crop(6, 6),
         rivet.Transform().scale_jitter(10, 8, [0.8, 1.2]).center_crop(6, 6),
         rivet.Transform().random_zoom_out(probability=1).center_crop(24, 24),
+        rivet.Transform().pixel_dropout(0.3, mask_drop_value=0),
         rivet.Transform().random_apply(1, rivet.Transform().horizontal_flip()),
     ],
 )
@@ -846,3 +847,37 @@ def test_letterbox_maps_structured_targets(layout, mask_dtype, mask_fill):
     np.testing.assert_array_equal(result["boxes"], [[2, 3, 8, 7]])
     np.testing.assert_array_equal(result["keypoints"], [[[4, 3]]])
     np.testing.assert_array_equal(result["labels"], [7])
+
+
+def test_pixel_dropout_synchronizes_masks_and_instance_fields():
+    image = np.full((7, 9, 3), 120, dtype=np.uint8)
+    mask = np.full((7, 9), 3, dtype=np.int64)
+    sample = rivet.AnnotatedSample(
+        image, boxes=[[1, 2, 5, 6]], labels=[9], masks=mask, keypoints=[[[2, 3]]]
+    )
+    transform = rivet.Transform().pixel_dropout(0.5, mask_drop_value=-1)
+    result = sample.apply(transform).to_dict()
+    dropped = result["image"][..., 0] == 0
+    assert dropped.any() and not dropped.all()
+    np.testing.assert_array_equal(result["masks"], np.where(dropped, -1, 3))
+    np.testing.assert_array_equal(result["boxes"], [[1, 2, 5, 6]])
+    np.testing.assert_array_equal(result["keypoints"], [[[2, 3]]])
+    np.testing.assert_array_equal(result["labels"], [9])
+    all_dropped = sample.apply(
+        rivet.Transform().pixel_dropout(1, mask_drop_value=-1)
+    ).to_dict()
+    np.testing.assert_array_equal(all_dropped["masks"], -1)
+    assert all_dropped["boxes"].shape == (0, 4)
+    assert all_dropped["labels"].shape == (0,)
+    assert all_dropped["keypoints"].shape == (0, 1, 2)
+
+
+def test_pixel_dropout_per_channel_and_empty_instance_masks():
+    image = np.full((7, 9, 3), 120, dtype=np.uint8)
+    sample = rivet.AnnotatedSample(
+        image, boxes=np.zeros((0, 4), dtype=np.float32), masks=np.zeros((0, 7, 9), dtype=np.uint8)
+    )
+    result = sample.apply(rivet.Transform().pixel_dropout(0.5, per_channel=True)).to_dict()
+    dropped = result["image"] == 0
+    assert np.any(dropped[..., 0] != dropped[..., 1])
+    assert result["masks"].shape == (0, 7, 9)

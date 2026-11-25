@@ -226,3 +226,118 @@ mod tests {
         assert_ne!(hwc_values, original);
     }
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PixelDropoutConfig {
+    pub dropout_prob: f64,
+    pub per_channel: bool,
+    pub drop_value: Option<Vec<f32>>,
+    pub mask_drop_value: Option<i64>,
+}
+
+impl PixelDropoutConfig {
+    pub(super) fn valid(&self) -> bool {
+        (0.0..=1.0).contains(&self.dropout_prob)
+            && (!self.per_channel || self.mask_drop_value.is_none())
+            && self
+                .drop_value
+                .as_ref()
+                .is_none_or(|fill| !fill.is_empty() && fill.iter().all(|v| v.is_finite()))
+    }
+
+    pub(crate) fn apply(
+        &self,
+        input: &Tensor,
+        axis: ImageAxisOrder,
+        rng: &mut RandomStream,
+        record: Option<&mut Vec<bool>>,
+    ) -> RivetResult<Tensor> {
+        if input.rank() != 3 || !matches!(input.dtype(), DType::U8 | DType::F32) {
+            return Err(invalid_argument(
+                "PixelDropout requires rank-3 uint8 or float32 input",
+            ));
+        }
+        let hwc = match axis {
+            ImageAxisOrder::Hwc => input.clone(),
+            ImageAxisOrder::Chw => input.permute(&[1, 2, 0])?,
+        };
+        let [height, width, channels] = *hwc.dims() else {
+            unreachable!()
+        };
+        if height == 0
+            || width == 0
+            || channels == 0
+            || self
+                .drop_value
+                .as_ref()
+                .is_some_and(|fill| fill.len() != 1 && fill.len() != channels)
+        {
+            return Err(invalid_argument(
+                "PixelDropout requires nonempty input and a scalar or one fill per channel",
+            ));
+        }
+        if self.dropout_prob == 0.0 {
+            if let Some(mask) = record {
+                mask.resize(height * width, false);
+            }
+            return Ok(input.clone());
+        }
+        let fill = self.drop_value.clone().unwrap_or_else(|| {
+            (0..channels)
+                .map(|_| {
+                    if input.dtype() == DType::U8 {
+                        (rng.next_u32() & 255) as f32
+                    } else {
+                        rng.next_f32()
+                    }
+                })
+                .collect()
+        });
+        let mut record = record;
+        let result = hwc.with_cpu_storage(|storage, layout| {
+            let [sy, sx, sc] = *layout.stride() else {
+                unreachable!()
+            };
+            let start = layout.start_offset();
+            macro_rules! write_dropout {
+                ($values:expr, $convert:expr) => {{
+                    let fill: Vec<_> = fill.iter().copied().map($convert).collect();
+                    Tensor::from_exact_writer(hwc.dims(), hwc.device(), |out| {
+                        for y in 0..height {
+                            for x in 0..width {
+                                let base = start + y * sy + x * sx;
+                                let shared =
+                                    !self.per_channel && rng.next_f64() < self.dropout_prob;
+                                if let Some(mask) = record.as_deref_mut() {
+                                    mask.push(shared);
+                                }
+                                for (c, &value) in fill.iter().cycle().take(channels).enumerate() {
+                                    let drop = if self.per_channel {
+                                        rng.next_f64() < self.dropout_prob
+                                    } else {
+                                        shared
+                                    };
+                                    out.write_next(if drop {
+                                        value
+                                    } else {
+                                        $values[base + c * sc]
+                                    })?;
+                                }
+                            }
+                        }
+                        Ok(())
+                    })
+                }};
+            }
+            match storage {
+                CpuStorageRef::U8(values) => write_dropout!(values, |v: f32| v.round() as u8),
+                CpuStorageRef::F32(values) => write_dropout!(values, |v| v),
+                _ => unreachable!(),
+            }
+        })?;
+        Ok(match axis {
+            ImageAxisOrder::Hwc => result,
+            ImageAxisOrder::Chw => result.permute(&[2, 0, 1])?,
+        })
+    }
+}

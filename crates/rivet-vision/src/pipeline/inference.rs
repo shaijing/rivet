@@ -435,6 +435,7 @@ pub(crate) fn infer_image_op(
                     }
                 }
                 V2Config::SaltAndPepper { .. }
+                | V2Config::PixelDropout(_)
                 | V2Config::GridDropout { .. }
                 | V2Config::CoarseDropout { .. } => {
                     if !matches!(

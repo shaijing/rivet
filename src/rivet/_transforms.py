@@ -1097,6 +1097,27 @@ class Transform:
         """
         return Transform(self._inner.defocus(radius_range))
 
+    def pixel_dropout(
+        self,
+        dropout_prob: float = 0.01,
+        *,
+        per_channel: bool = False,
+        drop_value: float | Iterable[float] | None = 0,
+        mask_drop_value: int | None = None,
+    ) -> Transform:
+        """Replace sampled pixels or independent channel elements.
+
+        Fill is a scalar, one value per channel, or None for a seeded
+        random fill per channel. Structured mask fill uses the shared
+        spatial decisions and requires per_channel=False. Fully occluded
+        boxes and associated instance annotations are removed.
+        """
+        fill = None if drop_value is None else _normalize_fill(drop_value)
+        inner = self._inner.pixel_dropout(
+            dropout_prob, per_channel=per_channel, drop_value=fill, mask_drop_value=mask_drop_value
+        )
+        return Transform(inner)
+
     def coarse_dropout(
         self,
         holes: tuple[int, int] = (1, 4),

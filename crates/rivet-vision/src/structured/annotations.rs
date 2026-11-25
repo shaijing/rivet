@@ -231,7 +231,7 @@ impl StructuredSample {
         self.retain_instances(&keep)
     }
 
-    fn retain_instances(mut self, keep: &[usize]) -> RivetResult<Self> {
+    pub(super) fn retain_instances(mut self, keep: &[usize]) -> RivetResult<Self> {
         self.boxes = self.boxes.map(|t| select_instances(&t, keep)).transpose()?;
         self.labels = self
             .labels

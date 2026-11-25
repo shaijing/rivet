@@ -2085,3 +2085,25 @@ def test_halftone_seed_and_identity(source):
         output(root, lambda p: p.hwc_to_chw().halftone())
     with pytest.raises(ValueError):
         rivet.Transform().halftone(dot_size_range=(1, 2))
+
+
+def test_pixel_dropout_fills_layout_and_seeding(source):
+    root, pixels = source
+
+    def augment(p):
+        return p.pixel_dropout(0.4, drop_value=(10, 20, 30))
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(root, augment, epoch=1))
+    changed = np.any(serial[0] != pixels, axis=-1)
+    np.testing.assert_array_equal(serial[0][changed], np.tile([10, 20, 30], (changed.sum(), 1)))
+    chw = output(root, lambda p: augment(p.hwc_to_chw()))[0]
+    np.testing.assert_array_equal(chw, serial[0].transpose(2, 0, 1))
+    floats = output(
+        root, lambda p: p.to_dtype("float32", True).pixel_dropout(1, drop_value=None)
+    )[0]
+    assert floats.dtype == np.float32 and 0 <= floats.min() <= floats.max() <= 1
+    np.testing.assert_array_equal(floats, np.broadcast_to(floats[0, 0], floats.shape))
+    with pytest.raises(ValueError):
+        rivet.Transform().pixel_dropout(per_channel=True, mask_drop_value=0)
