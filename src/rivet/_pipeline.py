@@ -633,6 +633,30 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def piecewise_affine(
+        self,
+        scale_range: tuple[float, float] = (0.03, 0.05),
+        nb_rows_range: tuple[int, int] = (4, 4),
+        nb_cols_range: tuple[int, int] = (4, 4),
+        *,
+        absolute_scale: bool = False,
+        interpolation: str = "bilinear",
+        fill: int = 0,
+        fill_mask: int = 0,
+    ) -> Pipeline:
+        """Warp uint8 images with a seeded triangulated control grid.
+
+        Scale is relative to each axis or measured in pixels. Jitter is capped
+        at one fifth of a grid cell per axis to prevent folded triangles.
+        Structured masks use nearest sampling and keypoints use the inverse
+        of the same triangle mapping.
+        """
+        inner = self._inner.piecewise_affine(
+            scale_range, nb_rows_range, nb_cols_range, absolute_scale=absolute_scale,
+            interpolation=interpolation, fill=fill, fill_mask=fill_mask,
+        )
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def grid_distortion(
         self, num_steps: int = 5, distort_range: tuple[float, float] = (-0.3, 0.3),
         *, normalized: bool = True, interpolation: str = "bilinear",

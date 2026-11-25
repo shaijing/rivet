@@ -176,6 +176,11 @@ impl ImagePipeline {
         ))
     }
 
+    /// Apply a seeded triangulated control-grid deformation.
+    pub fn piecewise_affine(self, config: crate::transforms::PiecewiseAffineConfig) -> Self {
+        self.v2(crate::transforms::V2Config::PiecewiseAffine(config))
+    }
+
     /// Apply a seeded piecewise-linear remap along both image axes.
     pub fn grid_distortion(self, config: crate::transforms::GridDistortionConfig) -> Self {
         self.v2(crate::transforms::V2Config::GridDistortion(config))

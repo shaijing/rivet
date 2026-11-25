@@ -2472,3 +2472,18 @@ def test_grid_distortion_normalized_edges_seed_and_layout(source):
     np.testing.assert_array_equal(chw,serial[0].transpose(2,0,1))
     with pytest.raises(ValueError):
         rivet.Transform().grid_distortion(distort_range=(-1,0))
+
+
+def test_piecewise_affine_seed_identity_and_layout(source):
+    root, pixels = source
+    np.testing.assert_array_equal(output(root, lambda p: p.piecewise_affine((0, 0)))[0], pixels)
+
+    def augment(p):
+        return p.piecewise_affine((3, 3), absolute_scale=True)
+
+    serial = output(root, augment)
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+    assert not np.array_equal(serial[0], pixels)
+    assert serial[0].shape == pixels.shape and serial[0].dtype == np.uint8
+    np.testing.assert_array_equal(output(root, lambda p: augment(p.hwc_to_chw()))[0],
+                                  serial[0].transpose(2, 0, 1))

@@ -671,6 +671,10 @@ pub(super) fn apply(
             }
             Ok(s)
         }
+        ImageOp::V2(V2Config::PiecewiseAffine(config)) => {
+            let map = config.sample(h, w, rng)?;
+            remap_structured(s, &map, config.interpolation, config.fill, config.fill_mask)
+        }
         ImageOp::V2(V2Config::GridDistortion(config)) => {
             let map = config.sample(h, w, rng);
             remap_structured(s, &map, config.interpolation, config.fill, config.fill_mask)

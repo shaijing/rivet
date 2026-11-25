@@ -1392,3 +1392,16 @@ def test_grid_distortion_shared_map_and_empty_instance_visibility():
     np.testing.assert_array_equal(result["boxes"],[[0,0,2,2]])
     np.testing.assert_array_equal(result["labels"],[4])
     np.testing.assert_allclose(result["keypoints"],[[[4/3,4/3]]],atol=1e-6)
+
+
+def test_piecewise_affine_uses_one_map_for_semantic_mask_and_image():
+    mask = np.arange(1, 100, dtype=np.uint8).reshape(9, 11)
+    image = np.repeat(mask[..., None], 3, axis=-1)
+    sample = rivet.AnnotatedSample(image, masks=mask, boxes=[[2, 2, 9, 7]], labels=[3], keypoints=[[[5, 4]]])
+    t = rivet.Transform().piecewise_affine(
+        (1, 1), absolute_scale=True, interpolation="nearest", fill=200, fill_mask=200
+    )
+    result = sample.apply(t).to_dict()
+    np.testing.assert_array_equal(result["image"][..., 0], result["masks"])
+    assert np.isfinite(result["keypoints"]).all()
+    np.testing.assert_array_equal(result["labels"], [3])

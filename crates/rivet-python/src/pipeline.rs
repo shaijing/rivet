@@ -936,6 +936,33 @@ impl PyTransform {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (scale_range=(0.03,0.05),nb_rows_range=(4,4),nb_cols_range=(4,4),*,absolute_scale=false,interpolation="bilinear",fill=0,fill_mask=0))]
+    fn piecewise_affine(
+        &self,
+        scale_range: (f64, f64),
+        nb_rows_range: (u32, u32),
+        nb_cols_range: (u32, u32),
+        absolute_scale: bool,
+        interpolation: &str,
+        fill: u8,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        let config = V2Config::PiecewiseAffine(rivet_vision::transforms::PiecewiseAffineConfig {
+            scale_range,
+            nb_rows_range,
+            nb_cols_range,
+            absolute_scale,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+            fill_mask,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (num_steps=5,distort_range=(-0.3,0.3),*,normalized=true,interpolation="bilinear",fill=0,fill_mask=0))]
     fn grid_distortion(
         &self,
@@ -3298,6 +3325,33 @@ impl PyImagePipeline {
         };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (scale_range=(0.03,0.05),nb_rows_range=(4,4),nb_cols_range=(4,4),*,absolute_scale=false,interpolation="bilinear",fill=0,fill_mask=0))]
+    fn piecewise_affine(
+        &self,
+        scale_range: (f64, f64),
+        nb_rows_range: (u32, u32),
+        nb_cols_range: (u32, u32),
+        absolute_scale: bool,
+        interpolation: &str,
+        fill: u8,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        let config = V2Config::PiecewiseAffine(rivet_vision::transforms::PiecewiseAffineConfig {
+            scale_range,
+            nb_rows_range,
+            nb_cols_range,
+            absolute_scale,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+            fill_mask,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

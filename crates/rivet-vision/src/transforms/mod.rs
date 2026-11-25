@@ -46,7 +46,9 @@ mod pad;
 mod pad_needed;
 pub use pad_needed::{PadIfNeededConfig, PadPosition};
 mod pca;
+mod piecewise;
 mod pixel_mask;
+pub use piecewise::PiecewiseAffineConfig;
 pub use pixel_mask::{
     ChannelDropoutConfig, ChannelDropoutFill, PixelDropoutConfig, StripLength, XyMaskingConfig,
 };
