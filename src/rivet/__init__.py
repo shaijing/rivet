@@ -43,6 +43,7 @@ from ._structured import (
     uniform_temporal_subsample,
 )
 from ._transforms import Compose, Transform
+from ._volume import VolumeSample
 
 __all__ = [
     "AnnotatedSample",
@@ -60,6 +61,7 @@ __all__ = [
     "Transform",
     "UniformTemporalSubsample",
     "VideoSample",
+    "VolumeSample",
     "convert_imagefolder_lance",
     "dataset",
     "download_dataset",

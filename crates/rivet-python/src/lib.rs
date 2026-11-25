@@ -9,6 +9,7 @@ mod numpy;
 mod pipeline;
 mod structured;
 mod text;
+mod volume;
 
 #[pymodule]
 fn _rivet(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -27,6 +28,7 @@ fn _rivet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<structured::PyStructuredPipeline>()?;
     m.add_class::<structured::PyStructuredLoader>()?;
     m.add_class::<structured::PyVideoSample>()?;
+    m.add_class::<volume::PyVolumeSample>()?;
     m.add_function(wrap_pyfunction!(structured::mix_batch, m)?)?;
     m.add_function(wrap_pyfunction!(structured::temporal_subsample, m)?)?;
     m.add_function(wrap_pyfunction!(loader::read_image_batch, m)?)?;
