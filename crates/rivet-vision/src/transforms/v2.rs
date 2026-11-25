@@ -50,6 +50,14 @@ pub enum V2Config {
         grid: (u32, u32),
         clip_limit: f64,
     },
+    AdvancedBlur {
+        kernel_range: (u32, u32),
+        sigma_x_range: (f64, f64),
+        sigma_y_range: (f64, f64),
+        rotate_range: (f64, f64),
+        beta_range: (f64, f64),
+        noise_range: (f64, f64),
+    },
     Blur {
         kernel_range: (u32, u32),
     },
@@ -122,6 +130,7 @@ impl V2Config {
             Self::ShotNoise { .. } => "ShotNoise",
             Self::RandomToneCurve { .. } => "RandomToneCurve",
             Self::Clahe { .. } => "CLAHE",
+            Self::AdvancedBlur { .. } => "AdvancedBlur",
             Self::Blur { .. } => "Blur",
             Self::MedianBlur => "MedianBlur",
             Self::PlanckianJitter { .. } => "PlanckianJitter",
@@ -153,6 +162,7 @@ impl V2Config {
             Self::ShotNoise { .. } => 60,
             Self::RandomToneCurve { .. } => 69,
             Self::Clahe { .. } => 70,
+            Self::AdvancedBlur { .. } => 76,
             Self::Blur { .. } => 75,
             Self::MedianBlur => 74,
             Self::PlanckianJitter { .. } => 73,
@@ -179,13 +189,34 @@ impl V2Config {
                 | Self::ToDtype { .. }
                 | Self::UnsharpMask { .. }
                 | Self::LetterBox(_)
-                | Self::Blur { .. }
                 | Self::MedianBlur
                 | Self::Clahe { .. }
         )
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::AdvancedBlur {
+                kernel_range,
+                sigma_x_range,
+                sigma_y_range,
+                rotate_range,
+                beta_range,
+                noise_range,
+            } => {
+                let positive =
+                    |&(low, high): &(f64, f64)| low > 0.0 && low <= high && high.is_finite();
+                Self::Blur {
+                    kernel_range: *kernel_range,
+                }
+                .validate()
+                .is_ok()
+                    && [sigma_x_range, sigma_y_range, beta_range, noise_range]
+                        .into_iter()
+                        .all(positive)
+                    && rotate_range.0 >= -360.0
+                    && rotate_range.0 <= rotate_range.1
+                    && rotate_range.1 <= 360.0
+            }
             Self::Blur {
                 kernel_range: (low, high),
             } => *low >= 3 && low <= high && *high <= 127 && low % 2 == 1 && high % 2 == 1,
@@ -531,6 +562,7 @@ impl V2Config {
             }
             Self::RandomToneCurve { .. }
             | Self::Clahe { .. }
+            | Self::AdvancedBlur { .. }
             | Self::Blur { .. }
             | Self::MedianBlur
             | Self::PlanckianJitter { .. }
@@ -549,6 +581,31 @@ impl V2Config {
                 let size =
                     low + 2 * rng.gen_range_usize(0..((high - low) / 2 + 1) as usize)? as u32;
                 s.image = super::blur::box_blur(&s.image, size as usize)?;
+            }
+            Self::AdvancedBlur {
+                kernel_range,
+                sigma_x_range,
+                sigma_y_range,
+                rotate_range,
+                beta_range,
+                noise_range,
+            } => {
+                let (low, high) = kernel_range;
+                let size =
+                    low + 2 * rng.gen_range_usize(0..((high - low) / 2 + 1) as usize)? as u32;
+                let mut sample = |(low, high)| low + rng.next_f64() * (high - low);
+                let sigma = (sample(*sigma_x_range), sample(*sigma_y_range));
+                let angle = sample(*rotate_range);
+                let beta = sample(*beta_range);
+                s.image = super::blur::advanced_blur(
+                    &s.image,
+                    size as usize,
+                    sigma,
+                    angle,
+                    beta,
+                    *noise_range,
+                    rng,
+                )?;
             }
             Self::MedianBlur => {
                 s.image = super::blur::median_blur_3x3(&s.image)?;

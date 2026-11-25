@@ -439,3 +439,36 @@ fn write_square<T: rivet_core::WithDType + Into<f64>>(
         Ok(())
     })
 }
+
+pub(super) fn advanced_blur(
+    input: &rivet_core::Tensor,
+    size: usize,
+    sigma: (f64, f64),
+    angle: f64,
+    beta: f64,
+    noise: (f64, f64),
+    rng: &mut rivet_data::random::RandomStream,
+) -> RivetResult<rivet_core::Tensor> {
+    let radius = (size / 2) as i32;
+    let (sin, cos) = angle.to_radians().sin_cos();
+    let mut weights = Vec::with_capacity(size * size);
+    let noise_min = noise.0 / noise.1;
+    for y in -radius..=radius {
+        for x in -radius..=radius {
+            let x = f64::from(x);
+            let y = f64::from(y);
+            let u = (cos * x + sin * y) / sigma.0;
+            let v = (cos * y - sin * x) / sigma.1;
+            let multiplier = noise_min + rng.next_f64() * (1.0 - noise_min);
+            weights.push((-0.5 * (u * u + v * v).powf(beta)).exp() * multiplier);
+        }
+    }
+    let sum: f64 = weights.iter().sum();
+    if sum == 0.0 {
+        return Ok(input.clone());
+    }
+    for weight in &mut weights {
+        *weight /= sum;
+    }
+    convolve_square(input, "AdvancedBlur", size, &weights)
+}

@@ -931,3 +931,48 @@ def test_box_blur_seed_and_validation(source):
             rivet.Transform().blur(bounds)
     with pytest.raises(ValueError, match="Blur"):
         output(root, lambda p: p.hwc_to_chw().blur())
+
+
+def test_advanced_blur_rotated_kernel_matches_reference(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.zeros((9, 9, 3), dtype=np.uint8)
+    pixels[4, 4] = [255, 128, 0]
+    Image.fromarray(pixels).save(folder / "image.png")
+    y, x = np.mgrid[-2:3, -2:3]
+    k = np.exp(-0.5 * ((y / 2) ** 2 + (x / 0.5) ** 2))
+    k /= k.sum()
+    for floating in [False, True]:
+        def augment(p):
+            if floating:
+                p = p.to_dtype("float32", True)
+            return p.advanced_blur((5, 5), (2, 2), (0.5, 0.5), (90, 90), (1, 1), (1, 1))
+
+        actual = output(tmp_path, augment, transform=True, workers=2)[0]
+        expected = np.zeros(pixels.shape, dtype=np.float64)
+        expected[2:7, 2:7] = k[..., None] * pixels[4, 4]
+        if floating:
+            assert actual.dtype == np.float32
+            np.testing.assert_allclose(actual, expected / 255, atol=1e-7)
+        else:
+            assert actual.dtype == np.uint8
+            np.testing.assert_array_equal(actual, expected.round().astype(np.uint8))
+
+
+def test_advanced_blur_seed_and_validation(source):
+    root, _ = source
+    serial = output(root, lambda p: p.advanced_blur())
+    parallel = output(root, lambda p: p.advanced_blur(), transform=True, workers=3)
+    np.testing.assert_array_equal(serial, parallel)
+    assert not np.array_equal(serial, output(root, lambda p: p.advanced_blur(), epoch=1))
+    for params in [
+        {"kernel_range": (2, 3)},
+        {"sigma_x_range": (0, 1)},
+        {"rotate_range": (20, -20)},
+        {"beta_range": (1, float("inf"))},
+        {"noise_range": (-1, 1)},
+    ]:
+        with pytest.raises(ValueError):
+            rivet.Transform().advanced_blur(**params)
+    with pytest.raises(ValueError, match="AdvancedBlur"):
+        output(root, lambda p: p.hwc_to_chw().advanced_blur())

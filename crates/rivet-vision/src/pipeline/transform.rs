@@ -58,6 +58,27 @@ impl TransformSequence {
         self.v2(crate::transforms::V2Config::LetterBox(config))
     }
 
+    /// Apply a seeded, rotated generalized Gaussian blur.
+    #[allow(clippy::too_many_arguments)]
+    pub fn advanced_blur(
+        self,
+        kernel_range: (u32, u32),
+        sigma_x_range: (f64, f64),
+        sigma_y_range: (f64, f64),
+        rotate_range: (f64, f64),
+        beta_range: (f64, f64),
+        noise_range: (f64, f64),
+    ) -> Self {
+        self.v2(crate::transforms::V2Config::AdvancedBlur {
+            kernel_range,
+            sigma_x_range,
+            sigma_y_range,
+            rotate_range,
+            beta_range,
+            noise_range,
+        })
+    }
+
     /// Apply a box filter with a seeded odd kernel width.
     pub fn blur(self, kernel_range: (u32, u32)) -> Self {
         self.v2(crate::transforms::V2Config::Blur { kernel_range })

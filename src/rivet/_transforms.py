@@ -523,6 +523,26 @@ class Transform:
             )
         )
 
+    def advanced_blur(
+        self,
+        kernel_range: tuple[int, int] = (3, 7),
+        sigma_x_range: tuple[float, float] = (0.2, 1.0),
+        sigma_y_range: tuple[float, float] = (0.2, 1.0),
+        rotate_range: tuple[float, float] = (-90.0, 90.0),
+        beta_range: tuple[float, float] = (0.5, 8.0),
+        noise_range: tuple[float, float] = (0.75, 1.25),
+    ) -> Transform:
+        """Apply a seeded generalized Gaussian filter to uint8 or float32 HWC.
+
+        Sigma controls the spread along each axis. Rotation is in degrees.
+        Beta controls the falloff shape. Positive noise factors perturb each
+        tap before normalization. Borders reflect without repeating the edge.
+        """
+        inner = self._inner.advanced_blur(
+            kernel_range, sigma_x_range, sigma_y_range, rotate_range, beta_range, noise_range
+        )
+        return Transform(inner)
+
     def blur(self, kernel_range: tuple[int, int] = (3, 7)) -> Transform:
         """Average uint8 or float32 HWC pixels using a seeded square box filter.
 

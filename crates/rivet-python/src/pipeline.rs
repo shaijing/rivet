@@ -905,6 +905,31 @@ impl PyTransform {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (kernel_range=(3, 7), sigma_x_range=(0.2, 1.0), sigma_y_range=(0.2, 1.0), rotate_range=(-90.0, 90.0), beta_range=(0.5, 8.0), noise_range=(0.75, 1.25)))]
+    fn advanced_blur(
+        &self,
+        kernel_range: (u32, u32),
+        sigma_x_range: (f64, f64),
+        sigma_y_range: (f64, f64),
+        rotate_range: (f64, f64),
+        beta_range: (f64, f64),
+        noise_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let config = V2Config::AdvancedBlur {
+            kernel_range,
+            sigma_x_range,
+            sigma_y_range,
+            rotate_range,
+            beta_range,
+            noise_range,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (kernel_range=(3, 7)))]
     fn blur(&self, kernel_range: (u32, u32)) -> PyResult<Self> {
         let config = V2Config::Blur { kernel_range };
@@ -2117,6 +2142,31 @@ impl PyImagePipeline {
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().letterbox(config),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (kernel_range=(3, 7), sigma_x_range=(0.2, 1.0), sigma_y_range=(0.2, 1.0), rotate_range=(-90.0, 90.0), beta_range=(0.5, 8.0), noise_range=(0.75, 1.25)))]
+    fn advanced_blur(
+        &self,
+        kernel_range: (u32, u32),
+        sigma_x_range: (f64, f64),
+        sigma_y_range: (f64, f64),
+        rotate_range: (f64, f64),
+        beta_range: (f64, f64),
+        noise_range: (f64, f64),
+    ) -> PyResult<Self> {
+        let config = V2Config::AdvancedBlur {
+            kernel_range,
+            sigma_x_range,
+            sigma_y_range,
+            rotate_range,
+            beta_range,
+            noise_range,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

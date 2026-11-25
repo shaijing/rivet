@@ -306,7 +306,7 @@ pub(crate) fn infer_image_op(
                         ShapeDim::Known(config.width as usize),
                     );
                 }
-                V2Config::Blur { .. } => {
+                V2Config::Blur { .. } | V2Config::AdvancedBlur { .. } => {
                     if !matches!(
                         input_state,
                         PipelineImageState::Decoded {
@@ -315,9 +315,10 @@ pub(crate) fn infer_image_op(
                         }
                     ) || matches!(channel_dim(input), ShapeDim::Known(0))
                     {
-                        return Err(invalid_pipeline(
-                            "Blur requires uint8 or float32 HWC input with at least one channel",
-                        ));
+                        return Err(invalid_pipeline(format!(
+                            "{} requires uint8 or float32 HWC input with at least one channel",
+                            op.name()
+                        )));
                     }
                 }
                 V2Config::PlanckianJitter { .. } => {
