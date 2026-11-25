@@ -244,6 +244,23 @@ class StructuredPipeline:
             ignore_values=list(ignore_values), ignore_channels=list(ignore_channels),
         ))
 
+    def random_crop_near_bbox(
+        self,
+        max_part_shift: tuple[float, float] = (0, 0.3),
+        *,
+        box_index: int = 0,
+        reference_box: tuple[float, float, float, float] | None = None,
+    ) -> StructuredPipeline:
+        """Jitter each edge of a reference box and crop around it.
+
+        Shift limits are fractions of box height and width, respectively.
+        An explicit pixel-space XYXY box overrides the index into each
+        sample's annotations. A missing or invisible reference keeps the image.
+        """
+        return self._from_inner(self._inner.random_crop_near_bbox(
+            max_part_shift, box_index=box_index, reference_box=reference_box
+        ))
+
     def bbox_safe_random_crop(self, erosion_rate: float = 0.0) -> StructuredPipeline:
         """Sample a crop containing the union of visible boxes at zero erosion.
 

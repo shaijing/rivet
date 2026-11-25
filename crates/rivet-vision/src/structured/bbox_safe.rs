@@ -98,24 +98,10 @@ impl StructuredSample {
             let (top, bottom) = draw_axis(union[1], union[3], height)?;
             [left, top, right, bottom]
         };
-        let sample = if boxes.is_some() {
-            let keep: Vec<_> = candidates
-                .iter()
-                .filter_map(|&(index, [x0, y0, x1, y1])| {
-                    (x0 < right as f64 && y0 < bottom as f64 && x1 > left as f64 && y1 > top as f64)
-                        .then_some(index)
-                })
-                .collect();
-            self.retain_instances(&keep)?
-        } else {
-            self
-        };
-        let cropped = super::geometry::crop(
-            sample,
-            left as u32,
-            top as u32,
-            (right - left) as u32,
-            (bottom - top) as u32,
+        let cropped = super::geometry::crop_visible_instances(
+            self,
+            boxes.as_deref(),
+            [left, top, right, bottom],
         )?;
         if let Some((w, h, interpolation)) = config.output {
             super::geometry::resize(cropped, w, h, interpolation)

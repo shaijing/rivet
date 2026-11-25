@@ -219,6 +219,25 @@ impl PyStructuredPipeline {
         })
     }
 
+    #[pyo3(signature = (max_part_shift=(0.0, 0.3), *, box_index=0, reference_box=None))]
+    fn random_crop_near_bbox(
+        &self,
+        max_part_shift: (f64, f64),
+        box_index: usize,
+        reference_box: Option<(f64, f64, f64, f64)>,
+    ) -> PyResult<Self> {
+        let op =
+            StructuredOp::RandomCropNearBBox(rivet_vision::structured::RandomCropNearBBoxConfig {
+                max_part_shift,
+                box_index,
+                reference_box: reference_box.map(|(l, t, r, b)| [l, t, r, b]),
+            });
+        op.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().push(op),
+        })
+    }
+
     #[pyo3(signature = (erosion_rate=0.0))]
     fn bbox_safe_random_crop(&self, erosion_rate: f64) -> PyResult<Self> {
         let op = StructuredOp::BBoxSafeRandomCrop(BBoxSafeRandomCropConfig {

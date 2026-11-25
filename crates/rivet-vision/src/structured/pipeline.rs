@@ -1,4 +1,5 @@
 use super::CropNonEmptyMaskConfig;
+use super::RandomCropNearBBoxConfig;
 use super::{
     AtLeastOneBBoxRandomCropConfig, BBoxSafeRandomCropConfig, BBoxSubsetSafeRandomCropConfig,
     BoxFormat, RandomIoUCropConfig, StructuredSample,
@@ -21,6 +22,7 @@ pub enum StructuredOp {
     SanitizeKeypoints,
     Sanitize { min_size: f32, min_area: f32 },
     RandomIoUCrop(RandomIoUCropConfig),
+    RandomCropNearBBox(RandomCropNearBBoxConfig),
     BBoxSafeRandomCrop(BBoxSafeRandomCropConfig),
     BBoxSubsetSafeRandomCrop(BBoxSubsetSafeRandomCropConfig),
     AtLeastOneBBoxRandomCrop(AtLeastOneBBoxRandomCropConfig),
@@ -37,6 +39,7 @@ impl StructuredOp {
             Self::Sanitize { .. } => "SanitizeBoundingBoxes",
             Self::RandomIoUCrop(_) => "RandomIoUCrop",
             Self::CropNonEmptyMask(_) => "CropNonEmptyMaskIfExists",
+            Self::RandomCropNearBBox(_) => "RandomCropNearBBox",
             Self::BBoxSafeRandomCrop(c) if c.output.is_some() => "RandomSizedBBoxSafeCrop",
             Self::BBoxSafeRandomCrop(_) => "BBoxSafeRandomCrop",
             Self::BBoxSubsetSafeRandomCrop(_) => "BBoxSubsetSafeRandomCrop",
@@ -48,6 +51,7 @@ impl StructuredOp {
             Self::Image(op) => validate_image(op),
             Self::RandomIoUCrop(c) => c.validate(),
             Self::CropNonEmptyMask(c) => c.validate(),
+            Self::RandomCropNearBBox(c) => c.validate(),
             Self::BBoxSafeRandomCrop(c) => c.validate(),
             Self::BBoxSubsetSafeRandomCrop(c) => c.validate(),
             Self::AtLeastOneBBoxRandomCrop(c) => c.validate(),
@@ -189,6 +193,7 @@ impl StructuredPipeline {
                 StructuredOp::CropNonEmptyMask(c) => {
                     sample.crop_non_empty_mask_if_exists(c, &mut rng)?
                 }
+                StructuredOp::RandomCropNearBBox(c) => sample.random_crop_near_bbox(c, &mut rng)?,
                 StructuredOp::BBoxSafeRandomCrop(c) => sample.bbox_safe_random_crop(c, &mut rng)?,
                 StructuredOp::AtLeastOneBBoxRandomCrop(c) => {
                     sample.at_least_one_bbox_random_crop(c, &mut rng)?

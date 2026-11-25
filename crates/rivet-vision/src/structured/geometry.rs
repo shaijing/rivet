@@ -164,6 +164,34 @@ where
         })
         .map_err(Into::into)
 }
+pub(super) fn crop_visible_instances(
+    mut sample: StructuredSample,
+    boxes: Option<&[f32]>,
+    [x0, y0, x1, y1]: [usize; 4],
+) -> RivetResult<StructuredSample> {
+    if let Some(boxes) = boxes {
+        let keep: Vec<_> = boxes
+            .chunks_exact(4)
+            .enumerate()
+            .filter_map(|(i, b)| {
+                (f64::from(b[0]).max(x0 as f64) < f64::from(b[2]).min(x1 as f64)
+                    && f64::from(b[1]).max(y0 as f64) < f64::from(b[3]).min(y1 as f64))
+                .then_some(i)
+            })
+            .collect();
+        if keep.len() != boxes.len() / 4 {
+            sample = sample.retain_instances(&keep)?;
+        }
+    }
+    crop(
+        sample,
+        x0 as u32,
+        y0 as u32,
+        (x1 - x0) as u32,
+        (y1 - y0) as u32,
+    )
+}
+
 pub(super) fn crop(
     mut s: StructuredSample,
     x: u32,

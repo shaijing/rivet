@@ -1083,3 +1083,30 @@ def test_crop_non_empty_mask_missing_and_ignored_fallback():
     assert a["images"].shape == (1, 4, 4, 3)
     np.testing.assert_array_equal(a["images"], b["images"])
     np.testing.assert_array_equal(b["targets"][0]["masks"], 4)
+
+
+def test_random_crop_near_bbox_fixed_and_missing_reference(annotated):
+    original = annotated.to_dict()
+    pipeline = rivet.StructuredPipeline([annotated]).random_crop_near_bbox((0, 0), box_index=1)
+    batch = next(iter(pipeline.execute()))
+    np.testing.assert_array_equal(batch["images"][0], original["image"][5:9, 7:11])
+    target = batch["targets"][0]
+    np.testing.assert_array_equal(target["boxes"], [[0, 0, 4, 4]])
+    np.testing.assert_array_equal(target["labels"], [9])
+    np.testing.assert_array_equal(target["keypoints"], original["keypoints"][1:] - [7, 5])
+    np.testing.assert_array_equal(target["masks"], original["masks"][1:, 5:9, 7:11])
+    empty = rivet.AnnotatedSample(original["image"])
+    missing = rivet.StructuredPipeline([empty]).random_crop_near_bbox()
+    np.testing.assert_array_equal(next(iter(missing.execute()))["images"][0], original["image"])
+    explicit = rivet.StructuredPipeline([empty]).random_crop_near_bbox(
+        (0, 0), reference_box=(-1, 1, 3, 5)
+    )
+    np.testing.assert_array_equal(next(iter(explicit.execute()))["images"][0], original["image"][1:5, :3])
+
+
+def test_random_crop_near_bbox_seed_across_workers(annotated):
+    pipeline = rivet.StructuredPipeline([annotated] * 7).random_crop_near_bbox((0.4, 0.4)).seed(31)
+    for a, b in zip(pipeline.execute(), pipeline.workers(3).execute(), strict=True):
+        np.testing.assert_array_equal(a["images"], b["images"])
+        for key in ("boxes", "labels", "keypoints", "masks"):
+            np.testing.assert_array_equal(a["targets"][0][key], b["targets"][0][key])
