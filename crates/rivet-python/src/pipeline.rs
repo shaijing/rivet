@@ -1792,6 +1792,32 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (channels_to_drop=None, dropout_ratio=0.5, fill=None))]
+    fn channel_dropout(
+        &self,
+        channels_to_drop: Option<Vec<usize>>,
+        dropout_ratio: f64,
+        fill: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{ChannelDropoutConfig, ChannelDropoutFill};
+        let fill = match fill {
+            None => ChannelDropoutFill::Constant(0.0),
+            Some(value) if value.extract::<&str>().is_ok_and(|s| s == "mean") => {
+                ChannelDropoutFill::Mean
+            }
+            Some(value) => ChannelDropoutFill::Constant(value.extract::<f32>()?),
+        };
+        let config = V2Config::ChannelDropout(std::sync::Arc::new(ChannelDropoutConfig {
+            channels_to_drop,
+            dropout_ratio,
+            fill,
+        }));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (dropout_prob=0.01, *, per_channel=false, drop_value=None, mask_drop_value=None))]
     fn pixel_dropout(
         &self,
@@ -3761,6 +3787,32 @@ impl PyImagePipeline {
     #[pyo3(signature = (amount=0.05, *, salt_ratio=0.5))]
     fn salt_and_pepper(&self, amount: f64, salt_ratio: f64) -> PyResult<Self> {
         let config = V2Config::SaltAndPepper { amount, salt_ratio };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (channels_to_drop=None, dropout_ratio=0.5, fill=None))]
+    fn channel_dropout(
+        &self,
+        channels_to_drop: Option<Vec<usize>>,
+        dropout_ratio: f64,
+        fill: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{ChannelDropoutConfig, ChannelDropoutFill};
+        let fill = match fill {
+            None => ChannelDropoutFill::Constant(0.0),
+            Some(value) if value.extract::<&str>().is_ok_and(|s| s == "mean") => {
+                ChannelDropoutFill::Mean
+            }
+            Some(value) => ChannelDropoutFill::Constant(value.extract::<f32>()?),
+        };
+        let config = V2Config::ChannelDropout(std::sync::Arc::new(ChannelDropoutConfig {
+            channels_to_drop,
+            dropout_ratio,
+            fill,
+        }));
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

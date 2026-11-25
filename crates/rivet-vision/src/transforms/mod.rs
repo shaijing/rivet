@@ -32,7 +32,7 @@ mod normalize;
 mod pad;
 mod pca;
 mod pixel_mask;
-pub use pixel_mask::PixelDropoutConfig;
+pub use pixel_mask::{ChannelDropoutConfig, ChannelDropoutFill, PixelDropoutConfig};
 mod resize;
 mod resized_crop;
 mod rotate;

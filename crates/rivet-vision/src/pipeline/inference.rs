@@ -434,6 +434,30 @@ pub(crate) fn infer_image_op(
                         )));
                     }
                 }
+                V2Config::ChannelDropout(config) => {
+                    if !matches!(
+                        input_state,
+                        Decoded {
+                            dtype: CoreDType::U8 | CoreDType::F32,
+                            ..
+                        }
+                    ) {
+                        return Err(invalid_pipeline(
+                            "ChannelDropout requires uint8 or float32 input",
+                        ));
+                    }
+                    if let ShapeDim::Known(channels) = channel_dim(input)
+                        && (channels == 0
+                            || config
+                                .channels_to_drop
+                                .as_ref()
+                                .is_some_and(|indices| indices.iter().any(|&i| i >= channels)))
+                    {
+                        return Err(invalid_pipeline(
+                            "ChannelDropout channel index is out of bounds",
+                        ));
+                    }
+                }
                 V2Config::SaltAndPepper { .. }
                 | V2Config::PixelDropout(_)
                 | V2Config::GridDropout { .. }

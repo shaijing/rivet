@@ -216,6 +216,7 @@ pub enum V2Config {
     Defocus {
         radius_range: (u32, u32),
     },
+    ChannelDropout(std::sync::Arc<ChannelDropoutConfig>),
     PixelDropout(std::sync::Arc<PixelDropoutConfig>),
     CoarseDropout {
         holes: (u32, u32),
@@ -309,6 +310,7 @@ impl V2Config {
             Self::ChromaticAberration { .. } => "ChromaticAberration",
             Self::LetterBox(_) => "LetterBox",
             Self::Defocus { .. } => "Defocus",
+            Self::ChannelDropout(_) => "ChannelDropout",
             Self::PixelDropout(_) => "PixelDropout",
             Self::CoarseDropout { .. } => "CoarseDropout",
             Self::MotionBlur { .. } => "MotionBlur",
@@ -374,6 +376,7 @@ impl V2Config {
             Self::ChromaticAberration { .. } => 71,
             Self::LetterBox(_) => 66,
             Self::Defocus { .. } => 67,
+            Self::ChannelDropout(_) => 111,
             Self::PixelDropout(_) => 110,
             Self::CoarseDropout { .. } => 68,
             Self::MotionBlur { .. } => 64,
@@ -404,6 +407,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::ChannelDropout(config) => config.valid(),
             Self::PixelDropout(config) => config.valid(),
             Self::Halftone {
                 dot_size_range: (lo, hi),
@@ -1392,6 +1396,9 @@ impl V2Config {
                     *salt_ratio,
                     rng,
                 )?;
+            }
+            Self::ChannelDropout(config) => {
+                s.image = config.apply(&s.image, axis, rng)?;
             }
             Self::PixelDropout(config) => {
                 s.image = config.apply(&s.image, axis, rng, None)?;

@@ -1097,6 +1097,21 @@ class Transform:
         """
         return Transform(self._inner.defocus(radius_range))
 
+    def channel_dropout(
+        self,
+        channels_to_drop: Iterable[int] | None = None,
+        dropout_ratio: float = 0.5,
+        fill: float | str = 0,
+    ) -> Transform:
+        """Replace a seeded subset of eligible channels in uint8 or float32 images.
+
+        The count is rounded half-up and capped to retain at least one
+        channel. Fill is a constant in input intensity units or "mean" for
+        each selected channel's spatial mean. Preserves HWC and CHW.
+        """
+        eligible = None if channels_to_drop is None else list(channels_to_drop)
+        return Transform(self._inner.channel_dropout(eligible, dropout_ratio, fill))
+
     def pixel_dropout(
         self,
         dropout_prob: float = 0.01,

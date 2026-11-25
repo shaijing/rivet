@@ -176,6 +176,13 @@ impl ImagePipeline {
         ))
     }
 
+    /// Replace a seeded subset of eligible channels.
+    pub fn channel_dropout(self, config: crate::transforms::ChannelDropoutConfig) -> Self {
+        self.v2(crate::transforms::V2Config::ChannelDropout(
+            std::sync::Arc::new(config),
+        ))
+    }
+
     /// Replace independently sampled pixels or channel elements.
     pub fn pixel_dropout(self, config: crate::transforms::PixelDropoutConfig) -> Self {
         self.v2(crate::transforms::V2Config::PixelDropout(

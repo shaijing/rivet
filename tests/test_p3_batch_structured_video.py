@@ -881,3 +881,12 @@ def test_pixel_dropout_per_channel_and_empty_instance_masks():
     dropped = result["image"] == 0
     assert np.any(dropped[..., 0] != dropped[..., 1])
     assert result["masks"].shape == (0, 7, 9)
+
+
+def test_channel_dropout_preserves_structured_targets(annotated):
+    original = annotated.to_dict()
+    transformed = annotated.apply(rivet.Transform().channel_dropout([0], 1, 23)).to_dict()
+    np.testing.assert_array_equal(transformed["image"][..., 0], 23)
+    np.testing.assert_array_equal(transformed["image"][..., 1:], original["image"][..., 1:])
+    for key in ["boxes", "labels", "keypoints", "masks"]:
+        np.testing.assert_array_equal(transformed[key], original[key])

@@ -2107,3 +2107,35 @@ def test_pixel_dropout_fills_layout_and_seeding(source):
     np.testing.assert_array_equal(floats, np.broadcast_to(floats[0, 0], floats.shape))
     with pytest.raises(ValueError):
         rivet.Transform().pixel_dropout(per_channel=True, mask_drop_value=0)
+
+
+def test_channel_dropout_selection_mean_layout_and_seed(source):
+    root, pixels = source
+
+    def augment(p):
+        return p.channel_dropout([0, 2], 0.5, "mean")
+
+    serial = output(root, augment)
+    actual = serial[0]
+    assert actual.dtype == np.uint8 and actual.shape == pixels.shape
+    np.testing.assert_array_equal(actual[..., 1], pixels[..., 1])
+    changed = [c for c in (0, 2) if not np.array_equal(actual[..., c], pixels[..., c])]
+    assert len(changed) == 1
+    c = changed[0]
+    np.testing.assert_array_equal(actual[..., c], np.floor(pixels[..., c].mean() + 0.5))
+    chw = output(root, lambda p: augment(p.hwc_to_chw()))[0]
+    np.testing.assert_array_equal(chw, actual.transpose(2, 0, 1))
+    np.testing.assert_array_equal(serial, output(root, augment, transform=True, workers=3))
+
+    floats = output(
+        root, lambda p: p.to_dtype("float32", True).channel_dropout([1], 1, "mean")
+    )[0]
+    assert floats.dtype == np.float32
+    np.testing.assert_allclose(floats[..., 1], pixels[..., 1].mean() / 255, atol=1e-7)
+    max_drop = output(root, lambda p: p.channel_dropout(dropout_ratio=1))[0]
+    assert sum(np.array_equal(max_drop[..., c], pixels[..., c]) for c in range(3)) == 1
+
+    with pytest.raises(ValueError):
+        rivet.Transform().channel_dropout([0, 0])
+    with pytest.raises(ValueError, match="ChannelDropout"):
+        output(root, lambda p: p.channel_dropout([3]))

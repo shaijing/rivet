@@ -341,3 +341,132 @@ impl PixelDropoutConfig {
         })
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ChannelDropoutFill {
+    Constant(f32),
+    Mean,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelDropoutConfig {
+    pub channels_to_drop: Option<Vec<usize>>,
+    pub dropout_ratio: f64,
+    pub fill: ChannelDropoutFill,
+}
+
+impl ChannelDropoutConfig {
+    pub(super) fn valid(&self) -> bool {
+        (0.0..=1.0).contains(&self.dropout_ratio)
+            && self.channels_to_drop.as_ref().is_none_or(|channels| {
+                !channels.is_empty()
+                    && channels
+                        .iter()
+                        .copied()
+                        .collect::<std::collections::HashSet<_>>()
+                        .len()
+                        == channels.len()
+            })
+            && match self.fill {
+                ChannelDropoutFill::Constant(v) => (0.0..=255.0).contains(&v),
+                ChannelDropoutFill::Mean => true,
+            }
+    }
+
+    pub(super) fn apply(
+        &self,
+        input: &Tensor,
+        axis: ImageAxisOrder,
+        rng: &mut RandomStream,
+    ) -> RivetResult<Tensor> {
+        if input.rank() != 3 || !matches!(input.dtype(), DType::U8 | DType::F32) {
+            return Err(invalid_argument(
+                "ChannelDropout requires rank-3 uint8 or float32 input",
+            ));
+        }
+        if input.dtype() == DType::F32
+            && matches!(self.fill, ChannelDropoutFill::Constant(v) if v > 1.0)
+        {
+            return Err(invalid_argument(
+                "ChannelDropout float32 fill must be in [0, 1]",
+            ));
+        }
+        let hwc = match axis {
+            ImageAxisOrder::Hwc => input.clone(),
+            ImageAxisOrder::Chw => input.permute(&[1, 2, 0])?,
+        };
+        let [height, width, channels] = *hwc.dims() else {
+            unreachable!()
+        };
+        let mut eligible = self
+            .channels_to_drop
+            .clone()
+            .unwrap_or_else(|| (0..channels).collect());
+        if height == 0 || width == 0 || channels == 0 || eligible.iter().any(|&i| i >= channels) {
+            return Err(invalid_argument(
+                "ChannelDropout requires nonempty input and valid channel indices",
+            ));
+        }
+        // A value immediately below a half caused by binary multiplication
+        // still represents a half-up tie for decimal ratios such as 0.35.
+        let scaled = eligible.len() as f64 * self.dropout_ratio;
+        let count = (scaled.next_up().round() as usize).min(channels - 1);
+        if count == 0 {
+            return Ok(input.clone());
+        }
+        for i in 0..count {
+            let j = rng.gen_range_usize(i..eligible.len())?;
+            eligible.swap(i, j);
+        }
+        let selected = &eligible[..count];
+        let result = hwc.with_cpu_storage(|storage, layout| {
+            let [sy, sx, sc] = *layout.stride() else {
+                unreachable!()
+            };
+            let start = layout.start_offset();
+            macro_rules! write_channels {
+                ($values:expr, $cast:expr) => {{
+                    let mut fill = vec![None; channels];
+                    let cast = $cast;
+                    for &c in selected {
+                        let value = match self.fill {
+                            ChannelDropoutFill::Constant(v) => f64::from(v),
+                            ChannelDropoutFill::Mean => {
+                                let mut sum = 0.0;
+                                for y in 0..height {
+                                    for x in 0..width {
+                                        sum += f64::from($values[start + y * sy + x * sx + c * sc]);
+                                    }
+                                }
+                                sum / (height * width) as f64
+                            }
+                        };
+                        fill[c] = Some(cast(value));
+                    }
+                    Tensor::from_exact_writer(hwc.dims(), hwc.device(), |out| {
+                        for y in 0..height {
+                            for x in 0..width {
+                                let base = start + y * sy + x * sx;
+                                for (c, &value) in fill.iter().enumerate() {
+                                    out.write_next(
+                                        value.unwrap_or_else(|| $values[base + c * sc]),
+                                    )?;
+                                }
+                            }
+                        }
+                        Ok(())
+                    })
+                }};
+            }
+            match storage {
+                CpuStorageRef::U8(values) => write_channels!(values, |v: f64| v.round() as u8),
+                CpuStorageRef::F32(values) => write_channels!(values, |v| v as f32),
+                _ => unreachable!(),
+            }
+        })?;
+        Ok(match axis {
+            ImageAxisOrder::Hwc => result,
+            ImageAxisOrder::Chw => result.permute(&[2, 0, 1])?,
+        })
+    }
+}
