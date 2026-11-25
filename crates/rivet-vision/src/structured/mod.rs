@@ -14,6 +14,8 @@ mod mask_crop;
 mod mask_dropout;
 pub use mask_crop::CropNonEmptyMaskConfig;
 pub use mask_dropout::MaskDropoutConfig;
+mod mosaic;
+pub use mosaic::{MosaicConfig, MosaicFit};
 mod near_bbox;
 mod overlay;
 pub use overlay::{OverlayElement, OverlayElementsConfig};

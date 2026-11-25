@@ -6,7 +6,7 @@ use super::{
     BoxFormat, RandomIoUCropConfig, StructuredSample,
 };
 use super::{ConstrainedCoarseDropoutConfig, MaskDropoutConfig};
-use super::{CropNonEmptyMaskConfig, OverlayElementsConfig};
+use super::{CropNonEmptyMaskConfig, MosaicConfig, OverlayElementsConfig};
 use crate::errors::{RivetResult, invalid_argument, invalid_shape};
 use crate::pipeline::{
     TransformSequence,
@@ -32,6 +32,7 @@ pub enum StructuredOp {
     GuidedCoarseDropout(Arc<GuidedCoarseDropoutConfig>),
     MaskDropout(MaskDropoutConfig),
     OverlayElements(Arc<OverlayElementsConfig>),
+    Mosaic(Arc<MosaicConfig>),
     SpatialDropout(StructuredDropoutConfig),
     ConstrainedCoarseDropout(std::sync::Arc<ConstrainedCoarseDropoutConfig>),
     CropNonEmptyMask(CropNonEmptyMaskConfig),
@@ -48,6 +49,7 @@ impl StructuredOp {
             Self::RandomIoUCrop(_) => "RandomIoUCrop",
             Self::ConstrainedCoarseDropout(_) => "ConstrainedCoarseDropout",
             Self::SpatialDropout(c) => c.name(),
+            Self::Mosaic(_) => "Mosaic",
             Self::OverlayElements(_) => "OverlayElements",
 
             Self::GuidedCoarseDropout(_) => "GuidedCoarseDropout",
@@ -66,6 +68,7 @@ impl StructuredOp {
             Self::RandomIoUCrop(c) => c.validate(),
             Self::ConstrainedCoarseDropout(c) => c.validate(),
             Self::SpatialDropout(c) => c.validate(),
+            Self::Mosaic(c) => c.validate(),
             Self::OverlayElements(c) => c.validate(),
 
             Self::GuidedCoarseDropout(c) => c.validate(),
@@ -221,6 +224,7 @@ impl StructuredPipeline {
                     sample.constrained_coarse_dropout(c, &mut rng)?
                 }
                 StructuredOp::SpatialDropout(c) => sample.spatial_dropout(c, &mut rng)?,
+                StructuredOp::Mosaic(c) => sample.mosaic(c, &mut rng)?,
                 StructuredOp::OverlayElements(c) => sample.overlay_elements(c, &mut rng)?,
 
                 StructuredOp::GuidedCoarseDropout(c) => {

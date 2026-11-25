@@ -100,7 +100,7 @@ where
     masks_map_fill(input, oh, ow, 0, mapping)
 }
 
-fn masks_map_fill<F>(
+pub(super) fn masks_map_fill<F>(
     input: &Tensor,
     oh: usize,
     ow: usize,
@@ -218,7 +218,7 @@ fn pad(s: StructuredSample, p: &PadConfig) -> RivetResult<StructuredSample> {
     pad_with_mask_fill(s, p, 0)
 }
 
-fn pad_with_mask_fill(
+pub(super) fn pad_with_mask_fill(
     mut s: StructuredSample,
     p: &PadConfig,
     mask_fill: i64,

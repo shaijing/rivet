@@ -293,6 +293,32 @@ class StructuredPipeline:
             min_visibility=min_visibility,
         ))
 
+    def mosaic(
+        self,
+        donors: Iterable[AnnotatedSample],
+        cell_shape: tuple[int, int],
+        *,
+        grid_yx: tuple[int, int] = (2, 2),
+        target_size: tuple[int, int] | None = None,
+        fit_mode: str = "cover",
+        center_range: tuple[float, float] = (0.3, 0.7),
+        interpolation: str = "bilinear",
+        fill: float = 0,
+        fill_mask: int = 0,
+    ) -> StructuredPipeline:
+        """Combine the input and seeded donors in a grid of (height, width) cells.
+
+        Donors are sampled without replacement. The input fills any remaining
+        cells. Cover crops oversize tiles and contain pads undersize tiles.
+        Optional target_size crops the canvas at a seeded position. Instance
+        fields are concatenated, and semantic class IDs are preserved.
+        """
+        return self._from_inner(self._inner.mosaic(
+            [donor._inner for donor in donors], cell_shape, grid_yx=grid_yx,
+            target_size=target_size, fit_mode=fit_mode, center_range=center_range,
+            interpolation=interpolation, fill=fill, fill_mask=fill_mask,
+        ))
+
     def overlay_elements(
         self, elements: Iterable[dict[str, Any]], min_visibility: float = 0
     ) -> StructuredPipeline:

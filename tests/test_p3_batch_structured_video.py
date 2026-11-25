@@ -1658,3 +1658,45 @@ def test_annotation_artifacts_is_independent_of_and_preserves_targets(annotated)
     assert not np.array_equal(result["image"], original["image"])
     for key in ("boxes", "masks", "keypoints", "labels"):
         np.testing.assert_array_equal(result[key], original[key])
+
+
+def test_mosaic_merges_instance_fields_and_worker_seed():
+    def sample(color, label):
+        pixels = np.full((4, 6, 3), color, np.uint8)
+        mask = np.zeros((1, 4, 6), np.uint8)
+        mask[:, 1:3, 1:3] = 1
+        return rivet.AnnotatedSample(pixels, boxes=[[1, 1, 3, 3]], labels=[label], masks=mask, keypoints=[[[2, 2]]])
+
+    primary = sample(30, 1)
+    donor = sample(90, 2)
+    p = rivet.StructuredPipeline([primary] * 5).mosaic([donor], (4, 6), grid_yx=(1, 2)).seed(14)
+    for a, b in zip(p.execute(), p.workers(3).execute(), strict=True):
+        image = a["images"][0]
+        np.testing.assert_array_equal(image, b["images"][0])
+        assert image.shape == (4, 12, 3)
+        np.testing.assert_array_equal(image[:, :6], 30)
+        np.testing.assert_array_equal(image[:, 6:], 90)
+        t = a["targets"][0]
+        np.testing.assert_array_equal(t["boxes"], [[1, 1, 3, 3], [7, 1, 9, 3]])
+        np.testing.assert_array_equal(t["labels"], [1, 2])
+        np.testing.assert_array_equal(t["keypoints"], [[[2, 2]], [[8, 2]]])
+        expected = np.zeros((2, 4, 12), np.uint8)
+        expected[0, 1:3, 1:3] = expected[1, 1:3, 7:9] = 1
+        np.testing.assert_array_equal(t["masks"], expected)
+
+
+def test_mosaic_contain_semantic_mask_and_target_crop():
+    base = rivet.AnnotatedSample(np.full((2, 4, 3), 40, np.uint8), masks=np.full((2, 4), 2, np.int64))
+    donor = rivet.AnnotatedSample(np.full((2, 4, 3), 90, np.uint8))
+    p = rivet.StructuredPipeline([base]).mosaic(
+        [donor], (4, 4), grid_yx=(1, 2), target_size=(4, 5),
+        fit_mode="contain", center_range=(1, 1), fill=7, fill_mask=-1,
+    )
+    out = next(iter(p.execute()))
+    expected = np.full((4, 5, 3), 7, np.uint8)
+    expected[1:3, 0] = 40
+    expected[1:3, 1:] = 90
+    np.testing.assert_array_equal(out["images"][0], expected)
+    mask = np.full((4, 5), -1, np.int64)
+    mask[1:3, 0] = 2
+    np.testing.assert_array_equal(out["targets"][0]["masks"], mask)

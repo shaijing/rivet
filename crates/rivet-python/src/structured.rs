@@ -278,6 +278,49 @@ impl PyStructuredPipeline {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (donors,cell_shape,*,grid_yx=(2,2),target_size=None,fit_mode="cover",center_range=(0.3,0.7),interpolation="bilinear",fill=0.0,fill_mask=0))]
+    fn mosaic(
+        &self,
+        py: Python<'_>,
+        donors: Vec<Py<PyAnnotatedSample>>,
+        cell_shape: (u32, u32),
+        grid_yx: (u32, u32),
+        target_size: Option<(u32, u32)>,
+        fit_mode: &str,
+        center_range: (f64, f64),
+        interpolation: &str,
+        fill: f32,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        use rivet_vision::structured::{MosaicConfig, MosaicFit};
+        let fit_mode = match fit_mode {
+            "cover" => MosaicFit::Cover,
+            "contain" => MosaicFit::Contain,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "Mosaic fit_mode must be cover or contain",
+                ));
+            }
+        };
+        let donors = donors.iter().map(|s| s.borrow(py).inner.clone()).collect();
+        let op = StructuredOp::Mosaic(std::sync::Arc::new(MosaicConfig {
+            donors,
+            grid_yx,
+            cell_shape,
+            target_size,
+            fit_mode,
+            center_range,
+            interpolation: crate::pipeline::parse_interpolation(interpolation)?,
+            fill,
+            fill_mask,
+        }));
+        op.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().push(op),
+        })
+    }
+
     #[pyo3(signature = (elements,min_visibility=0.0))]
     fn overlay_elements(
         &self,
