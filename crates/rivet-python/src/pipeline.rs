@@ -1077,6 +1077,21 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (mode="edge", alpha_range=(0.5, 1.0)))]
+    fn enhance(&self, mode: &str, alpha_range: (f64, f64)) -> PyResult<Self> {
+        use rivet_vision::transforms::EnhanceMode;
+        let mode = match mode {
+            "edge" => EnhanceMode::Edge,
+            "detail" => EnhanceMode::Detail,
+            _ => return Err(PyValueError::new_err("mode must be edge or detail")),
+        };
+        let config = V2Config::Enhance { mode, alpha_range };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (alpha_range=(0.2, 0.5), strength_range=(0.2, 0.7)))]
     fn emboss(&self, alpha_range: (f64, f64), strength_range: (f64, f64)) -> PyResult<Self> {
         let config = V2Config::Emboss {
@@ -2916,6 +2931,21 @@ impl PyImagePipeline {
             sat_shift_range,
             val_shift_range,
         ]));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (mode="edge", alpha_range=(0.5, 1.0)))]
+    fn enhance(&self, mode: &str, alpha_range: (f64, f64)) -> PyResult<Self> {
+        use rivet_vision::transforms::EnhanceMode;
+        let mode = match mode {
+            "edge" => EnhanceMode::Edge,
+            "detail" => EnhanceMode::Detail,
+            _ => return Err(PyValueError::new_err("mode must be edge or detail")),
+        };
+        let config = V2Config::Enhance { mode, alpha_range };
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

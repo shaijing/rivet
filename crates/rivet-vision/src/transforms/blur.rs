@@ -427,7 +427,7 @@ fn convolve_square(
             size,
             weights,
             |sum| {
-                if matches!(name, "StochasticConvolution" | "Emboss") {
+                if matches!(name, "StochasticConvolution" | "Emboss" | "Enhance") {
                     sum.clamp(0.0, 1.0) as f32
                 } else {
                     sum as f32
@@ -738,4 +738,32 @@ pub(super) fn emboss(
         gain,
     ];
     convolve_square(input, "Emboss", 3, &weights, super::PaddingMode::Reflect)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnhanceMode {
+    Edge,
+    Detail,
+}
+
+pub(super) fn enhance(
+    input: &rivet_core::Tensor,
+    mode: EnhanceMode,
+    alpha: f64,
+) -> RivetResult<rivet_core::Tensor> {
+    if alpha == 0.0 {
+        convolution_shape(input, "Enhance")?;
+        return Ok(input.clone());
+    }
+    // Pillow-inspired stencils with unit DC gain; fold the identity blend
+    // into the center tap so clipping and rounding happen only once.
+    let (corner, side) = match mode {
+        EnhanceMode::Edge => (-0.5 * alpha, -0.5 * alpha),
+        EnhanceMode::Detail => (0.0, -alpha / 6.0),
+    };
+    let center = 1.0 - 4.0 * (corner + side);
+    let weights = [
+        corner, side, corner, side, center, side, corner, side, corner,
+    ];
+    convolve_square(input, "Enhance", 3, &weights, super::PaddingMode::Reflect)
 }

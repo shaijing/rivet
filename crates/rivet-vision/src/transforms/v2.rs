@@ -109,6 +109,10 @@ pub enum V2Config {
     },
     RandomSunFlare(std::sync::Arc<RandomSunFlareConfig>),
     HueSaturationValue(std::sync::Arc<[(f64, f64); 3]>),
+    Enhance {
+        mode: EnhanceMode,
+        alpha_range: (f64, f64),
+    },
     Emboss {
         alpha_range: (f64, f64),
         strength_range: (f64, f64),
@@ -259,6 +263,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::RandomSunFlare(_) => "RandomSunFlare",
             Self::HueSaturationValue(_) => "HueSaturationValue",
+            Self::Enhance { .. } => "Enhance",
             Self::Emboss { .. } => "Emboss",
             Self::ExposureMatching { .. } => "ExposureMatching",
             Self::FancyPca { .. } => "FancyPCA",
@@ -319,6 +324,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => 82,
             Self::RandomSunFlare(_) => 88,
             Self::HueSaturationValue(_) => 99,
+            Self::Enhance { .. } => 105,
             Self::Emboss { .. } => 104,
             Self::ExposureMatching { .. } => 103,
             Self::FancyPca { .. } => 102,
@@ -377,6 +383,10 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::Enhance {
+                alpha_range: (lo, hi),
+                ..
+            } => *lo >= 0.0 && lo <= hi && *hi <= f64::from(f32::MAX),
             Self::Emboss {
                 alpha_range: (lo, hi),
                 strength_range: (min, max),
@@ -893,6 +903,7 @@ impl V2Config {
             | Self::MultiplicativeNoise { .. }
             | Self::RandomSunFlare(_)
             | Self::HueSaturationValue(_)
+            | Self::Enhance { .. }
             | Self::Emboss { .. }
             | Self::ExposureMatching { .. }
             | Self::FancyPca { .. }
@@ -1138,6 +1149,13 @@ impl V2Config {
                 let mut sample = |(lo, hi)| lo + rng.next_f64() * (hi - lo);
                 s.image =
                     super::blur::emboss(&s.image, sample(*alpha_range), sample(*strength_range))?;
+            }
+            Self::Enhance {
+                mode,
+                alpha_range: (lo, hi),
+            } => {
+                let alpha = lo + rng.next_f64() * (hi - lo);
+                s.image = super::blur::enhance(&s.image, *mode, alpha)?;
             }
             Self::FancyPca { alpha } => {
                 s.image = super::pca::fancy_pca(&s.image, *alpha, rng)?;

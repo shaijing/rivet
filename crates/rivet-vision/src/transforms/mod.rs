@@ -54,7 +54,7 @@ pub use advanced_geometry::{
     AffineConfig, ArbitraryRotateConfig, ElasticTransformConfig, PerspectiveConfig, Point2,
     RandomAffineConfig, RandomPerspectiveConfig,
 };
-pub use blur::GaussianBlurConfig;
+pub use blur::{EnhanceMode, GaussianBlurConfig};
 pub use color::{
     AutocontrastConfig, BrightnessConfig, ColorJitterConfig, ColorJitterParams, ColorizeConfig,
     ContrastConfig, EqualizeConfig, GammaConfig, GrayscaleConfig, HueConfig, InvertConfig,

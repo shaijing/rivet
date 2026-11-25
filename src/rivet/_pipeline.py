@@ -753,6 +753,17 @@ class Pipeline:
         )
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def enhance(
+        self, mode: str = "edge", alpha_range: tuple[float, float] = (0.5, 1.0)
+    ) -> Pipeline:
+        """Blend a local edge or detail preset into uint8 or float32 HWC.
+
+        Alpha is sampled once per image. Zero is identity, one applies
+        the full preset, and larger values strengthen the effect.
+        Borders reflect without repeating the edge. Output is clipped.
+        """
+        return Pipeline(self._inner.enhance(mode, alpha_range), as_numpy=self.as_numpy)
+
     def emboss(
         self,
         alpha_range: tuple[float, float] = (0.2, 0.5),

@@ -176,6 +176,11 @@ impl ImagePipeline {
         ))
     }
 
+    /// Apply the selected local detail or edge enhancement preset.
+    pub fn enhance(self, mode: crate::transforms::EnhanceMode, alpha_range: (f64, f64)) -> Self {
+        self.v2(crate::transforms::V2Config::Enhance { mode, alpha_range })
+    }
+
     /// Blend a directional relief filter with the original image.
     pub fn emboss(self, alpha_range: (f64, f64), strength_range: (f64, f64)) -> Self {
         self.v2(crate::transforms::V2Config::Emboss {

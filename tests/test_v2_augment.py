@@ -1921,3 +1921,29 @@ def test_emboss_reflected_filter_reference_and_seed(source):
     np.testing.assert_array_equal(output(root, lambda p: p.emboss((0, 0)))[0], pixels)
     with pytest.raises(ValueError, match="Emboss"):
         output(root, lambda p: p.hwc_to_chw().emboss())
+
+
+@pytest.mark.parametrize("mode", ["edge", "detail"])
+def test_enhance_preset_and_seed(source, mode):
+    from PIL import ImageFilter
+
+    root, pixels = source
+    preset = ImageFilter.EDGE_ENHANCE if mode == "edge" else ImageFilter.DETAIL
+    actual = output(root, lambda p: p.enhance(mode, (1, 1)), transform=True)[0]
+    expected = np.asarray(Image.fromarray(pixels).filter(preset))
+    assert actual.shape == pixels.shape and actual.dtype == np.uint8
+    np.testing.assert_allclose(actual[1:-1, 1:-1], expected[1:-1, 1:-1], atol=1)
+    floats = output(
+        root, lambda p: p.to_dtype("float32", True).enhance(mode, (1, 1))
+    )[0]
+    assert floats.dtype == np.float32
+    assert 0 <= floats.min() <= floats.max() <= 1
+    np.testing.assert_allclose(actual, floats * 255, atol=0.5001)
+    serial = output(root, lambda p: p.enhance(mode))
+    np.testing.assert_array_equal(
+        serial, output(root, lambda p: p.enhance(mode), transform=True, workers=3)
+    )
+    assert not np.array_equal(serial, output(root, lambda p: p.enhance(mode), epoch=1))
+    np.testing.assert_array_equal(output(root, lambda p: p.enhance(mode, (0, 0)))[0], pixels)
+    with pytest.raises(ValueError, match="Enhance"):
+        output(root, lambda p: p.hwc_to_chw().enhance(mode))
