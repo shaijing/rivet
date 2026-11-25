@@ -1077,6 +1077,18 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (alpha_range=(0.2, 0.5), strength_range=(0.2, 0.7)))]
+    fn emboss(&self, alpha_range: (f64, f64), strength_range: (f64, f64)) -> PyResult<Self> {
+        let config = V2Config::Emboss {
+            alpha_range,
+            strength_range,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (target_mean_range=(0.3, 0.5), gain_range=None))]
     fn exposure_matching(
         &self,
@@ -2904,6 +2916,18 @@ impl PyImagePipeline {
             sat_shift_range,
             val_shift_range,
         ]));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (alpha_range=(0.2, 0.5), strength_range=(0.2, 0.7)))]
+    fn emboss(&self, alpha_range: (f64, f64), strength_range: (f64, f64)) -> PyResult<Self> {
+        let config = V2Config::Emboss {
+            alpha_range,
+            strength_range,
+        };
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

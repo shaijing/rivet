@@ -643,6 +643,19 @@ class Transform:
         )
         return Transform(inner)
 
+    def emboss(
+        self,
+        alpha_range: tuple[float, float] = (0.2, 0.5),
+        strength_range: tuple[float, float] = (0.2, 0.7),
+    ) -> Transform:
+        """Add directional relief to uint8 or normalized float32 HWC.
+
+        Sample alpha and strength once per image. Alpha blends the relief
+        with the original; strength scales the diagonal differences.
+        The filter uses reflected borders and clips its final output.
+        """
+        return Transform(self._inner.emboss(alpha_range, strength_range))
+
     def exposure_matching(
         self,
         target_mean_range: tuple[float, float] = (0.3, 0.5),

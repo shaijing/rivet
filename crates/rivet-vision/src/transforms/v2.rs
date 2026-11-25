@@ -109,6 +109,10 @@ pub enum V2Config {
     },
     RandomSunFlare(std::sync::Arc<RandomSunFlareConfig>),
     HueSaturationValue(std::sync::Arc<[(f64, f64); 3]>),
+    Emboss {
+        alpha_range: (f64, f64),
+        strength_range: (f64, f64),
+    },
     ExposureMatching {
         target_mean_range: (f64, f64),
         gain_range: Option<(f64, f64)>,
@@ -255,6 +259,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::RandomSunFlare(_) => "RandomSunFlare",
             Self::HueSaturationValue(_) => "HueSaturationValue",
+            Self::Emboss { .. } => "Emboss",
             Self::ExposureMatching { .. } => "ExposureMatching",
             Self::FancyPca { .. } => "FancyPCA",
             Self::Colorize(_) => "Colorize",
@@ -314,6 +319,7 @@ impl V2Config {
             Self::MultiplicativeNoise { .. } => 82,
             Self::RandomSunFlare(_) => 88,
             Self::HueSaturationValue(_) => 99,
+            Self::Emboss { .. } => 104,
             Self::ExposureMatching { .. } => 103,
             Self::FancyPca { .. } => 102,
             Self::Colorize(_) => 101,
@@ -371,6 +377,17 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::Emboss {
+                alpha_range: (lo, hi),
+                strength_range: (min, max),
+            } => {
+                *lo >= 0.0
+                    && lo <= hi
+                    && *hi <= 1.0
+                    && *min >= 0.0
+                    && min <= max
+                    && *max <= f64::from(f32::MAX)
+            }
             Self::ExposureMatching {
                 target_mean_range: (lo, hi),
                 gain_range,
@@ -876,6 +893,7 @@ impl V2Config {
             | Self::MultiplicativeNoise { .. }
             | Self::RandomSunFlare(_)
             | Self::HueSaturationValue(_)
+            | Self::Emboss { .. }
             | Self::ExposureMatching { .. }
             | Self::FancyPca { .. }
             | Self::Colorize(_)
@@ -1112,6 +1130,14 @@ impl V2Config {
             } => {
                 let target = lo + rng.next_f64() * (hi - lo);
                 s.image = super::color::exposure_matching(&s.image, target, *gain_range)?;
+            }
+            Self::Emboss {
+                alpha_range,
+                strength_range,
+            } => {
+                let mut sample = |(lo, hi)| lo + rng.next_f64() * (hi - lo);
+                s.image =
+                    super::blur::emboss(&s.image, sample(*alpha_range), sample(*strength_range))?;
             }
             Self::FancyPca { alpha } => {
                 s.image = super::pca::fancy_pca(&s.image, *alpha, rng)?;

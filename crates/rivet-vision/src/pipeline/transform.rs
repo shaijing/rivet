@@ -123,6 +123,14 @@ impl TransformSequence {
         ))
     }
 
+    /// Blend a directional relief filter with the original image.
+    pub fn emboss(self, alpha_range: (f64, f64), strength_range: (f64, f64)) -> Self {
+        self.v2(crate::transforms::V2Config::Emboss {
+            alpha_range,
+            strength_range,
+        })
+    }
+
     /// Match each image to a seeded normalized target mean.
     pub fn exposure_matching(
         self,

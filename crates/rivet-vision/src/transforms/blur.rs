@@ -427,7 +427,7 @@ fn convolve_square(
             size,
             weights,
             |sum| {
-                if name == "StochasticConvolution" {
+                if matches!(name, "StochasticConvolution" | "Emboss") {
                     sum.clamp(0.0, 1.0) as f32
                 } else {
                     sum as f32
@@ -713,4 +713,29 @@ pub(super) fn glass_blur(
         }
     })?;
     smooth(&shuffled)
+}
+
+pub(super) fn emboss(
+    input: &rivet_core::Tensor,
+    alpha: f64,
+    strength: f64,
+) -> RivetResult<rivet_core::Tensor> {
+    let gain = alpha * strength;
+    if gain == 0.0 {
+        convolution_shape(input, "Emboss")?;
+        return Ok(input.clone());
+    }
+    // Opposite taps create diagonal relief. A unit DC gain preserves flats.
+    let weights = [
+        -gain,
+        -gain * 0.5,
+        0.0,
+        -gain * 0.5,
+        1.0,
+        gain * 0.5,
+        0.0,
+        gain * 0.5,
+        gain,
+    ];
+    convolve_square(input, "Emboss", 3, &weights, super::PaddingMode::Reflect)
 }

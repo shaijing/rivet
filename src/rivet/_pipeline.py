@@ -753,6 +753,19 @@ class Pipeline:
         )
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def emboss(
+        self,
+        alpha_range: tuple[float, float] = (0.2, 0.5),
+        strength_range: tuple[float, float] = (0.2, 0.7),
+    ) -> Pipeline:
+        """Add directional relief to uint8 or normalized float32 HWC.
+
+        Sample alpha and strength once per image. Alpha blends the relief
+        with the original; strength scales the diagonal differences.
+        The filter uses reflected borders and clips its final output.
+        """
+        return Pipeline(self._inner.emboss(alpha_range, strength_range), as_numpy=self.as_numpy)
+
     def exposure_matching(
         self,
         target_mean_range: tuple[float, float] = (0.3, 0.5),

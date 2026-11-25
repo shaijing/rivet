@@ -1895,3 +1895,29 @@ def test_exposure_matching_seed_and_clipping(source):
         output(root, lambda p: p.hwc_to_chw().exposure_matching())
     with pytest.raises(ValueError):
         rivet.Transform().exposure_matching(gain_range=(2, 1))
+
+
+def test_emboss_reflected_filter_reference_and_seed(source):
+    root, pixels = source
+
+    def augment(p):
+        return p.emboss((0.5, 0.5), (0.5, 0.5))
+
+    kernel = np.array([[-0.25, -0.125, 0], [-0.125, 1, 0.125], [0, 0.125, 0.25]])
+    padded = np.pad(pixels, ((1, 1), (1, 1), (0, 0)), mode="reflect")
+    windows = np.lib.stride_tricks.sliding_window_view(padded, (3, 3), axis=(0, 1))
+    expected = np.einsum("hwcij,ij->hwc", windows, kernel).clip(0, 255)
+    actual = output(root, augment, transform=True)[0]
+    assert actual.dtype == np.uint8 and actual.shape == pixels.shape
+    np.testing.assert_array_equal(actual, np.floor(expected + 0.5))
+    floats = output(root, lambda p: augment(p.to_dtype("float32", True)))[0]
+    assert floats.dtype == np.float32
+    np.testing.assert_allclose(floats * 255, expected, atol=3e-5)
+    serial = output(root, lambda p: p.emboss())
+    np.testing.assert_array_equal(
+        serial, output(root, lambda p: p.emboss(), transform=True, workers=3)
+    )
+    assert not np.array_equal(serial, output(root, lambda p: p.emboss(), epoch=1))
+    np.testing.assert_array_equal(output(root, lambda p: p.emboss((0, 0)))[0], pixels)
+    with pytest.raises(ValueError, match="Emboss"):
+        output(root, lambda p: p.hwc_to_chw().emboss())
