@@ -1700,3 +1700,61 @@ def test_mosaic_contain_semantic_mask_and_target_crop():
     mask = np.full((4, 5), -1, np.int64)
     mask[1:3, 0] = 2
     np.testing.assert_array_equal(out["targets"][0]["masks"], mask)
+
+
+def test_copy_and_paste_fully_occluded_instance_and_new_labels():
+    image = np.full((4, 5, 3), 40, np.uint8)
+    mask = np.ones((1, 4, 5), np.uint8)
+    primary = rivet.AnnotatedSample(image, masks=mask, boxes=[[0, 0, 5, 4]], labels=[3], keypoints=[[[1, 1]]])
+    donor = rivet.AnnotatedSample(np.full_like(image, 90), masks=mask, boxes=[[0, 0, 5, 4]],
+                                 labels=[7], keypoints=[[[3, 2]]])
+    pipeline = rivet.StructuredPipeline([primary]).copy_and_paste([donor], min_visibility_after_paste=0)
+    out = next(iter(pipeline.execute()))
+    np.testing.assert_array_equal(out["images"][0], 90)
+    t = out["targets"][0]
+    np.testing.assert_array_equal(t["labels"], [7])
+    np.testing.assert_array_equal(t["masks"], mask)
+    np.testing.assert_array_equal(t["boxes"], [[0, 0, 5, 4]])
+    np.testing.assert_array_equal(t["keypoints"], [[[3, 2]]])
+
+
+def test_copy_and_paste_crops_mask_translates_keypoints_and_worker_seed():
+    image = np.full((9, 10, 3), 20, np.uint8)
+    donor_image = np.full((5, 6, 3), 100, np.uint8)
+    mask = np.zeros((1, 5, 6), np.uint8)
+    mask[0, 1:4, 2:4] = 1
+    donor = rivet.AnnotatedSample(donor_image, masks=mask, labels=[9], keypoints=[[[3, 2]]])
+    base = rivet.AnnotatedSample(image)
+    pipeline = rivet.StructuredPipeline([base] * 5).copy_and_paste([donor]).seed(27)
+    for a,b in zip(pipeline.execute(), pipeline.workers(3).execute(), strict=True):
+        np.testing.assert_array_equal(a["images"], b["images"])
+        covered = a["images"][0][..., 0] == 100
+        y, x = np.argwhere(covered)[0]
+        assert covered.sum() == 6
+        t = a["targets"][0]
+        np.testing.assert_array_equal(t["masks"][0], covered)
+        np.testing.assert_array_equal(t["boxes"], [[x, y, x+2, y+3]])
+        np.testing.assert_array_equal(t["keypoints"], [[[x+1, y+1]]])
+        np.testing.assert_array_equal(t["labels"], [9])
+
+
+def test_copy_and_paste_gaussian_blend_preserves_semantic_footprint():
+    shape = (5, 5)
+    base = rivet.AnnotatedSample(np.full((*shape, 3), 20, np.uint8), masks=np.zeros(shape, np.int64))
+    donor = rivet.AnnotatedSample(
+        np.full((*shape, 3), 140, np.uint8), masks=np.ones((1, *shape), np.uint8), labels=[8],
+    )
+    semantic = np.arange(100, 125, dtype=np.int64).reshape(shape)
+    p = rivet.StructuredPipeline([base]).seed(14)
+    hard = next(iter(p.copy_and_paste([(donor, semantic)]).execute()))
+    soft = next(iter(p.copy_and_paste(
+        [(donor, semantic)], blend_mode="gaussian", blend_sigma_range=(1, 1),
+    ).execute()))
+    np.testing.assert_array_equal(hard["images"][0], 140)
+    soft_image = soft["images"][0]
+    assert 20 < soft_image[0, 0, 0] < soft_image[2, 2, 0] < 140
+    for result in (hard, soft):
+        target = result["targets"][0]
+        np.testing.assert_array_equal(target["masks"], semantic)
+        np.testing.assert_array_equal(target["boxes"], [[0, 0, 5, 5]])
+        np.testing.assert_array_equal(target["labels"], [8])

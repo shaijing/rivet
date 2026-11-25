@@ -278,6 +278,49 @@ impl PyStructuredPipeline {
         })
     }
 
+    #[pyo3(signature = (donors,*,scale_range=(1.0,1.0),min_visibility_after_paste=0.05,min_paste_area=1,blend_mode="hard",blend_sigma_range=(1.0,3.0)))]
+    fn copy_and_paste(
+        &self,
+        py: Python<'_>,
+        donors: Vec<(Py<PyAnnotatedSample>, Option<Bound<'_, PyAny>>)>,
+        scale_range: (f64, f64),
+        min_visibility_after_paste: f64,
+        min_paste_area: usize,
+        blend_mode: &str,
+        blend_sigma_range: (f64, f64),
+    ) -> PyResult<Self> {
+        use rivet_vision::structured::{CopyAndPasteConfig, CopyPasteDonor};
+        let donors = donors
+            .into_iter()
+            .map(|(s, m)| {
+                Ok(CopyPasteDonor {
+                    sample: s.borrow(py).inner.clone(),
+                    semantic_mask: m.as_ref().map(tensor_from_numpy).transpose()?,
+                })
+            })
+            .collect::<PyResult<_>>()?;
+        let blend_sigma_range = match blend_mode {
+            "hard" => None,
+            "gaussian" => Some(blend_sigma_range),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "CopyAndPaste blend_mode must be hard or gaussian",
+                ));
+            }
+        };
+        let op = StructuredOp::CopyAndPaste(std::sync::Arc::new(CopyAndPasteConfig {
+            donors,
+            scale_range,
+            min_visibility_after_paste,
+            min_paste_area,
+            blend_sigma_range,
+        }));
+        op.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().push(op),
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (donors,cell_shape,*,grid_yx=(2,2),target_size=None,fit_mode="cover",center_range=(0.3,0.7),interpolation="bilinear",fill=0.0,fill_mask=0))]
     fn mosaic(

@@ -1,3 +1,4 @@
+use super::CopyAndPasteConfig;
 use super::GuidedCoarseDropoutConfig;
 use super::RandomCropNearBBoxConfig;
 use super::StructuredDropoutConfig;
@@ -32,6 +33,7 @@ pub enum StructuredOp {
     GuidedCoarseDropout(Arc<GuidedCoarseDropoutConfig>),
     MaskDropout(MaskDropoutConfig),
     OverlayElements(Arc<OverlayElementsConfig>),
+    CopyAndPaste(Arc<CopyAndPasteConfig>),
     Mosaic(Arc<MosaicConfig>),
     SpatialDropout(StructuredDropoutConfig),
     ConstrainedCoarseDropout(std::sync::Arc<ConstrainedCoarseDropoutConfig>),
@@ -49,6 +51,7 @@ impl StructuredOp {
             Self::RandomIoUCrop(_) => "RandomIoUCrop",
             Self::ConstrainedCoarseDropout(_) => "ConstrainedCoarseDropout",
             Self::SpatialDropout(c) => c.name(),
+            Self::CopyAndPaste(_) => "CopyAndPaste",
             Self::Mosaic(_) => "Mosaic",
             Self::OverlayElements(_) => "OverlayElements",
 
@@ -68,6 +71,7 @@ impl StructuredOp {
             Self::RandomIoUCrop(c) => c.validate(),
             Self::ConstrainedCoarseDropout(c) => c.validate(),
             Self::SpatialDropout(c) => c.validate(),
+            Self::CopyAndPaste(c) => c.validate(),
             Self::Mosaic(c) => c.validate(),
             Self::OverlayElements(c) => c.validate(),
 
@@ -224,6 +228,7 @@ impl StructuredPipeline {
                     sample.constrained_coarse_dropout(c, &mut rng)?
                 }
                 StructuredOp::SpatialDropout(c) => sample.spatial_dropout(c, &mut rng)?,
+                StructuredOp::CopyAndPaste(c) => sample.copy_and_paste(c, &mut rng)?,
                 StructuredOp::Mosaic(c) => sample.mosaic(c, &mut rng)?,
                 StructuredOp::OverlayElements(c) => sample.overlay_elements(c, &mut rng)?,
 

@@ -7,6 +7,8 @@ pub use bbox_safe::BBoxSafeRandomCropConfig;
 pub use bbox_subset::BBoxSubsetSafeRandomCropConfig;
 mod constrained_dropout;
 pub use constrained_dropout::ConstrainedCoarseDropoutConfig;
+mod copy_paste;
+pub use copy_paste::{CopyAndPasteConfig, CopyPasteDonor};
 mod geometry;
 mod guided_dropout;
 pub use guided_dropout::GuidedCoarseDropoutConfig;

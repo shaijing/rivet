@@ -210,7 +210,7 @@ impl StructuredSample {
     }
 }
 
-fn compose<T: WithDType>(
+pub(super) fn compose<T: WithDType>(
     base: &Tensor,
     original: &[T],
     elements: &[OverlayElement],

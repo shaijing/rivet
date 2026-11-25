@@ -293,6 +293,35 @@ class StructuredPipeline:
             min_visibility=min_visibility,
         ))
 
+    def copy_and_paste(
+        self,
+        donors: Iterable[AnnotatedSample | tuple[AnnotatedSample, np.ndarray]],
+        *,
+        scale_range: tuple[float, float] = (1, 1),
+        min_visibility_after_paste: float = 0.05,
+        min_paste_area: int = 1,
+        blend_mode: str = "hard",
+        blend_sigma_range: tuple[float, float] = (1, 3),
+    ) -> StructuredPipeline:
+        """Paste donor instances at seeded positions and update annotations.
+
+        Instance masks or boxes define footprints. Optional donor tuples
+        supply a semantic map to update semantic targets. Objects shrink
+        to fit, then sample the scale multiplier. Gaussian blending softens
+        the stamp inside its crop, while annotation visibility uses the binary
+        footprint. Nonsemantic outputs contain binary instance planes.
+        """
+        layers = [
+            (donor._inner, None) if isinstance(donor, AnnotatedSample)
+            else (donor[0]._inner, np.asarray(donor[1]))
+            for donor in donors
+        ]
+        return self._from_inner(self._inner.copy_and_paste(
+            layers, scale_range=scale_range,
+            min_visibility_after_paste=min_visibility_after_paste, min_paste_area=min_paste_area,
+            blend_mode=blend_mode, blend_sigma_range=blend_sigma_range,
+        ))
+
     def mosaic(
         self,
         donors: Iterable[AnnotatedSample],
