@@ -267,6 +267,7 @@ pub enum V2Config {
         scale: bool,
     },
     SquareSymmetry(Option<SquareSymmetry>),
+    Morphological(MorphologicalConfig),
     SafeRotate(SafeRotateConfig),
     RandomRotate90,
     Transpose,
@@ -333,6 +334,7 @@ impl V2Config {
             Self::Defocus { .. } => "Defocus",
             Self::ChannelDropout(_) => "ChannelDropout",
             Self::SquareSymmetry(_) => "SquareSymmetry",
+            Self::Morphological(_) => "Morphological",
             Self::SafeRotate(_) => "SafeRotate",
             Self::RandomRotate90 => "RandomRotate90",
             Self::Transpose => "Transpose",
@@ -411,6 +413,7 @@ impl V2Config {
             Self::Defocus { .. } => 67,
             Self::ChannelDropout(_) => 111,
             Self::SquareSymmetry(_) => 122,
+            Self::Morphological(_) => 124,
             Self::SafeRotate(_) => 123,
             Self::RandomRotate90 => 121,
             Self::Transpose => 120,
@@ -450,6 +453,7 @@ impl V2Config {
                 | Self::LetterBox(_)
                 | Self::ToSepia { .. }
                 | Self::SquareSymmetry(Some(_))
+                | Self::Morphological(_)
                 | Self::Transpose
                 | Self::MedianBlur
                 | Self::Clahe { .. }
@@ -457,6 +461,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::Morphological(config) => config.valid(),
             Self::SafeRotate(config) => return config.validate(),
             Self::RandomScale { range, y, .. } => {
                 let valid = |(a, b): (f64, f64)| a > -1.0 && a <= b && b.is_finite();
@@ -1494,6 +1499,9 @@ impl V2Config {
                     s.image = s.image.permute(&order)?;
                 }
                 s.image = super::quarter_turn(&s.image, axis, turns)?;
+            }
+            Self::Morphological(config) => {
+                s.image = config.apply(&s.image, axis)?;
             }
             Self::SafeRotate(config) => {
                 if h == 0 || w == 0 {

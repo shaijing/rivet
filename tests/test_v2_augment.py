@@ -2401,3 +2401,19 @@ def test_safe_rotate_keeps_extent_and_layout(source):
     np.testing.assert_array_equal(planar, serial[0].transpose(2, 0, 1))
     with pytest.raises(ValueError, match="SafeRotate"):
         output(root, lambda p: p.to_dtype("float32", True).safe_rotate())
+
+
+@pytest.mark.parametrize("operation", ["erosion", "dilation"])
+def test_morphological_cross_reference_and_layout(source, operation):
+    root, pixels = source
+    padded = np.pad(pixels, ((1, 1), (1, 1), (0, 0)), mode="edge")
+    neighbors = np.stack([padded[y:y+12, x:x+18] for y, x in [(1, 0), (0, 1), (1, 1), (2, 1), (1, 2)]])
+    expected = (np.min if operation == "erosion" else np.max)(neighbors, axis=0)
+    serial = output(root, lambda p: p.morphological(3, operation))
+    np.testing.assert_array_equal(serial[0], expected)
+    np.testing.assert_array_equal(
+        serial, output(root, lambda p: p.morphological(3, operation), transform=True, workers=3)
+    )
+    planar = output(root, lambda p: p.to_dtype("float32", True).hwc_to_chw().morphological(3, operation))[0]
+    assert planar.dtype == np.float32
+    np.testing.assert_allclose(planar, expected.transpose(2, 0, 1) / 255, atol=1e-7)

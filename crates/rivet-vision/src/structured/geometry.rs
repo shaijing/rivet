@@ -664,6 +664,13 @@ pub(super) fn apply(
             }
             Ok(s)
         }
+        ImageOp::V2(V2Config::Morphological(config)) => {
+            s.image = config.apply(&s.image, s.axis_order)?;
+            if let Some(mask) = &s.masks {
+                s.masks = Some(config.apply(mask, ImageAxisOrder::Chw)?);
+            }
+            Ok(s)
+        }
         ImageOp::V2(V2Config::SafeRotate(config)) => {
             let matrix = config.sample(w, h, rng);
             if s.image.dtype() != rivet_core::DType::U8 {

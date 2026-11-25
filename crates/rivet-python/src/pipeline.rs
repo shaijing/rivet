@@ -936,6 +936,25 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (scale=(2,3), operation="dilation"))]
+    fn morphological(&self, scale: (u32, u32), operation: &str) -> PyResult<Self> {
+        use rivet_vision::transforms::{MorphologicalConfig, MorphologicalOperation};
+        let operation = match operation {
+            "erosion" => MorphologicalOperation::Erosion,
+            "dilation" => MorphologicalOperation::Dilation,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "operation must be erosion or dilation",
+                ));
+            }
+        };
+        let config = V2Config::Morphological(MorphologicalConfig { scale, operation });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (angle_range=(-90.0,90.0), *, interpolation="bilinear", fill=None, fill_mask=0))]
     fn safe_rotate(
         &self,
@@ -3209,6 +3228,25 @@ impl PyImagePipeline {
         };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (scale=(2,3), operation="dilation"))]
+    fn morphological(&self, scale: (u32, u32), operation: &str) -> PyResult<Self> {
+        use rivet_vision::transforms::{MorphologicalConfig, MorphologicalOperation};
+        let operation = match operation {
+            "erosion" => MorphologicalOperation::Erosion,
+            "dilation" => MorphologicalOperation::Dilation,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "operation must be erosion or dilation",
+                ));
+            }
+        };
+        let config = V2Config::Morphological(MorphologicalConfig { scale, operation });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

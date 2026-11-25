@@ -633,6 +633,18 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def morphological(
+        self, scale: int | tuple[int, int] = (2, 3), operation: str = "dilation"
+    ) -> Pipeline:
+        """Apply elliptical erosion or dilation to each image channel.
+
+        Scale is width and height, or one size for both. Borders omit
+        out-of-bounds taps. Structured masks use numeric min/max per
+        plane, so semantic class IDs are ordered by their numeric value.
+        """
+        size = (scale, scale) if isinstance(scale, int) else scale
+        return Pipeline(self._inner.morphological(size, operation), as_numpy=self.as_numpy)
+
     def safe_rotate(
         self,
         angle_range: tuple[float, float] = (-90, 90),

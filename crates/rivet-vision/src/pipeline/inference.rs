@@ -284,6 +284,9 @@ pub(crate) fn infer_image_op(
                     }
                     output.contiguity = Some(Contiguity::Unknown);
                 }
+                V2Config::Morphological(_) => {
+                    output.contiguity = Some(Contiguity::Unknown);
+                }
                 V2Config::SafeRotate(config) => {
                     require_u8_decoded(input_state, op.name())?;
                     if config.fill_channels.is_some()

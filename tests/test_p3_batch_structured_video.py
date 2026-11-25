@@ -1329,3 +1329,18 @@ def test_structured_spatial_dropout_mask_and_visibility(mode):
     assert removed["boxes"].shape == (0, 4)
     assert removed["labels"].shape == (0,)
     assert removed["keypoints"].shape == (0, 1, 2)
+
+
+@pytest.mark.parametrize("instance", [False, True])
+def test_morphological_masks_use_independent_numeric_planes(instance):
+    image = np.zeros((5, 7, 3), np.uint8)
+    mask = np.zeros((5, 7), np.int64)
+    mask[0, 0] = 9
+    expected = np.zeros_like(mask)
+    expected[0, :2] = expected[1, 0] = 9
+    if instance:
+        mask = np.stack([mask, np.zeros_like(mask)])
+        expected = np.stack([expected, np.zeros_like(expected)])
+    sample = rivet.AnnotatedSample(image, masks=mask)
+    t = sample.apply(rivet.Transform().morphological(3, "dilation")).to_dict()
+    np.testing.assert_array_equal(t["masks"], expected)

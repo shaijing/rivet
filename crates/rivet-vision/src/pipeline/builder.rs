@@ -176,6 +176,11 @@ impl ImagePipeline {
         ))
     }
 
+    /// Apply an elliptical erosion or dilation kernel.
+    pub fn morphological(self, config: crate::transforms::MorphologicalConfig) -> Self {
+        self.v2(crate::transforms::V2Config::Morphological(config))
+    }
+
     /// Rotate while fitting the complete source in the original frame.
     pub fn safe_rotate(self, config: crate::transforms::SafeRotateConfig) -> Self {
         self.v2(crate::transforms::V2Config::SafeRotate(config))
