@@ -905,6 +905,18 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (intensity_range=(0.2, 0.5), center_range=(0.3, 0.7)))]
+    fn vignetting(&self, intensity_range: (f64, f64), center_range: (f64, f64)) -> PyResult<Self> {
+        let config = V2Config::Vignetting {
+            intensity_range,
+            center_range,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (scale=0.1))]
     fn random_tone_curve(&self, scale: f64) -> PyResult<Self> {
         let config = V2Config::RandomToneCurve { scale };
@@ -2081,6 +2093,18 @@ impl PyImagePipeline {
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().letterbox(config),
+        })
+    }
+
+    #[pyo3(signature = (intensity_range=(0.2, 0.5), center_range=(0.3, 0.7)))]
+    fn vignetting(&self, intensity_range: (f64, f64), center_range: (f64, f64)) -> PyResult<Self> {
+        let config = V2Config::Vignetting {
+            intensity_range,
+            center_range,
+        };
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

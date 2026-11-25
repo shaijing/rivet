@@ -633,6 +633,20 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def vignetting(
+        self,
+        intensity_range: tuple[float, float] = (0.2, 0.5),
+        center_range: tuple[float, float] = (0.3, 0.7),
+    ) -> Pipeline:
+        """Darken uint8 or float32 HWC images using seeded radial falloff.
+
+        Each center coordinate is sampled independently as a fraction of its
+        pixel axis. Intensity is the fractional loss at the farthest corner.
+        """
+        return Pipeline(
+            self._inner.vignetting(intensity_range, center_range), as_numpy=self.as_numpy
+        )
+
     def random_tone_curve(self, scale: float = 0.1) -> Pipeline:
         """Apply one seeded monotone tone curve to all uint8 HWC RGB channels."""
         return Pipeline(self._inner.random_tone_curve(scale), as_numpy=self.as_numpy)

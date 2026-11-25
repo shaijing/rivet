@@ -777,3 +777,40 @@ def test_chromatic_aberration_samples_channels_independently(
 def test_new_color_operators_validate_parameters(build):
     with pytest.raises(ValueError):
         build(rivet.Transform())
+
+
+@pytest.mark.parametrize("shape", [(5, 7, 3), (1, 5, 3), (1, 1, 3)])
+def test_vignetting_radial_falloff(tmp_path, shape):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.full(shape, 200, dtype=np.uint8)
+    Image.fromarray(pixels).save(folder / "image.png")
+
+    def fixed(p):
+        return p.vignetting((0.5, 0.5), (0.5, 0.5))
+
+    h, w, _ = shape
+    actual = output(tmp_path, fixed, transform=True)[0]
+    np.testing.assert_array_equal(actual[h // 2, w // 2], 200)
+    np.testing.assert_array_equal(actual[0, 0], 200 if h == w == 1 else 100)
+    np.testing.assert_array_equal(
+        output(tmp_path, lambda p: p.vignetting((0, 0)))[0], pixels
+    )
+    floating = output(
+        tmp_path, lambda p: fixed(p.grayscale().to_dtype("float32", True))
+    )[0]
+    assert floating.shape == (h, w, 1)
+    assert floating.dtype == np.float32
+    np.testing.assert_allclose(floating[0, 0, 0], actual[0, 0, 0] / 255)
+
+
+def test_vignetting_is_seeded_across_workers(source):
+    root, _ = source
+
+    def augment(p):
+        return p.vignetting()
+
+    serial = output(root, augment)
+    parallel = output(root, augment, transform=True, workers=3)
+    np.testing.assert_array_equal(serial, parallel)
+    assert not np.array_equal(serial, output(root, augment, epoch=1))

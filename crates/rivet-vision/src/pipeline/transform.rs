@@ -58,6 +58,14 @@ impl TransformSequence {
         self.v2(crate::transforms::V2Config::LetterBox(config))
     }
 
+    /// Apply seeded radial darkening with intensity and center fractions in [0, 1].
+    pub fn vignetting(self, intensity_range: (f64, f64), center_range: (f64, f64)) -> Self {
+        self.v2(crate::transforms::V2Config::Vignetting {
+            intensity_range,
+            center_range,
+        })
+    }
+
     pub fn random_tone_curve(self, scale: f64) -> Self {
         self.v2(crate::transforms::V2Config::RandomToneCurve { scale })
     }

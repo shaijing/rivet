@@ -523,6 +523,18 @@ class Transform:
             )
         )
 
+    def vignetting(
+        self,
+        intensity_range: tuple[float, float] = (0.2, 0.5),
+        center_range: tuple[float, float] = (0.3, 0.7),
+    ) -> Transform:
+        """Darken uint8 or float32 HWC images using seeded radial falloff.
+
+        Each center coordinate is sampled independently as a fraction of its
+        pixel axis. Intensity is the fractional loss at the farthest corner.
+        """
+        return Transform(self._inner.vignetting(intensity_range, center_range))
+
     def random_tone_curve(self, scale: float = 0.1) -> Transform:
         """Apply one seeded monotone tone curve to all uint8 HWC RGB channels."""
         return Transform(self._inner.random_tone_curve(scale))

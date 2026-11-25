@@ -150,3 +150,73 @@ pub(super) fn clahe(input: &Tensor, grid: (u32, u32), clip_limit: f64) -> RivetR
         })
     })?)
 }
+
+pub(super) fn vignette(input: &Tensor, intensity: f64, center: (f64, f64)) -> RivetResult<Tensor> {
+    let [height, width, channels] = *input.dims() else {
+        return Err(invalid_argument("Vignetting expects a rank-3 HWC image"));
+    };
+    if height == 0
+        || width == 0
+        || channels == 0
+        || !matches!(input.dtype(), DType::U8 | DType::F32)
+    {
+        return Err(invalid_argument(
+            "Vignetting requires nonempty uint8 or float32 HWC input",
+        ));
+    }
+    if intensity == 0.0 || (height, width) == (1, 1) {
+        return Ok(input.clone());
+    }
+    // Ignore degenerate axes so a single row or column uses the full falloff.
+    let axis = |length: usize, center: f64| {
+        let extent = length.saturating_sub(1);
+        let limit = if extent == 0 {
+            0.0
+        } else {
+            center.max(1.0 - center).powi(2)
+        };
+        let distances: Vec<_> = (0..length)
+            .map(|i| {
+                if extent == 0 {
+                    0.0
+                } else {
+                    (i as f64 / extent as f64 - center).powi(2)
+                }
+            })
+            .collect();
+        (limit, distances)
+    };
+    let (x_limit, xs) = axis(width, center.0);
+    let (y_limit, ys) = axis(height, center.1);
+    let scale = intensity / (x_limit + y_limit);
+    let input = input.contiguous()?;
+    Ok(input.with_cpu_storage(|storage, layout| {
+        macro_rules! write_pixels {
+            ($values:expr, $scale_pixel:expr) => {{
+                let pixels = super::contiguous_values($values, layout)?;
+                Tensor::from_exact_writer(input.dims(), input.device(), |out| {
+                    let scale_pixel = $scale_pixel;
+                    for (row, &dy) in pixels.chunks_exact(width * channels).zip(&ys) {
+                        for (pixel, &dx) in row.chunks_exact(channels).zip(&xs) {
+                            let gain = (1.0 - scale * (dx + dy)).max(0.0);
+                            for &value in pixel {
+                                out.write_next(scale_pixel(value, gain))?;
+                            }
+                        }
+                    }
+                    Ok(())
+                })
+            }};
+        }
+        match storage {
+            CpuStorageRef::U8(values) => {
+                write_pixels!(values, |value, gain: f64| (f64::from(value) * gain).round()
+                    as u8)
+            }
+            CpuStorageRef::F32(values) => {
+                write_pixels!(values, |value, gain: f64| value * gain as f32)
+            }
+            _ => unreachable!(),
+        }
+    })?)
+}
