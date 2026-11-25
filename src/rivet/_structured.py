@@ -315,6 +315,38 @@ class StructuredPipeline:
             layers.append((image, mask, element.get("offset"), element.get("bbox"), element.get("mask_id")))
         return self._from_inner(self._inner.overlay_elements(layers, min_visibility))
 
+    def guided_coarse_dropout(
+        self,
+        region: np.ndarray,
+        *,
+        protected_bbox_labels: Iterable[int] = (),
+        protection_margin: float = 0,
+        num_holes_range: tuple[int, int] = (1, 1),
+        hole_height_range: tuple[float, float] = (0.05, 0.2),
+        hole_width_range: tuple[float, float] = (0.05, 0.2),
+        fill: float = 0,
+        fill_mask: int | None = None,
+        min_visibility: float = 0,
+    ) -> StructuredPipeline:
+        """Erase holes inside a binary guide and outside protected boxes.
+
+        Supply H×W for a shared guide or N×H×W for guides in source order.
+        Guide dimensions match the images at this stage. Hole size is a
+        fraction of image dimensions, and box margins are relative to box size.
+        Optional mask fill follows the same coverage as the image. Boxes
+        below min_visibility are removed with their aligned annotations.
+        """
+        region = np.asarray(region)
+        if not np.all((region == 0) | (region == 1)):
+            raise ValueError("GuidedCoarseDropout region must be binary")
+        return self._from_inner(self._inner.guided_coarse_dropout(
+            region.astype(np.uint8, copy=False),
+            protected_bbox_labels=list(protected_bbox_labels),
+            protection_margin=protection_margin, num_holes_range=num_holes_range,
+            hole_height_range=hole_height_range, hole_width_range=hole_width_range,
+            fill=fill, fill_mask=fill_mask, min_visibility=min_visibility,
+        ))
+
     def mask_dropout(
         self,
         max_objects_range: tuple[int, int] = (1, 1),

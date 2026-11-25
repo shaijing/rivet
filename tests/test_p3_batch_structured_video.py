@@ -1593,3 +1593,58 @@ def test_structured_lambda_shared_seed_and_target_protocol(annotated):
     skipped = rivet.Transform().lambda_transform(marker, probability=0)
     list(plain.compose(skipped).execute())
     assert not seen
+
+
+def test_guided_dropout_per_sample_regions_and_protection():
+    image = np.full((8, 9, 3), 80, np.uint8)
+    mask = np.ones((8, 9), np.int64)
+    samples = []
+    guides = np.zeros((4, 8, 9), dtype=bool)
+    for i in range(4):
+        stamped = image.copy()
+        stamped[0, 0] = 100 + i
+        samples.append(rivet.AnnotatedSample(
+            stamped, boxes=[[3, 2, 6, 5]], labels=[4], masks=mask, keypoints=[[[4, 3]]]
+        ))
+        guides[i, i + 1, 1] = True
+        guides[i, 3, 4] = True  # protected interior
+    pipeline = rivet.StructuredPipeline(samples).guided_coarse_dropout(
+        guides, protected_bbox_labels=[4], protection_margin=0.1,
+        hole_height_range=(1, 1), hole_width_range=(1, 1), fill=23, fill_mask=-1
+    ).shuffle().seed(15)
+    for a, b in zip(pipeline.execute(), pipeline.workers(3).execute(), strict=True):
+        actual = a["images"][0]
+        np.testing.assert_array_equal(actual, b["images"][0])
+        i = actual[0, 0, 0] - 100
+        covered = np.zeros(mask.shape, dtype=bool)
+        covered[i + 1, 1] = True
+        np.testing.assert_array_equal(np.all(actual == 23, axis=-1), covered)
+        t = a["targets"][0]
+        np.testing.assert_array_equal(t["masks"], np.where(covered, -1, 1))
+        np.testing.assert_array_equal(t["boxes"], [[3, 2, 6, 5]])
+        np.testing.assert_array_equal(t["keypoints"], [[[4, 3]]])
+        np.testing.assert_array_equal(t["labels"], [4])
+
+
+def test_guided_dropout_empty_and_invalid_regions():
+    img = np.full((4, 5, 3), 70, np.uint8)
+    p = rivet.StructuredPipeline([rivet.AnnotatedSample(img)])
+    result = next(iter(p.guided_coarse_dropout(np.zeros((4, 5), bool)).execute()))
+    np.testing.assert_array_equal(result["images"][0], img)
+    with pytest.raises(ValueError, match="binary"):
+        p.guided_coarse_dropout(np.full((4, 5), 2))
+    with pytest.raises(ValueError, match="one region"):
+        p.guided_coarse_dropout(np.zeros((2, 4, 5), bool)).execute()
+
+
+def test_guided_dropout_filters_boxes_at_visibility_threshold():
+    image = np.full((4, 4, 3), 70, np.uint8)
+    guide = np.zeros((4, 4), np.uint8)
+    guide[1, 1] = 1
+    sample = rivet.AnnotatedSample(image, boxes=[[0, 0, 4, 4]], labels=[3], keypoints=[[[2, 2]]])
+    p = rivet.StructuredPipeline([sample])
+    kept = next(iter(p.guided_coarse_dropout(guide, min_visibility=15 / 16).execute()))
+    np.testing.assert_array_equal(kept["targets"][0]["labels"], [3])
+    removed = next(iter(p.guided_coarse_dropout(guide, min_visibility=1).execute()))
+    assert removed["targets"][0]["boxes"].shape == (0, 4)
+    assert removed["targets"][0]["keypoints"].shape == (0, 1, 2)

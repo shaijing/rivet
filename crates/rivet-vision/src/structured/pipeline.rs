@@ -1,3 +1,4 @@
+use super::GuidedCoarseDropoutConfig;
 use super::RandomCropNearBBoxConfig;
 use super::StructuredDropoutConfig;
 use super::{
@@ -28,6 +29,7 @@ pub enum StructuredOp {
     BBoxSafeRandomCrop(BBoxSafeRandomCropConfig),
     BBoxSubsetSafeRandomCrop(BBoxSubsetSafeRandomCropConfig),
     AtLeastOneBBoxRandomCrop(AtLeastOneBBoxRandomCropConfig),
+    GuidedCoarseDropout(Arc<GuidedCoarseDropoutConfig>),
     MaskDropout(MaskDropoutConfig),
     OverlayElements(Arc<OverlayElementsConfig>),
     SpatialDropout(StructuredDropoutConfig),
@@ -47,6 +49,8 @@ impl StructuredOp {
             Self::ConstrainedCoarseDropout(_) => "ConstrainedCoarseDropout",
             Self::SpatialDropout(c) => c.name(),
             Self::OverlayElements(_) => "OverlayElements",
+
+            Self::GuidedCoarseDropout(_) => "GuidedCoarseDropout",
             Self::MaskDropout(_) => "MaskDropout",
             Self::CropNonEmptyMask(_) => "CropNonEmptyMaskIfExists",
             Self::RandomCropNearBBox(_) => "RandomCropNearBBox",
@@ -63,6 +67,8 @@ impl StructuredOp {
             Self::ConstrainedCoarseDropout(c) => c.validate(),
             Self::SpatialDropout(c) => c.validate(),
             Self::OverlayElements(c) => c.validate(),
+
+            Self::GuidedCoarseDropout(c) => c.validate(),
             Self::MaskDropout(c) => c.validate(),
             Self::CropNonEmptyMask(c) => c.validate(),
             Self::RandomCropNearBBox(c) => c.validate(),
@@ -157,6 +163,14 @@ impl StructuredPipeline {
         }
         for op in &self.ops {
             op.validate()?;
+            if let StructuredOp::GuidedCoarseDropout(config) = op
+                && config.region.rank() == 3
+                && config.region.dims()[0] != self.samples.len()
+            {
+                return Err(invalid_shape(
+                    "GuidedCoarseDropout requires one region per source sample",
+                ));
+            }
         }
         let mut indices: Vec<_> = (0..self.samples.len()).collect();
         if self.shuffle {
@@ -208,6 +222,10 @@ impl StructuredPipeline {
                 }
                 StructuredOp::SpatialDropout(c) => sample.spatial_dropout(c, &mut rng)?,
                 StructuredOp::OverlayElements(c) => sample.overlay_elements(c, &mut rng)?,
+
+                StructuredOp::GuidedCoarseDropout(c) => {
+                    sample.guided_coarse_dropout(c, index, &mut rng)?
+                }
                 StructuredOp::MaskDropout(c) => sample.mask_dropout(c, &mut rng)?,
                 StructuredOp::CropNonEmptyMask(c) => {
                     sample.crop_non_empty_mask_if_exists(c, &mut rng)?

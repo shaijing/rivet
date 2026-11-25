@@ -313,6 +313,39 @@ impl PyStructuredPipeline {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (region, *, protected_bbox_labels=Vec::new(), protection_margin=0.0, num_holes_range=(1,1), hole_height_range=(0.05,0.2),hole_width_range=(0.05,0.2),fill=0.0,fill_mask=None,min_visibility=0.0))]
+    fn guided_coarse_dropout(
+        &self,
+        region: &Bound<'_, PyAny>,
+        protected_bbox_labels: Vec<i64>,
+        protection_margin: f64,
+        num_holes_range: (u32, u32),
+        hole_height_range: (f64, f64),
+        hole_width_range: (f64, f64),
+        fill: f32,
+        fill_mask: Option<i64>,
+        min_visibility: f64,
+    ) -> PyResult<Self> {
+        let op = StructuredOp::GuidedCoarseDropout(std::sync::Arc::new(
+            rivet_vision::structured::GuidedCoarseDropoutConfig {
+                region: tensor_from_numpy(region)?,
+                protected_bbox_labels,
+                protection_margin,
+                num_holes_range,
+                hole_height_range,
+                hole_width_range,
+                fill,
+                fill_mask,
+                min_visibility,
+            },
+        ));
+        op.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().push(op),
+        })
+    }
+
     #[pyo3(signature = (max_objects_range=(1,1), *, fill=0.0, fill_mask=0))]
     fn mask_dropout(
         &self,

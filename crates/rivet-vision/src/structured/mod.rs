@@ -8,6 +8,8 @@ pub use bbox_subset::BBoxSubsetSafeRandomCropConfig;
 mod constrained_dropout;
 pub use constrained_dropout::ConstrainedCoarseDropoutConfig;
 mod geometry;
+mod guided_dropout;
+pub use guided_dropout::GuidedCoarseDropoutConfig;
 mod mask_crop;
 mod mask_dropout;
 pub use mask_crop::CropNonEmptyMaskConfig;
