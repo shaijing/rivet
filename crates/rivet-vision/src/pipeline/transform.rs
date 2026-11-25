@@ -100,6 +100,11 @@ impl TransformSequence {
         )))
     }
 
+    /// Simulate snow using lightness bleaching or a seeded texture.
+    pub fn random_snow(self, config: crate::transforms::RandomSnowConfig) -> Self {
+        self.v2(crate::transforms::V2Config::RandomSnow(config))
+    }
+
     /// Render seeded rain streaks and apply wet-scene blur and dimming.
     pub fn random_rain(self, config: crate::transforms::RandomRainConfig) -> Self {
         self.v2(crate::transforms::V2Config::RandomRain(

@@ -715,6 +715,22 @@ class Pipeline:
         inner = self._inner.lens_flare(flare_roi, num_ghosts_range, intensity_range, num_rays_range, bloom_range)
         return Pipeline(inner, as_numpy=self.as_numpy)
 
+    def random_snow(
+        self,
+        snow_point_range: tuple[float, float] = (0.1, 0.3),
+        brightness_coeff: float = 2.5,
+        method: str = "bleach",
+    ) -> Pipeline:
+        """Simulate snow on uint8 or normalized float32 HWC RGB.
+
+        Bleach scales HSL lightness above the sampled threshold.
+        Texture adds a seeded, cool-toned snow layer with more coverage
+        at the top of the image and sparse sparkles. A zero snow point
+        leaves the image unchanged.
+        """
+        inner = self._inner.random_snow(snow_point_range, brightness_coeff, method)
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def random_rain(
         self,
         slant_range: tuple[float, float] = (-10, 10),

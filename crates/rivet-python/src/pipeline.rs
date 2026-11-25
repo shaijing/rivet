@@ -1039,6 +1039,30 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (snow_point_range=(0.1, 0.3), brightness_coeff=2.5, method="bleach"))]
+    fn random_snow(
+        &self,
+        snow_point_range: (f64, f64),
+        brightness_coeff: f64,
+        method: &str,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{RandomSnowConfig, SnowMethod};
+        let method = match method {
+            "bleach" => SnowMethod::Bleach,
+            "texture" => SnowMethod::Texture,
+            _ => return Err(PyValueError::new_err("method must be bleach or texture")),
+        };
+        let config = V2Config::RandomSnow(RandomSnowConfig {
+            snow_point_range,
+            brightness_coeff,
+            method,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (slant_range=(-10.0, 10.0), drop_length=None, drop_width=1, drop_color=(200, 200, 200), blur_value=7, brightness_coefficient=0.7, rain_type="default"))]
     fn random_rain(
@@ -2631,6 +2655,30 @@ impl PyImagePipeline {
                 bloom_range,
             },
         ));
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (snow_point_range=(0.1, 0.3), brightness_coeff=2.5, method="bleach"))]
+    fn random_snow(
+        &self,
+        snow_point_range: (f64, f64),
+        brightness_coeff: f64,
+        method: &str,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{RandomSnowConfig, SnowMethod};
+        let method = match method {
+            "bleach" => SnowMethod::Bleach,
+            "texture" => SnowMethod::Texture,
+            _ => return Err(PyValueError::new_err("method must be bleach or texture")),
+        };
+        let config = V2Config::RandomSnow(RandomSnowConfig {
+            snow_point_range,
+            brightness_coeff,
+            method,
+        });
         config.validate().map_err(to_py_err)?;
         Ok(Self {
             inner: self.inner.clone().v2(config),

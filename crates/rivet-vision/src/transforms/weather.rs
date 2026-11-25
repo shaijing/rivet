@@ -116,3 +116,113 @@ pub(super) fn random_rain(
         super::blur::box_blur(&streaks, config.blur_value as usize)
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnowMethod {
+    Bleach,
+    Texture,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RandomSnowConfig {
+    pub snow_point_range: (f64, f64),
+    pub brightness_coeff: f64,
+    pub method: SnowMethod,
+}
+
+impl RandomSnowConfig {
+    pub(super) fn valid(&self) -> bool {
+        let (low, high) = self.snow_point_range;
+        0.0 <= low
+            && low <= high
+            && high <= 1.0
+            && self.brightness_coeff.is_finite()
+            && self.brightness_coeff >= 1.0
+    }
+}
+
+pub(super) fn random_snow(
+    input: &Tensor,
+    config: &RandomSnowConfig,
+    rng: &mut RandomStream,
+) -> RivetResult<Tensor> {
+    let [height, width, 3] = *input.dims() else {
+        return Err(invalid_argument("RandomSnow requires HWC RGB input"));
+    };
+    if height == 0 || width == 0 || !matches!(input.dtype(), DType::U8 | DType::F32) {
+        return Err(invalid_argument(
+            "RandomSnow requires nonempty uint8 or float32 HWC RGB input",
+        ));
+    }
+    let (low, high) = config.snow_point_range;
+    let point = low + rng.next_f64() * (high - low);
+    if point == 0.0 {
+        return Ok(input.clone());
+    }
+    match config.method {
+        SnowMethod::Bleach => write_weather_rgb(input, |_, _, rgb| {
+            let lo = rgb.into_iter().fold(1.0, f64::min);
+            let hi = rgb.into_iter().fold(0.0, f64::max);
+            let light = (lo + hi) * 0.5;
+            if light <= point || light >= 1.0 {
+                return rgb;
+            }
+            let lit = (light * config.brightness_coeff).min(1.0);
+            let chroma = (1.0 - (2.0 * lit - 1.0).abs()) / (1.0 - (2.0 * light - 1.0).abs());
+            rgb.map(|v| lit + (v - light) * chroma)
+        }),
+        SnowMethod::Texture => {
+            let noise = Tensor::from_exact_iter(
+                (0..height * width).map(|_| {
+                    (0.55 + 0.25 * super::noise::normal_pair(rng).0).clamp(0.0, 1.0) as f32
+                }),
+                [height, width, 1],
+                input.device(),
+            )?;
+            let noise = super::blur::box_blur(&noise, 3)?;
+            let values = noise.to_vec::<f32>()?;
+            let gain = 1.0 + (config.brightness_coeff - 1.0) * point;
+            write_weather_rgb(input, |x, y, rgb| {
+                let depth = 1.0 - 0.8 * y as f64 / (height - 1).max(1) as f64;
+                let sparkle = if rng.next_f64() < 0.015 { 0.45 } else { 0.0 };
+                let alpha = (point * depth * (f64::from(values[y * width + x]) + sparkle)).min(1.0);
+                let lit = rgb.map(|v| (v * gain).min(1.0));
+                std::array::from_fn(|c| lit[c] + alpha * ([0.89, 0.95, 1.0][c] - lit[c]))
+            })
+        }
+    }
+}
+
+fn write_weather_rgb(
+    input: &Tensor,
+    mut pixel: impl FnMut(usize, usize, [f64; 3]) -> [f64; 3],
+) -> RivetResult<Tensor> {
+    let width = input.dims()[1];
+    let input = input.contiguous()?;
+    Ok(input.with_cpu_storage(|storage, layout| {
+        macro_rules! write_pixels {
+            ($values:expr, $scale:expr, $finish:expr) => {{
+                let values = contiguous_values($values, layout)?;
+                let finish = $finish;
+                Tensor::from_exact_writer(input.dims(), input.device(), |out| {
+                    for (y, row) in values.chunks_exact(width * 3).enumerate() {
+                        for (x, rgb) in row.chunks_exact(3).enumerate() {
+                            let rgb = [rgb[0], rgb[1], rgb[2]].map(|v| f64::from(v) * $scale);
+                            for v in pixel(x, y, rgb) {
+                                out.write_next(finish(v.clamp(0.0, 1.0)))?;
+                            }
+                        }
+                    }
+                    Ok(())
+                })
+            }};
+        }
+        match storage {
+            CpuStorageRef::U8(values) => {
+                write_pixels!(values, 1.0 / 255.0, |v: f64| (v * 255.0).round() as u8)
+            }
+            CpuStorageRef::F32(values) => write_pixels!(values, 1.0, |v| v as f32),
+            _ => unreachable!(),
+        }
+    })?)
+}

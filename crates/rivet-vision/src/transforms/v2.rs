@@ -108,6 +108,7 @@ pub enum V2Config {
         elementwise: bool,
     },
     RandomSunFlare(std::sync::Arc<RandomSunFlareConfig>),
+    RandomSnow(RandomSnowConfig),
     RandomRain(std::sync::Arc<RandomRainConfig>),
     LensFlare(std::sync::Arc<LensFlareConfig>),
     RandomShadow(std::sync::Arc<RandomShadowConfig>),
@@ -227,6 +228,7 @@ impl V2Config {
             Self::AdditiveNoise(_) => "AdditiveNoise",
             Self::MultiplicativeNoise { .. } => "MultiplicativeNoise",
             Self::RandomSunFlare(_) => "RandomSunFlare",
+            Self::RandomSnow(_) => "RandomSnow",
             Self::RandomRain(_) => "RandomRain",
             Self::LensFlare(_) => "LensFlare",
             Self::RandomShadow(_) => "RandomShadow",
@@ -273,6 +275,7 @@ impl V2Config {
             Self::AdditiveNoise(_) => 83,
             Self::MultiplicativeNoise { .. } => 82,
             Self::RandomSunFlare(_) => 88,
+            Self::RandomSnow(_) => 91,
             Self::RandomRain(_) => 90,
             Self::LensFlare(_) => 89,
             Self::RandomShadow(_) => 87,
@@ -317,6 +320,7 @@ impl V2Config {
     }
     pub fn validate(&self) -> RivetResult<()> {
         let valid = match self {
+            Self::RandomSnow(config) => config.valid(),
             Self::RandomRain(config) => config.valid(),
             Self::LensFlare(config) => super::flare::lens_flare_valid(config),
             Self::RandomSunFlare(config) => super::flare::random_sun_flare_valid(config),
@@ -787,6 +791,7 @@ impl V2Config {
             | Self::AdditiveNoise(_)
             | Self::MultiplicativeNoise { .. }
             | Self::RandomSunFlare(_)
+            | Self::RandomSnow(_)
             | Self::RandomRain(_)
             | Self::LensFlare(_)
             | Self::RandomShadow(_)
@@ -983,6 +988,9 @@ impl V2Config {
             }
             Self::RandomRain(config) => {
                 s.image = super::weather::random_rain(&s.image, config, rng)?;
+            }
+            Self::RandomSnow(config) => {
+                s.image = super::weather::random_snow(&s.image, config, rng)?;
             }
             Self::MedianBlur => {
                 s.image = super::blur::median_blur_3x3(&s.image)?;

@@ -1470,3 +1470,41 @@ def test_random_rain_single_pixel(tmp_path):
     image = output(tmp_path, lambda p: p.random_rain())[0]
     assert image.shape == (1, 1, 3) and image.dtype == np.uint8
     np.testing.assert_array_equal(image, 56)
+
+
+def test_random_snow_bleach_threshold_and_dtype(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.array([[[32] * 3, [96] * 3, [160] * 3]], dtype=np.uint8)
+    Image.fromarray(pixels).save(folder / "image.png")
+
+    def augment(p):
+        return p.random_snow((0.25, 0.25), brightness_coeff=2)
+
+    actual = output(tmp_path, augment, transform=True)[0]
+    assert actual.dtype == np.uint8 and actual.shape == pixels.shape
+    np.testing.assert_array_equal(actual[0, :, 0], [32, 192, 255])
+    floats = output(tmp_path, lambda p: augment(p.to_dtype("float32", True)))[0]
+    assert floats.dtype == np.float32
+    np.testing.assert_allclose(floats * 255, actual, atol=1e-5)
+
+
+def test_random_snow_texture_depth_seed_and_identity(tmp_path):
+    folder = tmp_path / "class"
+    folder.mkdir()
+    pixels = np.full((23, 17, 3), 70, dtype=np.uint8)
+    for i in range(4):
+        Image.fromarray(pixels).save(folder / f"{i}.png")
+
+    def augment(p):
+        return p.random_snow((0.6, 0.6), method="texture")
+
+    serial = output(tmp_path, augment)
+    np.testing.assert_array_equal(serial, output(tmp_path, augment, transform=True, workers=3))
+    assert not np.array_equal(serial, output(tmp_path, augment, epoch=1))
+    assert serial[0][0].mean() > serial[0][-1].mean()
+    assert serial[0][..., 2].mean() > serial[0][..., 0].mean()
+    identity = output(tmp_path, lambda p: p.random_snow((0, 0), method="texture"))
+    np.testing.assert_array_equal(identity[0], pixels)
+    with pytest.raises(ValueError, match="RandomSnow"):
+        output(tmp_path, lambda p: p.grayscale().random_snow())
