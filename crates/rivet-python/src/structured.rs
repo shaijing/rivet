@@ -278,6 +278,41 @@ impl PyStructuredPipeline {
         })
     }
 
+    #[pyo3(signature = (elements,min_visibility=0.0))]
+    fn overlay_elements(
+        &self,
+        elements: Vec<(
+            Bound<'_, PyAny>,
+            Option<Bound<'_, PyAny>>,
+            Option<(i64, i64)>,
+            Option<[f64; 4]>,
+            Option<i64>,
+        )>,
+        min_visibility: f64,
+    ) -> PyResult<Self> {
+        use rivet_vision::structured::{OverlayElement, OverlayElementsConfig};
+        let elements = elements
+            .into_iter()
+            .map(|(image, mask, offset, bbox, mask_id)| {
+                Ok(OverlayElement {
+                    image: tensor_from_numpy(&image)?,
+                    mask: mask.as_ref().map(tensor_from_numpy).transpose()?,
+                    offset,
+                    bbox,
+                    mask_id,
+                })
+            })
+            .collect::<PyResult<_>>()?;
+        let op = StructuredOp::OverlayElements(std::sync::Arc::new(OverlayElementsConfig {
+            elements,
+            min_visibility,
+        }));
+        op.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().push(op),
+        })
+    }
+
     #[pyo3(signature = (max_objects_range=(1,1), *, fill=0.0, fill_mask=0))]
     fn mask_dropout(
         &self,

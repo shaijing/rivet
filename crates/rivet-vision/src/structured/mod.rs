@@ -13,6 +13,8 @@ mod mask_dropout;
 pub use mask_crop::CropNonEmptyMaskConfig;
 pub use mask_dropout::MaskDropoutConfig;
 mod near_bbox;
+mod overlay;
+pub use overlay::{OverlayElement, OverlayElementsConfig};
 mod pipeline;
 mod spatial_dropout;
 pub use annotations::{

@@ -1515,3 +1515,36 @@ def test_structured_elastic_transform_shares_mask_and_worker_seed():
     for key, value in sample.to_dict().items():
         if key in {"image", "masks", "boxes", "labels", "keypoints"}:
             np.testing.assert_array_equal(identity[key], value)
+
+
+def test_overlay_elements_clips_and_updates_semantic_ids():
+    base = np.full((5, 7, 3), 20, np.uint8)
+    overlay = np.full((2, 3, 3), 125, np.uint8)
+    mask = np.array([[1, 1, 0], [1, 0, 1]], dtype=bool)
+    sample = rivet.AnnotatedSample(base)
+    p = rivet.StructuredPipeline([sample]).overlay_elements([
+        {"image": overlay, "mask": mask, "offset": (-1, 1), "mask_id": 300}
+    ])
+    out = next(iter(p.execute()))
+    expected = base.copy()
+    expected[1:3, :2][mask[:, 1:]] = 125
+    np.testing.assert_array_equal(out["images"][0], expected)
+    labels = np.zeros((5, 7), np.int64)
+    labels[1:3, :2][mask[:, 1:]] = 300
+    np.testing.assert_array_equal(out["targets"][0]["masks"], labels)
+
+
+def test_overlay_elements_resizes_and_filters_aligned_instances(annotated):
+    source = annotated.to_dict()
+    overlay = np.full((1, 1, 3), 73, np.uint8)
+    fixed = {"image": overlay, "bbox": (1/12, 2/10, 5/12, 6/10)}
+    p = rivet.StructuredPipeline([annotated]).overlay_elements([fixed])
+    result = next(iter(p.execute()))
+    expected = source["image"].copy()
+    expected[2:6, 1:5] = 73
+    np.testing.assert_array_equal(result["images"][0], expected)
+    for key in ("labels", "boxes", "keypoints", "masks"):
+        np.testing.assert_array_equal(result["targets"][0][key], source[key][1:])
+    random = rivet.StructuredPipeline([annotated] * 6).overlay_elements([{"image": overlay}]).seed(17)
+    for a,b in zip(random.execute(), random.workers(3).execute(), strict=True):
+        np.testing.assert_array_equal(a["images"], b["images"])

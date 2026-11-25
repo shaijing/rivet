@@ -279,6 +279,28 @@ class StructuredPipeline:
             min_visibility=min_visibility,
         ))
 
+    def overlay_elements(
+        self, elements: Iterable[dict[str, Any]], min_visibility: float = 0
+    ) -> StructuredPipeline:
+        """Paste decoded HWC overlays in order with optional binary masks.
+
+        Each element has image and optional mask, XY pixel offset or normalized
+        XYXY bbox, and semantic mask_id. A bbox resizes the image and mask by
+        nearest sampling. Missing placement is seeded per image. Occluded
+        instance masks are cleared in the overlay region, and boxes below
+        min_visibility are removed with their aligned annotations.
+        """
+        layers = []
+        for element in elements:
+            image = np.asarray(element["image"])
+            if image.ndim == 2:
+                image = image[..., None]
+            mask = element.get("mask")
+            if mask is not None:
+                mask = (np.asarray(mask) != 0).astype(np.uint8)
+            layers.append((image, mask, element.get("offset"), element.get("bbox"), element.get("mask_id")))
+        return self._from_inner(self._inner.overlay_elements(layers, min_visibility))
+
     def mask_dropout(
         self,
         max_objects_range: tuple[int, int] = (1, 1),
