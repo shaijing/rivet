@@ -671,6 +671,14 @@ pub(super) fn apply(
             }
             Ok(s)
         }
+        ImageOp::V2(V2Config::GridDistortion(config)) => {
+            let map = config.sample(h, w, rng);
+            remap_structured(s, &map, config.interpolation, config.fill, config.fill_mask)
+        }
+        ImageOp::V2(V2Config::OpticalDistortion(config)) => {
+            let map = config.sample(h, w, rng);
+            remap_structured(s, &map, config.interpolation, config.fill, config.fill_mask)
+        }
         ImageOp::V2(V2Config::SafeRotate(config)) => {
             let matrix = config.sample(w, h, rng);
             if s.image.dtype() != rivet_core::DType::U8 {
@@ -979,4 +987,91 @@ fn rotate_quarters(s: StructuredSample, turns: usize) -> RivetResult<StructuredS
         2 => flip(flip(s, true)?, false),
         _ => flip(transpose(s)?, true),
     }
+}
+
+fn remap_structured(
+    mut sample: StructuredSample,
+    map: &impl crate::transforms::remap::SpatialRemap,
+    interpolation: InterpolationMode,
+    fill: u8,
+    fill_mask: i64,
+) -> RivetResult<StructuredSample> {
+    let (h, w) = sample.size()?;
+    if sample.image.dtype() != rivet_core::DType::U8 {
+        return Err(invalid_argument(
+            "structured spatial remap requires uint8 input",
+        ));
+    }
+    if map.is_identity() {
+        return Ok(sample);
+    }
+    validate_occlusion_fill(&sample, Some(fill_mask))?;
+    let backward: Vec<_> = (0..h)
+        .flat_map(|y| (0..w).map(move |x| map.source([x as f64, y as f64])))
+        .collect();
+    sample.image = crate::transforms::remap::remap_image(
+        image(&sample),
+        sample.axis_order,
+        (h, w),
+        interpolation,
+        fill,
+        |x, y| backward[y * w + x],
+    )?
+    .into_decoded()?
+    .image;
+    if let Some(mask) = &sample.masks {
+        sample.masks = Some(masks_map_fill(mask, h, w, fill_mask, |y, x| {
+            let [sx, sy] = backward[y * w + x];
+            let (sx, sy) = ((sx + 0.5).floor(), (sy + 0.5).floor());
+            (sx >= 0.0 && sy >= 0.0).then_some((sy as usize, sx as usize))
+        })?);
+    }
+    if let Some(boxes) = sample.xyxy()? {
+        let boxes = boxes.to_vec::<f32>()?;
+        let mut keep = Vec::new();
+        let mut mapped = Vec::new();
+        for (i, b) in boxes.chunks_exact(4).enumerate() {
+            let [l, t, r, b] = [b[0], b[1], b[2], b[3]].map(f64::from);
+            let (l, t, r, b) = (l.max(0.0), t.max(0.0), r.min(w as f64), b.min(h as f64));
+            let mut bounds = [w, h, 0, 0];
+            for (p, &[sx, sy]) in backward.iter().enumerate() {
+                let (sx, sy) = (sx + 0.5, sy + 0.5);
+                if sx >= l && sx < r && sy >= t && sy < b {
+                    let (x, y) = (p % w, p / w);
+                    bounds = [
+                        bounds[0].min(x),
+                        bounds[1].min(y),
+                        bounds[2].max(x + 1),
+                        bounds[3].max(y + 1),
+                    ];
+                }
+            }
+            if bounds[0] < bounds[2] && bounds[1] < bounds[3] {
+                keep.push(i);
+                mapped.extend(bounds.map(|v| v as f32));
+            }
+        }
+        let b = Tensor::from_vec(mapped, [keep.len(), 4], &Device::Cpu)?;
+        if keep.len() != boxes.len() / 4 {
+            sample = sample.retain_instances(&keep)?;
+        }
+        sample.boxes = Some(convert_boxes(&b, BoxFormat::Xyxy, sample.box_format)?);
+    }
+    if let Some(points) = &sample.keypoints {
+        let values = points.to_vec::<f32>()?;
+        let out: Vec<_> = values
+            .chunks_exact(2)
+            .flat_map(|p| {
+                map.destination([f64::from(p[0]), f64::from(p[1])])
+                    .map(|v| v as f32)
+            })
+            .collect();
+        if out.iter().any(|v| !v.is_finite()) {
+            return Err(invalid_argument(
+                "spatial remap produced a nonfinite keypoint",
+            ));
+        }
+        sample.keypoints = Some(Tensor::from_vec(out, points.dims(), &Device::Cpu)?);
+    }
+    Ok(sample)
 }

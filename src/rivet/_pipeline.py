@@ -633,6 +633,38 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def grid_distortion(
+        self, num_steps: int = 5, distort_range: tuple[float, float] = (-0.3, 0.3),
+        *, normalized: bool = True, interpolation: str = "bilinear",
+        fill: int = 0, fill_mask: int = 0,
+    ) -> Pipeline:
+        """Apply seeded piecewise-linear distortion to uint8 HWC or CHW.
+
+        Draw cell lengths using factors 1 + adjustment on each axis.
+        Normalization anchors the first and last pixel centers. Masks use
+        nearest sampling, and boxes bound their visible output pixels.
+        """
+        inner = self._inner.grid_distortion(
+            num_steps, distort_range, normalized=normalized,
+            interpolation=interpolation, fill=fill, fill_mask=fill_mask,
+        )
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
+    def optical_distortion(
+        self, distort_range: tuple[float, float] = (-0.05, 0.05), mode: str = "camera",
+        *, interpolation: str = "bilinear", fill: int = 0, fill_mask: int = 0,
+    ) -> Pipeline:
+        """Apply a seeded uint8 radial warp in HWC or CHW layout.
+
+        Camera uses cubic and quintic radial terms (coefficient -0.12 to 1).
+        Fisheye uses the cubic term (-0.3 to 1). Masks use nearest sampling,
+        and boxes bound visible output pixel centers.
+        """
+        inner = self._inner.optical_distortion(
+            distort_range, mode, interpolation=interpolation, fill=fill, fill_mask=fill_mask
+        )
+        return Pipeline(inner, as_numpy=self.as_numpy)
+
     def superpixels(
         self,
         p_replace_range: tuple[float, float] = (0.1, 0.3),

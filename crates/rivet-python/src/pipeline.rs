@@ -936,6 +936,58 @@ impl PyTransform {
         })
     }
 
+    #[pyo3(signature = (num_steps=5,distort_range=(-0.3,0.3),*,normalized=true,interpolation="bilinear",fill=0,fill_mask=0))]
+    fn grid_distortion(
+        &self,
+        num_steps: u32,
+        distort_range: (f64, f64),
+        normalized: bool,
+        interpolation: &str,
+        fill: u8,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        let config = V2Config::GridDistortion(rivet_vision::transforms::GridDistortionConfig {
+            num_steps,
+            distort_range,
+            normalized,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+            fill_mask,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (distort_range=(-0.05,0.05),mode="camera",*,interpolation="bilinear",fill=0,fill_mask=0))]
+    fn optical_distortion(
+        &self,
+        distort_range: (f64, f64),
+        mode: &str,
+        interpolation: &str,
+        fill: u8,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{OpticalDistortionConfig, OpticalDistortionMode};
+        let mode = match mode {
+            "camera" => OpticalDistortionMode::Camera,
+            "fisheye" => OpticalDistortionMode::Fisheye,
+            _ => return Err(PyValueError::new_err("mode must be camera or fisheye")),
+        };
+        let config = V2Config::OpticalDistortion(OpticalDistortionConfig {
+            distort_range,
+            mode,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+            fill_mask,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
     #[pyo3(signature = (p_replace_range=(0.1,0.3), n_segments_range=(15,120), max_size=Some(128)))]
     fn superpixels(
         &self,
@@ -3246,6 +3298,58 @@ impl PyImagePipeline {
         };
         Ok(Self {
             inner: self.inner.clone().random_erasing_with_config(config),
+        })
+    }
+
+    #[pyo3(signature = (num_steps=5,distort_range=(-0.3,0.3),*,normalized=true,interpolation="bilinear",fill=0,fill_mask=0))]
+    fn grid_distortion(
+        &self,
+        num_steps: u32,
+        distort_range: (f64, f64),
+        normalized: bool,
+        interpolation: &str,
+        fill: u8,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        let config = V2Config::GridDistortion(rivet_vision::transforms::GridDistortionConfig {
+            num_steps,
+            distort_range,
+            normalized,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+            fill_mask,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
+        })
+    }
+
+    #[pyo3(signature = (distort_range=(-0.05,0.05),mode="camera",*,interpolation="bilinear",fill=0,fill_mask=0))]
+    fn optical_distortion(
+        &self,
+        distort_range: (f64, f64),
+        mode: &str,
+        interpolation: &str,
+        fill: u8,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        use rivet_vision::transforms::{OpticalDistortionConfig, OpticalDistortionMode};
+        let mode = match mode {
+            "camera" => OpticalDistortionMode::Camera,
+            "fisheye" => OpticalDistortionMode::Fisheye,
+            _ => return Err(PyValueError::new_err("mode must be camera or fisheye")),
+        };
+        let config = V2Config::OpticalDistortion(OpticalDistortionConfig {
+            distort_range,
+            mode,
+            interpolation: parse_interpolation(interpolation)?,
+            fill,
+            fill_mask,
+        });
+        config.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().v2(config),
         })
     }
 

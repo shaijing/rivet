@@ -53,9 +53,11 @@ pub use pixel_mask::{
 pub(crate) use pixel_mask::{
     apply as replace_spatial_pixels, sample_coarse_dropout, sample_grid_dropout,
 };
+pub(crate) mod remap;
 mod resize;
 mod resized_crop;
 mod rotate;
+pub use remap::{GridDistortionConfig, OpticalDistortionConfig, OpticalDistortionMode};
 pub use rotate::SquareSymmetry;
 pub(crate) use rotate::quarter_turn;
 mod sized_crop;

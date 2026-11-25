@@ -1344,3 +1344,51 @@ def test_morphological_masks_use_independent_numeric_planes(instance):
     sample = rivet.AnnotatedSample(image, masks=mask)
     t = sample.apply(rivet.Transform().morphological(3, "dilation")).to_dict()
     np.testing.assert_array_equal(t["masks"], expected)
+
+
+def test_optical_distortion_shares_pixel_map_and_inverts_keypoints():
+    h, w = 9, 11
+    yy, xx = np.indices((h, w))
+    mask = (xx + w * yy + 1).astype(np.uint8)
+    image = np.repeat(mask[..., None], 3, axis=-1)
+    sample = rivet.AnnotatedSample(
+        image, masks=mask, boxes=[[2, 2, 9, 7]], keypoints=[[[6, 4]]], labels=[4]
+    )
+    result = sample.apply(rivet.Transform().optical_distortion(
+        (0.4, 0.4), "fisheye", interpolation="nearest", fill=200, fill_mask=200
+    )).to_dict()
+    f = 1 + 0.4 * ((xx - 5)**2 + (yy - 4)**2) / ((w*w+h*h) / 4)
+    sx, sy = (xx - 5) * f + 5, (yy - 4) * f + 4
+    ix, iy = np.floor(sx + 0.5).astype(int), np.floor(sy + 0.5).astype(int)
+    valid = (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
+    expected = np.full((h, w), 200, dtype=np.uint8)
+    expected[valid] = mask[iy[valid], ix[valid]]
+    np.testing.assert_array_equal(result["masks"], expected)
+    np.testing.assert_array_equal(result["image"][..., 0], expected)
+    inside = (sx+0.5 >= 2) & (sx+0.5 < 9) & (sy+0.5 >= 2) & (sy+0.5 < 7)
+    y, x = np.where(inside)
+    np.testing.assert_array_equal(result["boxes"], [[x.min(), y.min(), x.max()+1, y.max()+1]])
+    np.testing.assert_array_equal(result["labels"], [4])
+    x, y = result["keypoints"][0, 0]
+    assert abs(y - 4) < 1e-6
+    assert abs((x - 5) * (1 + 0.4 * (x - 5)**2 / ((w*w+h*h) / 4)) - 1) < 1e-6
+
+
+def test_grid_distortion_shared_map_and_empty_instance_visibility():
+    h,w=7,9
+    y,x=np.indices((h,w),dtype=np.uint8)
+    mask=y*w+x+1
+    img=np.repeat(mask[...,None],3,axis=-1)
+    sample=rivet.AnnotatedSample(img,masks=mask,boxes=[[0,0,3,3],[7,6,7.4,7]],labels=[4,7],keypoints=[[[2,2]],[[8,6]]])
+    result=sample.apply(rivet.Transform().grid_distortion(
+        1,(0.5,0.5),normalized=False,interpolation="nearest",fill=200,fill_mask=200
+    )).to_dict()
+    sx,sy=np.floor(x*1.5+0.5).astype(int),np.floor(y*1.5+0.5).astype(int)
+    valid=(sx<w)&(sy<h)
+    expected=np.full_like(mask,200)
+    expected[valid]=mask[sy[valid],sx[valid]]
+    np.testing.assert_array_equal(result["image"][...,0],expected)
+    np.testing.assert_array_equal(result["masks"],expected)
+    np.testing.assert_array_equal(result["boxes"],[[0,0,2,2]])
+    np.testing.assert_array_equal(result["labels"],[4])
+    np.testing.assert_allclose(result["keypoints"],[[[4/3,4/3]]],atol=1e-6)

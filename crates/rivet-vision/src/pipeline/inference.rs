@@ -284,6 +284,9 @@ pub(crate) fn infer_image_op(
                     }
                     output.contiguity = Some(Contiguity::Unknown);
                 }
+                V2Config::GridDistortion(_) | V2Config::OpticalDistortion(_) => {
+                    require_u8_decoded(input_state, op.name())?;
+                }
                 V2Config::Superpixels(_) => {
                     if !matches!(
                         input_state,

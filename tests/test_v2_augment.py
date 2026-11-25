@@ -2445,3 +2445,30 @@ def test_superpixels_single_pixel_grayscale_float(tmp_path):
     image = output(tmp_path, lambda p: p.grayscale().to_dtype("float32", True).superpixels((1, 1)))[0]
     assert image.dtype == np.float32 and image.shape == (1, 1, 1)
     np.testing.assert_allclose(image, 55 / 255, atol=1e-7)
+
+
+def test_optical_distortion_identity_layout_and_worker_seed(source):
+    root, pixels = source
+    np.testing.assert_array_equal(output(root, lambda p: p.optical_distortion((0, 0)))[0], pixels)
+    serial = output(root, lambda p: p.optical_distortion())
+    np.testing.assert_array_equal(serial, output(root, lambda p: p.optical_distortion(), transform=True, workers=3))
+    chw = output(root, lambda p: p.hwc_to_chw().optical_distortion())[0]
+    np.testing.assert_array_equal(chw, serial[0].transpose(2, 0, 1))
+    assert not np.array_equal(serial[0], pixels)
+    with pytest.raises(ValueError):
+        rivet.Transform().optical_distortion((-0.5, 0.1))
+
+
+def test_grid_distortion_normalized_edges_seed_and_layout(source):
+    root,pixels=source
+    normalized=output(root,lambda p:p.grid_distortion(1,(0.5,0.5)))[0]
+    np.testing.assert_array_equal(normalized,pixels)
+    serial=output(root,lambda p:p.grid_distortion())
+    parallel=output(root,lambda p:p.grid_distortion(),transform=True,workers=3)
+    np.testing.assert_array_equal(serial,parallel)
+    assert not np.array_equal(serial[0],pixels)
+    np.testing.assert_array_equal(serial[0][[0,-1]][:,[0,-1]],pixels[[0,-1]][:,[0,-1]])
+    chw=output(root,lambda p:p.hwc_to_chw().grid_distortion())[0]
+    np.testing.assert_array_equal(chw,serial[0].transpose(2,0,1))
+    with pytest.raises(ValueError):
+        rivet.Transform().grid_distortion(distort_range=(-1,0))

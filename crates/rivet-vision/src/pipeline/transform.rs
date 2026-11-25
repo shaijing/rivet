@@ -123,6 +123,16 @@ impl TransformSequence {
         ))
     }
 
+    /// Apply a seeded piecewise-linear remap along both image axes.
+    pub fn grid_distortion(self, config: crate::transforms::GridDistortionConfig) -> Self {
+        self.v2(crate::transforms::V2Config::GridDistortion(config))
+    }
+
+    /// Apply a seeded radial optical remap.
+    pub fn optical_distortion(self, config: crate::transforms::OpticalDistortionConfig) -> Self {
+        self.v2(crate::transforms::V2Config::OpticalDistortion(config))
+    }
+
     /// Segment and replace seeded regions by their mean pixel values.
     pub fn superpixels(self, config: crate::transforms::SuperpixelsConfig) -> Self {
         self.v2(crate::transforms::V2Config::Superpixels(config))

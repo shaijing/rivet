@@ -880,7 +880,7 @@ fn warp_perspective(
     )
 }
 
-fn warp_decoded<const TENSOR: bool, F>(
+pub(super) fn warp_decoded<const TENSOR: bool, F>(
     sample: DecodedSample,
     axis_order: ImageAxisOrder,
     output_width: usize,
