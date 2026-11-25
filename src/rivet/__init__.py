@@ -74,16 +74,17 @@ __all__ = [
     "scan_hf",
     "scan_image_folder",
     "scan_lance",
+    "text",
     "uniform_temporal_subsample",
     "vision",
 ]
 
 
 def __getattr__(name: str) -> Any:
-    if name == "vision":
+    if name in {"text", "vision"}:
         import importlib
 
-        module = importlib.import_module(".vision", __name__)
+        module = importlib.import_module(f".{name}", __name__)
         globals()[name] = module
         return module
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

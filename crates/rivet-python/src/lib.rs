@@ -8,9 +8,11 @@ mod loader;
 mod numpy;
 mod pipeline;
 mod structured;
+mod text;
 
 #[pymodule]
 fn _rivet(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    text::register(m)?;
     m.add_class::<dlpack::PyDLPackTensor>()?;
     m.add_class::<dataset::PyArrowDataset>()?;
     #[cfg(feature = "lance")]
