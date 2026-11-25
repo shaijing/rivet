@@ -7,7 +7,9 @@ pub use bbox_safe::BBoxSafeRandomCropConfig;
 pub use bbox_subset::BBoxSubsetSafeRandomCropConfig;
 mod geometry;
 mod mask_crop;
+mod mask_dropout;
 pub use mask_crop::CropNonEmptyMaskConfig;
+pub use mask_dropout::MaskDropoutConfig;
 mod near_bbox;
 mod pipeline;
 pub use annotations::{

@@ -893,7 +893,7 @@ fn validate_occlusion_fill(s: &StructuredSample, fill: Option<i64>) -> RivetResu
     Ok(())
 }
 
-fn apply_occlusion(
+pub(super) fn apply_occlusion(
     mut s: StructuredSample,
     h: usize,
     w: usize,

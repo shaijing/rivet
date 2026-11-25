@@ -3,7 +3,7 @@ use crate::sample::image::ImageAxisOrder;
 use rivet_core::{CpuStorageRef, DType, Tensor, WithDType};
 use rivet_data::random::RandomStream;
 
-pub(super) fn apply(
+pub(crate) fn apply(
     input: &Tensor,
     axis: ImageAxisOrder,
     height: usize,
@@ -373,7 +373,7 @@ impl ChannelDropoutConfig {
             }
     }
 
-    pub(super) fn apply(
+    pub(crate) fn apply(
         &self,
         input: &Tensor,
         axis: ImageAxisOrder,

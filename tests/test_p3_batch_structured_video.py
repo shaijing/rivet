@@ -1234,3 +1234,32 @@ def test_safe_rotate_aligns_constant_fill_and_targets():
     np.testing.assert_allclose(transformed["keypoints"], [[[5.5, 3.5]]], atol=1e-6)
     l, t, r, b = transformed["boxes"][0]
     assert 0 <= l < r <= 12 and 0 <= t < b <= 8
+
+
+def test_mask_dropout_keeps_instance_annotations_in_sync(annotated):
+    original = annotated.to_dict()
+    pipeline = rivet.StructuredPipeline([annotated] * 6).mask_dropout((1, 1), fill=23).seed(11)
+    for a, b in zip(pipeline.execute(), pipeline.workers(3).execute(), strict=True):
+        np.testing.assert_array_equal(a["images"], b["images"])
+        target = a["targets"][0]
+        keep = 0 if target["labels"][0] == 4 else 1
+        covered = original["masks"][1 - keep] != 0
+        np.testing.assert_array_equal(a["images"][0][covered], 23)
+        np.testing.assert_array_equal(a["images"][0][~covered], original["image"][~covered])
+        for key in ["boxes", "labels", "keypoints", "masks"]:
+            np.testing.assert_array_equal(target[key], original[key][keep:keep + 1])
+
+
+def test_mask_dropout_semantic_ids_and_empty_fallback():
+    image = np.full((5, 7, 3), 80, np.uint8)
+    mask = np.zeros((5, 7), np.int64)
+    mask[0, 0] = mask[4, 6] = 32
+    mask[2, 3] = -2
+    sample = rivet.AnnotatedSample(image, masks=mask)
+    pipeline = rivet.StructuredPipeline([sample]).mask_dropout((2, 2), fill_mask=-9)
+    batch = next(iter(pipeline.execute()))
+    np.testing.assert_array_equal(batch["images"][0], np.where(mask[..., None] != 0, 0, image))
+    np.testing.assert_array_equal(batch["targets"][0]["masks"], np.where(mask != 0, -9, 0))
+    empty = rivet.AnnotatedSample(image, masks=np.zeros_like(mask))
+    unchanged = next(iter(rivet.StructuredPipeline([empty]).mask_dropout().execute()))
+    np.testing.assert_array_equal(unchanged["images"][0], image)

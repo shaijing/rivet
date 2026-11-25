@@ -1,4 +1,5 @@
 use super::CropNonEmptyMaskConfig;
+use super::MaskDropoutConfig;
 use super::RandomCropNearBBoxConfig;
 use super::{
     AtLeastOneBBoxRandomCropConfig, BBoxSafeRandomCropConfig, BBoxSubsetSafeRandomCropConfig,
@@ -26,6 +27,7 @@ pub enum StructuredOp {
     BBoxSafeRandomCrop(BBoxSafeRandomCropConfig),
     BBoxSubsetSafeRandomCrop(BBoxSubsetSafeRandomCropConfig),
     AtLeastOneBBoxRandomCrop(AtLeastOneBBoxRandomCropConfig),
+    MaskDropout(MaskDropoutConfig),
     CropNonEmptyMask(CropNonEmptyMaskConfig),
 }
 impl StructuredOp {
@@ -38,6 +40,7 @@ impl StructuredOp {
             Self::SanitizeKeypoints => "SanitizeKeyPoints",
             Self::Sanitize { .. } => "SanitizeBoundingBoxes",
             Self::RandomIoUCrop(_) => "RandomIoUCrop",
+            Self::MaskDropout(_) => "MaskDropout",
             Self::CropNonEmptyMask(_) => "CropNonEmptyMaskIfExists",
             Self::RandomCropNearBBox(_) => "RandomCropNearBBox",
             Self::BBoxSafeRandomCrop(c) if c.output.is_some() => "RandomSizedBBoxSafeCrop",
@@ -50,6 +53,7 @@ impl StructuredOp {
         match self {
             Self::Image(op) => validate_image(op),
             Self::RandomIoUCrop(c) => c.validate(),
+            Self::MaskDropout(c) => c.validate(),
             Self::CropNonEmptyMask(c) => c.validate(),
             Self::RandomCropNearBBox(c) => c.validate(),
             Self::BBoxSafeRandomCrop(c) => c.validate(),
@@ -190,6 +194,7 @@ impl StructuredPipeline {
                 StructuredOp::BBoxSubsetSafeRandomCrop(c) => {
                     sample.bbox_subset_safe_random_crop(c, &mut rng)?
                 }
+                StructuredOp::MaskDropout(c) => sample.mask_dropout(c, &mut rng)?,
                 StructuredOp::CropNonEmptyMask(c) => {
                     sample.crop_non_empty_mask_if_exists(c, &mut rng)?
                 }

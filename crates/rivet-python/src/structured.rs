@@ -199,6 +199,24 @@ impl PyStructuredPipeline {
         })
     }
 
+    #[pyo3(signature = (max_objects_range=(1,1), *, fill=0.0, fill_mask=0))]
+    fn mask_dropout(
+        &self,
+        max_objects_range: (u32, u32),
+        fill: f32,
+        fill_mask: i64,
+    ) -> PyResult<Self> {
+        let op = StructuredOp::MaskDropout(rivet_vision::structured::MaskDropoutConfig {
+            max_objects_range,
+            fill,
+            fill_mask,
+        });
+        op.validate().map_err(to_py_err)?;
+        Ok(Self {
+            inner: self.inner.clone().push(op),
+        })
+    }
+
     #[pyo3(signature = (width, height, *, ignore_values=Vec::new(), ignore_channels=Vec::new()))]
     fn crop_non_empty_mask_if_exists(
         &self,

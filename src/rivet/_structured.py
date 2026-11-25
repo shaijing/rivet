@@ -226,6 +226,22 @@ class StructuredPipeline:
             subset_fraction_range, erosion_rate, aspect_ratio_range
         ))
 
+    def mask_dropout(
+        self,
+        max_objects_range: tuple[int, int] = (1, 1),
+        *,
+        fill: float = 0,
+        fill_mask: int = 0,
+    ) -> StructuredPipeline:
+        """Erase sampled nonzero mask IDs or instance planes and sync targets.
+
+        Instance planes selected for erasure are removed with their aligned
+        annotations. Surviving masks use fill_mask in the erased region.
+        """
+        return self._from_inner(self._inner.mask_dropout(
+            max_objects_range, fill=fill, fill_mask=fill_mask
+        ))
+
     def crop_non_empty_mask_if_exists(
         self,
         width: int,

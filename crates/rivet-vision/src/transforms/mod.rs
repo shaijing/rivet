@@ -43,6 +43,7 @@ mod pad_needed;
 pub use pad_needed::{PadIfNeededConfig, PadPosition};
 mod pca;
 mod pixel_mask;
+pub(crate) use pixel_mask::apply as replace_spatial_pixels;
 pub use pixel_mask::{
     ChannelDropoutConfig, ChannelDropoutFill, PixelDropoutConfig, StripLength, XyMaskingConfig,
 };
