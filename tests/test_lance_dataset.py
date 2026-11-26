@@ -74,6 +74,8 @@ def test_load_dataset_discovers_and_selects_splits(tmp_path: Path) -> None:
 
     with pytest.raises(KeyError, match="available splits: test, train"):
         dataset["dev"]
+    with pytest.raises(KeyError, match="available splits: test, train"):
+        rivet.load_dataset(tmp_path, split="dev")
 
 
 def test_manifest_is_authoritative_and_physical_paths_stay_single(

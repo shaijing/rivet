@@ -2,37 +2,19 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from ._download import _is_remote, download_dataset
 from ._io import hf_arrow_files
 from ._pipeline import Pipeline
 from ._rivet import _ArrowDataset, _ImageFolderDataset
 from ._utils import _maybe_numpy_batch, _normalize_arrow_files, _validate_hf_dataset
 
 try:
-    from ._rivet import (
-        _LanceDataset,
-        _LanceDatasetDict,
-    )
-    from ._rivet import (
-        load_lance_split as _load_lance_split,
-    )
+    from ._rivet import _LanceDataset
 except ImportError:
     _LanceDataset = None
-    _LanceDatasetDict = None
-    _load_lance_split = None
-
-
-def _require_lance() -> tuple[Any, Any, Any]:
-    if _LanceDataset is None or _LanceDatasetDict is None or _load_lance_split is None:
-        raise RuntimeError(
-            "Lance support is disabled; rebuild rivet-python with the 'lance' feature"
-        )
-    return _LanceDataset, _LanceDatasetDict, _load_lance_split
 
 
 class ArrowDataset:
@@ -165,8 +147,11 @@ class LanceDataset:
         image_column: str = "image",
         label_column: str = "label",
     ) -> None:
-        lance_dataset, _, _ = _require_lance()
-        self._inner = lance_dataset(
+        if _LanceDataset is None:
+            raise RuntimeError(
+                "Lance support is disabled; rebuild rivet-python with the 'lance' feature"
+            )
+        self._inner = _LanceDataset(
             str(path),
             image_column,
             label_column,
@@ -283,116 +268,6 @@ def convert_imagefolder_lance(
             "Lance support is disabled; rebuild rivet-python with the 'lance' feature"
         ) from exc
     return _convert_imagefolder_lance(root, output, split=split, overwrite=overwrite)
-
-
-def _lance_manifest(root: Path) -> Path | None:
-    for name in ("dataset.json", "dataset.rivet.json"):
-        path = root / name
-        if path.is_file():
-            return path
-    return None
-
-
-def _downloaded_lance_root(payload: Path) -> Path:
-    candidates = []
-    for root, dirs, files in payload.walk():
-        if (
-            root.suffix == ".lance"
-            or any(
-                name.endswith(".lance") and _lance_manifest(root / name) is None
-                for name in dirs
-            )
-            or "dataset.json" in files
-            or "dataset.rivet.json" in files
-        ):
-            candidates.append(root)
-            dirs.clear()
-
-    if len(candidates) != 1:
-        reason = (
-            "no Lance dataset" if not candidates else "multiple Lance dataset roots"
-        )
-        raise ValueError(f"downloaded source contains {reason}; inspect {payload}")
-
-    root = candidates[0]
-    cache_root = payload.resolve()
-    manifest = _lance_manifest(root)
-    if manifest is not None:
-        data = json.loads(manifest.read_bytes())
-        field = "path" if data.get("format_version") == 1 else "uri"
-        for split in data.get("splits", {}).values():
-            target = split.get(field)
-            if isinstance(target, str):
-                path = Path(target.removeprefix("file://"))
-                if not (root / path).resolve().is_relative_to(cache_root):
-                    raise ValueError(
-                        f"downloaded manifest split leaves the cache: {target!r}"
-                    )
-    return root
-
-
-def load_dataset(
-    path: str | Path,
-    *,
-    split: str | None = None,
-    revision: str | None = None,
-    cache_dir: str | Path | None = None,
-    offline: bool = False,
-    image_column: str = "image",
-    label_column: str = "label",
-) -> LanceDataset | DatasetDict:
-    """Load one physical Lance dataset or a logical multi-split dataset.
-
-    A dataset.json or legacy dataset.rivet.json manifest identifies a split
-    collection. Otherwise a .lance path is a physical dataset, and a directory
-    can contain immediate *.lance splits. Remote source strings are downloaded
-    to the dataset cache before opening the Lance dataset.
-    """
-    _, lance_dataset_dict, load_lance_split = _require_lance()
-    if _is_remote(path):
-        is_torch = str(path).startswith("torch:")
-        payload = download_dataset(
-            str(path),
-            revision=revision,
-            cache_dir=cache_dir,
-            offline=offline,
-            format="lance" if is_torch else "raw",
-        )
-        path = payload if is_torch else _downloaded_lance_root(payload)
-    else:
-        if revision is not None:
-            raise ValueError("revision requires a remote dataset source")
-        path = Path(path)
-    is_physical = path.name.endswith(".lance") and _lance_manifest(path) is None
-
-    if split is None:
-        if is_physical:
-            return LanceDataset(
-                path,
-                image_column=image_column,
-                label_column=label_column,
-            )
-        return DatasetDict(
-            lance_dataset_dict(
-                str(path),
-                image_column,
-                label_column,
-            )
-        )
-
-    if is_physical:
-        raise ValueError(
-            "split cannot be specified when loading a single .lance dataset path"
-        )
-
-    return LanceDataset._from_inner(
-        load_lance_split(
-            str(path),
-            image_column,
-            label_column,
-            split,
-        )
-    )
 
 
 def dataset(

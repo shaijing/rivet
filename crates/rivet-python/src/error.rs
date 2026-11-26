@@ -1,4 +1,4 @@
-use pyo3::exceptions::{PyIOError, PyIndexError, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyIOError, PyIndexError, PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use rivet_data::DataError;
 use rivet_vision::VisionError;
@@ -21,6 +21,7 @@ where
         }
         VisionError::Image(err) => PyRuntimeError::new_err(err.to_string()),
         VisionError::Core(err) => PyRuntimeError::new_err(err.to_string()),
+        err @ VisionError::UnknownDatasetSplit { .. } => PyKeyError::new_err(err.to_string()),
         VisionError::Worker(message) => PyRuntimeError::new_err(message),
     }
 }

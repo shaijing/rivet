@@ -4,34 +4,13 @@ from __future__ import annotations
 
 import inspect
 import json
-import re
-from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import parse_qsl
 
 
 def _torch_source(location: str) -> tuple[str, dict[str, str]]:
     name, _, query = location.removeprefix("//").partition("?")
-    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", name):
-        raise ValueError("torch: requires a torchvision dataset class name")
-    options = {}
-    for key, value in parse_qsl(query, keep_blank_values=True, strict_parsing=True):
-        if (
-            not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]*", key)
-            or key
-            in {
-                "root",
-                "download",
-                "transform",
-                "target_transform",
-                "transforms",
-                "loader",
-            }
-            or key in options
-        ):
-            raise ValueError(f"invalid or repeated torchvision option: {key!r}")
-        options[key] = value
-    return name.lower(), options
+    return name.lower(), dict(parse_qsl(query, keep_blank_values=True))
 
 
 def _torch_calls(location: str):
@@ -117,45 +96,17 @@ def _download_torch(location: str, root: Path) -> None:
         dataset(root=str(root), download=True, **options)
 
 
-def _derive_torch(
-    cache: Path, name: str, key: str, location: str, download: Callable[[], Path]
-) -> Path:
+def _convert_torch(location: str, root: Path, destination: Path) -> None:
     """Stage torchvision's in-memory pixel arrays for the Rust image writer."""
     import tempfile
 
     import numpy as np
 
-    supported = {
-        "cifar10",
-        "cifar100",
-        "mnist",
-        "fashionmnist",
-        "kmnist",
-        "emnist",
-        "usps",
-        "svhn",
-        "stl10",
-    }
-    if name not in supported:
-        raise ValueError(
-            f"Lance conversion is unavailable for torchvision dataset {name!r}"
-        )
+    from ._rivet import _convert_torch_images
 
-    output = cache / "derived" / "lance" / name / f"torch-v1-{key}"
-    if (output / "dataset.json").is_file():
-        return output
-    try:
-        from ._rivet import _convert_torch_images
-    except ImportError as exc:
-        raise RuntimeError(
-            "Lance conversion requires Rivet's 'lance' build feature"
-        ) from exc
-    root = download()
+    name, _ = _torch_source(location)
     dataset_class, calls = _torch_calls(location)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=".convert-torch-", dir=output.parent
-    ) as temp:
+    with tempfile.TemporaryDirectory(dir=destination.parent) as temp:
         work = Path(temp)
         splits = {}
         classes = None
@@ -203,11 +154,4 @@ def _derive_torch(
             targets.astype("<i4", copy=False).tofile(labels)
             rows, height, width, channels = pixels.shape
             splits[split] = (images, labels, rows, width, height, channels)
-        staging = work / name
-        _convert_torch_images(staging, splits, classes)
-        try:
-            staging.rename(output)
-        except OSError:
-            if not (output / "dataset.json").is_file():
-                raise
-    return output
+        _convert_torch_images(destination, splits, classes)

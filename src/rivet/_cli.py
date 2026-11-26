@@ -11,11 +11,6 @@ import sys
 from collections.abc import Sequence
 from importlib.metadata import version
 from pathlib import Path
-from subprocess import SubprocessError
-from tarfile import TarError
-from zipfile import BadZipFile
-
-from httpx import HTTPError
 
 from ._download import _dataset_cache, download_dataset, list_datasets
 
@@ -180,10 +175,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         TypeError,
         RuntimeError,
         ImportError,
-        HTTPError,
-        SubprocessError,
-        TarError,
-        BadZipFile,
     ) as exc:
         print(f"rivet: {exc}", file=sys.stderr)
         return 1

@@ -34,7 +34,7 @@ train = rivet.load_dataset("https://example.org/images-lance.zip", split="train"
 `git:owner/repo` and `github:owner/repo` resolve to GitHub. Use
 `git:https://host/owner/repo.git` or `git:ssh://git@host/owner/repo.git` for
 other hosts. Git downloads require the `git` executable. Hugging Face uses
-the Hub client's authentication, including `HF_TOKEN` for private datasets.
+the Hub token from `HF_TOKEN` or the saved Hugging Face token file.
 Pass `revision` for a Git or Hugging Face branch, tag, or commit.
 
 Downloads are stored in `$XDG_CACHE_HOME/rivet/datasets`, defaulting to
@@ -51,6 +51,44 @@ contents contain a Lance dataset or split bundle. It recognizes
 `*.lance` splits. Existing local Lance paths work with the same API. For
 other formats, use the path returned by `download_dataset()` with the reader
 for that format.
+
+### Download from Rust
+
+Use `rivet_data::dataset::download_dataset` with `DownloadOptions` for the
+same cache, archive extraction, and optional Lance conversion.
+
+```rust
+use rivet_data::dataset::{DownloadFormat, DownloadOptions, download_dataset};
+
+let dataset = download_dataset(
+    "hf:SetFit/sst5",
+    &DownloadOptions {
+        format: DownloadFormat::Lance,
+        ..DownloadOptions::default()
+    },
+)?;
+```
+
+For `torch:` sources, `download_dataset_with_torch` accepts a
+`TorchDatasetProvider` for cache misses. The Python binding supplies
+torchvision as that provider.
+
+With the `lance` feature enabled, use `rivet_vision::api::load_dataset` to
+open a local Lance image dataset or download and open a remote Lance source.
+The result is `DatasetLoadResult::Single` for a physical dataset or a selected
+split, and `DatasetLoadResult::Bundle` for a collection of named splits.
+
+```rust
+use rivet_vision::api::{LoadDatasetOptions, load_dataset};
+
+let train = load_dataset(
+    "./images",
+    &LoadDatasetOptions {
+        split: Some("train".into()),
+        ..LoadDatasetOptions::default()
+    },
+)?;
+```
 
 ### List cached datasets
 

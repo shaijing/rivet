@@ -14,8 +14,8 @@ use rivet_vision::api::{
 };
 #[cfg(feature = "lance")]
 use rivet_vision::api::{
-    CacheConfig, CacheLevel, DEFAULT_ENCODED_CHUNK_SIZE, ImageSource, LanceImageDataset,
-    load_lance_image_dataset,
+    CacheConfig, CacheLevel, DEFAULT_ENCODED_CHUNK_SIZE, DatasetLocation, ImageSource,
+    LanceImageDataset, LoadDatasetOptions, load_dataset_with_torch, load_lance_image_dataset,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -206,37 +206,86 @@ impl PyLanceDatasetDict {
     }
 }
 
-#[cfg(feature = "lance")]
+/// Open a local or remote Lance image dataset, optionally selecting one split.
 #[pyfunction]
-#[pyo3(signature = (path, image_column="image", label_column="label", split=None))]
-pub(crate) fn load_lance_split(
-    path: PathBuf,
+#[pyo3(signature = (path, *, split=None, revision=None, cache_dir=None, offline=false, image_column="image", label_column="label"))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn load_dataset<'py>(
+    py: Python<'py>,
+    path: Bound<'py, PyAny>,
+    split: Option<String>,
+    revision: Option<String>,
+    cache_dir: Option<PathBuf>,
+    offline: bool,
     image_column: &str,
     label_column: &str,
-    split: Option<&str>,
-) -> PyResult<PyLanceDataset> {
-    match load_lance_image_dataset(path, image_column, label_column).map_err(to_py_err)? {
-        DatasetLoadResult::Single(dataset) => {
-            if split.is_some() {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "split cannot be specified when loading a single .lance dataset path",
-                ));
-            }
-            Ok(PyLanceDataset::from_inner(dataset))
-        }
-        DatasetLoadResult::Bundle(bundle) => {
-            let split = split.ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err(
-                    "dataset root contains multiple splits; specify split",
-                )
-            })?;
-            let Some(dataset) = bundle.split(split) else {
-                let available = bundle.split_names().collect::<Vec<_>>().join(", ");
-                return Err(PyKeyError::new_err(format!(
-                    "split '{split}' not found; available splits: {available}"
-                )));
+) -> PyResult<Bound<'py, PyAny>> {
+    #[cfg(not(feature = "lance"))]
+    {
+        let _ = (
+            py,
+            path,
+            split,
+            revision,
+            cache_dir,
+            offline,
+            image_column,
+            label_column,
+        );
+        Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "Lance support is disabled; rebuild rivet-python with the 'lance' feature",
+        ))
+    }
+
+    #[cfg(feature = "lance")]
+    {
+        use crate::download::{expand_cache_dir, with_torchvision};
+        use pyo3::types::{PyString, PyStringMethods};
+        use rivet_data::dataset::is_remote_dataset;
+
+        let remote = if let Ok(source) = path.cast::<PyString>() {
+            source
+                .to_cow()
+                .ok()
+                .filter(|source| is_remote_dataset(source))
+                .map(|source| source.into_owned())
+        } else {
+            None
+        };
+        let cache_dir = if remote.is_some() {
+            expand_cache_dir(py, cache_dir)?
+        } else {
+            None
+        };
+        let local = if remote.is_none() {
+            Some(path.extract::<PathBuf>()?)
+        } else {
+            None
+        };
+        let options = LoadDatasetOptions {
+            split,
+            revision,
+            cache_dir,
+            offline,
+            image_column: image_column.to_owned(),
+            label_column: label_column.to_owned(),
+        };
+        let loaded = with_torchvision(py, move |provider| {
+            let location = match &remote {
+                Some(source) => DatasetLocation::Remote(source),
+                None => DatasetLocation::Local(local.as_deref().unwrap()),
             };
-            Ok(PyLanceDataset::from_inner(dataset))
+            load_dataset_with_torch(location, &options, Some(provider))
+        })?;
+        let wrappers = py.import("rivet._datasets")?;
+        match loaded {
+            DatasetLoadResult::Single(dataset) => wrappers.getattr("LanceDataset")?.call_method1(
+                "_from_inner",
+                (Py::new(py, PyLanceDataset::from_inner(dataset))?,),
+            ),
+            DatasetLoadResult::Bundle(inner) => wrappers
+                .getattr("DatasetDict")?
+                .call1((Py::new(py, PyLanceDatasetDict { inner })?,)),
         }
     }
 }
@@ -312,28 +361,6 @@ fn encoded_sample_to_py(py: Python<'_>, image: Buffer, label: i64) -> PyResult<P
     out.set_item("image", PyBytes::new(py, image.as_slice()))?;
     out.set_item("label", label)?;
     Ok(out.into())
-}
-
-#[cfg(feature = "lance")]
-#[pyfunction]
-pub(crate) fn _convert_lance_files(
-    py: Python<'_>,
-    output: PathBuf,
-    name: String,
-    files: std::collections::BTreeMap<String, Vec<PathBuf>>,
-    json_columns: Option<Vec<String>>,
-    detect_json_splits: bool,
-) -> PyResult<()> {
-    py.detach(move || {
-        rivet_data::dataset::lance::convert_files_to_lance(
-            &output,
-            &name,
-            files,
-            json_columns.as_deref(),
-            detect_json_splits,
-        )
-    })
-    .map_err(to_py_err)
 }
 
 #[cfg(feature = "lance")]

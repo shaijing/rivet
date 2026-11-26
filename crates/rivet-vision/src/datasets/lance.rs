@@ -13,7 +13,10 @@ pub use convert::{
 };
 pub use dataset::LanceImageDataset;
 pub use imagefolder_convert::convert_imagefolder_dataset;
-pub use loader::load_lance_image_dataset;
+pub use loader::{
+    DatasetLocation, LoadDatasetOptions, load_dataset, load_dataset_with_torch,
+    load_lance_image_dataset,
+};
 #[cfg(test)]
 pub(super) use schema::validate_schema;
 pub use torch_convert::{TorchImageSplit, convert_torch_images};

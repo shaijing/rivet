@@ -12,7 +12,6 @@ from ._datasets import (
     LanceDataset,
     convert_imagefolder_lance,
     dataset,
-    load_dataset,
     scan_arrow,
     scan_hf,
     scan_image_folder,
@@ -28,6 +27,7 @@ from ._io import (
 )
 from ._loader import DataLoader
 from ._pipeline import Pipeline
+from ._rivet import load_dataset
 from ._structured import (
     AnnotatedSample,
     CutMix,

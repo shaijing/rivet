@@ -18,6 +18,8 @@ pub enum VisionError {
     InvalidPipeline(String),
     #[error("invalid shape: {0}")]
     InvalidShape(String),
+    #[error("split '{name}' not found; available splits: {available}")]
+    UnknownDatasetSplit { name: String, available: String },
     #[error("worker error: {0}")]
     Worker(String),
 }

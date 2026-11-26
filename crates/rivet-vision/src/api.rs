@@ -12,7 +12,8 @@ pub use crate::cache::{
 };
 #[cfg(feature = "lance")]
 pub use crate::datasets::lance::{
-    LanceConversionReport, LanceImageDataset, convert_imagefolder_dataset, load_lance_image_dataset,
+    DatasetLocation, LanceConversionReport, LanceImageDataset, LoadDatasetOptions,
+    convert_imagefolder_dataset, load_dataset, load_dataset_with_torch, load_lance_image_dataset,
 };
 pub use crate::datasets::{ArrowImageDataset, ImageFolderDatasetCore, ImageFolderSample};
 pub use crate::errors::{

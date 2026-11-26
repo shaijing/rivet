@@ -8,21 +8,35 @@ description = "Dataset abstractions, storage backends, sampling, caching, and ru
 
 [features]
 default = ["lance"]
-lance = ["dep:lance", "dep:parquet"]
+lance = ["dep:lance", "dep:parquet", "dep:glob"]
 
 [dependencies]
-arrow.workspace = true
 arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-ipc.workspace = true
+arrow.workspace = true
 bytes.workspace = true
+bzip2 = "0.6"
+dirs = "6"
+flate2 = "1"
+glob = { version = "0.3", optional = true }
+hex = "0.4"
 lance = { workspace = true, optional = true }
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
 memmap2.workspace = true
 parquet = { version = "58.4.1", optional = true }
+percent-encoding = "2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "socks", "gzip", "brotli", "deflate"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.11"
+tar = "0.4"
+tempfile = "3"
 thiserror.workspace = true
 tokio.workspace = true
+url = "2"
+walkdir = "2"
+zip = { version = "9.8", default-features = false, features = ["deflate", "bzip2", "lzma"] }
 
 [dev-dependencies]
 criterion.workspace = true

@@ -1,6 +1,7 @@
 pub mod arrow;
 pub mod bundle;
 pub mod catalog;
+pub mod download;
 pub mod manifest;
 pub mod memory;
 pub mod source;
@@ -10,6 +11,10 @@ pub mod lance;
 
 pub use bundle::{DatasetBundle, DatasetLoadResult};
 pub use catalog::{DatasetEntry, list_datasets};
+pub use download::{
+    DataFiles, DownloadFormat, DownloadOptions, TorchDatasetProvider, dataset_cache_dir,
+    download_dataset, download_dataset_with_torch, is_remote_dataset,
+};
 pub use manifest::{
     ClassLabelFeature, DatasetManifest, Feature, ImageFeature, ImageRepresentation,
     LEGACY_MANIFEST_FILE_NAME, MANIFEST_FILE_NAME, SplitManifest, manifest_path,

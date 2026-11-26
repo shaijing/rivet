@@ -16,7 +16,6 @@ from ._datasets import (
     LanceDataset,
     convert_imagefolder_lance,
     dataset,
-    load_dataset,
     scan_arrow,
     scan_hf,
     scan_image_folder,
@@ -32,6 +31,8 @@ from ._io import (
 )
 from ._loader import DataLoader
 from ._pipeline import Pipeline
+from ._rivet import load_dataset
+from ._spectrogram import SpectrogramSample
 from ._structured import (
     AnnotatedSample,
     CutMix,
@@ -43,7 +44,6 @@ from ._structured import (
     uniform_temporal_subsample,
 )
 from ._transforms import Compose, Transform
-from ._spectrogram import SpectrogramSample
 from ._volume import VolumeSample
 
 __all__ = [
@@ -57,12 +57,12 @@ __all__ = [
     "LanceDataset",
     "MixUp",
     "Pipeline",
+    "SpectrogramSample",
     "StructuredDataLoader",
     "StructuredPipeline",
     "Transform",
     "UniformTemporalSubsample",
     "VideoSample",
-    "SpectrogramSample",
     "VolumeSample",
     "convert_imagefolder_lance",
     "dataset",
