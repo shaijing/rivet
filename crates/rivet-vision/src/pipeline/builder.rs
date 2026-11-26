@@ -1292,8 +1292,9 @@ impl ImagePipeline {
 
     /// Bound the producer-reported payload weight on each persistent queue.
     /// Defaults to 512 MiB; dequeued/active values are excluded and the CPU pull
-    /// path has no queues. Legacy DAG fallback supplies its single-value limit
-    /// unless dag_max_value_logical_bytes was explicitly set. Not a total budget.
+    /// path has no queues. Managed DAG execution uses this for one encoded
+    /// batch pending admission. It also supplies the DAG single-value limit
+    /// unless dag_max_value_logical_bytes was explicitly set.
     pub fn stage_queue_max_bytes(mut self, max_bytes: usize) -> Self {
         self.runtime.stage_queue_max_bytes = max_bytes;
         self

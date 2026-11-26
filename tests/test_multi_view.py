@@ -306,13 +306,14 @@ def test_managed_dag_budget_on_view_batches(source):
         next(loader)
 
 
-def test_dag_stack_workspace_preserves_exported_labels(source):
+@pytest.mark.parametrize("workers", [0, 2])
+def test_dag_stack_workspace_preserves_exported_labels(source, workers):
     torch = pytest.importorskip("torch")
     loader = (
         rv.scan_image_folder(source[0])
         .decode_image()
         .five_crop(9, 7)
-        .workers(0)
+        .workers(workers)
         .batch(1)
         .dag_managed_budget_bytes(4096)
         .execute()
@@ -320,8 +321,13 @@ def test_dag_stack_workspace_preserves_exported_labels(source):
     first = loader.next_dlpack()
     labels = torch.utils.dlpack.from_dlpack(first["labels"].into_dlpack())
     labels.fill_(23)
+    images = torch.utils.dlpack.from_dlpack(first["images"])
+    snapshot = images.clone()
     second = loader.next_dlpack()
     next_labels = torch.utils.dlpack.from_dlpack(second["labels"])
     assert next_labels.tolist() == [0] * 5
     assert labels.tolist() == [23] * 5
     assert next_labels.data_ptr() != labels.data_ptr()
+    del loader
+    assert torch.equal(images, snapshot)
+    assert labels.tolist() == [23] * 5

@@ -7,7 +7,9 @@ use crate::pipeline::op::{
 use crate::sample::image::{DecodedSample, ImageAxisOrder, ImageBatch, ImageSample};
 use rivet_core::Tensor;
 use rivet_data::random::{OpKey, RandomContext, SampleKey};
-use rivet_exec::physical::{ExecutableGraph, ExecutionValue, Morsel, PhysicalOperator};
+use rivet_exec::physical::{
+    ExecutableGraph, ExecutionValue, Morsel, PhysicalOperator, PhysicalProfiler,
+};
 use rivet_exec::runtime::{RuntimeError, RuntimeResult};
 use rivet_plan::ValueGranularity;
 use std::sync::Arc;
@@ -104,10 +106,15 @@ pub(crate) enum ImageKernel {
 struct ImageSamples {
     values: Vec<ImageSample>,
     keys: Option<Vec<SampleKey>>,
+    decoded_bytes: Option<usize>,
 }
 impl From<Vec<ImageSample>> for ImageSamples {
     fn from(values: Vec<ImageSample>) -> Self {
-        Self { values, keys: None }
+        Self {
+            values,
+            keys: None,
+            decoded_bytes: None,
+        }
     }
 }
 impl std::ops::Deref for ImageSamples {
@@ -139,6 +146,32 @@ fn take_values(morsel: &mut Morsel) -> RuntimeResult<ImageValues> {
         .map_err(|_| runtime_error("invalid vision value type"))?;
     Ok(Arc::try_unwrap(value).unwrap_or_else(|shared| (*shared).clone()))
 }
+fn decoded_rgb_bytes(
+    samples: &[ImageSample],
+    inspections: &mut usize,
+) -> RuntimeResult<(usize, bool)> {
+    let overflow = || runtime_error("managed image output size overflow");
+    samples
+        .iter()
+        .try_fold((0usize, true), |(total, all_jpeg), sample| {
+            let ImageSample::Encoded(sample) = sample else {
+                return Err(runtime_error("managed Decode requires encoded input"));
+            };
+            *inspections += 1;
+            let reader = image::ImageReader::new(std::io::Cursor::new(sample.image.as_slice()))
+                .with_guessed_format()
+                .map_err(runtime_error)?;
+            let jpeg = reader.format() == Some(image::ImageFormat::Jpeg);
+            let (width, height) = reader.into_dimensions().map_err(runtime_error)?;
+            let bytes = (width as usize)
+                .checked_mul(height as usize)
+                .and_then(|pixels| pixels.checked_mul(3))
+                .and_then(|bytes| total.checked_add(bytes))
+                .ok_or_else(overflow)?;
+            Ok((bytes, all_jpeg && jpeg))
+        })
+}
+
 fn put_values(morsel: &mut Morsel, values: ImageValues) {
     match &values {
         ImageValues::Samples(samples) => {
@@ -284,42 +317,31 @@ impl PhysicalOperator for ImageKernel {
         let ImageValues::Samples(samples) = values else {
             return Ok(None);
         };
-        let overflow = || runtime_error("managed image output size overflow");
-        let mut bytes = 0usize;
-        for sample in samples.iter() {
-            let sample_bytes = match (decode, sample) {
-                (true, ImageSample::Encoded(sample)) => {
-                    // Read the dimensions before decoding or allocating a tensor.
-                    let (width, height) =
-                        image::ImageReader::new(std::io::Cursor::new(sample.image.as_slice()))
-                            .with_guessed_format()
-                            .map_err(runtime_error)?
-                            .into_dimensions()
-                            .map_err(runtime_error)?;
-                    (width as usize)
-                        .checked_mul(height as usize)
-                        .and_then(|pixels| pixels.checked_mul(3))
-                        .ok_or_else(overflow)?
-                }
-                (false, ImageSample::Decoded(sample)) => sample
-                    .image
-                    .logical_bytes()
-                    .checked_add(std::mem::size_of::<i64>())
-                    .ok_or_else(overflow)?,
-                _ => {
-                    return Err(runtime_error(
-                        "managed image allocation has incompatible input",
-                    ));
-                }
+        if decode {
+            return match samples.decoded_bytes {
+                Some(bytes) => Ok(Some(bytes)),
+                None => decoded_rgb_bytes(samples, &mut 0).map(|(bytes, _)| Some(bytes)),
             };
-            bytes = bytes.checked_add(sample_bytes).ok_or_else(overflow)?;
         }
+        let overflow = || runtime_error("managed image output size overflow");
+        let bytes = samples.iter().try_fold(0usize, |total, sample| {
+            let ImageSample::Decoded(sample) = sample else {
+                return Err(runtime_error("managed ImageStack requires decoded input"));
+            };
+            total
+                .checked_add(sample.image.logical_bytes())
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<i64>()))
+                .ok_or_else(overflow)
+        })?;
         Ok(Some(bytes))
     }
 
     fn execute(&self, mut morsel: Morsel) -> RuntimeResult<Morsel> {
         let values = match self {
             Self::Source(source) => {
+                if !morsel.values.is_empty() {
+                    return Ok(morsel);
+                }
                 let samples = source
                     .get_many(&morsel.source_indices)
                     .map_err(runtime_error)?;
@@ -351,6 +373,7 @@ impl PhysicalOperator for ImageKernel {
                     ImageValues::Samples(ImageSamples {
                         values: output,
                         keys: samples.keys,
+                        decoded_bytes: None,
                     })
                 } else {
                     let count = samples
@@ -386,6 +409,7 @@ impl PhysicalOperator for ImageKernel {
                     ImageValues::Samples(ImageSamples {
                         values: output,
                         keys: Some(keys),
+                        decoded_bytes: None,
                     })
                 }
             }
@@ -411,6 +435,7 @@ impl PhysicalOperator for ImageKernel {
                         ImageValues::Samples(ImageSamples {
                             values: output,
                             keys: samples.keys,
+                            decoded_bytes: None,
                         })
                     }
                 }
@@ -483,6 +508,7 @@ impl PhysicalOperator for ImageKernel {
                 ImageValues::Samples(ImageSamples {
                     values: output,
                     keys: samples.keys.clone(),
+                    decoded_bytes: None,
                 })
             }
             ImageValues::Batch(first_batch) => {
@@ -524,6 +550,70 @@ impl PhysicalOperator for ImageKernel {
     }
 }
 
+/// Sum unique managed allocations in the physical DAG. Aliases and edges
+/// carry no allocation charge. The execution-time backing check handles
+/// reuse and lifetimes when this conservative sum exceeds the budget.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ManagedImagePreflight {
+    pub(crate) decodes: usize,
+    pub(crate) fixed_bytes_per_source: Option<usize>,
+    pub(crate) rgb_stack_copies: usize,
+}
+
+impl ManagedImagePreflight {
+    pub(crate) fn prepare(
+        &self,
+        source: &SourceOp,
+        morsel: &mut Morsel,
+        max_encoded_bytes: usize,
+        profiler: &PhysicalProfiler,
+    ) -> RuntimeResult<Option<usize>> {
+        let started = profiler.is_enabled().then(std::time::Instant::now);
+        let samples = source.get_many(&morsel.source_indices);
+        if let Some(started) = started {
+            profiler.record_dag_preflight_read(started.elapsed());
+        }
+        let samples = samples.map_err(runtime_error)?;
+        if samples.len() != morsel.source_indices.len() {
+            return Err(runtime_error(
+                "source sample count does not match requested indices",
+            ));
+        }
+        let encoded_bytes = samples.iter().try_fold(0usize, |total, sample| {
+            let ImageSample::Encoded(sample) = sample else {
+                return Err(runtime_error("image preflight requires encoded input"));
+            };
+            total
+                .checked_add(sample.image.len())
+                .ok_or_else(|| runtime_error("pending encoded byte count overflow"))
+        })?;
+        if encoded_bytes > max_encoded_bytes {
+            // The coordinator reports the capacity error. Do not retain or
+            // inspect the oversized batch.
+            morsel.bytes = encoded_bytes;
+            return Ok(None);
+        }
+        let mut samples = ImageSamples::from(samples);
+        let mut inspections = 0;
+        let decoded = decoded_rgb_bytes(&samples, &mut inspections);
+        if profiler.is_enabled() {
+            profiler.record_dag_preflight_dimension_checks(inspections);
+        }
+        let (rgb, all_jpeg) = decoded?;
+        let bound = (|| {
+            if !all_jpeg {
+                return None;
+            }
+            let copies = self.decodes.checked_add(self.rgb_stack_copies)?;
+            rgb.checked_mul(copies)?
+                .checked_add(self.fixed_bytes_per_source?.checked_mul(samples.len())?)
+        })();
+        samples.decoded_bytes = Some(rgb);
+        put_values(morsel, ImageValues::Samples(samples));
+        Ok(bound)
+    }
+}
+
 pub(crate) struct ImageExecutionGraph {
     pub(crate) executable: Arc<ExecutableGraph>,
     pub(crate) info: ImageGraphInfo,
@@ -533,6 +623,7 @@ pub(crate) struct ImageExecutionGraph {
     pub(crate) batch_nodes: Vec<Arc<BatchNode>>,
     pub(crate) linear: bool,
     pub(crate) managed_bytes_per_morsel: Option<usize>,
+    pub(crate) managed_preflight: Option<ManagedImagePreflight>,
     pub(crate) explanation: String,
 }
 impl ImageExecutionGraph {

@@ -223,7 +223,11 @@ fn cse_preserves_identical_lambda_occurrences_and_random_keys() {
     use std::sync::Mutex;
 
     let keys = Arc::new(Mutex::new(Vec::new()));
-    let (builder, _, _) = source(3);
+    let builder = ImagePipeline::new(variable_jpeg_source(8, None))
+        .workers(3)
+        .seed(91)
+        .dag_managed_budget_bytes(3200)
+        .profiling(true);
     let mut plan = graph(builder, false, false);
     let (join, original) = plan
         .nodes()
@@ -270,6 +274,225 @@ fn cse_preserves_identical_lambda_occurrences_and_random_keys() {
     assert_eq!(shared_keys, unshared_keys);
     shared_keys.dedup();
     assert_eq!(shared_keys.len(), 16);
+    assert_eq!(
+        shared
+            .profiler()
+            .dag_scheduler_snapshot()
+            .unwrap()
+            .preflight_dimension_checks,
+        8
+    );
+}
+
+fn variable_jpeg_source(rows: u32, bad_at: Option<u32>) -> Arc<Images> {
+    Arc::new(Images {
+        bytes: (0..rows)
+            .map(|i| {
+                if Some(i) == bad_at {
+                    return Buffer::from(vec![0, 1, 2]);
+                }
+                let image =
+                    image::RgbImage::from_pixel(8 + i % 3, 8, image::Rgb([i as u8, 74, 109]));
+                let mut bytes = Cursor::new(Vec::new());
+                image
+                    .write_to(&mut bytes, image::ImageFormat::Jpeg)
+                    .unwrap();
+                Buffer::from(bytes.into_inner())
+            })
+            .collect(),
+        reads: Arc::new(AtomicUsize::new(0)),
+        calls: Arc::new(AtomicUsize::new(0)),
+    })
+}
+
+#[test]
+fn managed_variable_jpeg_preflight_admits_shared_morsels_in_order() {
+    let source = variable_jpeg_source(12, None);
+    let pipeline = || {
+        ImagePipeline::new(Arc::clone(&source))
+            .workers(3)
+            .prefetch_batches(2)
+    };
+    let budget = 3200;
+    let mut loader = compile(
+        graph(
+            pipeline()
+                .seed(91)
+                .profiling(true)
+                .dag_managed_budget_bytes(budget),
+            true,
+            true,
+        ),
+        true,
+    );
+    // Match the random seed between optimized and unshared graph invocations.
+    let mut baseline = compile(graph(pipeline().seed(91), true, true), false);
+    assert_same(&drain(&mut loader), &drain(&mut baseline));
+    assert_eq!(source.calls.load(Ordering::Relaxed), 6);
+    assert_eq!(source.reads.load(Ordering::Relaxed), 24);
+    let memory = loader.managed_memory_snapshot().unwrap();
+    assert_eq!(memory.reserved_bytes, 0);
+    assert!(memory.peak_reserved_bytes <= budget);
+    let profiler = loader.profiler();
+    let scheduler = profiler.dag_scheduler_snapshot().unwrap();
+    assert_eq!(scheduler.peak_in_flight_morsels, 2);
+    assert_eq!(scheduler.peak_pending_morsels, 1);
+    assert_eq!(scheduler.preflight_source_reads, 3);
+    assert_eq!(scheduler.preflight_dimension_checks, 12);
+    let explanation = loader.physical_explanation().unwrap();
+    let decodes = explanation
+        .nodes
+        .iter()
+        .filter(|node| node.operator.as_deref() == Some("Decode"));
+    assert_eq!(
+        decodes
+            .map(|node| profiler.snapshot()[&node.id].executions)
+            .sum::<u64>(),
+        3
+    );
+    // Each admitted batch reserves its one shared decode and its stack.
+    // Two separate Decode nodes would require more than the given budget.
+    assert!((840 + 864 + 2 * 416..=864 + 888 + 2 * 416).contains(&memory.peak_reserved_bytes));
+
+    let mut loader = compile(
+        graph(pipeline().dag_managed_budget_bytes(839), true, false),
+        true,
+    );
+    let error = loader.next_batch().unwrap_err().to_string();
+    assert!(
+        error.contains("Decode") && error.contains("before allocation"),
+        "{error}"
+    );
+    assert_eq!(loader.managed_memory_snapshot().unwrap().reserved_bytes, 0);
+
+    let mut loader = compile(
+        graph(
+            pipeline()
+                .stage_queue_max_bytes(32)
+                .dag_managed_budget_bytes(budget),
+            true,
+            false,
+        ),
+        true,
+    );
+    let error = loader.next_batch().unwrap_err().to_string();
+    assert!(error.contains("pending encoded bytes"), "{error}");
+    assert_eq!(loader.managed_memory_snapshot().unwrap().reserved_bytes, 0);
+}
+
+#[test]
+fn managed_jpeg_bad_image_and_early_drop_are_terminal() {
+    for workers in [0, 3] {
+        let source = variable_jpeg_source(16, Some(5));
+        let builder = ImagePipeline::new(Arc::clone(&source))
+            .workers(workers)
+            .prefetch_batches(3)
+            .profiling(true)
+            .dag_managed_budget_bytes(3200);
+        let mut loader = compile(graph(builder, true, false), true);
+        let error = match loader.next_batch() {
+            Ok(Some(first)) => {
+                assert_eq!(first.labels.to_vec::<i64>().unwrap(), [0, 1, 2, 3]);
+                loader.next_batch().unwrap_err()
+            }
+            Err(error) if workers > 0 => error,
+            other => panic!("unexpected first result: {other:?}"),
+        }
+        .to_string();
+        assert!(error.contains("format"), "{error}");
+        assert!(loader.next_batch().unwrap().is_none());
+        assert_eq!(loader.managed_memory_snapshot().unwrap().reserved_bytes, 0);
+        assert_eq!(source.calls.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            loader
+                .profiler()
+                .dag_scheduler_snapshot()
+                .unwrap()
+                .preflight_dimension_checks,
+            6
+        );
+    }
+
+    let source = variable_jpeg_source(48, None);
+    let builder = ImagePipeline::new(Arc::clone(&source))
+        .workers(3)
+        .prefetch_batches(5)
+        .dag_managed_budget_bytes(3200);
+    let mut loader = compile(graph(builder, true, false), true);
+    let first = loader.next_batch().unwrap().unwrap();
+    let read_count = source.calls.load(Ordering::Relaxed);
+    drop(loader);
+    assert!((3..=7).contains(&read_count));
+    assert_eq!(source.calls.load(Ordering::Relaxed), read_count);
+    assert_eq!(first.labels.to_vec::<i64>().unwrap(), [0, 1, 2, 3]);
+}
+
+#[test]
+fn managed_loader_preserves_arrival_order_for_worker_errors() {
+    use crate::pipeline::op::CallbackConfig;
+    use std::sync::{Mutex, mpsc};
+    use std::time::Duration;
+
+    let source = variable_jpeg_source(8, None);
+    let mut plan = graph(
+        ImagePipeline::new(source)
+            .workers(2)
+            .prefetch_batches(1)
+            .dag_managed_budget_bytes(3200),
+        true,
+        false,
+    );
+    let (decode, _) = plan
+        .nodes()
+        .find(|(_, node)| matches!(node.payload_as::<ImageOp>(), Some(ImageOp::Decode(_))))
+        .unwrap();
+    let (resize, original) = plan
+        .nodes()
+        .find(|(_, node)| {
+            matches!(node.payload_as::<ImageOp>(), Some(ImageOp::Resize(_)))
+                && node.inputs().get(0) == Some(decode)
+        })
+        .map(|(id, node)| (id, node.clone()))
+        .unwrap();
+    let (late_entered, wait_for_late) = mpsc::channel();
+    let wait_for_late = Mutex::new(wait_for_late);
+    let callback = Arc::new(move |_: &str, input: &rivet_core::Tensor, _: u64| {
+        // Batch 0 starts with width 8, batch 1 with width 9.
+        // Only their first callback invocations should participate.
+        match input.dims()[1] {
+            8 => {
+                wait_for_late
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap();
+                std::thread::sleep(Duration::from_millis(70));
+                Err(crate::errors::invalid_argument(
+                    "earlier morsel failed later",
+                ))
+            }
+            9 => {
+                late_entered.send(()).unwrap();
+                Err(crate::errors::invalid_argument("later morsel failed first"))
+            }
+            _ => unreachable!(),
+        }
+    });
+    let delayed = op(
+        &mut plan,
+        decode,
+        ImageOp::Callback(CallbackConfig {
+            probability: 1.0,
+            callback,
+        }),
+    );
+    plan.replace_node(resize, original.with_inputs([delayed]))
+        .unwrap();
+    let mut loader = compile(plan, true);
+    let error = loader.next_batch().unwrap_err().to_string();
+    assert!(error.contains("later morsel failed first"), "{error}");
+    assert!(loader.next_batch().unwrap().is_none());
+    assert_eq!(loader.managed_memory_snapshot().unwrap().reserved_bytes, 0);
 }
 
 #[test]
@@ -540,9 +763,18 @@ fn dag_workload_matrix() {
     let prefetch = std::env::var("RIVET_DAG_BENCH_PREFETCH")
         .map_or(6, |value| value.parse::<usize>().unwrap());
     let mut shared_output = None;
-    for workload in ["shared", "unshared", "views", "managed"] {
+    for workload in [
+        "shared",
+        "unshared",
+        "views",
+        "managed",
+        "managed-unshared",
+        "managed-views",
+        "managed-slow",
+    ] {
         let mut reference = None;
-        for profile in [false, true] {
+        let profile_on_first = std::env::var_os("RIVET_DAG_BENCH_PROFILE_FIRST").is_some();
+        for profile in [profile_on_first, !profile_on_first] {
             let source = Arc::new(Images {
                 bytes: images.clone(),
                 reads: Arc::new(AtomicUsize::new(0)),
@@ -552,33 +784,43 @@ fn dag_workload_matrix() {
                 .workers(4)
                 .prefetch_batches(prefetch)
                 .profiling(profile);
+            let builder = if workload.starts_with("managed") {
+                builder.dag_managed_budget_bytes(32 * 1024)
+            } else {
+                builder
+            };
             let mut loader = match workload {
-                "views" => builder
+                "views" | "managed-views" => builder
                     .decode_image()
                     .resize(12, 12)
                     .five_crop(8, 8)
                     .batch(4, false)
                     .compile()
                     .unwrap(),
-                "managed" => compile(
-                    graph(builder.dag_managed_budget_bytes(32 * 1024), false, false),
-                    true,
+                _ => compile(
+                    graph(builder, false, false),
+                    !workload.ends_with("unshared"),
                 ),
-                _ => compile(graph(builder, false, false), workload == "shared"),
             };
-            let expected_views = if workload == "views" { 5 } else { 1 };
+            let expected_views = if workload.ends_with("views") { 5 } else { 1 };
             let mut output = Vec::new();
             let mut latencies = Vec::new();
             let mut labels = Vec::new();
+            let mut steady_start = None;
+            let mut steady_end = Instant::now();
             loop {
                 let start = Instant::now();
                 let Some(batch) = loader.next_batch().unwrap() else {
                     break;
                 };
-                latencies.push(start.elapsed());
+                steady_end = Instant::now();
+                if steady_start.is_none() {
+                    steady_start = Some(steady_end);
+                }
+                latencies.push(steady_end - start);
                 labels.extend(batch.labels.to_vec::<i64>().unwrap());
                 output.push(batch);
-                if workload == "managed" {
+                if workload == "managed-slow" {
                     std::thread::sleep(Duration::from_micros(25));
                 }
             }
@@ -591,6 +833,7 @@ fn dag_workload_matrix() {
             assert_eq!(source.reads.load(Ordering::Relaxed), rows as usize);
             assert_eq!(source.calls.load(Ordering::Relaxed), rows as usize / 4);
             let first = latencies[0];
+            let steady = (rows - 4) as f64 / (steady_end - steady_start.unwrap()).as_secs_f64();
             latencies.sort_unstable();
             let pctl = |p: usize| latencies[(latencies.len() * p).div_ceil(100) - 1];
             let profiler = loader.profiler();
@@ -602,7 +845,7 @@ fn dag_workload_matrix() {
                     .iter()
                     .filter(|node| node.operator.as_deref() == Some("Decode"));
                 let decode_calls: u64 = decodes.map(|node| by_node[&node.id].executions).sum();
-                let expected = if workload == "unshared" { 2 } else { 1 };
+                let expected = if workload.ends_with("unshared") { 2 } else { 1 };
                 assert_eq!(decode_calls, u64::from(rows) / 4 * expected);
                 assert!(
                     profiler
@@ -618,7 +861,7 @@ fn dag_workload_matrix() {
             }
             match workload {
                 "shared" if shared_output.is_none() => shared_output = Some(output.clone()),
-                "shared" | "unshared" | "managed" => {
+                "shared" | "unshared" | "managed" | "managed-unshared" | "managed-slow" => {
                     assert_same(&output, shared_output.as_deref().unwrap());
                 }
                 _ => {}
@@ -641,7 +884,7 @@ fn dag_workload_matrix() {
                 })
                 .collect::<Vec<_>>();
             println!(
-                "{workload} profile={profile} first={first:?} p95={:?} p99={:?} nodes={nodes:?} backing={:?} reservation={:?} scheduler={:?}",
+                "{workload} profile={profile} first={first:?} p95={:?} p99={:?} steady_samples_per_s={steady:.0} nodes={nodes:?} backing={:?} reservation={:?} scheduler={:?}",
                 pctl(95),
                 pctl(99),
                 profiler.memory_snapshot(),

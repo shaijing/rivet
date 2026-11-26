@@ -169,24 +169,31 @@ impl ImageDataLoader {
                     budget: rivet_exec::memory::ManagedMemoryBudget::new(bytes),
                     bytes_per_morsel: graph.managed_bytes_per_morsel.unwrap_or(bytes).min(bytes),
                 });
-            ImageExecutor::Dag(
-                DagPipelineExecutor::with_managed_admission(
-                    Arc::clone(&graph.executable),
-                    graph.batch.size,
-                    graph.batch.drop_last,
-                    config.num_workers,
-                    config.prefetch_batches,
-                    rivet_exec::memory::GraphMemoryLimits {
-                        max_value_logical_bytes: config
-                            .dag_max_value_logical_bytes
-                            .unwrap_or(config.stage_queue_max_bytes),
-                        ..Default::default()
-                    },
-                    config.profiling_enabled,
-                    admission,
-                )
-                .map_err(|error| RivetError::Worker(error.to_string()))?,
+            let mut executor = DagPipelineExecutor::with_managed_admission(
+                Arc::clone(&graph.executable),
+                graph.batch.size,
+                graph.batch.drop_last,
+                config.num_workers,
+                config.prefetch_batches,
+                rivet_exec::memory::GraphMemoryLimits {
+                    max_value_logical_bytes: config
+                        .dag_max_value_logical_bytes
+                        .unwrap_or(config.stage_queue_max_bytes),
+                    ..Default::default()
+                },
+                config.profiling_enabled,
+                admission,
             )
+            .map_err(|error| RivetError::Worker(error.to_string()))?;
+            if let Some(preflight) = graph.managed_preflight {
+                let source = graph.source.clone();
+                let max_encoded_bytes = config.stage_queue_max_bytes;
+                let profiler = executor.profiler();
+                executor = executor.with_preflight(max_encoded_bytes, move |morsel| {
+                    preflight.prepare(&source, morsel, max_encoded_bytes, &profiler)
+                });
+            }
+            ImageExecutor::Dag(executor)
         };
         Ok(Self {
             info: graph.info.clone(),
@@ -223,11 +230,17 @@ impl ImageDataLoader {
                         PipelineError::Domain(error) => error,
                     })
             }
-            ImageExecutor::Dag(executor) => executor
-                .next_morsel(&mut self.sampler)
-                .map_err(|error| RivetError::Worker(error.to_string()))?
-                .map(ImageExecutionGraph::output_batch)
-                .transpose(),
+            ImageExecutor::Dag(executor) => {
+                let result = executor
+                    .next_morsel(&mut self.sampler)
+                    .map_err(|error| RivetError::Worker(error.to_string()))?
+                    .map(ImageExecutionGraph::output_batch)
+                    .transpose();
+                if result.is_err() {
+                    executor.cancel();
+                }
+                result
+            }
         };
         let Some(mut batch) = result? else {
             return Ok(None);
@@ -241,6 +254,9 @@ impl ImageDataLoader {
                 Ok(output) => batch = output,
                 Err(error) => {
                     self.mix_failed = true;
+                    if let ImageExecutor::Dag(executor) = &mut self.executor {
+                        executor.cancel();
+                    }
                     return Err(error);
                 }
             }

@@ -1,4 +1,6 @@
-use super::physical::{BatchNode, ImageExecutionGraph, ImageGraphInfo, ImageKernel, SampleNode};
+use super::physical::{
+    BatchNode, ImageExecutionGraph, ImageGraphInfo, ImageKernel, ManagedImagePreflight, SampleNode,
+};
 use crate::errors::{RivetResult, invalid_pipeline};
 use crate::pipeline::ImagePipeline;
 use crate::pipeline::op::{
@@ -946,6 +948,19 @@ fn compile_graph(
     let mut edge_values = vec![None::<ValueProperties>; physical.nodes().len()];
     let mut pre_batch_state = None;
     let mut managed_bytes = context.runtime.dag_managed_budget_bytes.map(|_| 0usize);
+    let mut preflight = ManagedImagePreflight {
+        fixed_bytes_per_source: Some(0),
+        ..Default::default()
+    };
+    let mut admission_properties = context
+        .runtime
+        .dag_managed_budget_bytes
+        .map(|_| vec![None::<ValueProperties>; physical.nodes().len()]);
+    let mut direct_rgb = if admission_properties.is_some() {
+        vec![None::<usize>; physical.nodes().len()]
+    } else {
+        Vec::new()
+    };
     for id in &physical_order {
         let node = physical
             .node(*id)
@@ -1003,6 +1018,85 @@ fn compile_graph(
                     current.checked_add(per_image.checked_mul(items)?)
                 });
             }
+        }
+        if let Some(properties) = &mut admission_properties {
+            let admission_inputs = if node.kind == PhysicalNodeKind::Source {
+                Some(Vec::new())
+            } else {
+                node.inputs
+                    .iter()
+                    .map(|input| properties[input.index()].clone())
+                    .collect::<Option<Vec<_>>>()
+            };
+            let mut admission_output = admission_inputs
+                .as_ref()
+                .and_then(|inputs| inference.infer_node(logical_node, inputs).ok());
+            let input_rgb_copies = || {
+                node.inputs
+                    .first()
+                    .and_then(|input| direct_rgb[input.index()])
+            };
+            direct_rgb[id.index()] = match kernel.as_ref() {
+                ImageKernel::Sample(node) if node.op.is_decode() => {
+                    preflight.decodes += 1;
+                    // Decode materializes RGB8 independently of source channel count.
+                    if let Some(shape) = admission_output
+                        .as_mut()
+                        .and_then(|props| props.shape.as_mut())
+                    {
+                        shape.0[2] = rivet_plan::ShapeDim::Known(3);
+                    }
+                    Some(1)
+                }
+                ImageKernel::Identity => input_rgb_copies(),
+                ImageKernel::Sample(node)
+                    if matches!(
+                        node.op.kernel,
+                        SampleKernel::Semantic(
+                            ImageOp::Layout(_)
+                                | ImageOp::Flip(_)
+                                | ImageOp::RandomHorizontalFlip(_)
+                        )
+                    ) =>
+                {
+                    input_rgb_copies()
+                }
+                ImageKernel::BatchOp(node) if matches!(node.op, BatchKernel::Layout { .. }) => {
+                    input_rgb_copies()
+                }
+                ImageKernel::Concat { .. } => {
+                    node.inputs.iter().try_fold(0usize, |total, input| {
+                        total.checked_add(direct_rgb[input.index()]?)
+                    })
+                }
+                ImageKernel::Batch { .. } => {
+                    let props = &inputs[0];
+                    let views = crate::pipeline::planning::inference::views_per_source(props);
+                    let label_bytes = std::mem::size_of::<i64>();
+                    let fixed_bytes = admission_inputs
+                        .as_ref()
+                        .and_then(|inputs| known_image_bytes(&inputs[0]))
+                        .or_else(|| known_image_bytes(props));
+                    if let Some(bytes) = fixed_bytes {
+                        preflight.fixed_bytes_per_source =
+                            preflight.fixed_bytes_per_source.and_then(|sum| {
+                                sum.checked_add(bytes.checked_add(label_bytes)?.checked_mul(views)?)
+                            });
+                    } else if let Some(copies) = input_rgb_copies()
+                        .and_then(|copies| preflight.rgb_stack_copies.checked_add(copies))
+                    {
+                        preflight.rgb_stack_copies = copies;
+                        preflight.fixed_bytes_per_source = preflight
+                            .fixed_bytes_per_source
+                            .and_then(|fixed| fixed.checked_add(label_bytes));
+                    } else {
+                        preflight.fixed_bytes_per_source = None;
+                    }
+                    None
+                }
+                _ => None,
+            };
+            properties[id.index()] = admission_output;
         }
         edge_values[id.index()] = Some(output);
         match kernel.as_ref() {
@@ -1131,6 +1225,7 @@ fn compile_graph(
         .map_err(|error| invalid_pipeline(error.to_string()))?;
     let executable =
         ExecutableGraph::new(physical).map_err(|error| invalid_pipeline(error.to_string()))?;
+    let source_is_encoded = matches!(source.state(), PipelineImageState::Encoded);
     let graph = Arc::new(ImageExecutionGraph {
         executable: Arc::new(executable),
         info,
@@ -1140,6 +1235,7 @@ fn compile_graph(
         batch_nodes,
         linear,
         managed_bytes_per_morsel: managed_bytes,
+        managed_preflight: (preflight.decodes > 0 && source_is_encoded).then_some(preflight),
         explanation,
     });
     ImageDataLoader::new(graph, IndexSampler::new(sampler, start), context.runtime)

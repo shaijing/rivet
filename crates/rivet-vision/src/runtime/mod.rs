@@ -14,7 +14,8 @@ pub struct RuntimeConfig {
     /// Maximum producer-reported payload weight on each persistent stage queue.
     /// Dequeued, executing and reordered values are excluded. The CPU pull fast
     /// path has no stage queues and does not enforce this limit.
-    /// Legacy compatibility: also supplies the DAG single-value limit when
+    /// Also caps one encoded batch pending admission on a managed DAG.
+    /// Legacy compatibility: supplies the DAG single-value limit when
     /// dag_max_value_logical_bytes is None; never a shared execution budget.
     pub stage_queue_max_bytes: usize,
     /// Independent DAG single-output logical byte limit, checked after allocation.

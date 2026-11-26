@@ -8,7 +8,7 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use rivet_core::{DType, Tensor};
@@ -450,6 +450,8 @@ impl fmt::Debug for PhysicalNode {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PhysicalGraphError {
+    #[error("DAG execution cancelled")]
+    Cancelled,
     #[error(
         "node p{node} reported logical output bytes exceed single-value limit after allocation: {bytes} > {limit}; not a queue limit or managed executor budget"
     )]
@@ -1040,6 +1042,23 @@ pub struct DagSchedulerProfile {
     pub result_wait: Duration,
     /// Time a completed result spent buffered behind an earlier sequence.
     pub reorder_wait: Duration,
+    /// Coordinator time blocked on capacity until a delivery releases it.
+    pub budget_wait: Duration,
+    /// Empty-channel wait with no later result buffered.
+    pub worker_wait: Duration,
+    /// Empty-channel wait while a later result is buffered.
+    pub earliest_sequence_wait: Duration,
+    /// Time between delivery and the next pull with outstanding work.
+    pub downstream_wait: Duration,
+    pub preflight_time: Duration,
+    pub preflight_morsels: u64,
+    pub preflight_source_reads: u64,
+    pub preflight_source_read_time: Duration,
+    pub preflight_dimension_checks: u64,
+    pub peak_pending_morsels: u64,
+    pub peak_pending_encoded_bytes: u64,
+    pub peak_reordered_logical_bytes: u64,
+    pub peak_reordered_reserved_bytes: u64,
     pub peak_in_flight_morsels: u64,
     pub peak_reordered_morsels: u64,
 }
@@ -1048,8 +1067,28 @@ pub struct DagSchedulerProfile {
 struct AtomicDagSchedulerProfile {
     result_wait_ns: AtomicU64,
     reorder_wait_ns: AtomicU64,
+    budget_wait_ns: AtomicU64,
+    worker_wait_ns: AtomicU64,
+    earliest_sequence_wait_ns: AtomicU64,
+    downstream_wait_ns: AtomicU64,
+    preflight_ns: AtomicU64,
+    preflight_morsels: AtomicU64,
+    preflight_source_reads: AtomicU64,
+    preflight_source_read_ns: AtomicU64,
+    preflight_dimension_checks: AtomicU64,
+    peak_pending_morsels: AtomicU64,
+    peak_pending_encoded_bytes: AtomicU64,
+    peak_reordered_logical_bytes: AtomicU64,
+    peak_reordered_reserved_bytes: AtomicU64,
     peak_in_flight: AtomicU64,
     peak_reordered: AtomicU64,
+}
+
+fn add_duration(counter: &AtomicU64, duration: Duration) {
+    counter.fetch_add(
+        duration.as_nanos().min(u64::MAX as u128) as u64,
+        Ordering::Relaxed,
+    );
 }
 
 #[derive(Clone)]
@@ -1068,6 +1107,33 @@ impl PhysicalProfiler {
         Some(DagSchedulerProfile {
             result_wait: Duration::from_nanos(scheduler.result_wait_ns.load(Ordering::Relaxed)),
             reorder_wait: Duration::from_nanos(scheduler.reorder_wait_ns.load(Ordering::Relaxed)),
+            budget_wait: Duration::from_nanos(scheduler.budget_wait_ns.load(Ordering::Relaxed)),
+            worker_wait: Duration::from_nanos(scheduler.worker_wait_ns.load(Ordering::Relaxed)),
+            earliest_sequence_wait: Duration::from_nanos(
+                scheduler.earliest_sequence_wait_ns.load(Ordering::Relaxed),
+            ),
+            downstream_wait: Duration::from_nanos(
+                scheduler.downstream_wait_ns.load(Ordering::Relaxed),
+            ),
+            preflight_time: Duration::from_nanos(scheduler.preflight_ns.load(Ordering::Relaxed)),
+            preflight_morsels: scheduler.preflight_morsels.load(Ordering::Relaxed),
+            preflight_source_reads: scheduler.preflight_source_reads.load(Ordering::Relaxed),
+            preflight_source_read_time: Duration::from_nanos(
+                scheduler.preflight_source_read_ns.load(Ordering::Relaxed),
+            ),
+            preflight_dimension_checks: scheduler
+                .preflight_dimension_checks
+                .load(Ordering::Relaxed),
+            peak_pending_morsels: scheduler.peak_pending_morsels.load(Ordering::Relaxed),
+            peak_pending_encoded_bytes: scheduler
+                .peak_pending_encoded_bytes
+                .load(Ordering::Relaxed),
+            peak_reordered_logical_bytes: scheduler
+                .peak_reordered_logical_bytes
+                .load(Ordering::Relaxed),
+            peak_reordered_reserved_bytes: scheduler
+                .peak_reordered_reserved_bytes
+                .load(Ordering::Relaxed),
             peak_in_flight_morsels: scheduler.peak_in_flight.load(Ordering::Relaxed),
             peak_reordered_morsels: scheduler.peak_reordered.load(Ordering::Relaxed),
         })
@@ -1084,17 +1150,76 @@ impl PhysicalProfiler {
         }
     }
 
-    pub(crate) fn record_dag_wait(&self, wait: Duration, reorder: bool) {
+    pub(crate) fn record_dag_reorder_residence(&self, elapsed: Duration) {
         if let Some(scheduler) = self.scheduler() {
-            let counter = if reorder {
-                &scheduler.reorder_wait_ns
+            add_duration(&scheduler.reorder_wait_ns, elapsed);
+        }
+    }
+
+    pub fn record_dag_preflight_read(&self, elapsed: Duration) {
+        if let Some(scheduler) = self.scheduler() {
+            scheduler
+                .preflight_source_reads
+                .fetch_add(1, Ordering::Relaxed);
+            add_duration(&scheduler.preflight_source_read_ns, elapsed);
+        }
+    }
+
+    pub fn record_dag_preflight_dimension_checks(&self, count: usize) {
+        if let Some(scheduler) = self.scheduler() {
+            scheduler
+                .preflight_dimension_checks
+                .fetch_add(count as u64, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn observe_dag_preflight(&self, elapsed: Duration, bytes: Option<usize>) {
+        if let Some(scheduler) = self.scheduler() {
+            scheduler.preflight_morsels.fetch_add(1, Ordering::Relaxed);
+            add_duration(&scheduler.preflight_ns, elapsed);
+            if let Some(bytes) = bytes {
+                scheduler
+                    .peak_pending_morsels
+                    .fetch_max(1, Ordering::Relaxed);
+                scheduler
+                    .peak_pending_encoded_bytes
+                    .fetch_max(bytes as u64, Ordering::Relaxed);
+            }
+        }
+    }
+
+    pub(crate) fn observe_dag_reorder_bytes(&self, logical: u64, reserved: usize) {
+        if let Some(scheduler) = self.scheduler() {
+            scheduler
+                .peak_reordered_logical_bytes
+                .fetch_max(logical, Ordering::Relaxed);
+            scheduler
+                .peak_reordered_reserved_bytes
+                .fetch_max(reserved as u64, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn record_dag_worker_wait(&self, elapsed: Duration, waiting_for_sequence: bool) {
+        if let Some(scheduler) = self.scheduler() {
+            add_duration(&scheduler.result_wait_ns, elapsed);
+            let counter = if waiting_for_sequence {
+                &scheduler.earliest_sequence_wait_ns
             } else {
-                &scheduler.result_wait_ns
+                &scheduler.worker_wait_ns
             };
-            counter.fetch_add(
-                wait.as_nanos().min(u64::MAX as u128) as u64,
-                Ordering::Relaxed,
-            );
+            add_duration(counter, elapsed);
+        }
+    }
+
+    pub(crate) fn record_dag_budget_wait(&self, elapsed: Duration) {
+        if let Some(scheduler) = self.scheduler() {
+            add_duration(&scheduler.budget_wait_ns, elapsed);
+        }
+    }
+
+    pub(crate) fn record_dag_downstream_wait(&self, elapsed: Duration) {
+        if let Some(scheduler) = self.scheduler() {
+            add_duration(&scheduler.downstream_wait_ns, elapsed);
         }
     }
 
@@ -1308,7 +1433,7 @@ impl ExecutableGraph {
         limits: crate::memory::GraphMemoryLimits,
         scratch: &mut GraphScratch,
     ) -> Result<Morsel, PhysicalGraphError> {
-        self.execute_reusing_with_budget(morsel, profiler, limits, scratch, None)
+        self.execute_reusing_with_budget(morsel, profiler, limits, scratch, None, None)
     }
 
     pub(crate) fn execute_reusing_with_budget(
@@ -1318,6 +1443,7 @@ impl ExecutableGraph {
         limits: crate::memory::GraphMemoryLimits,
         scratch: &mut GraphScratch,
         reservation: Option<&mut crate::memory::MemoryReservation>,
+        cancelled: Option<&AtomicBool>,
     ) -> Result<Morsel, PhysicalGraphError> {
         execute_graph(
             &self.graph,
@@ -1327,6 +1453,7 @@ impl ExecutableGraph {
             limits,
             scratch,
             reservation,
+            cancelled,
         )
     }
 }
@@ -1349,6 +1476,7 @@ impl GraphExecutor {
             Default::default(),
             &mut GraphScratch::new(graph.nodes.len(), schedule.workspace_count),
             None,
+            None,
         )
     }
 }
@@ -1364,6 +1492,7 @@ struct ExecutionSchedule {
     root: usize,
     nodes: Vec<ScheduledNode>,
     initial_uses: Vec<usize>,
+    entry_uses: usize,
     workspace_count: usize,
 }
 
@@ -1401,7 +1530,7 @@ impl ExecutionSchedule {
                 Some((id, operator.workspace_type()?))
             }));
         let workspace_count = workspace_slots.values().max().map_or(0, |&slot| slot + 1);
-        let nodes = order
+        let nodes: Vec<_> = order
             .iter()
             .map(|&id| {
                 let node = &graph.nodes[id.index()];
@@ -1419,6 +1548,10 @@ impl ExecutionSchedule {
         let initial_uses = graph.nodes.iter().map(|node| node.last_use_count).collect();
         Ok(Self {
             root: graph.root()?.index(),
+            entry_uses: nodes
+                .iter()
+                .filter(|node| node.input_slots.is_empty())
+                .count(),
             nodes,
             initial_uses,
             workspace_count,
@@ -1475,6 +1608,7 @@ fn execute_graph(
     limits: crate::memory::GraphMemoryLimits,
     scratch: &mut GraphScratch,
     mut reservation: Option<&mut crate::memory::MemoryReservation>,
+    cancelled: Option<&AtomicBool>,
 ) -> Result<Morsel, PhysicalGraphError> {
     let GraphScratch {
         remaining_uses,
@@ -1486,7 +1620,12 @@ fn execute_graph(
     let observe = profiler.is_enabled() || limits.max_observed_live_backing_bytes.is_some();
     let mut managed_backings = crate::memory::ManagedBackings::default();
     let mut tracked_managed_output = false;
+    let mut entry_value = Some(morsel);
+    let mut entry_uses = schedule.entry_uses;
     for scheduled in &schedule.nodes {
+        if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return Err(PhysicalGraphError::Cancelled);
+        }
         let id = scheduled.id;
         let node = &graph.nodes[id.index()];
         let mut take_input = |slot_index| {
@@ -1504,9 +1643,21 @@ fn execute_graph(
             })
         };
         let inputs = match scheduled.input_slots.as_slice() {
-            [] if scheduled.direct_unary => NodeInputs::Direct(morsel.clone()),
+            [] => {
+                entry_uses -= 1;
+                let entry = if entry_uses == 0 {
+                    entry_value.take()
+                } else {
+                    entry_value.clone()
+                }
+                .expect("scheduled graph entry");
+                if scheduled.direct_unary {
+                    NodeInputs::Direct(entry)
+                } else {
+                    NodeInputs::Ordered(vec![entry])
+                }
+            }
             [slot] if scheduled.direct_unary => NodeInputs::Direct(take_input(*slot)?),
-            [] => NodeInputs::Ordered(vec![morsel.clone()]),
             inputs => NodeInputs::Ordered(
                 inputs
                     .iter()
@@ -1522,7 +1673,7 @@ fn execute_graph(
                     .iter()
                     .filter_map(Option::as_ref)
                     .chain(inputs.as_slice())
-                    .chain(std::iter::once(&morsel)),
+                    .chain(entry_value.iter()),
                 profiler,
                 limits,
                 id,
@@ -1601,7 +1752,7 @@ fn execute_graph(
                     .iter()
                     .filter_map(Option::as_ref)
                     .chain(std::iter::once(&value))
-                    .chain(std::iter::once(&morsel)),
+                    .chain(entry_value.iter()),
                 profiler,
                 limits,
                 id,

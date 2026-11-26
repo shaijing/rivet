@@ -6,6 +6,7 @@ use crate::physical::{ExecutableGraph, GraphScratch, Morsel, PhysicalProfiler};
 use rivet_data::sampler::IndexSampler;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 /// Per-morsel managed footprint, including allocation while the morsel runs.
@@ -15,9 +16,26 @@ pub struct DagMemoryAdmission {
     pub bytes_per_morsel: usize,
 }
 
+struct PreparedMorsel {
+    value: Morsel,
+    managed_bytes: Option<usize>,
+    error: Option<super::RuntimeError>,
+}
+
+type Preflight = Box<dyn Fn(&mut Morsel) -> RuntimeResult<Option<usize>> + Send + Sync>;
+
 struct AdmittedMorsel {
     value: Morsel,
     reservation: Option<MemoryReservation>,
+    error: Option<super::RuntimeError>,
+}
+
+impl AdmittedMorsel {
+    fn reserved_bytes(&self) -> usize {
+        self.reservation
+            .as_ref()
+            .map_or(0, MemoryReservation::bytes)
+    }
 }
 
 pub struct DagPipelineExecutor {
@@ -27,6 +45,8 @@ pub struct DagPipelineExecutor {
     inline_scratch: Option<GraphScratch>,
     ready: BTreeMap<u64, (AdmittedMorsel, Option<Instant>)>,
     admission: Option<DagMemoryAdmission>,
+    preflight: Option<(usize, Preflight)>,
+    pending: Option<PreparedMorsel>,
     batch_size: usize,
     drop_last: bool,
     capacity: usize,
@@ -34,7 +54,11 @@ pub struct DagPipelineExecutor {
     submitted: u64,
     delivered: u64,
     exhausted: bool,
-    failed: bool,
+    cancelled: Arc<AtomicBool>,
+    budget_blocked_at: Option<Instant>,
+    delivered_at: Option<Instant>,
+    reorder_logical: u128,
+    reorder_reserved: usize,
 }
 impl DagPipelineExecutor {
     /// Compatibility constructor: the legacy byte argument limits ONE
@@ -111,11 +135,13 @@ impl DagPipelineExecutor {
         } else {
             PhysicalProfiler::default()
         };
+        let cancelled = Arc::new(AtomicBool::new(false));
         let workers = if num_workers == 0 {
             None
         } else {
             let graph = Arc::clone(&graph);
             let profiler = profiler.clone();
+            let cancelled = Arc::clone(&cancelled);
             Some(WorkerPool::with_worker(
                 num_workers,
                 capacity,
@@ -123,7 +149,11 @@ impl DagPipelineExecutor {
                     let graph = Arc::clone(&graph);
                     let profiler = profiler.clone();
                     let mut scratch = graph.scratch();
+                    let cancelled = Arc::clone(&cancelled);
                     move |mut input: AdmittedMorsel, _| {
+                        if let Some(error) = input.error {
+                            return Err(error);
+                        }
                         let value = graph
                             .execute_reusing_with_budget(
                                 input.value,
@@ -131,11 +161,13 @@ impl DagPipelineExecutor {
                                 memory_limits,
                                 &mut scratch,
                                 input.reservation.as_mut(),
+                                Some(&cancelled),
                             )
                             .map_err(|error| runtime_error(error.to_string()))?;
                         Ok(AdmittedMorsel {
                             value,
                             reservation: input.reservation,
+                            error: None,
                         })
                     }
                 },
@@ -153,6 +185,8 @@ impl DagPipelineExecutor {
             workers,
             inline_scratch,
             admission,
+            preflight: None,
+            pending: None,
             ready: BTreeMap::new(),
             batch_size,
             drop_last,
@@ -161,9 +195,26 @@ impl DagPipelineExecutor {
             submitted: 0,
             delivered: 0,
             exhausted: false,
-            failed: false,
+            cancelled,
+            budget_blocked_at: None,
+            delivered_at: None,
+            reorder_logical: 0,
+            reorder_reserved: 0,
         })
     }
+    /// Prepare at most one batch ahead of managed admission. The callback
+    /// stores the encoded payload and its logical byte count in the morsel.
+    /// Return a proven managed-byte upper bound when available. Unknown
+    /// bounds use the configured per-morsel reservation.
+    pub fn with_preflight(
+        mut self,
+        max_encoded_bytes: usize,
+        prepare: impl Fn(&mut Morsel) -> RuntimeResult<Option<usize>> + Send + Sync + 'static,
+    ) -> Self {
+        self.preflight = Some((max_encoded_bytes, Box::new(prepare)));
+        self
+    }
+
     pub fn memory_limits(&self) -> crate::memory::GraphMemoryLimits {
         self.memory_limits
     }
@@ -178,14 +229,18 @@ impl DagPipelineExecutor {
             || "disabled".to_owned(),
             |admission| {
                 format!(
-                    "{}B ({}B per morsel, queued through ordered delivery)",
+                    "{}B ({}B default per morsel, queued through ordered delivery)",
                     admission.budget.snapshot().limit_bytes,
                     admission.bytes_per_morsel,
                 )
             },
         );
+        let pending = self.preflight.as_ref().map_or_else(
+            || "disabled".to_owned(),
+            |(limit, _)| format!("{limit}B (one batch, encoded logical bytes)"),
+        );
         format!(
-            "DAG memory limits: max_value_logical_bytes={} max_observed_live_backing_bytes={:?}; checks=post_allocation node_boundaries=per_invocation observed_reorder=excluded managed_executor_budget={admission}; caller_outputs=excluded\n",
+            "DAG memory limits: max_value_logical_bytes={} max_observed_live_backing_bytes={:?}; checks=post_allocation node_boundaries=per_invocation observed_reorder=excluded managed_executor_budget={admission}; pending_encoded={pending}; caller_outputs=excluded\n",
             self.memory_limits.max_value_logical_bytes,
             self.memory_limits.max_observed_live_backing_bytes
         )
@@ -194,30 +249,68 @@ impl DagPipelineExecutor {
         self.profiler.clone()
     }
     pub fn next_morsel(&mut self, sampler: &mut IndexSampler) -> RuntimeResult<Option<Morsel>> {
-        if self.failed {
+        if self.cancelled.load(Ordering::Relaxed) {
             return Ok(None);
+        }
+        if let Some(at) = self.delivered_at.take() {
+            self.profiler.record_dag_downstream_wait(at.elapsed());
         }
         let result = self.next_inner(sampler);
         if result.is_err() {
-            self.failed = true;
-            self.ready.clear();
-            self.workers.take();
-            self.inline_scratch.take();
+            self.cancel();
         }
         result
     }
+    /// Stop requesting source data and discard undelivered work. Active
+    /// workers stop at the next node boundary before their reservations drop.
+    pub fn cancel(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.finish_budget_wait();
+        self.pending.take();
+        self.ready.clear();
+        self.workers.take();
+        self.inline_scratch.take();
+    }
+
+    fn finish_budget_wait(&mut self) {
+        if let Some(at) = self.budget_blocked_at.take() {
+            self.profiler.record_dag_budget_wait(at.elapsed());
+        }
+    }
+
+    fn deliver(&mut self, output: AdmittedMorsel) -> Morsel {
+        self.finish_budget_wait();
+        self.delivered += 1;
+        drop(output.reservation);
+        if self.profiler.is_enabled() && (self.submitted > self.delivered || self.pending.is_some())
+        {
+            self.delivered_at = Some(Instant::now());
+        }
+        output.value
+    }
+
     fn next_inner(&mut self, sampler: &mut IndexSampler) -> RuntimeResult<Option<Morsel>> {
         if self.workers.is_none() {
             if self.exhausted {
                 return Ok(None);
             }
-            let mut reservation = self.reserve_morsel()?.ok_or_else(|| {
-                runtime_error("managed memory capacity is held by another executor")
-            })?;
-            let Some(input) = self.sample(sampler) else {
+            let Some(AdmittedMorsel {
+                value: input,
+                mut reservation,
+                error,
+            }) = self.admit_next(sampler)?
+            else {
+                if self.pending.is_some() {
+                    return Err(runtime_error(
+                        "managed memory capacity is held by another executor",
+                    ));
+                }
                 self.inline_scratch.take();
                 return Ok(None);
             };
+            if let Some(error) = error {
+                return Err(error);
+            }
             let output = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.graph.execute_reusing_with_budget(
                     input,
@@ -225,6 +318,7 @@ impl DagPipelineExecutor {
                     self.memory_limits,
                     self.inline_scratch.as_mut().expect("inline graph"),
                     reservation.as_mut(),
+                    None,
                 )
             }))
             .map_err(|_| runtime_error("DAG inline operator panicked"))?
@@ -234,23 +328,17 @@ impl DagPipelineExecutor {
             return Ok(Some(output));
         }
         while !self.exhausted && self.submitted - self.delivered < self.capacity as u64 {
-            let Some(reservation) = self.reserve_morsel()? else {
-                break;
-            };
-            let Some(input) = self.sample(sampler) else {
+            let Some(input) = self.admit_next(sampler)? else {
                 break;
             };
             self.workers
                 .as_ref()
                 .expect("worker path")
                 .submit(WorkItem {
-                    batch_id: input.sequence_id,
+                    batch_id: input.value.sequence_id,
                     position: 0,
-                    sample_index: input.source_indices.first().copied().unwrap_or(0),
-                    payload: AdmittedMorsel {
-                        value: input,
-                        reservation,
-                    },
+                    sample_index: input.value.source_indices.first().copied().unwrap_or(0),
+                    payload: input,
                 })?;
         }
         if self.profiler.is_enabled() {
@@ -270,24 +358,35 @@ impl DagPipelineExecutor {
         loop {
             if let Some((output, ready_at)) = self.ready.remove(&self.delivered) {
                 if let Some(ready_at) = ready_at {
-                    self.profiler.record_dag_wait(ready_at.elapsed(), true);
+                    self.profiler
+                        .record_dag_reorder_residence(ready_at.elapsed());
+                    self.reorder_logical -= output.value.bytes as u128;
+                    self.reorder_reserved -= output.reserved_bytes();
                 }
-                self.delivered += 1;
-                return Ok(Some(output.value));
+                return Ok(Some(self.deliver(output)));
             }
             let workers = self.workers.as_ref().expect("worker path");
             let started =
                 (self.profiler.is_enabled() && workers.result_queue_is_empty()).then(Instant::now);
-            let result = workers.recv()?;
+            let result = workers.recv();
             if let Some(started) = started {
-                self.profiler.record_dag_wait(started.elapsed(), false);
+                self.profiler
+                    .record_dag_worker_wait(started.elapsed(), !self.ready.is_empty());
             }
+            let result = result?;
             let output = result.result?;
             if result.batch_id == self.delivered {
-                self.delivered += 1;
-                return Ok(Some(output.value));
+                return Ok(Some(self.deliver(output)));
             }
             let ready_at = self.profiler.is_enabled().then(Instant::now);
+            if ready_at.is_some() {
+                self.reorder_logical += output.value.bytes as u128;
+                self.reorder_reserved += output.reserved_bytes();
+                self.profiler.observe_dag_reorder_bytes(
+                    u64::try_from(self.reorder_logical).unwrap_or(u64::MAX),
+                    self.reorder_reserved,
+                );
+            }
             self.ready.insert(result.batch_id, (output, ready_at));
             if ready_at.is_some() {
                 self.profiler
@@ -297,15 +396,86 @@ impl DagPipelineExecutor {
     }
     // Outer None asks the coordinator to drain existing work. Inner None
     // represents unbudgeted execution.
-    fn reserve_morsel(&self) -> RuntimeResult<Option<Option<MemoryReservation>>> {
+    fn reserve_morsel(
+        &self,
+        managed_bytes: Option<usize>,
+    ) -> RuntimeResult<Option<Option<MemoryReservation>>> {
         let Some(admission) = &self.admission else {
             return Ok(Some(None));
         };
         admission
             .budget
-            .try_reserve(admission.bytes_per_morsel)
+            .try_reserve(
+                managed_bytes
+                    .map(|bytes| bytes.min(admission.budget.snapshot().limit_bytes))
+                    .unwrap_or(admission.bytes_per_morsel),
+            )
             .map(|result| result.map(Some))
             .map_err(|error| runtime_error(error.to_string()))
+    }
+
+    fn admit_next(&mut self, sampler: &mut IndexSampler) -> RuntimeResult<Option<AdmittedMorsel>> {
+        if self.pending.is_none() {
+            let Some(mut value) = self.sample(sampler) else {
+                return Ok(None);
+            };
+            let (managed_bytes, error) = if let Some((limit, prepare)) = &self.preflight {
+                let started = self.profiler.is_enabled().then(Instant::now);
+                let bound =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| prepare(&mut value)))
+                        .unwrap_or_else(|_| {
+                            Err(runtime_error(format!(
+                                "DAG source preflight panicked at source index {}",
+                                value.source_indices.first().copied().unwrap_or(0),
+                            )))
+                        });
+                if let Some(started) = started {
+                    self.profiler.observe_dag_preflight(
+                        started.elapsed(),
+                        (bound.is_ok() && value.bytes <= *limit).then_some(value.bytes),
+                    );
+                }
+                if value.bytes > *limit {
+                    return Err(runtime_error(format!(
+                        "morsel {} requires {} pending encoded bytes, above the limit of {limit}",
+                        value.sequence_id, value.bytes,
+                    )));
+                }
+                match bound {
+                    Ok(bytes) => (bytes, None),
+                    Err(error) => {
+                        // This sequence will fail through the normal result
+                        // channel. Its successors no longer need source reads.
+                        self.exhausted = true;
+                        (None, Some(error))
+                    }
+                }
+            } else {
+                (None, None)
+            };
+            self.pending = Some(PreparedMorsel {
+                value,
+                managed_bytes,
+                error,
+            });
+        }
+        let prepared = self.pending.as_ref().expect("prepared morsel");
+        let reservation = if prepared.error.is_some() {
+            None
+        } else {
+            let Some(reservation) = self.reserve_morsel(prepared.managed_bytes)? else {
+                self.budget_blocked_at = self.profiler.is_enabled().then(Instant::now);
+                return Ok(None);
+            };
+            reservation
+        };
+        let prepared = self.pending.take().expect("prepared morsel");
+        self.submitted += 1;
+        Ok(Some(AdmittedMorsel {
+            value: prepared.value,
+            reservation,
+            error: prepared.error,
+        }))
     }
 
     fn sample(&mut self, sampler: &mut IndexSampler) -> Option<Morsel> {
@@ -317,9 +487,13 @@ impl DagPipelineExecutor {
             self.exhausted = true;
             return None;
         }
-        let input = Morsel::new(self.submitted, indices);
-        self.submitted += 1;
-        Some(input)
+        Some(Morsel::new(self.submitted, indices))
+    }
+}
+
+impl Drop for DagPipelineExecutor {
+    fn drop(&mut self) {
+        self.cancel();
     }
 }
 
@@ -436,6 +610,7 @@ mod tests {
                 )
                 .unwrap();
                 morsel.values.push(ExecutionValue::Tensor(value));
+                morsel.bytes = 8;
                 Ok(morsel)
             }
         }
@@ -492,8 +667,13 @@ mod tests {
         assert_eq!(held, 16);
         assert_eq!(first.sequence_id, 0);
         assert_eq!(budget.snapshot().reserved_bytes, 8);
+        std::thread::sleep(Duration::from_millis(2));
         let second = executor.next_morsel(&mut sampler).unwrap().unwrap();
         assert_eq!(second.sequence_id, 1);
+        let waiting = profiler.dag_scheduler_snapshot().unwrap();
+        assert_eq!(waiting.peak_reordered_reserved_bytes, 8);
+        assert_eq!(waiting.peak_reordered_logical_bytes, 8);
+        assert!(waiting.downstream_wait >= Duration::from_millis(2));
         assert_eq!(budget.snapshot().reserved_bytes, 0);
         assert_eq!(budget.snapshot().peak_reserved_bytes, 16);
         assert!(executor.next_morsel(&mut sampler).unwrap().is_none());
