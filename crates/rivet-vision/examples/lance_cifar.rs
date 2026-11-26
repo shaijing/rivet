@@ -1,8 +1,8 @@
 //! Read the Rivet-native CIFAR Lance datasets through Rivet's API.
 //!
 //! Usage:
-//!   cargo run -j 16 -p rivet-vision --features lance --example lance_cifar
-//!   cargo run -j 16 -p rivet-vision --features lance --example lance_cifar -- cifar100 test 4 128
+//!   cargo run -j 16 -p rivet-vision --example lance_cifar
+//!   cargo run -j 16 -p rivet-vision --example lance_cifar -- cifar100 test 4 128
 //!
 //! Arguments are: <dataset> <split> <max_batches> <batch_size>.
 //! Defaults are: cifar10 train 2 64.

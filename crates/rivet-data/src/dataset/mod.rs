@@ -6,7 +6,6 @@ pub mod manifest;
 pub mod memory;
 pub mod source;
 
-#[cfg(feature = "lance")]
 pub mod lance;
 
 pub use bundle::{DatasetBundle, DatasetLoadResult};

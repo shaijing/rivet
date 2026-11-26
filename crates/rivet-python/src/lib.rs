@@ -18,9 +18,7 @@ fn _rivet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     text::register(m)?;
     m.add_class::<dlpack::PyDLPackTensor>()?;
     m.add_class::<dataset::PyArrowDataset>()?;
-    #[cfg(feature = "lance")]
     m.add_class::<dataset::PyLanceDataset>()?;
-    #[cfg(feature = "lance")]
     m.add_class::<dataset::PyLanceDatasetDict>()?;
     m.add_class::<dataset::PyImageFolderDataset>()?;
     m.add_class::<loader::PyDataLoader>()?;
@@ -36,9 +34,7 @@ fn _rivet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(structured::temporal_subsample, m)?)?;
     m.add_function(wrap_pyfunction!(loader::read_image_batch, m)?)?;
     m.add_function(wrap_pyfunction!(dataset::load_dataset, m)?)?;
-    #[cfg(feature = "lance")]
     m.add_function(wrap_pyfunction!(dataset::_convert_imagefolder_lance, m)?)?;
-    #[cfg(feature = "lance")]
     m.add_function(wrap_pyfunction!(dataset::_convert_torch_images, m)?)?;
     m.add_function(wrap_pyfunction!(dataset::_list_datasets, m)?)?;
     m.add_function(wrap_pyfunction!(download::download_dataset, m)?)?;

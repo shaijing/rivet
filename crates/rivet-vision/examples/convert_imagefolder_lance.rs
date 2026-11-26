@@ -2,11 +2,11 @@
 //!
 //! Expected input layout: `<input>/<split>/<class>/*.{jpg,jpeg,png,bmp,webp}`.
 //! Usage:
-//!   cargo run -j 12 -p rivet-vision --features lance \
+//!   cargo run -j 12 -p rivet-vision \
 //!     --example convert_imagefolder_lance -- <imagefolder-root> [output-root] [--overwrite]
 //!
 //! Example:
-//!   cargo run -j 12 -p rivet-vision --features lance \
+//!   cargo run -j 12 -p rivet-vision \
 //!     --example convert_imagefolder_lance -- \
 //!     ./nuimages_classification \
 //!     ./nuimages_classification.lance

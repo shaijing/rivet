@@ -28,11 +28,11 @@ half = "2.7.1"
 lance = {version = "14.0.3", default-features = false}
 memmap2 = "0.9.12"
 rivet-core = { path = "crates/rivet-core" }
-rivet-data = { path = "crates/rivet-data", default-features = false }
+rivet-data = { path = "crates/rivet-data" }
 rivet-plan = { path = "crates/rivet-plan" }
 rivet-exec = { path = "crates/rivet-exec" }
 rivet-text = { path = "crates/rivet-text" }
-rivet-vision = { path = "crates/rivet-vision", default-features = false }
+rivet-vision = { path = "crates/rivet-vision" }
 thiserror = "2.0.21"
 tokenizers = "1.0.0-rc.4"
 tokio = { version = "1.54.1", features = ["full"] }

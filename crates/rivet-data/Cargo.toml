@@ -6,10 +6,6 @@ license.workspace = true
 repository.workspace = true
 description = "Dataset abstractions, storage backends, sampling, caching, and runtime primitives"
 
-[features]
-default = ["lance"]
-lance = ["dep:lance", "dep:parquet", "dep:glob"]
-
 [dependencies]
 arrow-array.workspace = true
 arrow-buffer.workspace = true
@@ -19,12 +15,12 @@ bytes.workspace = true
 bzip2 = "0.6"
 dirs = "6"
 flate2 = "1"
-glob = { version = "0.3", optional = true }
+glob = "0.3"
 hex = "0.4"
-lance = { workspace = true, optional = true }
+lance.workspace = true
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
 memmap2.workspace = true
-parquet = { version = "58.4.1", optional = true }
+parquet = "58.4.1"
 percent-encoding = "2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "socks", "gzip", "brotli", "deflate"] }
 serde = { version = "1.0.229", features = ["derive"] }

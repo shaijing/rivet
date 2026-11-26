@@ -10,7 +10,6 @@ pub use crate::cache::{
     CacheConfig, CacheLevel, CachePolicy, DEFAULT_DECODED_CHUNK_SIZE, DEFAULT_DECODED_SLAB_BYTES,
     DEFAULT_ENCODED_CHUNK_SIZE,
 };
-#[cfg(feature = "lance")]
 pub use crate::datasets::lance::{
     DatasetLocation, LanceConversionReport, LanceImageDataset, LoadDatasetOptions,
     convert_imagefolder_dataset, load_dataset, load_dataset_with_torch, load_lance_image_dataset,

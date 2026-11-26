@@ -1,7 +1,7 @@
 //! Convert a local Hugging Face Arrow cache to Rivet-native Lance datasets.
 //!
 //! Usage:
-//!   cargo run -j 12 -p rivet-vision --features lance \
+//!   cargo run -j 12 -p rivet-vision \
 //!     --example convert_hf_lance -- <hf-arrow-root> [output-root]
 //!
 //! Optional flags:

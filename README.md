@@ -73,7 +73,7 @@ For `torch:` sources, `download_dataset_with_torch` accepts a
 `TorchDatasetProvider` for cache misses. The Python binding supplies
 torchvision as that provider.
 
-With the `lance` feature enabled, use `rivet_vision::api::load_dataset` to
+Use `rivet_vision::api::load_dataset` to
 open a local Lance image dataset or download and open a remote Lance source.
 The result is `DatasetLoadResult::Single` for a physical dataset or a selected
 split, and `DatasetLoadResult::Bundle` for a collection of named splits.
@@ -153,8 +153,8 @@ argument use both splits unless a split is specified.
 ### Convert downloads to Lance
 
 Pass `format="lance"` to download and convert supported tabular files.
-Conversion runs in the Rivet Rust extension with the default `lance` build
-feature. The example uses `pylance` to read the resulting text table.
+Conversion runs in the Rivet Rust extension. The example uses `pylance` to
+read the resulting text table.
 
 ```python
 import lance
@@ -269,8 +269,7 @@ maturin develop --release -j 12 --features blas
 maturin build --release -j 12 --features blas
 ```
 
-Lance remains enabled by default; add `--no-default-features` to build without
-Lance. BLAS is a Cargo build feature selected when compiling the extension.
+Lance is included in every build. BLAS is selected at compile time.
 
 The native runtime on `main` supports CPU execution. CUDA development lives on
 the `cuda/cuda13.3` branch. The tensor device and storage boundaries remain in
@@ -502,7 +501,7 @@ throughput for decode, augmentation, normalization, CHW conversion, CIFAR,
 and ImageNet-style workloads across worker and prefetch settings:
 
 ```bash
-cargo run -j 12 -p rivet-vision --release --no-default-features \
+cargo run -j 12 -p rivet-vision --release \
   --example pipeline_baseline_bench
 ```
 
@@ -532,7 +531,7 @@ More complete examples are available in `crates/rivet-vision/examples`.
 To convert a local Hugging Face Arrow cache into Rivet-native Lance splits:
 
 ```bash
-cargo run -j 12 -p rivet-vision --features lance \
+cargo run -j 12 -p rivet-vision \
   --example convert_hf_lance -- \
   /path/to/huggingface/dataset-revision /path/to/output
 ```

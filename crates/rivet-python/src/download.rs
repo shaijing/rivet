@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use pyo3::exceptions::{PyFileNotFoundError, PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyFileNotFoundError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyMapping, PyString};
 use rivet_data::dataset::{self, DataFiles, DownloadFormat, DownloadOptions, TorchDatasetProvider};
@@ -143,9 +143,6 @@ pub(crate) fn with_torchvision<T: Send>(
             provider.error.into_inner().unwrap_or_else(|| match err {
                 VisionError::Data(DataError::Io(err)) if err.kind() == ErrorKind::NotFound => {
                     PyFileNotFoundError::new_err(err.to_string())
-                }
-                VisionError::Data(DataError::Io(err)) if err.kind() == ErrorKind::Unsupported => {
-                    PyRuntimeError::new_err(err.to_string())
                 }
                 err => to_py_err(err),
             })

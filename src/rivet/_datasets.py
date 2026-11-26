@@ -8,13 +8,13 @@ from typing import Any
 
 from ._io import hf_arrow_files
 from ._pipeline import Pipeline
-from ._rivet import _ArrowDataset, _ImageFolderDataset
+from ._rivet import (
+    _ArrowDataset,
+    _convert_imagefolder_lance,
+    _ImageFolderDataset,
+    _LanceDataset,
+)
 from ._utils import _maybe_numpy_batch, _normalize_arrow_files, _validate_hf_dataset
-
-try:
-    from ._rivet import _LanceDataset
-except ImportError:
-    _LanceDataset = None
 
 
 class ArrowDataset:
@@ -147,10 +147,6 @@ class LanceDataset:
         image_column: str = "image",
         label_column: str = "label",
     ) -> None:
-        if _LanceDataset is None:
-            raise RuntimeError(
-                "Lance support is disabled; rebuild rivet-python with the 'lance' feature"
-            )
         self._inner = _LanceDataset(
             str(path),
             image_column,
@@ -261,12 +257,6 @@ def convert_imagefolder_lance(
     class directories. For a single ImageFolder, pass its split name.
     Nonempty splits must have the same class names. Images stay encoded.
     """
-    try:
-        from ._rivet import _convert_imagefolder_lance
-    except ImportError as exc:
-        raise RuntimeError(
-            "Lance support is disabled; rebuild rivet-python with the 'lance' feature"
-        ) from exc
     return _convert_imagefolder_lance(root, output, split=split, overwrite=overwrite)
 
 

@@ -2,17 +2,14 @@ use crate::error::to_py_err;
 use crate::loader::image_batch_to_py;
 use crate::pipeline::PyImagePipeline;
 use arrow_buffer::Buffer;
-#[cfg(feature = "lance")]
 use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use rivet_data::dataset::Dataset;
-#[cfg(feature = "lance")]
 use rivet_data::dataset::{DatasetBundle, DatasetLoadResult};
 use rivet_vision::api::{
     ArrowImageDataset, ImageFolderDatasetCore, ImagePipeline, decode_image_batch,
 };
-#[cfg(feature = "lance")]
 use rivet_vision::api::{
     CacheConfig, CacheLevel, DEFAULT_ENCODED_CHUNK_SIZE, DatasetLocation, ImageSource,
     LanceImageDataset, LoadDatasetOptions, load_dataset_with_torch, load_lance_image_dataset,
@@ -66,20 +63,17 @@ impl PyArrowDataset {
     }
 }
 
-#[cfg(feature = "lance")]
 #[pyclass(name = "_LanceDataset")]
 pub(crate) struct PyLanceDataset {
     pub(crate) inner: ImageSource,
 }
 
-#[cfg(feature = "lance")]
 impl PyLanceDataset {
     pub(crate) fn from_inner(inner: ImageSource) -> Self {
         Self { inner }
     }
 }
 
-#[cfg(feature = "lance")]
 #[pymethods]
 impl PyLanceDataset {
     #[new]
@@ -163,13 +157,11 @@ impl PyLanceDataset {
     }
 }
 
-#[cfg(feature = "lance")]
 #[pyclass(name = "_LanceDatasetDict")]
 pub(crate) struct PyLanceDatasetDict {
     inner: DatasetBundle<ImageSource>,
 }
 
-#[cfg(feature = "lance")]
 #[pymethods]
 impl PyLanceDatasetDict {
     #[new]
@@ -220,73 +212,53 @@ pub(crate) fn load_dataset<'py>(
     image_column: &str,
     label_column: &str,
 ) -> PyResult<Bound<'py, PyAny>> {
-    #[cfg(not(feature = "lance"))]
-    {
-        let _ = (
-            py,
-            path,
-            split,
-            revision,
-            cache_dir,
-            offline,
-            image_column,
-            label_column,
-        );
-        Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "Lance support is disabled; rebuild rivet-python with the 'lance' feature",
-        ))
-    }
+    use crate::download::{expand_cache_dir, with_torchvision};
+    use pyo3::types::{PyString, PyStringMethods};
+    use rivet_data::dataset::is_remote_dataset;
 
-    #[cfg(feature = "lance")]
-    {
-        use crate::download::{expand_cache_dir, with_torchvision};
-        use pyo3::types::{PyString, PyStringMethods};
-        use rivet_data::dataset::is_remote_dataset;
-
-        let remote = if let Ok(source) = path.cast::<PyString>() {
-            source
-                .to_cow()
-                .ok()
-                .filter(|source| is_remote_dataset(source))
-                .map(|source| source.into_owned())
-        } else {
-            None
+    let remote = if let Ok(source) = path.cast::<PyString>() {
+        source
+            .to_cow()
+            .ok()
+            .filter(|source| is_remote_dataset(source))
+            .map(|source| source.into_owned())
+    } else {
+        None
+    };
+    let cache_dir = if remote.is_some() {
+        expand_cache_dir(py, cache_dir)?
+    } else {
+        None
+    };
+    let local = if remote.is_none() {
+        Some(path.extract::<PathBuf>()?)
+    } else {
+        None
+    };
+    let options = LoadDatasetOptions {
+        split,
+        revision,
+        cache_dir,
+        offline,
+        image_column: image_column.to_owned(),
+        label_column: label_column.to_owned(),
+    };
+    let loaded = with_torchvision(py, move |provider| {
+        let location = match &remote {
+            Some(source) => DatasetLocation::Remote(source),
+            None => DatasetLocation::Local(local.as_deref().unwrap()),
         };
-        let cache_dir = if remote.is_some() {
-            expand_cache_dir(py, cache_dir)?
-        } else {
-            None
-        };
-        let local = if remote.is_none() {
-            Some(path.extract::<PathBuf>()?)
-        } else {
-            None
-        };
-        let options = LoadDatasetOptions {
-            split,
-            revision,
-            cache_dir,
-            offline,
-            image_column: image_column.to_owned(),
-            label_column: label_column.to_owned(),
-        };
-        let loaded = with_torchvision(py, move |provider| {
-            let location = match &remote {
-                Some(source) => DatasetLocation::Remote(source),
-                None => DatasetLocation::Local(local.as_deref().unwrap()),
-            };
-            load_dataset_with_torch(location, &options, Some(provider))
-        })?;
-        let wrappers = py.import("rivet._datasets")?;
-        match loaded {
-            DatasetLoadResult::Single(dataset) => wrappers.getattr("LanceDataset")?.call_method1(
-                "_from_inner",
-                (Py::new(py, PyLanceDataset::from_inner(dataset))?,),
-            ),
-            DatasetLoadResult::Bundle(inner) => wrappers
-                .getattr("DatasetDict")?
-                .call1((Py::new(py, PyLanceDatasetDict { inner })?,)),
-        }
+        load_dataset_with_torch(location, &options, Some(provider))
+    })?;
+    let wrappers = py.import("rivet._datasets")?;
+    match loaded {
+        DatasetLoadResult::Single(dataset) => wrappers.getattr("LanceDataset")?.call_method1(
+            "_from_inner",
+            (Py::new(py, PyLanceDataset::from_inner(dataset))?,),
+        ),
+        DatasetLoadResult::Bundle(inner) => wrappers
+            .getattr("DatasetDict")?
+            .call1((Py::new(py, PyLanceDatasetDict { inner })?,)),
     }
 }
 
@@ -363,7 +335,6 @@ fn encoded_sample_to_py(py: Python<'_>, image: Buffer, label: i64) -> PyResult<P
     Ok(out.into())
 }
 
-#[cfg(feature = "lance")]
 #[pyfunction]
 #[pyo3(signature = (root, output, *, split=None, overwrite=false))]
 pub(crate) fn _convert_imagefolder_lance(
@@ -380,7 +351,6 @@ pub(crate) fn _convert_imagefolder_lance(
     .map_err(to_py_err)
 }
 
-#[cfg(feature = "lance")]
 #[pyfunction]
 pub(crate) fn _convert_torch_images(
     py: Python<'_>,

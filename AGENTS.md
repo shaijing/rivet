@@ -22,7 +22,6 @@ maturin build -j 12
 ```
 
 ```bash
-# Lance is enabled by default. Use --no-default-features to disable it.
 # Debug editable install
 maturin develop -j 12
 

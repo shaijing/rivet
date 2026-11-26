@@ -60,7 +60,7 @@ jobs:
           command: build
           args: >-
             --release --locked --zig --manylinux 2_35 --auditwheel repair
-            --no-default-features --features lance,blas
+            --features blas
             --interpreter python3.13 --out dist
 
       - name: Inspect repaired wheel

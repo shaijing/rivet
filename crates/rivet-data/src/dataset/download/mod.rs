@@ -2,7 +2,6 @@
 
 mod archive;
 mod remote;
-#[cfg(feature = "lance")]
 mod tabular;
 
 use std::collections::BTreeMap;
@@ -146,10 +145,7 @@ pub fn download_dataset_with_torch(
     if options.format == DownloadFormat::Raw {
         return raw();
     }
-    #[cfg(feature = "lance")]
-    return tabular::derive(&cache, name, &format!("{provider}/{key}"), options, raw);
-    #[cfg(not(feature = "lance"))]
-    Err(lance_required())
+    tabular::derive(&cache, name, &format!("{provider}/{key}"), options, raw)
 }
 
 fn download_torch(
@@ -236,21 +232,10 @@ fn download_torch(
     if output.join("dataset.json").is_file() {
         return Ok(output);
     }
-    if !cfg!(feature = "lance") {
-        return Err(lance_required());
-    }
     let raw = raw()?;
     publish_derived(output, |staging| {
         require_torch()?.convert(location, &raw, staging)
     })
-}
-
-fn lance_required() -> crate::DataError {
-    io::Error::new(
-        io::ErrorKind::Unsupported,
-        "Lance conversion requires Rivet to be built with the 'lance' feature",
-    )
-    .into()
 }
 
 fn download_raw(
