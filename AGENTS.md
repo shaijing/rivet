@@ -73,3 +73,5 @@ investigate meaningful regressions before merging.
 candle tensor: /home/lingyu/ws/rustWS/candle/candle-core/src/tensor.rs
 polars ir: /home/lingyu/ws/rustWS/polars/crates/polars-plan/src/plans/ir/mod.rs
 tokenizers: /home/lingyu/ws/rustWS/tokenizers
+huggingface_hub: /home/lingyu/ws/pyWS/huggingface_hub
+datasets: /home/lingyu/ws/pyWS/datasets
