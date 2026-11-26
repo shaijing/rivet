@@ -57,13 +57,16 @@ Reference command:
   --batch 128 --workers 4 --epochs 3
 ```
 
-With the release Python extension and the current decoded CIFAR-10 dataset,
-five complete runs produced Rivet decoded throughputs of `728278`, `730208`,
-`734899`, `737451`, and `725681 img/s`: arithmetic mean `731303 img/s`,
-range `725681-737451 img/s`, population standard deviation `4305 img/s`.
-Treat this as a same-environment absolute-throughput reference baseline; rerun
-multiple times and investigate meaningful regressions rather than comparing
-against a single noisy run.
+On 2026-11-26, five offline runs at commit `b323e8f` with the Python extension
+built using `maturin develop --release -j 12` and Rust `1.99.1` produced Rivet
+decoded steady throughputs of `1,119,801`, `1,128,255`, `1,120,164`, `1,127,857`, and
+`1,124,615` img/s. The arithmetic mean was `1,124,138` img/s, the median was
+`1,124,615` img/s, and the range was `1,119,801–1,128,255` img/s. The
+population standard deviation was `3,622` img/s.
+
+Steady throughput uses epochs 2 and 3 of each run. Treat these measurements as
+a same-environment baseline. Rerun multiple times on the same machine and
+investigate meaningful regressions before merging.
 
 
 # References
