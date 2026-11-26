@@ -36,6 +36,66 @@ pub(crate) struct CompiledNormalize {
 }
 
 impl CompiledNormalize {
+    pub(crate) fn into_rgb_sample_kernel(self) -> SampleKernel {
+        let table = std::array::from_fn(|channel| {
+            let index = if self.config.mean.len() == 1 {
+                0
+            } else {
+                channel
+            };
+            let scale = 1.0 / (255.0 * self.config.std[index]);
+            let bias = -self.config.mean[index] / self.config.std[index];
+            std::array::from_fn(|value| value as f32 * scale + bias)
+        });
+        SampleKernel::SampleNormalizeRgb(self, std::sync::Arc::new(table))
+    }
+
+    fn apply_rgb_table(
+        &self,
+        sample: ImageSample,
+        table: &[[f32; 256]; 3],
+    ) -> RivetResult<ImageSample> {
+        let ImageSample::Decoded(decoded) = &sample else {
+            return self.config.apply_trusted(sample, self.input_layout);
+        };
+        let input = &decoded.image;
+        let [_, _, 3] = input.dims() else {
+            return self.config.apply_trusted(sample, self.input_layout);
+        };
+        let image = input.with_cpu_storage(|storage, layout| {
+            let (rivet_core::CpuStorageRef::U8(values), Some((start, end))) =
+                (storage, layout.contiguous_offsets())
+            else {
+                return Ok(None);
+            };
+            let values = values
+                .get(start..end)
+                .ok_or(rivet_core::Error::StorageOutOfBounds)?;
+            let [reds, greens, blues] = table;
+            rivet_core::Tensor::from_exact_writer::<f32, _, _>(
+                input.dims(),
+                input.device(),
+                |output| {
+                    for pixel in values.chunks_exact(3) {
+                        output.write_next(reds[pixel[0] as usize])?;
+                        output.write_next(greens[pixel[1] as usize])?;
+                        output.write_next(blues[pixel[2] as usize])?;
+                    }
+                    Ok(())
+                },
+            )
+            .map(Some)
+        })?;
+        if let Some(image) = image {
+            Ok(ImageSample::Decoded(crate::sample::image::DecodedSample {
+                image,
+                label: decoded.label,
+            }))
+        } else {
+            self.config.apply_trusted(sample, self.input_layout)
+        }
+    }
+
     // Keep the planar writer's view setup out of the common per-sample
     // dispatch body, which is also used by the RGB HWC fast path.
     #[inline(never)]
@@ -57,6 +117,7 @@ impl CompiledNormalize {
 pub(crate) enum SampleKernel {
     Semantic(ImageOp),
     SampleNormalize(CompiledNormalize),
+    SampleNormalizeRgb(CompiledNormalize, std::sync::Arc<[[f32; 256]; 3]>),
     SampleNormalizeToChw(CompiledNormalize),
     RandomApply {
         probability: f64,
@@ -155,6 +216,9 @@ impl CompiledSampleOp {
             SampleKernel::SampleNormalize(kernel) => {
                 kernel.config.apply_trusted(sample, kernel.input_layout)
             }
+            SampleKernel::SampleNormalizeRgb(kernel, table) => {
+                kernel.apply_rgb_table(sample, table)
+            }
             SampleKernel::SampleNormalizeToChw(kernel) => kernel.apply_to_chw_sample(sample),
             SampleKernel::RandomApply {
                 probability,
@@ -208,7 +272,9 @@ impl CompiledSampleOp {
     pub(crate) fn name(&self) -> &'static str {
         match &self.kernel {
             SampleKernel::Semantic(op) => op.name(),
-            SampleKernel::SampleNormalize(_) => "NormalizeSample",
+            SampleKernel::SampleNormalize(_) | SampleKernel::SampleNormalizeRgb(..) => {
+                "NormalizeSample"
+            }
             SampleKernel::SampleNormalizeToChw(_) => "NormalizeToChwSample",
             SampleKernel::RandomApply { .. } => "RandomApply",
             SampleKernel::RandomChoice { .. } => "RandomChoice",

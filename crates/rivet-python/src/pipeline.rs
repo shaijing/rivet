@@ -5648,6 +5648,13 @@ impl PyImagePipeline {
         }
     }
 
+    /// Bound decode and batch tensor allocations managed by the DAG executor.
+    fn dag_managed_budget_bytes(&self, bytes: usize) -> Self {
+        Self {
+            inner: self.inner.clone().dag_managed_budget_bytes(bytes),
+        }
+    }
+
     fn profiling(&self, enabled: bool) -> Self {
         Self {
             inner: self.inner.clone().profiling(enabled),

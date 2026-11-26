@@ -5,7 +5,8 @@ use crate::sample::image::{DecodedSample, ImageBatch, ImageSample};
 use crate::sampler::IndexSampler;
 use rivet_exec::physical::{KernelStage, PhysicalNodeKind, PhysicalProfiler};
 use rivet_exec::runtime::{
-    DagPipelineExecutor, PhysicalPipelineAdapter, PhysicalPipelineExecutor, PipelineError,
+    DagMemoryAdmission, DagPipelineExecutor, PhysicalPipelineAdapter, PhysicalPipelineExecutor,
+    PipelineError,
 };
 use std::sync::Arc;
 
@@ -162,17 +163,27 @@ impl ImageDataLoader {
                 .map_err(|error| RivetError::Worker(error.to_string()))?,
             ))
         } else {
+            let admission = config
+                .dag_managed_budget_bytes
+                .map(|bytes| DagMemoryAdmission {
+                    budget: rivet_exec::memory::ManagedMemoryBudget::new(bytes),
+                    bytes_per_morsel: graph.managed_bytes_per_morsel.unwrap_or(bytes).min(bytes),
+                });
             ImageExecutor::Dag(
-                DagPipelineExecutor::new(
+                DagPipelineExecutor::with_managed_admission(
                     Arc::clone(&graph.executable),
                     graph.batch.size,
                     graph.batch.drop_last,
                     config.num_workers,
                     config.prefetch_batches,
-                    config
-                        .dag_max_value_logical_bytes
-                        .unwrap_or(config.stage_queue_max_bytes),
+                    rivet_exec::memory::GraphMemoryLimits {
+                        max_value_logical_bytes: config
+                            .dag_max_value_logical_bytes
+                            .unwrap_or(config.stage_queue_max_bytes),
+                        ..Default::default()
+                    },
                     config.profiling_enabled,
+                    admission,
                 )
                 .map_err(|error| RivetError::Worker(error.to_string()))?,
             )
@@ -238,6 +249,14 @@ impl ImageDataLoader {
         Ok(Some(batch))
     }
 
+    /// The graph and operator mapping used by this loader.
+    pub fn physical_explanation(&self) -> RivetResult<rivet_exec::physical::PhysicalExplanation> {
+        self.graph
+            .executable
+            .explanation()
+            .map_err(|error| RivetError::Worker(error.to_string()))
+    }
+
     pub fn physical_explain(&mut self) -> RivetResult<String> {
         match &mut self.executor {
             ImageExecutor::Linear(executor) => executor
@@ -248,6 +267,13 @@ impl ImageDataLoader {
                 self.graph.explanation,
                 executor.memory_explain()
             )),
+        }
+    }
+
+    pub fn managed_memory_snapshot(&self) -> Option<rivet_exec::memory::ManagedMemorySnapshot> {
+        match &self.executor {
+            ImageExecutor::Linear(_) => None,
+            ImageExecutor::Dag(executor) => executor.managed_memory_snapshot(),
         }
     }
 
@@ -436,6 +462,96 @@ mod tests {
                 );
                 assert_eq!(labels(&batches[1]), vec![2; views]);
             }
+        }
+    }
+
+    #[test]
+    #[ignore = "release repeated compilation benchmark"]
+    fn reuse_prepared_short_graph_benchmark() {
+        use rivet_data::sampler::SamplerPlan;
+        use std::time::Instant;
+
+        for workers in [0, 4] {
+            let builder = pipeline(128, workers)
+                .seed(42)
+                .random_horizontal_flip(0.5)
+                .batch(128, false);
+            let initial = builder.clone().compile().unwrap();
+            let config = super::super::RuntimeConfig {
+                num_workers: workers,
+                ..Default::default()
+            };
+            let create = |reuse: bool| {
+                if reuse {
+                    ImageDataLoader::new(
+                        Arc::clone(&initial.graph),
+                        IndexSampler::new(SamplerPlan::Sequential { start: 0, end: 128 }, 0),
+                        config,
+                    )
+                    .unwrap()
+                } else {
+                    builder.clone().compile().unwrap()
+                }
+            };
+            let rows = |loader: &mut ImageDataLoader| drain(loader).pop().unwrap();
+            let original = rows(&mut create(false));
+            let repeated = rows(&mut create(true));
+            assert_eq!(labels(&original), labels(&repeated));
+            assert_eq!(
+                original.images.to_vec::<u8>().unwrap(),
+                repeated.images.to_vec::<u8>().unwrap()
+            );
+
+            let mut samples = [vec![], vec![]];
+            for iteration in 0..120 {
+                for path in [iteration % 2, 1 - iteration % 2] {
+                    let start = Instant::now();
+                    let mut loader = create(path == 1);
+                    let initialized = start.elapsed();
+                    let batch = loader.next_batch().unwrap().unwrap();
+                    assert_eq!(batch.labels.elem_count(), 128);
+                    assert!(loader.next_batch().unwrap().is_none());
+                    drop(loader);
+                    samples[path].push((initialized, start.elapsed()));
+                }
+            }
+            for (reuse, samples) in samples.into_iter().enumerate() {
+                let (mut startup, mut total): (Vec<_>, Vec<_>) = samples.into_iter().unzip();
+                startup.sort_unstable();
+                total.sort_unstable();
+                println!(
+                    "workers={workers} prepared={reuse} startup={:?} total={:?}",
+                    startup[60], total[60]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn source_offset_keeps_duplicate_sample_ids_and_complete_view_groups() {
+        use rivet_data::sampler::SamplerPlan;
+
+        for workers in [0, 3] {
+            let mut loader = pipeline(5, workers)
+                .seed(71)
+                .random_horizontal_flip(0.5)
+                .five_crop(1, 1)
+                .batch(2, true)
+                .compile()
+                .unwrap();
+            loader.sampler = IndexSampler::new(
+                SamplerPlan::Permutation {
+                    indices: vec![1, 4, 2, 4, 0, 3],
+                },
+                1,
+            );
+            let batches = drain(&mut loader);
+            assert_eq!(batches.len(), 2);
+            assert_eq!(labels(&batches[0]), [vec![4; 5], vec![2; 5]].concat());
+            assert_eq!(labels(&batches[1]), [vec![4; 5], vec![0; 5]].concat());
+            let first = batches[0].images.to_vec::<u8>().unwrap();
+            let second = batches[1].images.to_vec::<u8>().unwrap();
+            assert_eq!(&first[..15], &second[..15]);
         }
     }
 
@@ -1220,6 +1336,53 @@ mod tests {
         assert_eq!(first, collect_labels(0));
         assert_ne!(first, collect_labels(1));
     }
+    #[test]
+    fn linear_and_dag_run_the_same_random_graph_in_sample_order() {
+        let build = || {
+            pipeline(23, 3)
+                .seed(42)
+                .shuffle(17)
+                .random_horizontal_flip(0.5)
+                .normalize(vec![0.5; 3], vec![0.5; 3])
+                .hwc_to_chw()
+                .batch(4, false)
+                .compile_from(2)
+                .unwrap()
+        };
+        let mut linear = build();
+        assert!(matches!(linear.executor, ImageExecutor::Linear(_)));
+        let mut dag = build();
+        assert_eq!(
+            linear.physical_explanation().unwrap(),
+            dag.physical_explanation().unwrap()
+        );
+        dag.executor = ImageExecutor::Dag(
+            DagPipelineExecutor::new(
+                Arc::clone(&dag.graph.executable),
+                dag.graph.batch.size,
+                dag.graph.batch.drop_last,
+                3,
+                3,
+                usize::MAX,
+                true,
+            )
+            .unwrap(),
+        );
+
+        let linear_batches = drain(&mut linear);
+        let dag_batches = drain(&mut dag);
+        assert_eq!(linear_batches.len(), dag_batches.len());
+        assert_eq!(dag_batches.iter().flat_map(labels).count(), 21);
+        for (typed, graph) in linear_batches.iter().zip(&dag_batches) {
+            assert_eq!(labels(typed), labels(graph));
+            assert_eq!(typed.images.dims(), graph.images.dims());
+            assert_eq!(
+                typed.images.to_vec::<f32>().unwrap(),
+                graph.images.to_vec::<f32>().unwrap()
+            );
+        }
+    }
+
     #[test]
     fn dag_reads_shared_source_once_per_batch_and_preserves_index_prefix() {
         use crate::pipeline::{

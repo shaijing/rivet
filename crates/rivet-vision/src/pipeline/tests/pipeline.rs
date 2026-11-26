@@ -867,7 +867,7 @@ fn optimizer_discovers_legal_normalize_layout_fusion() {
         .placement_explain(rivet_plan::MachineProfile::default())
         .unwrap();
     assert!(explain.contains("physical candidate"));
-    assert!(explain.contains("vision-normalize-to-chw-fused"));
+    assert!(explain.contains("vision::NormalizeToChw-cpu-Fused"));
 }
 
 #[test]
@@ -1135,7 +1135,6 @@ fn placement_profile_changes_parallel_strategy_and_explains_cost() {
     assert!(single.contains("cost="));
     assert!(single.contains("parallelism=1"));
     assert!(single.contains("physical candidate"));
-    assert!(single.contains("vision-image-cpu"));
     assert!(multi.contains("parallelism=4"));
     assert!(multi.contains("source access=RandomAccess"));
 }

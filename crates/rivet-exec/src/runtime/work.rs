@@ -25,13 +25,13 @@ pub(crate) fn worker_loop<T, R, E, F, P>(
     worker_id: usize,
     work_rx: Receiver<WorkItem<T>>,
     result_tx: Sender<WorkResult<R, E>>,
-    execute: Arc<F>,
+    mut execute: F,
     panic_error: Arc<P>,
 ) where
     T: Send + 'static,
     R: Send + 'static,
     E: Send + 'static,
-    F: Fn(T, usize) -> Result<R, E> + Send + Sync + 'static,
+    F: FnMut(T, usize) -> Result<R, E>,
     P: Fn(usize, usize) -> E + Send + Sync + 'static,
 {
     while let Ok(item) = work_rx.recv() {

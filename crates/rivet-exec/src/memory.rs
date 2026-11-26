@@ -4,9 +4,14 @@
 //! allocation remain owned by the execution backend.
 
 mod accounting;
+mod managed;
 pub use accounting::{
     GraphMemoryLimits, GraphMemoryProfile, LiveMemorySnapshot, MemoryAccountingError,
     observe_live_morsels,
+};
+pub(crate) use managed::ManagedBackings;
+pub use managed::{
+    ManagedMemoryBudget, ManagedMemorySnapshot, MemoryReservation, MorselExceedsBudget,
 };
 
 use std::collections::HashMap;
@@ -112,6 +117,23 @@ pub struct MemoryPlan {
 pub struct MemoryPlanner;
 
 impl MemoryPlanner {
+    /// Collapse node-local workspace requests by concrete type. A workspace
+    /// is borrowed only for one kernel call and cannot be exported as an
+    /// output, so ordered execution permits reuse irrespective of output
+    /// lifetimes. Each worker owns its own set of slots.
+    pub(crate) fn workspace_slots(
+        requests: impl IntoIterator<Item = (PhysNodeId, std::any::TypeId)>,
+    ) -> HashMap<PhysNodeId, usize> {
+        let mut types = HashMap::new();
+        requests
+            .into_iter()
+            .map(|(node, workspace)| {
+                let next = types.len();
+                (node, *types.entry(workspace).or_insert(next))
+            })
+            .collect()
+    }
+
     /// Build requests from output-size and kernel-memory metadata already
     /// attached during physical lowering.
     pub fn plan_physical(

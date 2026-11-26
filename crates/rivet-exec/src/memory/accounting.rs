@@ -9,10 +9,8 @@
 //!   addresses held at a node boundary of ONE graph invocation. A view charges
 //!   its entire backing storage once. This is an opt-in, post-allocation check,
 //!   not a shared executor budget or a measure of the peak inside a kernel.
-//! * A managed executor budget would require shared allocation leases covering
-//!   queued, executing and reordered values across workers. That admission and
-//!   allocation protocol is not implemented here (T05); no existing byte option
-//!   should be described as providing it.
+//! * DAG managed admission independently reserves declared allocation
+//!   capacity for queued, executing and reordered morsels across workers.
 //!
 //! Observation includes input backing storage still held by the graph, even
 //! when allocated externally. It excludes scratch and temporary allocations
@@ -93,7 +91,7 @@ pub enum MemoryAccountingError {
     )]
     ObservedLiveExceeded { bytes: usize, limit: usize },
     #[error(
-        "cannot enforce observed graph-live backing limit: {unknown_values} values have unknown backing capacity; managed executor budgeting is unavailable"
+        "cannot enforce observed graph-live backing limit: {unknown_values} values have unknown backing capacity"
     )]
     Incomplete { unknown_values: usize },
     #[error("graph memory observation overflowed; exact byte accounting is unavailable")]
@@ -113,22 +111,26 @@ pub fn observe_live_morsels<'a>(
         if morsel.values.is_empty() && morsel.bytes > 0 {
             snapshot.unknown_values = snapshot.unknown_values.saturating_add(1);
         }
+        let mut visit = |tensor: &rivet_core::Tensor| {
+            snapshot.logical_tensor_bytes = add_bytes(
+                snapshot.logical_tensor_bytes,
+                tensor.logical_bytes(),
+                &mut snapshot.overflowed,
+            );
+            let bytes = tensor.storage_bytes();
+            if bytes != 0 {
+                let id = tensor.storage_base_ptr() as usize;
+                allocations
+                    .entry(id)
+                    .and_modify(|capacity| *capacity = (*capacity).max(bytes))
+                    .or_insert(bytes);
+            }
+        };
         for value in &morsel.values {
             match value {
-                ExecutionValue::Tensor(tensor) => {
-                    snapshot.logical_tensor_bytes = add_bytes(
-                        snapshot.logical_tensor_bytes,
-                        tensor.logical_bytes(),
-                        &mut snapshot.overflowed,
-                    );
-                    let bytes = tensor.storage_bytes();
-                    if bytes != 0 {
-                        let id = tensor.storage_base_ptr() as usize;
-                        allocations
-                            .entry(id)
-                            .and_modify(|capacity| *capacity = (*capacity).max(bytes))
-                            .or_insert(bytes);
-                    }
+                ExecutionValue::Tensor(tensor) => visit(tensor),
+                ExecutionValue::DecodedWithTensors(value, tensors) => {
+                    tensors(value.as_ref(), &mut visit)
                 }
                 ExecutionValue::Encoded(value) | ExecutionValue::Decoded(value) => {
                     opaque.insert(std::sync::Arc::as_ptr(value) as *const () as usize);

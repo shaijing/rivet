@@ -2100,6 +2100,13 @@ class Pipeline:
             as_numpy=self.as_numpy,
         )
 
+    def dag_managed_budget_bytes(self, max_bytes: int) -> Pipeline:
+        """Limit managed decode and batch tensor storage in DAG execution."""
+        return Pipeline(
+            self._inner.dag_managed_budget_bytes(max_bytes),
+            as_numpy=self.as_numpy,
+        )
+
     def with_numpy(self, enabled: bool = True) -> Pipeline:
         return Pipeline(self._inner, as_numpy=enabled)
 

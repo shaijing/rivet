@@ -218,6 +218,119 @@ fn duplicate_encoded_branches_share_actual_execution_and_source_reads() {
 }
 
 #[test]
+fn cse_preserves_identical_lambda_occurrences_and_random_keys() {
+    use crate::pipeline::op::CallbackConfig;
+    use std::sync::Mutex;
+
+    let keys = Arc::new(Mutex::new(Vec::new()));
+    let (builder, _, _) = source(3);
+    let mut plan = graph(builder, false, false);
+    let (join, original) = plan
+        .nodes()
+        .find(|(_, node)| node.payload_as::<ImageConcat>().is_some())
+        .map(|(id, node)| (id, node.clone()))
+        .unwrap();
+    let callback = Arc::new({
+        let keys = Arc::clone(&keys);
+        move |_: &str, input: &rivet_core::Tensor, seed| {
+            keys.lock().unwrap().push(seed);
+            Ok(input.clone())
+        }
+    });
+    let ports = original
+        .inputs()
+        .iter()
+        .enumerate()
+        .map(|(port, id)| {
+            plan.add_node(
+                LogicalNode::new(
+                    NodeKind::Op,
+                    [id],
+                    Some(Arc::new(ImageOp::Callback(CallbackConfig {
+                        probability: 1.0,
+                        callback: callback.clone(),
+                    }))),
+                )
+                .with_semantic_identity(181 + port as u64),
+            )
+        })
+        .collect::<Vec<_>>();
+    plan.replace_node(join, original.with_inputs(ports))
+        .unwrap();
+    let mut unshared = compile(plan.clone(), false);
+    let mut shared = compile(plan, true);
+    let reference = drain(&mut unshared);
+    let mut unshared_keys = std::mem::take(&mut *keys.lock().unwrap());
+    let actual = drain(&mut shared);
+    let mut shared_keys = std::mem::take(&mut *keys.lock().unwrap());
+    unshared_keys.sort_unstable();
+    shared_keys.sort_unstable();
+    assert_same(&actual, &reference);
+    assert_eq!(shared_keys.len(), 16);
+    assert_eq!(shared_keys, unshared_keys);
+    shared_keys.dedup();
+    assert_eq!(shared_keys.len(), 16);
+}
+
+#[test]
+fn managed_dag_checks_decode_and_stack_before_their_kernel_calls() {
+    // Decode allocates 432B. Resize releases that backing, so stack can
+    // allocate 896B with the same reservation.
+    fn resized_graph(builder: ImagePipeline) -> LogicalPlan {
+        let mut plan = graph(builder, false, false);
+        let crops = plan
+            .nodes()
+            .filter_map(|(id, node)| {
+                matches!(node.payload_as::<ImageOp>(), Some(ImageOp::Crop(_)))
+                    .then(|| (id, node.inputs().get(0).unwrap()))
+            })
+            .collect::<Vec<_>>();
+        for (id, input) in crops {
+            plan.replace_node(
+                id,
+                LogicalNode::new(
+                    NodeKind::Op,
+                    [input],
+                    Some(Arc::new(ImageOp::Crop(CropConfig::new(0, 0, 6, 6)))),
+                ),
+            )
+            .unwrap();
+        }
+        plan
+    }
+
+    for (budget, failing_op) in [
+        (431, Some("Decode")),
+        (895, Some("ImageStack")),
+        (896, None),
+    ] {
+        let (builder, _, _) = source(3);
+        let plan = resized_graph(builder.dag_managed_budget_bytes(budget));
+        let mut loader = compile(plan, true);
+        if let Some(failing_op) = failing_op {
+            let error = loader.next_batch().unwrap_err().to_string();
+            assert!(error.contains(failing_op), "{error}");
+            assert!(error.contains("before allocation"), "{error}");
+            let explain = loader.physical_explanation().unwrap();
+            let node = explain
+                .nodes
+                .iter()
+                .find(|node| node.operator.as_deref() == Some(failing_op))
+                .unwrap();
+            assert!(!loader.profiler().snapshot().contains_key(&node.id));
+            assert!(loader.next_batch().unwrap().is_none());
+        } else {
+            let (builder, _, _) = source(3);
+            let mut baseline = compile(resized_graph(builder), true);
+            assert_same(&drain(&mut loader), &drain(&mut baseline));
+        }
+        let accounting = loader.managed_memory_snapshot().unwrap();
+        assert_eq!(accounting.reserved_bytes, 0);
+        assert_eq!(accounting.peak_reserved_bytes, budget);
+    }
+}
+
+#[test]
 fn differing_parameters_preserve_both_branch_values_and_port_order() {
     for workers in [0, 3] {
         let (builder, _, _) = source(workers);
@@ -400,6 +513,140 @@ fn layout_fusion_retains_shared_normalize_without_duplicating_work() {
             assert_eq!(
                 expected.labels.to_vec::<i64>().unwrap(),
                 actual.labels.to_vec::<i64>().unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "release DAG workload benchmark"]
+fn dag_workload_matrix() {
+    use std::time::{Duration, Instant};
+
+    let rows = 512;
+    let images = (0..rows)
+        .map(|i| {
+            let pixels = image::RgbImage::from_fn(32 + i % 17, 32 + i % 13, |x, y| {
+                image::Rgb([(i + x) as u8, (i + y * 7) as u8, (x * y) as u8])
+            });
+            let mut bytes = Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgb8(pixels)
+                .write_to(&mut bytes, image::ImageFormat::Jpeg)
+                .unwrap();
+            Buffer::from(bytes.into_inner())
+        })
+        .collect::<Vec<_>>();
+
+    let prefetch = std::env::var("RIVET_DAG_BENCH_PREFETCH")
+        .map_or(6, |value| value.parse::<usize>().unwrap());
+    let mut shared_output = None;
+    for workload in ["shared", "unshared", "views", "managed"] {
+        let mut reference = None;
+        for profile in [false, true] {
+            let source = Arc::new(Images {
+                bytes: images.clone(),
+                reads: Arc::new(AtomicUsize::new(0)),
+                calls: Arc::new(AtomicUsize::new(0)),
+            });
+            let builder = ImagePipeline::new(Arc::clone(&source))
+                .workers(4)
+                .prefetch_batches(prefetch)
+                .profiling(profile);
+            let mut loader = match workload {
+                "views" => builder
+                    .decode_image()
+                    .resize(12, 12)
+                    .five_crop(8, 8)
+                    .batch(4, false)
+                    .compile()
+                    .unwrap(),
+                "managed" => compile(
+                    graph(builder.dag_managed_budget_bytes(32 * 1024), false, false),
+                    true,
+                ),
+                _ => compile(graph(builder, false, false), workload == "shared"),
+            };
+            let expected_views = if workload == "views" { 5 } else { 1 };
+            let mut output = Vec::new();
+            let mut latencies = Vec::new();
+            let mut labels = Vec::new();
+            loop {
+                let start = Instant::now();
+                let Some(batch) = loader.next_batch().unwrap() else {
+                    break;
+                };
+                latencies.push(start.elapsed());
+                labels.extend(batch.labels.to_vec::<i64>().unwrap());
+                output.push(batch);
+                if workload == "managed" {
+                    std::thread::sleep(Duration::from_micros(25));
+                }
+            }
+            assert_eq!(
+                labels,
+                (0..i64::from(rows))
+                    .flat_map(|id| std::iter::repeat_n(id, expected_views))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(source.reads.load(Ordering::Relaxed), rows as usize);
+            assert_eq!(source.calls.load(Ordering::Relaxed), rows as usize / 4);
+            let first = latencies[0];
+            latencies.sort_unstable();
+            let pctl = |p: usize| latencies[(latencies.len() * p).div_ceil(100) - 1];
+            let profiler = loader.profiler();
+            let explanation = loader.physical_explanation().unwrap();
+            let by_node = profiler.snapshot();
+            if profile {
+                let decodes = explanation
+                    .nodes
+                    .iter()
+                    .filter(|node| node.operator.as_deref() == Some("Decode"));
+                let decode_calls: u64 = decodes.map(|node| by_node[&node.id].executions).sum();
+                let expected = if workload == "unshared" { 2 } else { 1 };
+                assert_eq!(decode_calls, u64::from(rows) / 4 * expected);
+                assert!(
+                    profiler
+                        .memory_snapshot()
+                        .unwrap()
+                        .peak_known_backing_bytes_per_invocation
+                        > 0
+                );
+            }
+            if let Some(memory) = loader.managed_memory_snapshot() {
+                assert_eq!(memory.reserved_bytes, 0);
+                assert!(memory.peak_reserved_bytes <= memory.limit_bytes);
+            }
+            match workload {
+                "shared" if shared_output.is_none() => shared_output = Some(output.clone()),
+                "shared" | "unshared" | "managed" => {
+                    assert_same(&output, shared_output.as_deref().unwrap());
+                }
+                _ => {}
+            }
+            if let Some(baseline) = reference.as_deref() {
+                assert_same(&output, baseline);
+            } else {
+                reference = Some(output);
+            }
+            let nodes = explanation
+                .nodes
+                .iter()
+                .filter_map(|node| {
+                    let profile = by_node.get(&node.id)?;
+                    Some((
+                        node.operator.as_deref(),
+                        profile.executions,
+                        profile.output_bytes,
+                    ))
+                })
+                .collect::<Vec<_>>();
+            println!(
+                "{workload} profile={profile} first={first:?} p95={:?} p99={:?} nodes={nodes:?} backing={:?} reservation={:?} scheduler={:?}",
+                pctl(95),
+                pctl(99),
+                profiler.memory_snapshot(),
+                loader.managed_memory_snapshot(),
+                profiler.dag_scheduler_snapshot()
             );
         }
     }

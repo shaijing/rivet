@@ -62,6 +62,7 @@ impl OptimizerPass for Cse {
             let key = if original.kind() == NodeKind::Op && inputs.len() == 1 {
                 original
                     .payload_as::<ImageOp>()
+                    .filter(|op| super::semantics::image_semantics(op).allows_sharing())
                     .and_then(exact_parameters)
                     .map(|parameters| Key {
                         inputs: inputs.clone(),

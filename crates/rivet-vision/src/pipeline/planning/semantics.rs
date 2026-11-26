@@ -16,8 +16,15 @@ pub(crate) enum Randomness {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SampleCardinality {
+    OneToOne,
+    ViewsPerSample(usize),
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct OperatorSemantics {
-    pub one_to_one: bool,
+    pub cardinality: SampleCardinality,
     pub preserves_order: bool,
     pub sample_independent: bool,
     pub has_side_effects: bool,
@@ -32,7 +39,7 @@ impl Default for OperatorSemantics {
         // Unknown operators must opt in through a specific rule, rather than
         // gaining permission from their NodeKind or inferred output shape.
         Self {
-            one_to_one: false,
+            cardinality: SampleCardinality::Unknown,
             preserves_order: false,
             sample_independent: false,
             has_side_effects: true,
@@ -61,7 +68,7 @@ pub(crate) fn image_semantics(op: &ImageOp) -> OperatorSemantics {
             OperatorSemantics::default()
         }
         ImageOp::FiveCrop(_) | ImageOp::TenCrop(_) => OperatorSemantics {
-            one_to_one: false,
+            cardinality: SampleCardinality::ViewsPerSample(op.output_multiplier()),
             preserves_order: true,
             sample_independent: true,
             has_side_effects: false,
@@ -115,7 +122,7 @@ pub(crate) fn image_semantics(op: &ImageOp) -> OperatorSemantics {
         | ImageOp::Rotate(_)
         | ImageOp::Normalize(_)
         | ImageOp::Layout(_) => OperatorSemantics {
-            one_to_one: true,
+            cardinality: SampleCardinality::OneToOne,
             preserves_order: true,
             sample_independent: true,
             has_side_effects: false,
@@ -126,6 +133,17 @@ pub(crate) fn image_semantics(op: &ImageOp) -> OperatorSemantics {
             },
             may_error: true,
         },
+    }
+}
+
+impl OperatorSemantics {
+    /// Equality of values and input ports must be established by the rule.
+    pub(crate) fn allows_sharing(self) -> bool {
+        self.cardinality == SampleCardinality::OneToOne
+            && self.preserves_order
+            && self.sample_independent
+            && !self.has_side_effects
+            && self.randomness == Randomness::None
     }
 }
 
@@ -142,7 +160,10 @@ pub(crate) fn allows_index_pushdown(
         return Err("unknown or multi-input operation has no approved selection rewrite");
     };
     let semantics = image_semantics(op);
-    if !semantics.one_to_one || !semantics.preserves_order || !semantics.sample_independent {
+    if semantics.cardinality != SampleCardinality::OneToOne
+        || !semantics.preserves_order
+        || !semantics.sample_independent
+    {
         return Err("operation does not preserve independent one-to-one source samples");
     }
     if semantics.has_side_effects || semantics.randomness == Randomness::Unknown {

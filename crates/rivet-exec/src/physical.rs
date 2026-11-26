@@ -4,7 +4,7 @@
 //! topology to executable physical nodes without putting backend handles in
 //! `rivet-plan`.
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -96,10 +96,13 @@ impl fmt::Display for PhysicalNodeKind {
 
 /// A type-erased domain value. Encoded and decoded values are held in shared
 /// ownership so fan-out does not require copying their backing buffers.
+pub type TensorBackingVisitor = fn(&dyn Any, &mut dyn FnMut(&Tensor));
+
 #[derive(Clone)]
 pub enum ExecutionValue {
     Encoded(Arc<dyn Any + Send + Sync>),
     Decoded(Arc<dyn Any + Send + Sync>),
+    DecodedWithTensors(Arc<dyn Any + Send + Sync>, TensorBackingVisitor),
     Tensor(Tensor),
 }
 
@@ -107,7 +110,7 @@ impl fmt::Debug for ExecutionValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Encoded(_) => f.write_str("Encoded(..)"),
-            Self::Decoded(_) => f.write_str("Decoded(..)"),
+            Self::Decoded(_) | Self::DecodedWithTensors(..) => f.write_str("Decoded(..)"),
             Self::Tensor(tensor) => f.debug_tuple("Tensor").field(tensor).finish(),
         }
     }
@@ -155,6 +158,49 @@ pub trait PhysicalOperator: Send + Sync {
     fn name(&self) -> &str;
     fn execute(&self, morsel: Morsel) -> RuntimeResult<Morsel>;
 
+    /// Opt in when unary execution is equivalent to execute_inputs.
+    fn supports_direct_unary(&self) -> bool {
+        false
+    }
+
+    /// Optional workspace for a directly invoked unary kernel. The mutable
+    /// workspace borrow is confined to this call; outputs must own storage.
+    fn workspace_type(&self) -> Option<TypeId> {
+        None
+    }
+
+    fn new_workspace(&self) -> Box<dyn Any + Send + Sync> {
+        Box::new(())
+    }
+
+    fn execute_in_workspace(
+        &self,
+        input: Morsel,
+        _workspace: &mut (dyn Any + Send + Sync),
+    ) -> RuntimeResult<Morsel> {
+        self.execute(input)
+    }
+
+    /// Addressable output bytes allocated by a managed kernel. Returning
+    /// None leaves allocations by this operator outside managed accounting.
+    fn managed_output_bytes(&self, _inputs: &[Morsel]) -> RuntimeResult<Option<usize>> {
+        Ok(None)
+    }
+
+    /// Report the backing created by a kernel with a managed output bound.
+    /// Opaque envelopes can override this to expose their tensors.
+    fn visit_managed_output(&self, output: &Morsel, visit: &mut dyn FnMut(&Tensor)) {
+        for value in &output.values {
+            match value {
+                ExecutionValue::Tensor(tensor) => visit(tensor),
+                ExecutionValue::DecodedWithTensors(value, tensors) => {
+                    tensors(value.as_ref(), visit)
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Ordered inputs for a join. Unary operators reject unexpected arity.
     fn execute_inputs(&self, mut inputs: Vec<Morsel>) -> RuntimeResult<Morsel> {
         if inputs.len() != 1 {
@@ -168,6 +214,18 @@ pub trait PhysicalOperator: Send + Sync {
     }
 }
 
+/// An output boundary with a known storage effect.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PhysicalStorageEffect {
+    #[default]
+    Unspecified,
+    SourceRead,
+    View,
+    Materialize,
+    Copy,
+    Transfer,
+}
+
 /// Output for one logical node during lowering. A lowerer may fuse multiple
 /// logical nodes in a later extension; the initial contract maps one logical
 /// node to one physical node.
@@ -175,6 +233,8 @@ pub struct PhysicalNodeSpec {
     pub kind: PhysicalNodeKind,
     pub lane: ExecutionLane,
     pub operator: Option<Arc<dyn PhysicalOperator>>,
+    pub selection: Option<rivet_plan::PlacementCandidate>,
+    pub storage_effect: PhysicalStorageEffect,
     /// Destination lane for a transfer node. Transfer execution itself runs on
     /// the transfer lane; the target remains explicit for planning/runtime.
     pub transfer_target: Option<ExecutionLane>,
@@ -194,6 +254,13 @@ impl PhysicalNodeSpec {
             kind,
             lane,
             operator: None,
+            selection: None,
+            storage_effect: match kind {
+                PhysicalNodeKind::Source => PhysicalStorageEffect::SourceRead,
+                PhysicalNodeKind::Batch => PhysicalStorageEffect::Materialize,
+                PhysicalNodeKind::Transfer(_) => PhysicalStorageEffect::Transfer,
+                _ => PhysicalStorageEffect::Unspecified,
+            },
             transfer_target: None,
             estimated_transfer_bytes: None,
             parallelism: ParallelismClass::Serial,
@@ -261,6 +328,8 @@ pub struct PhysicalNode {
     /// root result retained by the caller.
     pub last_use_count: usize,
     pub operator: Option<Arc<dyn PhysicalOperator>>,
+    pub selection: Option<rivet_plan::PlacementCandidate>,
+    pub storage_effect: PhysicalStorageEffect,
     pub transfer_target: Option<ExecutionLane>,
     pub estimated_transfer_bytes: Option<u64>,
     pub parallelism: ParallelismClass,
@@ -269,6 +338,95 @@ pub struct PhysicalNode {
     /// Domain proof that applying this unary kernel per sample is equivalent
     /// to applying it after stacking. Stage classification alone is insufficient.
     pub batch_lift_equivalent: bool,
+}
+
+/// Runtime graph facts in execution order, including synthetic nodes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhysicalExplanation {
+    pub root: PhysNodeId,
+    pub nodes: Vec<PhysicalNodeExplanation>,
+    pub diagnostics: Vec<rivet_plan::Diagnostic>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhysicalNodeExplanation {
+    pub id: PhysNodeId,
+    pub logical_id: Option<NodeId>,
+    pub kind: PhysicalNodeKind,
+    pub lane: ExecutionLane,
+    pub inputs: Vec<PhysNodeId>,
+    pub last_use_count: usize,
+    pub operator: Option<String>,
+    pub selection: Option<rivet_plan::PlacementCandidate>,
+    pub storage_effect: PhysicalStorageEffect,
+    pub transfer_target: Option<ExecutionLane>,
+    pub estimated_transfer_bytes: Option<u64>,
+    pub parallelism: ParallelismClass,
+}
+
+impl fmt::Display for PhysicalExplanation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "PhysicalGraph(root=p{})", self.root.index())?;
+        for node in &self.nodes {
+            let inputs = node
+                .inputs
+                .iter()
+                .map(|id| format!("p{}", id.index()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let logical = node
+                .logical_id
+                .map(|id| format!(" logical=%{}", id.index()))
+                .unwrap_or_default();
+            let operator = node
+                .operator
+                .as_ref()
+                .map(|op| format!(" op={op}"))
+                .unwrap_or_default();
+            let transfer_target = node
+                .transfer_target
+                .as_ref()
+                .map(|target| format!(" target={target:?}"))
+                .unwrap_or_default();
+            let transfer_estimate = node
+                .estimated_transfer_bytes
+                .map(|bytes| format!(" estimated_transfer_bytes={bytes}"))
+                .unwrap_or_default();
+            let implementation = node
+                .selection
+                .as_ref()
+                .map(|candidate| {
+                    format!(
+                        " kernel={} cost={:.6}s candidates={:?} rejected={:?}",
+                        candidate.kernel,
+                        candidate.cost.total_score,
+                        candidate.alternatives,
+                        candidate.rejected,
+                    )
+                })
+                .unwrap_or_default();
+            writeln!(
+                f,
+                "  p{} {} lane={:?} parallelism={:?}{}{}{}{}{} <- [{}] last_uses={} storage={:?}",
+                node.id.index(),
+                node.kind,
+                node.lane,
+                node.parallelism,
+                logical,
+                operator,
+                implementation,
+                transfer_target,
+                transfer_estimate,
+                inputs,
+                node.last_use_count,
+                node.storage_effect,
+            )?;
+        }
+        for diagnostic in &self.diagnostics {
+            writeln!(f, "  {}: {}", diagnostic.code, diagnostic.message)?;
+        }
+        Ok(())
+    }
 }
 
 impl fmt::Debug for PhysicalNode {
@@ -326,11 +484,16 @@ pub enum PhysicalGraphError {
 pub struct PhysicalGraph {
     nodes: Vec<PhysicalNode>,
     root: Option<PhysNodeId>,
+    diagnostics: Vec<rivet_plan::Diagnostic>,
 }
 
 impl PhysicalGraph {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn set_diagnostics(&mut self, diagnostics: Vec<rivet_plan::Diagnostic>) {
+        self.diagnostics = diagnostics;
     }
 
     pub fn add_node(
@@ -348,6 +511,8 @@ impl PhysicalGraph {
             inputs: inputs.into_iter().collect(),
             last_use_count: 0,
             operator: spec.operator,
+            selection: spec.selection,
+            storage_effect: spec.storage_effect,
             transfer_target: spec.transfer_target,
             estimated_transfer_bytes: spec.estimated_transfer_bytes,
             parallelism: spec.parallelism,
@@ -593,49 +758,35 @@ impl PhysicalGraph {
 
     pub fn explain(&mut self) -> Result<String, PhysicalGraphError> {
         self.validate()?;
-        let root = self.root()?;
-        let mut out = format!("PhysicalGraph(root=p{})\n", root.index());
-        for id in self.topological_order()? {
-            let node = self.node(id)?;
-            let inputs = node
-                .inputs
-                .iter()
-                .map(|id| format!("p{}", id.index()))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let logical = node
-                .logical_id
-                .map(|id| format!(" logical=%{}", id.index()))
-                .unwrap_or_default();
-            let operator = node
-                .operator
-                .as_ref()
-                .map(|op| format!(" op={}", op.name()))
-                .unwrap_or_default();
-            let transfer_target = node
-                .transfer_target
-                .as_ref()
-                .map(|target| format!(" target={target:?}"))
-                .unwrap_or_default();
-            let transfer_estimate = node
-                .estimated_transfer_bytes
-                .map(|bytes| format!(" estimated_transfer_bytes={bytes}"))
-                .unwrap_or_default();
-            out.push_str(&format!(
-                "  p{} {} lane={:?} parallelism={:?}{}{}{}{} <- [{}] last_uses={}\n",
-                node.id.index(),
-                node.kind,
-                node.lane,
-                node.parallelism,
-                logical,
-                operator,
-                transfer_target,
-                transfer_estimate,
-                inputs,
-                node.last_use_count
-            ));
-        }
-        Ok(out)
+        Ok(self.explanation(&self.topological_order()?)?.to_string())
+    }
+
+    fn explanation(&self, order: &[PhysNodeId]) -> Result<PhysicalExplanation, PhysicalGraphError> {
+        let nodes = order
+            .iter()
+            .map(|&id| {
+                let node = self.node(id)?;
+                Ok(PhysicalNodeExplanation {
+                    id,
+                    logical_id: node.logical_id,
+                    kind: node.kind,
+                    lane: node.lane.clone(),
+                    inputs: node.inputs.clone(),
+                    last_use_count: node.last_use_count,
+                    operator: node.operator.as_ref().map(|op| op.name().to_owned()),
+                    selection: node.selection.clone(),
+                    storage_effect: node.storage_effect,
+                    transfer_target: node.transfer_target.clone(),
+                    estimated_transfer_bytes: node.estimated_transfer_bytes,
+                    parallelism: node.parallelism,
+                })
+            })
+            .collect::<Result<_, PhysicalGraphError>>()?;
+        Ok(PhysicalExplanation {
+            root: self.root()?,
+            nodes,
+            diagnostics: self.diagnostics.clone(),
+        })
     }
 
     fn topological_order(&self) -> Result<Vec<PhysNodeId>, PhysicalGraphError> {
@@ -879,6 +1030,26 @@ struct AtomicMemoryProfile {
     incomplete: AtomicU64,
     value_failures: AtomicU64,
     live_failures: AtomicU64,
+    scheduler: Option<AtomicDagSchedulerProfile>,
+}
+
+/// Timing and depth observed at the DAG coordinator.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DagSchedulerProfile {
+    /// Time waiting for a result when the worker result channel was empty.
+    pub result_wait: Duration,
+    /// Time a completed result spent buffered behind an earlier sequence.
+    pub reorder_wait: Duration,
+    pub peak_in_flight_morsels: u64,
+    pub peak_reordered_morsels: u64,
+}
+
+#[derive(Default)]
+struct AtomicDagSchedulerProfile {
+    result_wait_ns: AtomicU64,
+    reorder_wait_ns: AtomicU64,
+    peak_in_flight: AtomicU64,
+    peak_reordered: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -888,6 +1059,45 @@ pub struct PhysicalProfiler {
 }
 
 impl PhysicalProfiler {
+    fn scheduler(&self) -> Option<&AtomicDagSchedulerProfile> {
+        self.memory.as_ref()?.scheduler.as_ref()
+    }
+
+    pub fn dag_scheduler_snapshot(&self) -> Option<DagSchedulerProfile> {
+        let scheduler = self.scheduler()?;
+        Some(DagSchedulerProfile {
+            result_wait: Duration::from_nanos(scheduler.result_wait_ns.load(Ordering::Relaxed)),
+            reorder_wait: Duration::from_nanos(scheduler.reorder_wait_ns.load(Ordering::Relaxed)),
+            peak_in_flight_morsels: scheduler.peak_in_flight.load(Ordering::Relaxed),
+            peak_reordered_morsels: scheduler.peak_reordered.load(Ordering::Relaxed),
+        })
+    }
+
+    pub(crate) fn observe_dag_depth(&self, in_flight: u64, reordered: usize) {
+        if let Some(scheduler) = self.scheduler() {
+            scheduler
+                .peak_in_flight
+                .fetch_max(in_flight, Ordering::Relaxed);
+            scheduler
+                .peak_reordered
+                .fetch_max(reordered as u64, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn record_dag_wait(&self, wait: Duration, reorder: bool) {
+        if let Some(scheduler) = self.scheduler() {
+            let counter = if reorder {
+                &scheduler.reorder_wait_ns
+            } else {
+                &scheduler.result_wait_ns
+            };
+            counter.fetch_add(
+                wait.as_nanos().min(u64::MAX as u128) as u64,
+                Ordering::Relaxed,
+            );
+        }
+    }
+
     /// Graph boundary observations only; stage queues retain their own reported
     /// payload counters. Managed executor budgeting and kernel scratch are absent.
     pub fn memory_snapshot(&self) -> Option<crate::memory::GraphMemoryProfile> {
@@ -930,13 +1140,27 @@ impl PhysicalProfiler {
     /// Create an enabled profiler with one dense counter slot per physical node.
     /// Profiling is opt-in because even atomic accounting perturbs short kernels.
     pub fn enabled(node_count: usize) -> Self {
+        Self::enabled_with_memory(node_count, AtomicMemoryProfile::default())
+    }
+
+    pub(crate) fn enabled_for_dag(node_count: usize) -> Self {
+        Self::enabled_with_memory(
+            node_count,
+            AtomicMemoryProfile {
+                scheduler: Some(AtomicDagSchedulerProfile::default()),
+                ..Default::default()
+            },
+        )
+    }
+
+    fn enabled_with_memory(node_count: usize, memory: AtomicMemoryProfile) -> Self {
         let nodes = (0..node_count)
             .map(|_| AtomicNodeProfile::default())
             .collect::<Vec<_>>()
             .into();
         Self {
             nodes: Some(nodes),
-            memory: Some(Arc::new(AtomicMemoryProfile::default())),
+            memory: Some(Arc::new(memory)),
         }
     }
 
@@ -1015,13 +1239,19 @@ impl Default for PhysicalProfiler {
 pub struct ExecutableGraph {
     graph: PhysicalGraph,
     order: Vec<PhysNodeId>,
+    schedule: ExecutionSchedule,
 }
 
 impl ExecutableGraph {
     pub fn new(mut graph: PhysicalGraph) -> Result<Self, PhysicalGraphError> {
         graph.validate()?;
         let order = graph.execution_order()?;
-        Ok(Self { graph, order })
+        let schedule = ExecutionSchedule::new(&graph, &order)?;
+        Ok(Self {
+            graph,
+            order,
+            schedule,
+        })
     }
 
     pub fn execute_with_limit(
@@ -1048,7 +1278,11 @@ impl ExecutableGraph {
         profiler: &PhysicalProfiler,
         limits: crate::memory::GraphMemoryLimits,
     ) -> Result<Morsel, PhysicalGraphError> {
-        execute_graph(&self.graph, &self.order, morsel, profiler, limits)
+        self.execute_reusing(morsel, profiler, limits, &mut self.scratch())
+    }
+
+    pub fn explanation(&self) -> Result<PhysicalExplanation, PhysicalGraphError> {
+        self.graph.explanation(&self.order)
     }
 
     pub fn graph(&self) -> &PhysicalGraph {
@@ -1060,12 +1294,39 @@ impl ExecutableGraph {
         morsel: Morsel,
         profiler: &PhysicalProfiler,
     ) -> Result<Morsel, PhysicalGraphError> {
+        self.execute_with_memory_limits(morsel, profiler, Default::default())
+    }
+
+    pub(crate) fn scratch(&self) -> GraphScratch {
+        GraphScratch::new(self.graph.nodes.len(), self.schedule.workspace_count)
+    }
+
+    pub(crate) fn execute_reusing(
+        &self,
+        morsel: Morsel,
+        profiler: &PhysicalProfiler,
+        limits: crate::memory::GraphMemoryLimits,
+        scratch: &mut GraphScratch,
+    ) -> Result<Morsel, PhysicalGraphError> {
+        self.execute_reusing_with_budget(morsel, profiler, limits, scratch, None)
+    }
+
+    pub(crate) fn execute_reusing_with_budget(
+        &self,
+        morsel: Morsel,
+        profiler: &PhysicalProfiler,
+        limits: crate::memory::GraphMemoryLimits,
+        scratch: &mut GraphScratch,
+        reservation: Option<&mut crate::memory::MemoryReservation>,
+    ) -> Result<Morsel, PhysicalGraphError> {
         execute_graph(
             &self.graph,
-            &self.order,
+            &self.schedule,
             morsel,
             profiler,
-            crate::memory::GraphMemoryLimits::default(),
+            limits,
+            scratch,
+            reservation,
         )
     }
 }
@@ -1079,79 +1340,249 @@ impl GraphExecutor {
         profiler: &PhysicalProfiler,
     ) -> Result<Morsel, PhysicalGraphError> {
         graph.validate()?;
+        let schedule = ExecutionSchedule::new(graph, &graph.execution_order()?)?;
         execute_graph(
             graph,
-            &graph.execution_order()?,
+            &schedule,
             morsel,
             profiler,
-            crate::memory::GraphMemoryLimits::default(),
+            Default::default(),
+            &mut GraphScratch::new(graph.nodes.len(), schedule.workspace_count),
+            None,
         )
+    }
+}
+
+struct ScheduledNode {
+    id: PhysNodeId,
+    input_slots: Vec<usize>,
+    direct_unary: bool,
+    workspace: Option<usize>,
+}
+
+struct ExecutionSchedule {
+    root: usize,
+    nodes: Vec<ScheduledNode>,
+    initial_uses: Vec<usize>,
+    workspace_count: usize,
+}
+
+impl ExecutionSchedule {
+    fn new(graph: &PhysicalGraph, order: &[PhysNodeId]) -> Result<Self, PhysicalGraphError> {
+        for id in order {
+            let node = graph.node(*id)?;
+            if matches!(node.kind, PhysicalNodeKind::Transfer(_)) {
+                if node.operator.is_none() {
+                    return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
+                        "transfer p{} has no bound operator",
+                        id.index(),
+                    )));
+                }
+                continue;
+            }
+            for input in &node.inputs {
+                let producer = graph.node(*input)?;
+                if transfer_for_lanes(&output_lane(producer), &node.lane).is_some() {
+                    return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
+                        "edge p{} → p{} needs an explicit bound transfer",
+                        input.index(),
+                        id.index(),
+                    )));
+                }
+            }
+        }
+        let workspace_slots =
+            crate::memory::MemoryPlanner::workspace_slots(order.iter().filter_map(|&id| {
+                let node = &graph.nodes[id.index()];
+                let operator = node.operator.as_ref()?;
+                if node.inputs.len() > 1 || !operator.supports_direct_unary() {
+                    return None;
+                }
+                Some((id, operator.workspace_type()?))
+            }));
+        let workspace_count = workspace_slots.values().max().map_or(0, |&slot| slot + 1);
+        let nodes = order
+            .iter()
+            .map(|&id| {
+                let node = &graph.nodes[id.index()];
+                ScheduledNode {
+                    id,
+                    workspace: workspace_slots.get(&id).copied(),
+                    input_slots: node.inputs.iter().map(|id| id.index()).collect(),
+                    direct_unary: node
+                        .operator
+                        .as_ref()
+                        .is_none_or(|op| op.supports_direct_unary()),
+                }
+            })
+            .collect();
+        let initial_uses = graph.nodes.iter().map(|node| node.last_use_count).collect();
+        Ok(Self {
+            root: graph.root()?.index(),
+            nodes,
+            initial_uses,
+            workspace_count,
+        })
+    }
+}
+
+pub(crate) struct GraphScratch {
+    remaining_uses: Vec<usize>,
+    outputs: Vec<Option<Morsel>>,
+    workspaces: Vec<Option<Box<dyn Any + Send + Sync>>>,
+}
+
+impl GraphScratch {
+    fn new(slots: usize, workspace_count: usize) -> Self {
+        Self {
+            remaining_uses: vec![0; slots],
+            outputs: vec![None; slots],
+            workspaces: (0..workspace_count).map(|_| None).collect(),
+        }
+    }
+}
+
+/// Clear retained outputs on both a returned error and an unwind.
+struct InvocationSlots<'a>(&'a mut [Option<Morsel>]);
+
+impl Drop for InvocationSlots<'_> {
+    fn drop(&mut self) {
+        for slot in &mut *self.0 {
+            *slot = None;
+        }
+    }
+}
+
+enum NodeInputs {
+    Direct(Morsel),
+    Ordered(Vec<Morsel>),
+}
+
+impl NodeInputs {
+    fn as_slice(&self) -> &[Morsel] {
+        match self {
+            Self::Direct(input) => std::slice::from_ref(input),
+            Self::Ordered(inputs) => inputs,
+        }
     }
 }
 
 fn execute_graph(
     graph: &PhysicalGraph,
-    order: &[PhysNodeId],
+    schedule: &ExecutionSchedule,
     morsel: Morsel,
     profiler: &PhysicalProfiler,
     limits: crate::memory::GraphMemoryLimits,
+    scratch: &mut GraphScratch,
+    mut reservation: Option<&mut crate::memory::MemoryReservation>,
 ) -> Result<Morsel, PhysicalGraphError> {
-    let mut remaining_uses = graph
-        .nodes
-        .iter()
-        .map(|node| node.last_use_count)
-        .collect::<Vec<_>>();
-    let root = graph.root()?;
-    let mut outputs = vec![None::<Morsel>; graph.nodes.len()];
-    for &id in order {
-        let node = graph.node(id)?;
-        let mut inputs = Vec::with_capacity(node.inputs.len().max(1));
-        for &input in &node.inputs {
-            remaining_uses[input.index()] -= 1;
-            let slot = &mut outputs[input.index()];
-            let value = if remaining_uses[input.index()] == 0 {
+    let GraphScratch {
+        remaining_uses,
+        outputs,
+        workspaces,
+    } = scratch;
+    remaining_uses.copy_from_slice(&schedule.initial_uses);
+    let slots = InvocationSlots(outputs);
+    let observe = profiler.is_enabled() || limits.max_observed_live_backing_bytes.is_some();
+    let mut managed_backings = crate::memory::ManagedBackings::default();
+    let mut tracked_managed_output = false;
+    for scheduled in &schedule.nodes {
+        let id = scheduled.id;
+        let node = &graph.nodes[id.index()];
+        let mut take_input = |slot_index| {
+            remaining_uses[slot_index] -= 1;
+            let slot: &mut Option<Morsel> = &mut slots.0[slot_index];
+            let value = if remaining_uses[slot_index] == 0 {
                 slot.take()
             } else {
                 slot.clone()
             };
-            inputs.push(value.ok_or_else(|| {
+            value.ok_or_else(|| {
                 PhysicalGraphError::UnsupportedExecutionShape(format!(
-                    "input p{} has no execution value",
-                    input.index()
+                    "input p{slot_index} has no execution value"
                 ))
-            })?);
-        }
-        if inputs.is_empty() {
-            inputs.push(morsel.clone());
-        }
-        if profiler.is_enabled() || limits.max_observed_live_backing_bytes.is_some() {
+            })
+        };
+        let inputs = match scheduled.input_slots.as_slice() {
+            [] if scheduled.direct_unary => NodeInputs::Direct(morsel.clone()),
+            [slot] if scheduled.direct_unary => NodeInputs::Direct(take_input(*slot)?),
+            [] => NodeInputs::Ordered(vec![morsel.clone()]),
+            inputs => NodeInputs::Ordered(
+                inputs
+                    .iter()
+                    .copied()
+                    .map(take_input)
+                    .collect::<Result<_, _>>()?,
+            ),
+        };
+        if observe {
             observe_graph_memory(
-                outputs
+                slots
+                    .0
                     .iter()
                     .filter_map(Option::as_ref)
-                    .chain(inputs.iter())
+                    .chain(inputs.as_slice())
                     .chain(std::iter::once(&morsel)),
                 profiler,
                 limits,
                 id,
             )?;
         }
+        let managed_bound = if let (Some(reservation), Some(operator)) =
+            (&reservation, &node.operator)
+        {
+            let bound = operator.managed_output_bytes(inputs.as_slice())?;
+            if let Some(bytes) = bound {
+                let remaining = reservation.bytes() - managed_backings.live_bytes();
+                if bytes > remaining {
+                    return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
+                        "p{} ({}) requires {bytes} managed output bytes before allocation; {remaining} bytes remain in this morsel's reservation",
+                        id.index(),
+                        operator.name(),
+                    )));
+                }
+            }
+            bound
+        } else {
+            None
+        };
         let input_bytes = inputs
+            .as_slice()
             .iter()
             .fold(0usize, |sum, input| sum.saturating_add(input.bytes));
         let started = profiler.is_enabled().then(Instant::now);
-        let value = if let Some(operator) = &node.operator {
-            operator
-                .execute_inputs(inputs)
-                .map_err(PhysicalGraphError::Operator)?
-        } else if inputs.len() == 1 {
-            inputs.pop().expect("checked unary input")
-        } else {
-            return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
-                "multi-input node p{} requires an operator",
-                id.index()
-            )));
+        let value = match (inputs, &node.operator) {
+            (NodeInputs::Direct(input), Some(operator)) => match scheduled.workspace {
+                Some(slot) => {
+                    let workspace =
+                        workspaces[slot].get_or_insert_with(|| operator.new_workspace());
+                    operator.execute_in_workspace(input, workspace.as_mut())?
+                }
+                None => operator.execute(input)?,
+            },
+            (NodeInputs::Direct(input), None) => input,
+            (NodeInputs::Ordered(inputs), Some(operator)) => operator.execute_inputs(inputs)?,
+            (NodeInputs::Ordered(_), None) => {
+                return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
+                    "multi-input node p{} requires an operator",
+                    id.index(),
+                )));
+            }
         };
+        if let (Some(bound), Some(operator)) = (managed_bound, &node.operator) {
+            tracked_managed_output = true;
+            let mut allocated = 0usize;
+            operator.visit_managed_output(&value, &mut |tensor| {
+                allocated = allocated.saturating_add(managed_backings.insert(tensor));
+            });
+            if allocated > bound {
+                return Err(PhysicalGraphError::UnsupportedExecutionShape(format!(
+                    "p{} ({}) allocated {allocated} managed backing bytes above its declared bound of {bound}",
+                    id.index(),
+                    operator.name(),
+                )));
+            }
+        }
         if let Some(started) = started {
             profiler.record(id, started.elapsed(), input_bytes, value.bytes);
         }
@@ -1163,9 +1594,10 @@ fn execute_graph(
                 limit: limits.max_value_logical_bytes,
             });
         }
-        if profiler.is_enabled() || limits.max_observed_live_backing_bytes.is_some() {
+        if observe {
             observe_graph_memory(
-                outputs
+                slots
+                    .0
                     .iter()
                     .filter_map(Option::as_ref)
                     .chain(std::iter::once(&value))
@@ -1175,11 +1607,16 @@ fn execute_graph(
                 id,
             )?;
         }
-        outputs[id.index()] = Some(value);
+        slots.0[id.index()] = Some(value);
     }
-    outputs[root.index()]
+    let output = slots.0[schedule.root]
         .take()
-        .ok_or(PhysicalGraphError::MissingRoot)
+        .ok_or(PhysicalGraphError::MissingRoot)?;
+    drop(slots);
+    if tracked_managed_output && let Some(reservation) = &mut reservation {
+        reservation.shrink_to(managed_backings.live_bytes());
+    }
+    Ok(output)
 }
 
 fn observe_graph_memory<'a>(
@@ -1290,8 +1727,14 @@ mod tests {
         assert_eq!(graph.node(ids[&shared]).unwrap().last_use_count, 3);
         let profiler = PhysicalProfiler::enabled(graph.nodes().len());
         let graph = ExecutableGraph::new(graph).unwrap();
+        let mut scratch = graph.scratch();
         let result = graph
-            .execute(Morsel::new(9, vec![4, 8]), &profiler)
+            .execute_reusing(
+                Morsel::new(9, vec![4, 8]),
+                &profiler,
+                Default::default(),
+                &mut scratch,
+            )
             .unwrap();
         assert_eq!(result.bytes, 64);
         assert_eq!(result.source_indices, [4, 8]);
@@ -1299,11 +1742,77 @@ mod tests {
         assert_eq!(profiler.snapshot()[&ids[&left]].executions, 1);
         assert_eq!(
             graph
-                .execute(Morsel::new(10, vec![1]), &profiler)
+                .execute_reusing(
+                    Morsel::new(10, vec![1]),
+                    &profiler,
+                    Default::default(),
+                    &mut scratch
+                )
                 .unwrap()
                 .bytes,
             64
         );
+    }
+
+    #[test]
+    fn reusable_slots_release_shared_values_after_errors_and_panics() {
+        struct Fail;
+        impl PhysicalOperator for Fail {
+            fn name(&self) -> &str {
+                "Fail"
+            }
+            fn execute(&self, input: Morsel) -> RuntimeResult<Morsel> {
+                assert_ne!(input.sequence_id, 1, "test unwind");
+                Err(RuntimeError::Message("test error".to_owned()))
+            }
+            fn supports_direct_unary(&self) -> bool {
+                true
+            }
+        }
+        let mut graph = PhysicalGraph::new();
+        let source = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Source, ExecutionLane::Cpu),
+            [],
+        );
+        let fail = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(
+                PhysicalNodeKind::Kernel(KernelStage::Sample),
+                ExecutionLane::Cpu,
+            )
+            .with_operator(Arc::new(Fail)),
+            [source],
+        );
+        let sink = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Sink, ExecutionLane::Cpu),
+            [fail, source],
+        );
+        graph.set_root(sink).unwrap();
+        let prepared = ExecutableGraph::new(graph).unwrap();
+        let mut scratch = prepared.scratch();
+        for sequence in [0, 1] {
+            let mut morsel = Morsel::new(sequence, vec![]);
+            let backing = Arc::new(vec![42u8]);
+            let weak = Arc::downgrade(&backing);
+            morsel.values.push(ExecutionValue::Encoded(backing));
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                prepared.execute_reusing(
+                    morsel,
+                    &PhysicalProfiler::default(),
+                    Default::default(),
+                    &mut scratch,
+                )
+            }));
+            if sequence == 0 {
+                assert!(outcome.unwrap().is_err());
+            } else {
+                assert!(outcome.is_err());
+            }
+            assert!(scratch.outputs.iter().all(Option::is_none));
+            assert!(weak.upgrade().is_none());
+        }
     }
 
     #[test]
@@ -1347,10 +1856,10 @@ mod tests {
             explanation,
             concat!(
                 "PhysicalGraph(root=p3)\n",
-                "  p0 Source lane=Cpu parallelism=Serial logical=%0 <- [] last_uses=1\n",
-                "  p1 SampleKernel lane=Cpu parallelism=Serial logical=%1 <- [p0] last_uses=1\n",
-                "  p2 Batch lane=Cpu parallelism=Serial logical=%2 <- [p1] last_uses=1\n",
-                "  p3 Sink lane=Cpu parallelism=Serial logical=%3 <- [p2] last_uses=1\n",
+                "  p0 Source lane=Cpu parallelism=Serial logical=%0 <- [] last_uses=1 storage=SourceRead\n",
+                "  p1 SampleKernel lane=Cpu parallelism=Serial logical=%1 <- [p0] last_uses=1 storage=Unspecified\n",
+                "  p2 Batch lane=Cpu parallelism=Serial logical=%2 <- [p1] last_uses=1 storage=Materialize\n",
+                "  p3 Sink lane=Cpu parallelism=Serial logical=%3 <- [p2] last_uses=1 storage=Unspecified\n",
             )
         );
         assert_eq!(physical.nodes()[0].last_use_count, 1);
@@ -1606,6 +2115,43 @@ mod tests {
         assert!(graph.explain().unwrap().contains(
             "Transfer(H2D) lane=Transfer parallelism=Serial target=Device { class: Metal, ordinal: 2 } estimated_transfer_bytes=512"
         ));
+    }
+
+    #[test]
+    fn prepared_dag_rejects_missing_and_unbound_transfers() {
+        let mut graph = PhysicalGraph::new();
+        let source = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(PhysicalNodeKind::Source, ExecutionLane::Io),
+            [],
+        );
+        let sink = graph.add_node(
+            None,
+            PhysicalNodeSpec::new(
+                PhysicalNodeKind::Sink,
+                ExecutionLane::Device {
+                    class: DeviceClass::Metal,
+                    ordinal: 0,
+                },
+            ),
+            [source],
+        );
+        graph.set_root(sink).unwrap();
+        assert!(
+            ExecutableGraph::new(graph.clone())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("needs an explicit bound transfer")
+        );
+        graph.insert_transfers_for_lane_changes().unwrap();
+        assert!(
+            ExecutableGraph::new(graph)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("has no bound operator")
+        );
     }
 
     #[test]

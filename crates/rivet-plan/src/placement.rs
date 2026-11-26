@@ -80,12 +80,20 @@ impl Default for KernelCostHint {
 #[derive(Clone, Debug, Default)]
 pub struct KernelCapabilities {
     kernels: Vec<KernelCapability>,
+    node_kernels: HashMap<NodeId, Vec<KernelCapability>>,
 }
 
 impl KernelCapabilities {
     pub fn register(&mut self, capability: KernelCapability) {
         self.kernels.push(capability);
     }
+    /// Override the registry for a node in the current planning invocation.
+    /// Domains use this when lowering eligibility depends on upstream graph
+    /// context that cannot be expressed as value properties alone.
+    pub fn register_for_node(&mut self, node: NodeId, capability: KernelCapability) {
+        self.node_kernels.entry(node).or_default().push(capability);
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &KernelCapability> {
         self.kernels.iter()
     }
@@ -95,6 +103,9 @@ impl KernelCapabilities {
         id: NodeId,
     ) -> Result<Vec<&'a KernelCapability>, PlacementError> {
         let node = plan.node(id)?;
+        if let Some(kernels) = self.node_kernels.get(&id) {
+            return Ok(kernels.iter().collect());
+        }
         let (operator, domain_operator) = match node.payload() {
             Some(payload) => (
                 format!("{}::{}", payload.domain(), payload.name()),
@@ -271,6 +282,21 @@ impl Default for MachineProfile {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KernelRejectionReason {
+    DeviceUnavailable,
+    ValueProperties,
+    OutputContiguity,
+    SinkDevice,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KernelRejection {
+    pub kernel: String,
+    pub device: DeviceClass,
+    pub reason: KernelRejectionReason,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlacementCandidate {
     pub node: NodeId,
@@ -280,9 +306,11 @@ pub struct PlacementCandidate {
     /// `None` means only a device class was available to the planner.
     pub location: Option<DeviceLocation>,
     pub class: KernelClass,
+    pub requirements: KernelRequirements,
     pub parallelism: usize,
     pub cost: CostEstimate,
     pub alternatives: Vec<String>,
+    pub rejected: Vec<KernelRejection>,
     pub fusion_tags: Vec<String>,
     pub alignment_bytes: usize,
     pub contiguity: Contiguity,
@@ -406,53 +434,42 @@ pub fn place(
     };
     let mut candidate_rows = Vec::with_capacity(ids.len());
     let mut local_cost_rows = Vec::with_capacity(ids.len());
+    let mut rejection_rows = Vec::with_capacity(ids.len());
 
     for (position, id) in ids.iter().copied().enumerate() {
         let props = annotations.get(id);
         let input = input_properties(plan, id, annotations);
         let output = props;
         let available = capabilities.for_node(plan, id)?;
-        let has_registered = !available.is_empty();
-        let mut compatible = available
-            .into_iter()
-            .filter(|kernel| {
-                device_supports_kernel(
-                    machine,
-                    kernel,
-                    required_device_bytes(kernel, input, output, machine),
-                )
-            })
-            .filter(|kernel| properties_match(&kernel.requirements, plan, id, annotations))
-            .filter(|kernel| output_contiguity_matches(kernel.contiguity, props))
-            .collect::<Vec<_>>();
+        let is_sink = plan.node(id)?.kind() == NodeKind::Sink;
+        let mut rejected = Vec::new();
+        let mut compatible = Vec::new();
+        for kernel in available {
+            if let Some(rejection) = reject_kernel(
+                kernel,
+                plan,
+                id,
+                annotations,
+                machine,
+                is_sink,
+                required_device_bytes(kernel, input, output, machine),
+            ) {
+                rejected.push(rejection);
+            } else {
+                compatible.push(kernel);
+            }
+        }
         if compatible.is_empty() {
-            if position + 1 == ids.len() {
-                if let Some(device) = &machine.preferred_sink_device {
-                    return Err(PlacementError::SinkDeviceUnavailable {
-                        device: device.clone(),
-                    });
-                }
+            if (is_sink || position + 1 == ids.len())
+                && let Some(device) = &machine.preferred_sink_device
+            {
+                return Err(PlacementError::SinkDeviceUnavailable {
+                    device: device.clone(),
+                });
             }
-            return Err(PlacementError::NoKernel {
-                node: id.index(),
-                reason: if !has_registered {
-                    "no implementation registered".to_owned()
-                } else {
-                    "registered kernels do not match properties or available devices".to_owned()
-                },
-            });
+            return Err(no_kernel(id, &rejected));
         }
-        // A sink candidate describes the device required by its consumed value.
-        if plan.node(id)?.kind() == NodeKind::Sink {
-            if let Some(sink_device) = &machine.preferred_sink_device {
-                compatible.retain(|candidate| &candidate.device == sink_device);
-                if compatible.is_empty() {
-                    return Err(PlacementError::SinkDeviceUnavailable {
-                        device: sink_device.clone(),
-                    });
-                }
-            }
-        }
+        rejection_rows.push(rejected);
         let local_costs = compatible
             .iter()
             .map(|kernel| estimate_cost(kernel, input, output, machine))
@@ -576,9 +593,11 @@ pub fn place(
             kernel: selected.name.clone(),
             device: selected.device.clone(),
             class: selected.class,
+            requirements: selected.requirements.clone(),
             parallelism,
             cost,
             alternatives,
+            rejected: std::mem::take(&mut rejection_rows[position]),
             fusion_tags: selected.fusion_tags.clone(),
             alignment_bytes: selected.alignment_bytes,
             contiguity: selected.contiguity,
@@ -616,19 +635,18 @@ fn place_dag(
         let output = annotations.get(id);
         let input = input_properties(plan, id, annotations);
         let mut choices = Vec::new();
+        let mut rejected = Vec::new();
         for kernel in capabilities.for_node(plan, id)? {
-            if !device_supports_kernel(
-                machine,
+            if let Some(rejection) = reject_kernel(
                 kernel,
+                plan,
+                id,
+                annotations,
+                machine,
+                node.kind() == NodeKind::Sink,
                 required_graph_device_bytes(plan, id, kernel, annotations, machine),
-            ) || !properties_match(&kernel.requirements, plan, id, annotations)
-                || !output_contiguity_matches(kernel.contiguity, output)
-                || (node.kind() == NodeKind::Sink
-                    && machine
-                        .preferred_sink_device
-                        .as_ref()
-                        .is_some_and(|device| device != &kernel.device))
-            {
+            ) {
+                rejected.push(rejection);
                 continue;
             }
             let mut cost = estimate_cost(kernel, input, output, machine);
@@ -683,10 +701,7 @@ fn place_dag(
                     device: device.clone(),
                 });
             }
-            return Err(PlacementError::NoKernel {
-                node: id.index(),
-                reason: "no compatible registered kernel for graph node".to_owned(),
-            });
+            return Err(no_kernel(id, &rejected));
         };
         let alternatives = choices
             .iter()
@@ -700,6 +715,7 @@ fn place_dag(
             kernel: kernel.name.clone(),
             device: kernel.device.clone(),
             class: kernel.class,
+            requirements: kernel.requirements.clone(),
             parallelism: if kernel.parallel {
                 machine.cpu_threads.max(1)
             } else {
@@ -707,6 +723,7 @@ fn place_dag(
             },
             cost,
             alternatives,
+            rejected,
             fusion_tags: kernel.fusion_tags.clone(),
             alignment_bytes: kernel.alignment_bytes,
             contiguity: kernel.contiguity,
@@ -718,6 +735,53 @@ fn place_dag(
         });
     }
     Ok(result)
+}
+
+fn reject_kernel(
+    kernel: &KernelCapability,
+    plan: &LogicalPlan,
+    id: NodeId,
+    annotations: &PropertyAnnotations,
+    machine: &MachineProfile,
+    is_sink: bool,
+    required_bytes: u64,
+) -> Option<KernelRejection> {
+    let reason = if !device_supports_kernel(machine, kernel, required_bytes) {
+        KernelRejectionReason::DeviceUnavailable
+    } else if !properties_match(&kernel.requirements, plan, id, annotations) {
+        KernelRejectionReason::ValueProperties
+    } else if !output_contiguity_matches(kernel.contiguity, annotations.get(id)) {
+        KernelRejectionReason::OutputContiguity
+    } else if is_sink
+        && machine
+            .preferred_sink_device
+            .as_ref()
+            .is_some_and(|target| *target != kernel.device)
+    {
+        KernelRejectionReason::SinkDevice
+    } else {
+        return None;
+    };
+    Some(KernelRejection {
+        kernel: kernel.name.clone(),
+        device: kernel.device.clone(),
+        reason,
+    })
+}
+
+fn no_kernel(node: NodeId, rejected: &[KernelRejection]) -> PlacementError {
+    PlacementError::NoKernel {
+        node: node.index(),
+        reason: if rejected.is_empty() {
+            "no implementation registered".to_owned()
+        } else {
+            rejected
+                .iter()
+                .map(|item| format!("{}: {:?}", item.kernel, item.reason))
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
+    }
 }
 
 fn required_graph_device_bytes(
@@ -1263,6 +1327,81 @@ mod tests {
                 .contains("compute=")
         );
     }
+    #[test]
+    fn greedy_dag_placement_can_duplicate_shared_transfers() {
+        let mut plan = LogicalPlan::new();
+        let payload =
+            || Some(std::sync::Arc::new(Payload) as std::sync::Arc<dyn crate::PlanPayload>);
+        let source = plan.add_node(LogicalNode::new(NodeKind::Source, [], payload()));
+        let expand = plan.add_node(LogicalNode::new(NodeKind::Op, [source], payload()));
+        let branches =
+            [0, 1].map(|_| plan.add_node(LogicalNode::new(NodeKind::Op, [expand], payload())));
+        let join = plan.add_node(LogicalNode::new(NodeKind::Op, branches, payload()));
+        plan.set_root(join).unwrap();
+
+        let mut props = PropertyAnnotations::default();
+        let large = 4 * 1024 * 1024;
+        for (id, bytes) in [
+            (source, 4096),
+            (expand, large),
+            (branches[0], large),
+            (branches[1], large),
+            (join, large),
+        ] {
+            props.insert(
+                id,
+                ValueProperties {
+                    dtype: Some(DataType::U8),
+                    shape: Some(crate::ValueShape(vec![ShapeDim::Known(bytes)])),
+                    ..ValueProperties::default()
+                },
+            );
+        }
+        props.certify_preserved(&plan);
+        let capability = |device, name: &str| KernelCapability {
+            name: name.to_owned(),
+            operator: "demo::Op".to_owned(),
+            node_kind: NodeKind::Op,
+            device,
+            class: KernelClass::Sample,
+            requirements: KernelRequirements::default(),
+            fusion_tags: Vec::new(),
+            alignment_bytes: 1,
+            contiguity: Contiguity::Unknown,
+            temporary_bytes: 0,
+            cost_hint: KernelCostHint {
+                input_read_passes: 0,
+                output_write_passes: 0,
+                compute_ops_per_element: 0,
+            },
+            in_place: true,
+            parallel: false,
+        };
+        let machine = MachineProfile {
+            available_devices: vec![DeviceClass::Cpu, DeviceClass::Metal],
+            ..Default::default()
+        };
+        let mut forced = KernelCapabilities::default();
+        forced.register_for_node(source, capability(DeviceClass::Cpu, "read"));
+        for id in [expand, branches[0], branches[1], join] {
+            forced.register_for_node(id, capability(DeviceClass::Metal, "device"));
+        }
+        let mut greedy = forced.clone();
+        greedy.register_for_node(expand, capability(DeviceClass::Cpu, "host"));
+
+        let greedy = place(&plan, &props, &greedy, &machine).unwrap();
+        let forced = place(&plan, &props, &forced, &machine).unwrap();
+        let total_transfer = |placement: &PlacementPlan| {
+            placement
+                .transfer_boundaries
+                .iter()
+                .map(|edge| edge.bytes)
+                .sum::<u64>()
+        };
+        assert_eq!(total_transfer(&greedy), 2 * large as u64);
+        assert_eq!(total_transfer(&forced), 4096);
+    }
+
     #[test]
     fn dag_placement_costs_each_incoming_edge_and_checks_all_ports() {
         let mut plan = LogicalPlan::new();

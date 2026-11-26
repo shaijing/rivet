@@ -37,8 +37,9 @@ pub use optimizer::{
 };
 pub use placement::{
     CostEstimate, DeviceDescriptor, DeviceLocation, KernelCapabilities, KernelCapability,
-    KernelClass, KernelCostHint, KernelRequirements, KernelSet, MachineProfile, PlacementCandidate,
-    PlacementError, PlacementPlan, TransferBoundary, TransferKind, place,
+    KernelClass, KernelCostHint, KernelRejection, KernelRejectionReason, KernelRequirements,
+    KernelSet, MachineProfile, PlacementCandidate, PlacementError, PlacementPlan, TransferBoundary,
+    TransferKind, place,
 };
 
 pub use properties::{

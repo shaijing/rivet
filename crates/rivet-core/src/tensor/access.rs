@@ -131,6 +131,12 @@ impl Tensor {
         self.storage().len()
     }
 
+    /// Observe backing identity and liveness without retaining the allocation.
+    /// Views of this tensor return a weak reference to the same storage.
+    pub fn weak_storage(&self) -> std::sync::Weak<Storage> {
+        Arc::downgrade(&self.0.storage)
+    }
+
     /// Returns the backing allocation base address.
     ///
     /// The pointer is valid only while this tensor keeps the backing storage

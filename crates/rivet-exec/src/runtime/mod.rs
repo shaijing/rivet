@@ -1,6 +1,6 @@
 mod dag;
 mod pipeline;
-pub use dag::DagPipelineExecutor;
+pub use dag::{DagMemoryAdmission, DagPipelineExecutor};
 mod pool;
 mod reorder;
 mod stage_queue;

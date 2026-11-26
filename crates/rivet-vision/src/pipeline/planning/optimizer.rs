@@ -5,9 +5,8 @@ use std::sync::Arc;
 use rivet_plan::{
     AxisOrder, Contiguity, DeviceClass, FusionCandidate, FusionRule, KernelCapabilities,
     KernelCapability, KernelClass, KernelRequirements, LogicalNode, LogicalPlan, MachineProfile,
-    NodeId, NodeKind, OperatorStage, OptimizerContext, OptimizerPass, PassResult,
-    PhysicalCandidate, PhysicalCandidateProvider, PlanPlugin, PlanRegistry, PropertyAnnotations,
-    PropertyInference, ValueProperties,
+    NodeId, NodeKind, OperatorStage, OptimizerContext, OptimizerPass, PassResult, PlanPlugin,
+    PlanRegistry, PropertyAnnotations, PropertyInference, ValueProperties,
 };
 
 use super::cached_inference::CachedInferProperties as InferProperties;
@@ -176,17 +175,16 @@ impl crate::pipeline::builder::ImagePipeline {
             .find(|diagnostic| diagnostic.code == "placement.explain")
             .map(|diagnostic| diagnostic.message.clone())
             .ok_or_else(|| invalid_pipeline("optimizer did not produce placement explanation"))?;
-        for (id, node) in plan.nodes() {
-            for candidate in
-                registry.physical_candidates_for(&plan, node, context.annotations().get(id))
-            {
-                explanation.push_str(&format!(
-                    "  physical candidate %{}: {} backend={}\n",
-                    id.index(),
-                    candidate.name,
-                    candidate.backend
-                ));
-            }
+        let placement = context
+            .placement()
+            .ok_or_else(|| invalid_pipeline("optimizer did not produce placement"))?;
+        for candidate in &placement.candidates {
+            explanation.push_str(&format!(
+                "  physical candidate %{}: {} device={:?}\n",
+                candidate.node.index(),
+                candidate.kernel,
+                candidate.device,
+            ));
         }
         Ok(explanation)
     }
@@ -263,15 +261,13 @@ impl PlanPlugin for VisionPlanPlugin {
             capabilities: vision_kernel_capabilities(),
             machine: self.machine.clone(),
             collect_explain: self.collect_placement_explain,
+            execution_workers: self.prepare_execution.then_some(self.workers),
         }));
         passes.extend(physical_passes);
         passes
     }
     fn fusion_rules(&self) -> Vec<Arc<dyn FusionRule>> {
         vec![Arc::new(NormalizeLayoutFusion)]
-    }
-    fn physical_candidates(&self) -> Vec<Arc<dyn PhysicalCandidateProvider>> {
-        vec![Arc::new(VisionPhysicalCandidates)]
     }
 }
 
@@ -772,18 +768,21 @@ impl FusionRule for NormalizeLayoutFusion {
                     continue;
                 };
                 let normalize = plan.node(normalize_id).map_err(|error| error.to_string())?;
-                if !matches!(
-                    normalize.payload_as::<ImageOp>(),
-                    Some(ImageOp::Normalize(_))
-                ) {
+                let Some(normalize_op @ ImageOp::Normalize(_)) = normalize.payload_as::<ImageOp>()
+                else {
                     continue;
-                }
+                };
+                let safe_to_fuse = super::semantics::image_semantics(normalize_op).allows_sharing()
+                    && node
+                        .payload_as::<ImageOp>()
+                        .is_some_and(|op| super::semantics::image_semantics(op).allows_sharing());
                 let Some(normalize_input) = normalize.inputs().get(0) else {
                     continue;
                 };
                 let props = annotations.get(normalize_input);
                 let shared_normalize = uses.get(&normalize_id).copied() != Some(1);
-                let legal = !shared_normalize
+                let legal = safe_to_fuse
+                    && !shared_normalize
                     && props.is_some_and(|p| {
                         p.dtype == Some(rivet_plan::DataType::U8)
                             && axis_order(p) == Some(ImageAxisOrder::Hwc)
@@ -1007,7 +1006,7 @@ impl OptimizerPass for PrepareExecution {
         plan: &mut LogicalPlan,
         context: &mut OptimizerContext,
     ) -> Result<PassResult, String> {
-        if crate::pipeline::execution::expand_terminal_sample_fusion(
+        if let Some(reason) = crate::pipeline::execution::select_terminal_normalize_layout(
             plan,
             context.annotations(),
             self.workers,
@@ -1015,7 +1014,7 @@ impl OptimizerPass for PrepareExecution {
         .map_err(|error| error.to_string())?
         {
             context.clear_annotations();
-            Ok(PassResult::changed())
+            Ok(PassResult::changed().diagnostic("fusion.execution-split", reason))
         } else {
             Ok(PassResult::unchanged())
         }
@@ -1026,6 +1025,7 @@ struct PlacementBoundary {
     capabilities: KernelCapabilities,
     machine: MachineProfile,
     collect_explain: bool,
+    execution_workers: Option<usize>,
 }
 
 impl OptimizerPass for PlacementBoundary {
@@ -1044,13 +1044,19 @@ impl OptimizerPass for PlacementBoundary {
         context: &mut OptimizerContext,
     ) -> Result<PassResult, String> {
         validate_source_index_prefix(plan)?;
-        let placement = rivet_plan::place(
-            plan,
-            context.annotations(),
-            &self.capabilities,
-            &self.machine,
-        )
-        .map_err(|error| error.to_string())?;
+        let mut capabilities = self.capabilities.clone();
+        if let Some(workers) = self.execution_workers {
+            crate::pipeline::execution::register_execution_kernels(
+                &mut capabilities,
+                plan,
+                context.annotations(),
+                workers,
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        let placement =
+            rivet_plan::place(plan, context.annotations(), &capabilities, &self.machine)
+                .map_err(|error| error.to_string())?;
         if !self.collect_explain {
             context.set_placement(placement);
             return Ok(PassResult::unchanged());
@@ -1080,62 +1086,6 @@ impl OptimizerPass for PlacementBoundary {
         }
         context.set_placement(placement);
         Ok(PassResult::unchanged().diagnostic("placement.explain", explanation))
-    }
-}
-
-struct VisionPhysicalCandidates;
-impl PhysicalCandidateProvider for VisionPhysicalCandidates {
-    fn candidates(
-        &self,
-        node: &LogicalNode,
-        properties: Option<&ValueProperties>,
-    ) -> Vec<PhysicalCandidate> {
-        let Some(payload) = node.payload() else {
-            if node.kind() == NodeKind::Sink {
-                return vec![PhysicalCandidate {
-                    revision: None,
-                    name: "vision-output-sink".to_owned(),
-                    backend: "cpu".to_owned(),
-                }];
-            }
-            return Vec::new();
-        };
-        if payload.domain_id() != Some(crate::VISION_DOMAIN_ID) {
-            return Vec::new();
-        }
-        let name = match (node.kind(), payload.name()) {
-            (NodeKind::Source, "Source") => "vision-source-read".to_owned(),
-            (NodeKind::Index, "IndexOp") => "vision-index-sampler".to_owned(),
-            (NodeKind::Op, _) if payload.as_domain_op().is_some() => {
-                // Defer concrete kernel compatibility to KernelCapabilities.
-                if properties.is_none() {
-                    return Vec::new();
-                }
-                "vision-image-cpu".to_owned()
-            }
-            (NodeKind::Op, "FusionGroup") => {
-                let Some(group) = node.payload_as::<FusionGroupPayload>() else {
-                    return Vec::new();
-                };
-                if group.name != "NormalizeToChw"
-                    || properties.is_none_or(|properties| {
-                        properties.dtype != Some(rivet_plan::DataType::F32)
-                            || axis_order(properties) != Some(ImageAxisOrder::Chw)
-                    })
-                {
-                    return Vec::new();
-                }
-                "vision-normalize-to-chw-fused".to_owned()
-            }
-            (NodeKind::Batch, "BatchConfig") => "vision-batch-assembly".to_owned(),
-            _ => return Vec::new(),
-        };
-        let candidates = vec![PhysicalCandidate {
-            revision: None,
-            name,
-            backend: "cpu".to_owned(),
-        }];
-        candidates
     }
 }
 

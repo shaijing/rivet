@@ -234,69 +234,80 @@ impl<P: PhysicalPipelineAdapter> PhysicalPipelineExecutor<P> {
         graph.validate().map_err(graph_runtime_error)?;
         let order = graph.execution_order().map_err(graph_runtime_error)?;
         let mut positions = vec![0usize; graph.nodes().len()];
-        for (position, id) in order.iter().copied().enumerate() {
+        let mut previous = None;
+        let mut stage = 0;
+        let mut sampler_node = None;
+        let mut source_node = None;
+        let mut decode_node = None;
+        let mut sample_node = None;
+        let mut batch_node = None;
+        let mut batch_kernel = None;
+        let mut transfer_nodes = Vec::new();
+        for (position, id) in order.into_iter().enumerate() {
+            let node = graph.node(id).map_err(graph_runtime_error)?;
+            if node.inputs.iter().copied().ne(previous) {
+                return Err(runtime_error(format!(
+                    "typed pipeline requires a linear edge into p{}",
+                    id.index(),
+                )));
+            }
             positions[id.index()] = position;
+            previous = Some(id);
+            let next_stage = match node.kind {
+                PhysicalNodeKind::Sampler => {
+                    sampler_node.get_or_insert(id);
+                    0
+                }
+                PhysicalNodeKind::Source => {
+                    if source_node.replace(id).is_some() {
+                        return Err(runtime_error("typed pipeline requires one source"));
+                    }
+                    1
+                }
+                PhysicalNodeKind::Kernel(KernelStage::Decode) => {
+                    decode_node.get_or_insert(id);
+                    2
+                }
+                PhysicalNodeKind::Kernel(KernelStage::Sample) => {
+                    sample_node.get_or_insert(id);
+                    3
+                }
+                PhysicalNodeKind::Batch => {
+                    if batch_node.replace(id).is_some() {
+                        return Err(runtime_error("typed pipeline requires one batch barrier"));
+                    }
+                    4
+                }
+                PhysicalNodeKind::Kernel(KernelStage::Batch) => {
+                    batch_kernel.get_or_insert(id);
+                    5
+                }
+                PhysicalNodeKind::Sink => 6,
+                PhysicalNodeKind::Transfer(kind) => {
+                    let target = node.transfer_target.clone().ok_or_else(|| {
+                        runtime_error(format!("transfer node p{} has no target lane", id.index()))
+                    })?;
+                    transfer_nodes.push((id, kind, target));
+                    stage
+                }
+                PhysicalNodeKind::Cache => stage,
+            };
+            if next_stage < stage {
+                return Err(runtime_error(format!(
+                    "typed pipeline stage order is invalid at p{} ({})",
+                    id.index(),
+                    node.kind,
+                )));
+            }
+            stage = next_stage;
         }
-        let source_node = find_node(&graph, |kind| kind == PhysicalNodeKind::Source)
+        let source_node = source_node
             .ok_or_else(|| runtime_error("physical pipeline graph has no source node"))?;
-        let sampler_node = find_node(&graph, |kind| kind == PhysicalNodeKind::Sampler);
-        let decode_node = find_node(&graph, |kind| {
-            kind == PhysicalNodeKind::Kernel(KernelStage::Decode)
-        });
-        let sample_node = find_node(&graph, |kind| {
-            kind == PhysicalNodeKind::Kernel(KernelStage::Sample)
-        });
-        if decode_node
-            .is_some_and(|decode| positions[decode.index()] <= positions[source_node.index()])
-        {
-            return Err(runtime_error("decode stage must follow source reads"));
-        }
-        if sample_node.is_some_and(|sample| {
-            let previous = decode_node.unwrap_or(source_node);
-            positions[sample.index()] <= positions[previous.index()]
-        }) {
-            return Err(runtime_error(
-                "sample kernel must follow source/decode stages",
-            ));
-        }
-        let batch_node = find_node(&graph, |kind| kind == PhysicalNodeKind::Batch);
         let batch_node =
             batch_node.ok_or_else(|| runtime_error("physical pipeline graph has no batch node"))?;
-        if positions[batch_node.index()] <= positions[source_node.index()] {
-            return Err(runtime_error(
-                "physical batch barrier must follow source reads",
-            ));
-        }
-        if sample_node
-            .is_some_and(|sample| positions[sample.index()] >= positions[batch_node.index()])
-        {
-            return Err(runtime_error(
-                "sample kernel must precede the physical batch barrier",
-            ));
-        }
-        let batch_kernel = find_node(&graph, |kind| {
-            kind == PhysicalNodeKind::Kernel(KernelStage::Batch)
-        });
-        if batch_kernel
-            .is_some_and(|kernel| positions[kernel.index()] <= positions[batch_node.index()])
-        {
-            return Err(runtime_error(
-                "batch kernel must follow the physical batch barrier",
-            ));
-        }
         let root = graph.root().map_err(graph_runtime_error)?;
         if graph.node(root).map_err(graph_runtime_error)?.kind != PhysicalNodeKind::Sink {
             return Err(runtime_error("physical pipeline graph root must be a sink"));
-        }
-        let mut transfer_nodes = Vec::new();
-        for id in &order {
-            let node = graph.node(*id).map_err(graph_runtime_error)?;
-            if let PhysicalNodeKind::Transfer(kind) = node.kind {
-                let target = node.transfer_target.clone().ok_or_else(|| {
-                    runtime_error(format!("transfer node p{} has no target lane", id.index()))
-                })?;
-                transfer_nodes.push((*id, kind, target));
-            }
         }
         if transfer_nodes.len() > 1 {
             return Err(runtime_error(
@@ -1046,17 +1057,6 @@ fn default_graph(batch_native: bool) -> Result<PhysicalGraph, crate::physical::P
     Ok(graph)
 }
 
-fn find_node(
-    graph: &PhysicalGraph,
-    predicate: impl Fn(PhysicalNodeKind) -> bool,
-) -> Option<PhysNodeId> {
-    graph
-        .nodes()
-        .iter()
-        .find(|node| predicate(node.kind))
-        .map(|node| node.id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1248,6 +1248,39 @@ mod tests {
                     .contains("SampleKernel")
             );
         }
+    }
+
+    #[test]
+    fn typed_pipeline_rejects_a_second_sample_stage_after_batch() {
+        let adapter = Arc::new(Adapter {
+            calls: AtomicUsize::new(0),
+            transfers: AtomicUsize::new(0),
+            fail_transfer: false,
+            overlap_probe: None,
+        });
+        let mut graph = PhysicalGraph::new();
+        let mut previous = None;
+        for kind in [
+            PhysicalNodeKind::Source,
+            PhysicalNodeKind::Kernel(KernelStage::Sample),
+            PhysicalNodeKind::Batch,
+            PhysicalNodeKind::Kernel(KernelStage::Sample),
+            PhysicalNodeKind::Sink,
+        ] {
+            previous = Some(graph.add_node(
+                None,
+                PhysicalNodeSpec::new(kind, ExecutionLane::Cpu),
+                previous,
+            ));
+        }
+        graph.set_root(previous.unwrap()).unwrap();
+        assert!(
+            PhysicalPipelineExecutor::with_graph(adapter, 0, 0, graph)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("stage order")
+        );
     }
 
     #[test]

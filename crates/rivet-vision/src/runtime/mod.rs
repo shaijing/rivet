@@ -20,6 +20,7 @@ pub struct RuntimeConfig {
     /// Independent DAG single-output logical byte limit, checked after allocation.
     /// None retains the legacy stage_queue_max_bytes fallback.
     pub dag_max_value_logical_bytes: Option<usize>,
+    pub dag_managed_budget_bytes: Option<usize>,
     /// Collect per-node timings and byte counts. Disabled by default to keep
     /// steady-state execution free from profiling overhead.
     pub profiling_enabled: bool,
@@ -32,6 +33,7 @@ impl Default for RuntimeConfig {
             prefetch_batches: 2,
             stage_queue_max_bytes: 512 * 1024 * 1024,
             dag_max_value_logical_bytes: None,
+            dag_managed_budget_bytes: None,
             profiling_enabled: false,
         }
     }

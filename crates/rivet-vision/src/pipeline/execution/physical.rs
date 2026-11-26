@@ -131,7 +131,7 @@ fn take_values(morsel: &mut Morsel) -> RuntimeResult<ImageValues> {
         return Err(runtime_error("vision node requires one image envelope"));
     }
     let value = match morsel.values.pop().expect("checked envelope") {
-        ExecutionValue::Encoded(value) | ExecutionValue::Decoded(value) => value,
+        ExecutionValue::Encoded(value) | ExecutionValue::DecodedWithTensors(value, _) => value,
         _ => return Err(runtime_error("invalid vision envelope")),
     };
     let value = value
@@ -174,15 +174,56 @@ fn put_values(morsel: &mut Morsel, values: ImageValues) {
     morsel.values = vec![if encoded {
         ExecutionValue::Encoded(value)
     } else {
-        ExecutionValue::Decoded(value)
+        ExecutionValue::DecodedWithTensors(value, visit_image_tensors)
     }];
 }
-fn stack(samples: Vec<ImageSample>) -> RivetResult<ImageBatch> {
-    let mut builder = crate::batch::ImageBatchBuilder::with_capacity(samples.len());
-    for sample in samples {
-        builder.push(sample.into_decoded()?)?;
+fn visit_image_tensors(envelope: &dyn std::any::Any, visit: &mut dyn FnMut(&Tensor)) {
+    match envelope.downcast_ref::<ImageValues>() {
+        Some(ImageValues::Samples(samples)) => {
+            for sample in samples.iter() {
+                if let ImageSample::Decoded(sample) = sample {
+                    visit(&sample.image);
+                }
+            }
+        }
+        Some(ImageValues::Batch(batch)) => {
+            visit(&batch.images);
+            visit(&batch.labels);
+        }
+        None => {}
     }
-    builder.finish()
+}
+
+fn stack_morsel(
+    mut morsel: Morsel,
+    axis_order: ImageAxisOrder,
+    mut workspace: Option<&mut Vec<i64>>,
+) -> RuntimeResult<Morsel> {
+    let values = take_values(&mut morsel)?;
+    let values = if let ImageValues::Samples(samples) = values {
+        let capacity = samples.len();
+        let mut builder = if let Some(labels) = &mut workspace {
+            crate::batch::ImageBatchBuilder::with_reusable_labels(capacity, std::mem::take(*labels))
+        } else {
+            crate::batch::ImageBatchBuilder::with_capacity(capacity)
+        };
+        for sample in samples.values {
+            builder
+                .push(sample.into_decoded().map_err(runtime_error)?)
+                .map_err(runtime_error)?;
+        }
+        let mut batch = match workspace {
+            Some(labels) => builder.finish_reusing_labels(labels),
+            None => builder.finish(),
+        }
+        .map_err(runtime_error)?;
+        batch.axis_order = axis_order;
+        ImageValues::Batch(batch)
+    } else {
+        values
+    };
+    put_values(&mut morsel, values);
+    Ok(morsel)
 }
 
 impl PhysicalOperator for ImageKernel {
@@ -196,6 +237,86 @@ impl PhysicalOperator for ImageKernel {
             Self::Identity => "ImageIdentity",
         }
     }
+    fn supports_direct_unary(&self) -> bool {
+        !matches!(self, Self::Concat { .. })
+    }
+    fn workspace_type(&self) -> Option<std::any::TypeId> {
+        matches!(self, Self::Batch { .. }).then(std::any::TypeId::of::<Vec<i64>>)
+    }
+
+    fn new_workspace(&self) -> Box<dyn std::any::Any + Send + Sync> {
+        Box::new(Vec::<i64>::new())
+    }
+
+    fn execute_in_workspace(
+        &self,
+        input: Morsel,
+        workspace: &mut (dyn std::any::Any + Send + Sync),
+    ) -> RuntimeResult<Morsel> {
+        let Self::Batch { axis_order } = self else {
+            return self.execute(input);
+        };
+        let labels = workspace
+            .downcast_mut::<Vec<i64>>()
+            .ok_or_else(|| runtime_error("image stack workspace has the wrong type"))?;
+        stack_morsel(input, *axis_order, Some(labels))
+    }
+
+    fn managed_output_bytes(&self, inputs: &[Morsel]) -> RuntimeResult<Option<usize>> {
+        let decode = matches!(self, Self::Sample(node) if node.op.is_decode());
+        if !decode && !matches!(self, Self::Batch { .. }) {
+            return Ok(None);
+        }
+
+        let [input] = inputs else {
+            return Err(runtime_error("managed image kernel requires one input"));
+        };
+        let [ExecutionValue::Encoded(value) | ExecutionValue::DecodedWithTensors(value, _)] =
+            input.values.as_slice()
+        else {
+            return Err(runtime_error(
+                "managed image kernel requires one image envelope",
+            ));
+        };
+        let values = value
+            .downcast_ref::<ImageValues>()
+            .ok_or_else(|| runtime_error("invalid managed image envelope"))?;
+        let ImageValues::Samples(samples) = values else {
+            return Ok(None);
+        };
+        let overflow = || runtime_error("managed image output size overflow");
+        let mut bytes = 0usize;
+        for sample in samples.iter() {
+            let sample_bytes = match (decode, sample) {
+                (true, ImageSample::Encoded(sample)) => {
+                    // Read the dimensions before decoding or allocating a tensor.
+                    let (width, height) =
+                        image::ImageReader::new(std::io::Cursor::new(sample.image.as_slice()))
+                            .with_guessed_format()
+                            .map_err(runtime_error)?
+                            .into_dimensions()
+                            .map_err(runtime_error)?;
+                    (width as usize)
+                        .checked_mul(height as usize)
+                        .and_then(|pixels| pixels.checked_mul(3))
+                        .ok_or_else(overflow)?
+                }
+                (false, ImageSample::Decoded(sample)) => sample
+                    .image
+                    .logical_bytes()
+                    .checked_add(std::mem::size_of::<i64>())
+                    .ok_or_else(overflow)?,
+                _ => {
+                    return Err(runtime_error(
+                        "managed image allocation has incompatible input",
+                    ));
+                }
+            };
+            bytes = bytes.checked_add(sample_bytes).ok_or_else(overflow)?;
+        }
+        Ok(Some(bytes))
+    }
+
     fn execute(&self, mut morsel: Morsel) -> RuntimeResult<Morsel> {
         let values = match self {
             Self::Source(source) => {
@@ -268,14 +389,9 @@ impl PhysicalOperator for ImageKernel {
                     })
                 }
             }
-            Self::Batch { axis_order } => match take_values(&mut morsel)? {
-                ImageValues::Samples(samples) => {
-                    let mut batch = stack(samples.values).map_err(runtime_error)?;
-                    batch.axis_order = *axis_order;
-                    ImageValues::Batch(batch)
-                }
-                batch => batch,
-            },
+            Self::Batch { axis_order } => {
+                return stack_morsel(morsel, *axis_order, None);
+            }
             Self::BatchOp(node) => {
                 match take_values(&mut morsel)? {
                     ImageValues::Batch(batch) => {
@@ -416,6 +532,7 @@ pub(crate) struct ImageExecutionGraph {
     pub(crate) sample_nodes: Vec<Arc<SampleNode>>,
     pub(crate) batch_nodes: Vec<Arc<BatchNode>>,
     pub(crate) linear: bool,
+    pub(crate) managed_bytes_per_morsel: Option<usize>,
     pub(crate) explanation: String,
 }
 impl ImageExecutionGraph {

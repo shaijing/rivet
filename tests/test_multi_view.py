@@ -279,3 +279,49 @@ def test_empty_source_finishes_without_partial_view_groups(tmp_path, workers):
     assert list(loader) == []
     with pytest.raises(StopIteration):
         next(loader)
+
+
+def test_managed_dag_budget_on_view_batches(source):
+    def pipeline():
+        return (
+            rv.scan_image_folder(source[0])
+            .decode_image()
+            .five_crop(9, 7)
+            .workers(2)
+            .batch(2)
+        )
+
+    expected = list(pipeline().execute())
+    # Five views share each decoded allocation. During stacking the two
+    # decoded backings and the new image and label storage coexist.
+    peak = 2 * 19 * 23 * 3 + 10 * (7 * 9 * 3 + 8)
+    actual = list(pipeline().dag_managed_budget_bytes(peak).execute())
+    assert len(actual) == len(expected) == 2
+    for managed, baseline in zip(actual, expected):
+        np.testing.assert_array_equal(managed["images"], baseline["images"])
+        np.testing.assert_array_equal(managed["labels"], baseline["labels"])
+
+    loader = pipeline().dag_managed_budget_bytes(peak - 1).execute()
+    with pytest.raises(RuntimeError, match="ImageStack.*managed output bytes before allocation"):
+        next(loader)
+
+
+def test_dag_stack_workspace_preserves_exported_labels(source):
+    torch = pytest.importorskip("torch")
+    loader = (
+        rv.scan_image_folder(source[0])
+        .decode_image()
+        .five_crop(9, 7)
+        .workers(0)
+        .batch(1)
+        .dag_managed_budget_bytes(4096)
+        .execute()
+    )
+    first = loader.next_dlpack()
+    labels = torch.utils.dlpack.from_dlpack(first["labels"].into_dlpack())
+    labels.fill_(23)
+    second = loader.next_dlpack()
+    next_labels = torch.utils.dlpack.from_dlpack(second["labels"])
+    assert next_labels.tolist() == [0] * 5
+    assert labels.tolist() == [23] * 5
+    assert next_labels.data_ptr() != labels.data_ptr()

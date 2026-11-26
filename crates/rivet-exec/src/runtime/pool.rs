@@ -31,17 +31,39 @@ where
         F: Fn(T, usize) -> Result<R, E> + Send + Sync + 'static,
         P: Fn(usize, usize) -> E + Send + Sync + 'static,
     {
+        let execute = Arc::new(execute);
+        Self::with_worker(
+            num_workers,
+            max_in_flight_samples,
+            move || {
+                let execute = Arc::clone(&execute);
+                move |payload, index| execute(payload, index)
+            },
+            panic_error,
+        )
+    }
+
+    pub(crate) fn with_worker<F, W, P>(
+        num_workers: usize,
+        max_in_flight_samples: usize,
+        make_worker: F,
+        panic_error: P,
+    ) -> RuntimeResult<Self>
+    where
+        F: Fn() -> W,
+        W: FnMut(T, usize) -> Result<R, E> + Send + 'static,
+        P: Fn(usize, usize) -> E + Send + Sync + 'static,
+    {
         let capacity = max_in_flight_samples.max(1);
         let (work_tx, work_rx) = crossbeam_channel::bounded(capacity);
         let (result_tx, result_rx) = crossbeam_channel::bounded(capacity);
-        let execute = Arc::new(execute);
         let panic_error = Arc::new(panic_error);
 
         let mut handles = Vec::with_capacity(num_workers);
         for worker_id in 0..num_workers {
             let work_rx = work_rx.clone();
             let result_tx = result_tx.clone();
-            let execute = Arc::clone(&execute);
+            let execute = make_worker();
             let panic_error = Arc::clone(&panic_error);
             let handle = std::thread::Builder::new()
                 .name(format!("rivet-worker-{worker_id}"))
@@ -65,6 +87,10 @@ where
         sender
             .send(item)
             .map_err(|_| runtime_error("work queue closed"))
+    }
+
+    pub(crate) fn result_queue_is_empty(&self) -> bool {
+        self.result_rx.as_ref().is_none_or(Receiver::is_empty)
     }
 
     pub fn recv(&self) -> RuntimeResult<WorkResult<R, E>> {

@@ -1281,6 +1281,15 @@ impl ImagePipeline {
         self
     }
 
+    /// Bound managed DAG tensor allocations from decode and batch assembly.
+    /// Unknown per-morsel sizes reserve the whole limit before execution.
+    /// Source-owned storage, other kernels, decoder scratch and caller-held
+    /// batches are outside this budget. Typed linear execution is unchanged.
+    pub fn dag_managed_budget_bytes(mut self, bytes: usize) -> Self {
+        self.runtime.dag_managed_budget_bytes = Some(bytes);
+        self
+    }
+
     /// Bound the producer-reported payload weight on each persistent queue.
     /// Defaults to 512 MiB; dequeued/active values are excluded and the CPU pull
     /// path has no queues. Legacy DAG fallback supplies its single-value limit
