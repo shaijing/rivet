@@ -37,6 +37,8 @@ manifest-path = "crates/rivet-python/Cargo.toml"
 
 [dependency-groups]
 dev = [
+    "auditwheel==6.8.2",
+    "patchelf==0.19.3",
     "pillow>=11.0.0",
     "pytest>=9.1.1",
     "ruff>=0.16.6",
