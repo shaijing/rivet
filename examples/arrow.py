@@ -1,55 +1,34 @@
-# import pyarrow as pa
-# import pyarrow.parquet as pq
-# from pyarrow import ipc
+"""Convert an Arrow IPC stream to a Lance dataset."""
 
-# input_path = "/home/ling/.cache/huggingface/datasets/uoft-cs___cifar10/plain_text/0.0.0/0b2714987fa478483af9968de7c934580d0bb9a2/cifar10-train.arrow"
-# output_path = "/tmp/data.parquet"
-
-# # 读取 Arrow IPC file
-# with pa.memory_map(input_path, "r") as source:
-#     reader = ipc.open_stream(source)
-#     table = reader.read_all()
-
-# # 写成 Parquet
-# pq.write_table(table, output_path)
+import argparse
 from pathlib import Path
 
 import lance
 import pyarrow as pa
 from pyarrow import ipc
 
-train_arrow = "/home/ling/.cache/huggingface/datasets/uoft-cs___cifar100/cifar100/0.0.0/aadb3af77e9048adbea6b47c21a81e47dd092ae5/cifar100-train.arrow"
-
-test_arrow = "/home/ling/.cache/huggingface/datasets/uoft-cs___cifar100/cifar100/0.0.0/aadb3af77e9048adbea6b47c21a81e47dd092ae5/cifar100-test.arrow"
-
-output_root = Path.home() / ".cache" / "rivet" / "datasets" / "cifar100"
-output_root.mkdir(parents=True, exist_ok=True)
+from rivet import download_dataset
 
 
-def arrow_stream_to_lance(input_path: str, output_path: str):
-    with pa.memory_map(input_path, "r") as source:
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("input", help="local Arrow IPC stream file or HTTP(S) URL")
+    parser.add_argument("output", type=Path, help="output .lance path")
+    args = parser.parse_args()
+
+    path = (
+        download_dataset(args.input, extract=False)
+        if args.input.startswith(("http://", "https://"))
+        else Path(args.input).expanduser()
+    )
+    with pa.memory_map(str(path), "r") as source:
         reader = ipc.open_stream(source)
+        dataset = lance.write_dataset(reader, str(args.output), schema=reader.schema)
 
-        # 直接把 RecordBatchReader 交给 Lance
-        dataset = lance.write_dataset(
-            reader,
-            output_path,
-            schema=reader.schema,
-            mode="overwrite",
-        )
-
-    print(f"written: {output_path}")
+    print(f"written: {args.output}")
     print("rows:", dataset.count_rows())
-    print("schema:")
-    print(dataset.schema)
+    print("schema:", dataset.schema)
 
 
-arrow_stream_to_lance(
-    train_arrow,
-    str(output_root / "train.lance"),
-)
-
-arrow_stream_to_lance(
-    test_arrow,
-    str(output_root / "test.lance"),
-)
+if __name__ == "__main__":
+    main()

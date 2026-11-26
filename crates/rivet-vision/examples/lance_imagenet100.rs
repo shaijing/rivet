@@ -1,44 +1,27 @@
 //! Read the Rivet-native ImageNet-100 Lance dataset.
 //!
 //! Usage:
-//!   cargo run -j 12 -p rivet-vision --features lance --example lance_imagenet100
-//!   cargo run -j 12 -p rivet-vision --features lance --example lance_imagenet100 -- validation 2 32
+//! cargo run -j 12 -p rivet-vision --example lance_imagenet100 -- ./imagenet-100 validation 2 32
 //!
-//! Arguments are: [split] [max_batches] [batch_size].
-//! Defaults are: train 2 32.
-//!
-//! The dataset root can be overridden with RIVET_IMAGENET100_ROOT. By default
-//! it reads ~/.cache/rivet/datasets/imagenet-100.
+//! The source is a local Lance bundle or a remote source containing one.
+//! With RIVET_IMAGENET100_ROOT set, omit the source argument.
+//! Optional split, batch count, and batch size default to train, 2, and 32.
 
 use rivet_data::dataset::DatasetLoadResult;
-use rivet_vision::datasets::load_lance_image_dataset;
+use rivet_vision::api::{LoadDatasetOptions, load_dataset};
 use rivet_vision::sample::image::ImageSample;
 use rivet_vision::source::ImageSource;
 use std::env;
 use std::error::Error;
 use std::io;
-use std::path::PathBuf;
 use std::time::Instant;
-
-const DATASET_NAME: &str = "imagenet-100";
 
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
-fn dataset_root() -> PathBuf {
-    if let Some(path) = env::var_os("RIVET_IMAGENET100_ROOT") {
-        return PathBuf::from(path);
-    }
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join(".cache/rivet/datasets").join(DATASET_NAME))
-        .unwrap_or_else(|| PathBuf::from(".cache/rivet/datasets").join(DATASET_NAME))
-}
-
-fn parse_args() -> ExampleResult<(String, usize, usize)> {
-    let args: Vec<String> = env::args().skip(1).collect();
+fn parse_args(args: Vec<String>) -> ExampleResult<(String, usize, usize)> {
     if args.len() > 3 {
         return Err(io::Error::other(
-            "usage: lance_imagenet100 [split] [max_batches] [batch_size]",
+            "usage: lance_imagenet100 <source> [split] [max_batches] [batch_size]",
         )
         .into());
     }
@@ -64,28 +47,6 @@ fn parse_args() -> ExampleResult<(String, usize, usize)> {
     }
 
     Ok((split.to_owned(), max_batches, batch_size))
-}
-
-fn open_split(root: &std::path::Path, split: &str) -> ExampleResult<ImageSource> {
-    let loaded = load_lance_image_dataset(root, "image", "label")?;
-    match loaded {
-        DatasetLoadResult::Single(_) => Err(io::Error::other(format!(
-            "expected a dataset root containing splits at {}, but it resolved to one physical dataset",
-            root.display()
-        ))
-        .into()),
-        DatasetLoadResult::Bundle(bundle) => {
-            let available = bundle.split_names().collect::<Vec<_>>().join(", ");
-            let dataset = bundle.split(split).ok_or_else(|| {
-                io::Error::other(format!(
-                    "split '{split}' not found in {}; available splits: {available}",
-                    root.display()
-                ))
-            })?;
-            println!("available splits: {available}");
-            Ok(dataset)
-        }
-    }
 }
 
 fn read_batches(dataset: &ImageSource, max_batches: usize, batch_size: usize) -> ExampleResult<()> {
@@ -140,10 +101,20 @@ fn read_batches(dataset: &ImageSource, max_batches: usize, batch_size: usize) ->
 }
 
 fn main() -> ExampleResult<()> {
-    let (split, max_batches, batch_size) = parse_args()?;
-    let root = dataset_root();
-    println!("opening ImageNet-100 split={split} at {}", root.display());
-    let dataset = open_split(&root, &split)?;
+    let mut args = env::args().skip(1);
+    let source = env::var("RIVET_IMAGENET100_ROOT")
+        .ok()
+        .or_else(|| args.next())
+        .ok_or("usage: lance_imagenet100 <source> [split] [max_batches] [batch_size]")?;
+    let (split, max_batches, batch_size) = parse_args(args.collect())?;
+    println!("opening ImageNet-100 split={split} from {source}");
+    let options = LoadDatasetOptions {
+        split: Some(split),
+        ..LoadDatasetOptions::default()
+    };
+    let DatasetLoadResult::Single(dataset) = load_dataset(source.as_str(), &options)? else {
+        unreachable!("a specific split was requested");
+    };
     println!(
         "rows: {}, batch_size: {}, max_batches: {}",
         dataset.len(),

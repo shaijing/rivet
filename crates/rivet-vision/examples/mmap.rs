@@ -101,7 +101,10 @@ fn inspect_first_image_batch(
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let path = "/home/ling/.cache/huggingface/datasets/uoft-cs___cifar10/plain_text/0.0.0/0b2714987fa478483af9968de7c934580d0bb9a2/cifar10-train.arrow";
+    let path = std::env::args_os()
+        .nth(1)
+        .or_else(|| std::env::var_os("RIVET_TEST_ARROW_FILE"))
+        .ok_or("usage: cargo run -p rivet-vision --example mmap -- <arrow-stream-file>")?;
 
     let mut buffer = mmap_arrow_file(path)?;
 

@@ -1,11 +1,9 @@
+import argparse
 from collections.abc import Iterator
 from pathlib import Path
 
 import lance
 import pyarrow as pa
-
-ROOT = Path.home() / ".data" / "custom" / "nuimages_classification"
-OUTPUT = Path("/tmp/my_dataset")
 
 BATCH_SIZE = 1024
 
@@ -85,9 +83,9 @@ def make_batches(
         )
 
 
-def convert_split(split: str):
-    split_dir = ROOT / split
-    output_path = OUTPUT / f"{split}.lance"
+def convert_split(root: Path, output: Path, split: str):
+    split_dir = root / split
+    output_path = output / f"{split}.lance"
 
     class_to_idx = build_class_mapping(split_dir)
 
@@ -108,7 +106,11 @@ def convert_split(split: str):
     print(f"wrote {dataset.count_rows()} rows -> {output_path}")
 
 
-OUTPUT.mkdir(parents=True, exist_ok=True)
-
-convert_split("train")
-convert_split("val")
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Convert ImageFolder splits to Lance.")
+    parser.add_argument("root", type=Path, help="directory containing train and val")
+    parser.add_argument("output", type=Path, help="output Lance bundle directory")
+    args = parser.parse_args()
+    args.output.mkdir(parents=True, exist_ok=True)
+    for split in ("train", "val"):
+        convert_split(args.root, args.output, split)

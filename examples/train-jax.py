@@ -67,14 +67,6 @@ CIFAR10_STD = (
 # ============================================================
 
 
-DEFAULT_CIFAR10_ROOT = Path.home() / ".cache" / "rivet" / "datasets" / "cifar10"
-
-
-def cifar10_root() -> Path:
-    """Return the Rivet-native Lance CIFAR-10 root."""
-    return Path(os.environ.get("RIVET_CIFAR10_ROOT", DEFAULT_CIFAR10_ROOT))
-
-
 def load_cifar10_split(split: str):
     """Load and materialize one Rivet-native CIFAR-10 Lance split.
 
@@ -85,9 +77,9 @@ def load_cifar10_split(split: str):
     if split not in ("train", "test"):
         raise ValueError(f"unknown split {split!r}")
 
-    return rivet.load_dataset(cifar10_root(), split=split).cache(
-        level="decoded",
-    )
+    override = os.environ.get("RIVET_CIFAR10_ROOT")
+    source = Path(override).expanduser() if override else "torch:CIFAR10"
+    return rivet.load_dataset(source, split=split).cache(level="decoded")
 
 
 def build_loader(

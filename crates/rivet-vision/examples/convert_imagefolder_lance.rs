@@ -8,8 +8,8 @@
 //! Example:
 //!   cargo run -j 12 -p rivet-vision --features lance \
 //!     --example convert_imagefolder_lance -- \
-//!     /home/lingyu/.data/custom/nuimages_classification \
-//!     /home/lingyu/.data/custom/nuimages_classification.lance
+//!     ./nuimages_classification \
+//!     ./nuimages_classification.lance
 
 use rivet_vision::api::convert_imagefolder_dataset;
 use std::env;

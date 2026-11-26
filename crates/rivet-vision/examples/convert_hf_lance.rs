@@ -57,7 +57,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let output = output.unwrap_or_else(|| default_output_root(&input));
+    let output = match output {
+        Some(path) => path,
+        None => default_output_root(&input)?,
+    };
     let splits = discover_huggingface_splits(&input)?;
     let report = convert_huggingface_dataset(splits, output, &options)?;
     for (split, rows) in report.rows_by_split {
@@ -67,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn default_output_root(input: &std::path::Path) -> PathBuf {
+fn default_output_root(input: &std::path::Path) -> rivet_data::DataResult<PathBuf> {
     let raw_name = input
         .file_stem()
         .or_else(|| input.file_name())
@@ -77,9 +80,7 @@ fn default_output_root(input: &std::path::Path) -> PathBuf {
         .rsplit_once("___")
         .map(|(_, name)| name)
         .unwrap_or(raw_name);
-    let base = env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .unwrap_or_else(|| env::home_dir().unwrap_or_default().join(".cache"));
-    base.join("rivet/datasets/local/lance").join(dataset_name)
+    Ok(rivet_data::dataset::dataset_cache_dir()?
+        .join("local/lance")
+        .join(dataset_name))
 }

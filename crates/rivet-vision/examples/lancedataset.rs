@@ -3,13 +3,13 @@ use image::ImageReader;
 use lance::Dataset;
 use lance::dataset::ProjectionRequest;
 use std::io::Cursor;
-use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = PathBuf::from(std::env::var_os("HOME").ok_or("HOME is not set")?)
-        .join(".cache/rivet/datasets/nuimages_classification/train.lance");
-    let dataset = Dataset::open(path.to_str().ok_or("dataset path is not valid UTF-8")?).await?;
+    let path = std::env::args().nth(1).ok_or(
+        "usage: cargo run -p rivet-vision --example lancedataset -- <physical-lance-path>",
+    )?;
+    let dataset = Dataset::open(&path).await?;
 
     // Rivet's converted cache requires image/label; custom conversions may
     // additionally preserve class names and source paths.

@@ -3,7 +3,10 @@ use lance::Dataset;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let dataset = Dataset::open("/tmp/data.lance").await?;
+    let path = std::env::args()
+        .nth(1)
+        .ok_or("usage: cargo run -p rivet-vision --example lance -- <physical-lance-path>")?;
+    let dataset = Dataset::open(&path).await?;
 
     println!("schema:\n{:?}", dataset.schema());
     println!("rows: {}", dataset.count_rows(None).await?);

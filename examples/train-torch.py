@@ -33,12 +33,17 @@ class Config:
 
 CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
 CIFAR10_STD = (0.2470, 0.2435, 0.2616)
-DEFAULT_CIFAR10_ROOT = Path.home() / ".data" / "pytorch"
 
 
 def cifar10_root() -> Path:
-    """Return the local directory used by torchvision for CIFAR-10."""
-    return Path(os.environ.get("CIFAR10_ROOT", DEFAULT_CIFAR10_ROOT))
+    """Return the native torchvision CIFAR-10 root."""
+    override = os.environ.get("CIFAR10_ROOT")
+    if override:
+        return Path(override).expanduser()
+
+    from rivet import download_dataset
+
+    return download_dataset("torch:CIFAR10")
 
 
 def main() -> None:
@@ -81,17 +86,19 @@ def main() -> None:
         ]
     )
 
+    root = cifar10_root()
+    download = bool(os.environ.get("CIFAR10_ROOT"))
     train_dataset = datasets.CIFAR10(
-        root=cifar10_root(),
+        root=root,
         train=True,
         transform=train_transform,
-        download=True,
+        download=download,
     )
     test_dataset = datasets.CIFAR10(
-        root=cifar10_root(),
+        root=root,
         train=False,
         transform=test_transform,
-        download=True,
+        download=download,
     )
 
     loader_kwargs = {

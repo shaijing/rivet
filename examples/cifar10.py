@@ -5,15 +5,8 @@ loop must be plain numpy (``dtype=uint8``, ``NHWC`` images plus labels),
 the loader must reach a sticky ``StopIteration``, and worker mode must
 agree with the inline path.
 
-The input directory should contain Rivet-native Lance splits:
-
-    ~/.cache/rivet/datasets/cifar10/
-    ├── train.lance/
-    └── test.lance/
-
-Convert Hugging Face-style Lance data first with
-examples/convert_hf_lance.py when necessary. Set
-RIVET_CIFAR10_ROOT to use another dataset root.
+The default source is torch:CIFAR10. Set RIVET_CIFAR10_ROOT to use a
+local Lance bundle instead.
 """
 
 from __future__ import annotations
@@ -28,7 +21,6 @@ import rivet
 
 BATCH_SIZE = 64
 N_BATCHES = 4  # keep the demo quick; set to None to drain everything
-DEFAULT_LANCE_ROOT = Path.home() / ".cache" / "rivet" / "datasets" / "cifar10"
 
 
 def run(loader: object, max_batches: int | None) -> list[dict[str, object]]:
@@ -61,7 +53,8 @@ def run(loader: object, max_batches: int | None) -> list[dict[str, object]]:
 
 
 def main() -> int:
-    lance_root = Path(os.environ.get("RIVET_CIFAR10_ROOT", DEFAULT_LANCE_ROOT))
+    override = os.environ.get("RIVET_CIFAR10_ROOT")
+    lance_root = Path(override).expanduser() if override else "torch:CIFAR10"
     dataset = rivet.load_dataset(lance_root)
     print(f"lance dataset: {lance_root}")
     print(f"splits: {dataset.keys()}")

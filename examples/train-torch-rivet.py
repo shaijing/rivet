@@ -35,12 +35,6 @@ class Config:
 
 CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
 CIFAR10_STD = (0.2470, 0.2435, 0.2616)
-DEFAULT_CIFAR10_ROOT = Path.home() / ".cache" / "rivet" / "datasets" / "cifar10"
-
-
-def cifar10_root() -> Path:
-    """Return the Rivet-native Lance CIFAR-10 root."""
-    return Path(os.environ.get("RIVET_CIFAR10_ROOT", DEFAULT_CIFAR10_ROOT))
 
 
 def load_cifar10_split(split: str):
@@ -48,9 +42,9 @@ def load_cifar10_split(split: str):
     if split not in ("train", "test"):
         raise ValueError(f"unknown split {split!r}")
 
-    return rivet.load_dataset(cifar10_root(), split=split).cache(
-        level="decoded",
-    )
+    override = os.environ.get("RIVET_CIFAR10_ROOT")
+    source = Path(override).expanduser() if override else "torch:CIFAR10"
+    return rivet.load_dataset(source, split=split).cache(level="decoded")
 
 
 def build_loader(

@@ -7,28 +7,27 @@
 //! Arguments are: <dataset> <split> <max_batches> <batch_size>.
 //! Defaults are: cifar10 train 2 64.
 //!
-//! The dataset root can be overridden with RIVET_LANCE_ROOT:
-//!   RIVET_LANCE_ROOT=$HOME/.cache/rivet/datasets cargo run -j 16 \
-//!     -p rivet-vision --features lance --example lance_cifar
+//! By default Rivet downloads and converts the Hugging Face dataset.
+//! Set RIVET_LANCE_ROOT to a local directory containing cifar10 or cifar100 bundles.
 
-use rivet_data::dataset::DatasetLoadResult;
-use rivet_vision::datasets::load_lance_image_dataset;
+use rivet_data::dataset::{
+    DataFiles, DatasetLoadResult, DownloadFormat, DownloadOptions, download_dataset,
+};
+use rivet_vision::api::{LoadDatasetOptions, load_dataset};
 use rivet_vision::sample::image::ImageSample;
 use rivet_vision::source::ImageSource;
 use std::env;
 use std::error::Error;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
-
-const DEFAULT_DATASET_ROOT: &str = ".cache/rivet/datasets";
 
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
 struct CifarSpec {
     name: &'static str,
-    image_column: &'static str,
-    label_column: &'static str,
+    hub_source: &'static str,
+    hub_label_column: &'static str,
 }
 
 impl CifarSpec {
@@ -36,13 +35,13 @@ impl CifarSpec {
         match name.to_ascii_lowercase().as_str() {
             "cifar10" => Ok(Self {
                 name: "cifar10",
-                image_column: "image",
-                label_column: "label",
+                hub_source: "hf:uoft-cs/cifar10",
+                hub_label_column: "label",
             }),
             "cifar100" => Ok(Self {
                 name: "cifar100",
-                image_column: "image",
-                label_column: "label",
+                hub_source: "hf:uoft-cs/cifar100",
+                hub_label_column: "fine_label",
             }),
             _ => Err(io::Error::other("dataset must be cifar10 or cifar100").into()),
         }
@@ -92,38 +91,34 @@ fn parse_args() -> ExampleResult<(CifarSpec, String, usize, usize)> {
     ))
 }
 
-fn dataset_root() -> PathBuf {
-    env::var_os("RIVET_LANCE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|home| home.join(DEFAULT_DATASET_ROOT))
-                .unwrap_or_else(|| PathBuf::from(DEFAULT_DATASET_ROOT))
-        })
-}
-
-fn open_split(root: &Path, spec: &CifarSpec, split: &str) -> ExampleResult<ImageSource> {
-    let path = root.join(spec.name);
-    let loaded = load_lance_image_dataset(&path, spec.image_column, spec.label_column)?;
-
-    match loaded {
-        DatasetLoadResult::Single(_) => Err(io::Error::other(format!(
-            "expected a split root at {}, but it resolved to one physical dataset",
-            path.display()
-        ))
-        .into()),
-        DatasetLoadResult::Bundle(bundle) => {
-            let available = bundle.split_names().collect::<Vec<_>>().join(", ");
-            let dataset = bundle.split(split).ok_or_else(|| {
-                io::Error::other(format!(
-                    "split '{split}' not found in {}; available splits: {available}",
-                    path.display()
-                ))
-            })?;
-            println!("available splits: {available}");
-            Ok(dataset)
-        }
+fn open_split(spec: &CifarSpec, split: String) -> ExampleResult<ImageSource> {
+    let mut options = LoadDatasetOptions {
+        split: Some(split),
+        ..LoadDatasetOptions::default()
+    };
+    let root = if let Some(root) = env::var_os("RIVET_LANCE_ROOT") {
+        PathBuf::from(root).join(spec.name)
+    } else {
+        options.image_column = "img".into();
+        options.label_column = spec.hub_label_column.into();
+        download_dataset(
+            spec.hub_source,
+            &DownloadOptions {
+                format: DownloadFormat::Lance,
+                data_files: Some(DataFiles::Splits(
+                    ["train", "test"]
+                        .into_iter()
+                        .map(|name| (name.to_owned(), vec![format!("**/{name}-*.parquet")]))
+                        .collect(),
+                )),
+                ..DownloadOptions::default()
+            },
+        )?
+    };
+    println!("opening {} at {}", spec.name, root.display());
+    match load_dataset(root.as_path(), &options)? {
+        DatasetLoadResult::Single(dataset) => Ok(dataset),
+        DatasetLoadResult::Bundle(_) => unreachable!("a specific split was requested"),
     }
 }
 
@@ -182,20 +177,7 @@ fn read_batches(dataset: &ImageSource, max_batches: usize, batch_size: usize) ->
 
 fn main() -> ExampleResult<()> {
     let (spec, split, max_batches, batch_size) = parse_args()?;
-    let root = dataset_root();
-    let dataset_root = root.join(spec.name);
-
-    println!(
-        "opening {} split={} at {}",
-        spec.name,
-        split,
-        dataset_root.display()
-    );
-    let dataset = open_split(&root, &spec, &split)?;
-    println!(
-        "columns: image={}, label={}",
-        spec.image_column, spec.label_column
-    );
+    let dataset = open_split(&spec, split)?;
     println!(
         "rows: {}, batch_size: {}, max_batches: {}",
         dataset.len(),

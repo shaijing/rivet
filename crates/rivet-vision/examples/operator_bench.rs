@@ -4,13 +4,12 @@
 //! the CIFAR-10 pipeline examples:
 //!
 //! ```text
-//! RIVET_OPERATOR_BENCH_ITERS=20 \
+//! RIVET_OPERATOR_BENCH_ARROW=./cifar10-train.arrow RIVET_OPERATOR_BENCH_ITERS=20 \
 //!   cargo run -p rivet-vision --release --example operator_bench
 //! ```
 //!
-//! The Arrow file can be selected with `RIVET_OPERATOR_BENCH_ARROW` or the
-//! test-compatible `RIVET_TEST_ARROW_FILE` variable. If neither is set, the
-//! local Hugging Face CIFAR-10 cache is searched.
+//! Supply an Arrow IPC stream with `RIVET_OPERATOR_BENCH_ARROW` or
+//! `RIVET_TEST_ARROW_FILE`.
 
 use rivet_core::Tensor;
 use rivet_data::dataset::Dataset;
@@ -30,7 +29,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use walkdir::WalkDir;
 
 const BATCH_SIZE: usize = 128;
 const WORKERS: usize = 4;
@@ -153,28 +151,6 @@ fn find_arrow_file() -> BenchResult<PathBuf> {
     for variable in ["RIVET_OPERATOR_BENCH_ARROW", "RIVET_TEST_ARROW_FILE"] {
         if let Some(path) = env::var_os(variable) {
             return Ok(PathBuf::from(path));
-        }
-    }
-
-    let roots = [
-        env::var_os("HF_DATASETS_CACHE").map(PathBuf::from),
-        env::var_os("HF_HOME").map(|home| PathBuf::from(home).join("datasets")),
-        env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache/huggingface/datasets")),
-    ];
-
-    for root in roots.into_iter().flatten() {
-        if !root.is_dir() {
-            continue;
-        }
-        let mut matches = WalkDir::new(root)
-            .into_iter()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_name() == "cifar10-train.arrow")
-            .map(|entry| entry.into_path())
-            .collect::<Vec<_>>();
-        matches.sort();
-        if let Some(path) = matches.pop() {
-            return Ok(path);
         }
     }
 

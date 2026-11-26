@@ -7,14 +7,12 @@ use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_DATA_DIR: &str = "/home/ling/.cache/huggingface/datasets/setfit___sst5";
 const SPLITS: [&str; 3] = ["train", "validation", "test"];
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let data_dir = std::env::args_os()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_DATA_DIR));
+    let data_dir = std::env::args_os().nth(1).map(PathBuf::from).ok_or(
+        "usage: cargo run -p rivet-text --example inspect_sst5_arrowtext -- <sst5-arrow-directory>",
+    )?;
 
     println!("ArrowText directory: {}", data_dir.display());
     for split in SPLITS {

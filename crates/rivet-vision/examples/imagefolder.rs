@@ -1,14 +1,14 @@
 //! End-to-end ImageFolder example over the nuImages classification dataset.
 //!
 //! ```text
-//! cargo run -p rivet-vision --example imagefolder                 # train, 2 batches
-//! cargo run -p rivet-vision --example imagefolder -- val 1        # val, 1 batch
+//! cargo run -p rivet-vision --example imagefolder -- ./nuimages_classification
+//! cargo run -p rivet-vision --example imagefolder -- ./nuimages_classification val 1
 //! ```
 //!
 //! The dataset has the usual split/class directory layout:
 //!
 //! ```text
-//! ~/.data/custom/nuimages_classification/
+//! ./nuimages_classification/
 //! ├── train/<class>/*.jpg
 //! └── val/<class>/*.jpg
 //! ```
@@ -20,12 +20,15 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-const DATASET_ROOT: &str = ".data/custom/nuimages_classification";
 const IMAGE_SIZE: u32 = 224;
 const BATCH_SIZE: usize = 8;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
+    let root = PathBuf::from(
+        args.next()
+            .ok_or("usage: imagefolder <root> [split] [max_batches]")?,
+    );
     let split = args.next().unwrap_or_else(|| "train".to_string());
     let max_batches = args
         .next()
@@ -33,9 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .transpose()?
         .unwrap_or(2);
 
-    let root = PathBuf::from(env::var_os("HOME").ok_or("HOME is not set")?)
-        .join(DATASET_ROOT)
-        .join(&split);
+    let root = root.join(&split);
     let dataset = Arc::new(ImageFolderDatasetCore::new(root.clone())?);
 
     println!("root: {}", root.display());

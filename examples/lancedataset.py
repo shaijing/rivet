@@ -1,43 +1,27 @@
-import io
-from pathlib import Path
+"""Inspect an image sample in a local or remote Lance bundle."""
 
-import lance
+import argparse
+import io
+
 from PIL import Image
 
-root = Path.home() / ".cache" / "rivet" / "datasets" / "nuimages_classification"
+from rivet import load_dataset
 
-train = lance.dataset(str(root / "train.lance"))
-val = lance.dataset(str(root / "val.lance"))
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("source", help="local bundle path or remote dataset source")
+    parser.add_argument("--split", default="train")
+    parser.add_argument("--index", type=int, default=0)
+    args = parser.parse_args()
 
-print("Train rows:", train.count_rows())
-print("Val rows:", val.count_rows())
+    dataset = load_dataset(args.source, split=args.split)
+    print("Rows:", len(dataset))
+    sample = dataset.get_encoded(args.index)
+    encoded = sample["image"]
+    print("Label:", sample["label"])
+    print("Encoded bytes:", len(encoded))
 
-print("\nTrain schema:")
-print(train.schema)
-
-
-# 随机读取第 1000 个样本
-index = 1000
-
-table = train.take([index])
-row = table.to_pylist()[0]
-
-print("\nSample:")
-print("label:", row["label"])
-
-# 如果你保存的是:
-# image: binary
-# label: int32
-encoded = row["image"]
-
-print("encoded bytes:", len(encoded))
-print("signature:", encoded[:8])
-
-# 解码图片
-image = Image.open(io.BytesIO(encoded))
-
-print("format:", image.format)
-print("size:", image.size)
-print("mode:", image.mode)
-
-image.show()
+    with Image.open(io.BytesIO(encoded)) as image:
+        print("Format:", image.format)
+        print("Size:", image.size)
+        print("Mode:", image.mode)

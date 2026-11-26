@@ -6,7 +6,10 @@ use std::io::Cursor;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let dataset = Dataset::open("/tmp/data.lance").await?;
+    let path = std::env::args()
+        .nth(1)
+        .ok_or("usage: cargo run -p rivet-vision --example lancecopy -- <physical-lance-path>")?;
+    let dataset = Dataset::open(&path).await?;
 
     // Lance 11: 显式构造 projection
     let projection = ProjectionRequest::from_columns(["img"], dataset.schema());

@@ -2,13 +2,11 @@
 //! pipeline -> training-style batch loop over (x, y).
 //!
 //! ```text
-//! cargo run -p rivet-vision --example cifar10            # all batches
-//! cargo run -p rivet-vision --example cifar10 -- 10      # first 10 batches
+//! RIVET_TEST_ARROW_FILE=./cifar10-train.arrow cargo run -p rivet-vision --example cifar10 -- 10
 //! ```
 //!
-//! The Arrow file comes from `RIVET_TEST_ARROW_FILE` or the local Hugging
-//! Face CIFAR-10 cache (populated by `load_dataset("uoft-cs/cifar10")`);
-//! the optional argument caps the number of batches.
+//! Set RIVET_TEST_ARROW_FILE to an Arrow IPC stream. The optional argument
+//! limits the number of batches. For cached Lance data, use lance_cifar.
 
 use rivet_data::dataset::Dataset;
 use rivet_vision::datasets::ArrowImageDataset;
@@ -19,55 +17,17 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use walkdir::WalkDir;
 
 const IMAGE_COLUMN: &str = "img";
 const LABEL_COLUMN: &str = "label";
 const MEAN: [f32; 3] = [0.4914, 0.4822, 0.4465];
 const STD: [f32; 3] = [0.2470, 0.2435, 0.2616];
 
-fn find_cache_file() -> Option<PathBuf> {
-    let roots = [
-        env::var("HF_DATASETS_CACHE").ok().map(PathBuf::from),
-        env::var("HF_HOME")
-            .ok()
-            .map(|home| PathBuf::from(home).join("datasets")),
-        env::var("HOME")
-            .ok()
-            .map(|home| PathBuf::from(home).join(".cache/huggingface/datasets")),
-    ]
-    .into_iter()
-    .flatten();
-
-    for root in roots {
-        if !root.is_dir() {
-            continue;
-        }
-        let mut found = WalkDir::new(&root)
-            .into_iter()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_name() == "cifar10-train.arrow")
-            .map(|entry| entry.into_path())
-            .collect::<Vec<_>>();
-        if !found.is_empty() {
-            found.sort();
-            return found.pop();
-        }
-    }
-    None
-}
-
 fn arrow_file_arg() -> Result<PathBuf, Box<dyn std::error::Error>> {
     if let Some(path) = env::var_os("RIVET_TEST_ARROW_FILE") {
         return Ok(PathBuf::from(path));
     }
-    find_cache_file().ok_or_else(|| {
-        std::io::Error::other(
-            "no CIFAR-10 Arrow file found: set RIVET_TEST_ARROW_FILE or load \
-             'uoft-cs/cifar10' with the datasets library first",
-        )
-        .into()
-    })
+    Err("set RIVET_TEST_ARROW_FILE to a CIFAR-10 Arrow IPC stream".into())
 }
 
 /// A minimal "training step" over one batch, mirroring real use: `x` is the
@@ -150,8 +110,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .hwc_to_chw();
 
     // Compiled output state is known before any sample is processed.
-    let plan = pipeline.clone().batch(1, false).compile()?.plan;
-    println!("output state: {:?}", plan.output_state);
+    let info = pipeline.clone().batch(1, false).compile()?.info;
+    println!("output state: {:?}", info.output_state);
 
     // Training-style loop with a persistent 4-worker pool and 2 batches of
     // prefetch.
