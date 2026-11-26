@@ -2,8 +2,7 @@ use super::context::SampleContext;
 use super::image::{ImageOp, PipelineImageState};
 use crate::errors::{RivetResult, invalid_pipeline};
 use crate::sample::image::{ImageAxisOrder, ImageSample};
-use crate::transforms::geometry::LayoutConfig;
-use crate::transforms::representation::{ConvertImageDtypeConfig, NormalizeConfig};
+use crate::transforms::{ConvertImageDtypeConfig, LayoutConfig, NormalizeConfig};
 use rivet_core::DType;
 use rivet_data::random::OpKey;
 
@@ -180,7 +179,7 @@ impl CompiledSampleOp {
             } => {
                 debug_assert!(!branches.is_empty(), "RandomChoice must have branches");
                 let mut rng = ctx.stream(*key);
-                let branch = super::image::choose_branch(
+                let branch = super::choice::choose_branch(
                     &mut rng,
                     branches.len(),
                     cumulative_weights.as_deref(),

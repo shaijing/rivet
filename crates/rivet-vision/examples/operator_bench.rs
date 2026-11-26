@@ -17,10 +17,10 @@ use rivet_vision::cache::{DecodedImageMemoryDataset, DenseImageMemoryDataset};
 use rivet_vision::datasets::ArrowImageDataset;
 use rivet_vision::pipeline::ImagePipeline;
 use rivet_vision::sample::image::{DecodedSample, ImageAxisOrder, ImageSample};
-use rivet_vision::transforms::geometry::{CropConfig, LayoutConfig};
 use rivet_vision::transforms::representation::{
     decode_rgb, normalize_u8_batch_to_f32, normalize_u8_batch_to_nchw_f32, normalize_u8_to_f32,
 };
+use rivet_vision::transforms::{CropConfig, LayoutConfig};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::env;
 use std::error::Error;

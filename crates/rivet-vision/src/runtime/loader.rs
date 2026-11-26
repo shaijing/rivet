@@ -1,7 +1,6 @@
 use crate::batch::ImageBatchBuilder;
 use crate::errors::{RivetError, RivetResult};
-use crate::pipeline::ImageGraphInfo;
-use crate::pipeline::physical::ImageExecutionGraph;
+use crate::pipeline::{ImageExecutionGraph, ImageGraphInfo};
 use crate::sample::image::{DecodedSample, ImageBatch, ImageSample};
 use crate::sampler::IndexSampler;
 use rivet_exec::physical::{KernelStage, PhysicalNodeKind, PhysicalProfiler};

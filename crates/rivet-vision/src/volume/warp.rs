@@ -1,4 +1,4 @@
-use super::{IntoVolumeFloat, VolumeInterpolation, VolumeSample};
+use super::{VolumeInterpolation, VolumeSample, resample::IntoVolumeFloat};
 use crate::RandomStream;
 use crate::errors::{RivetResult, invalid_argument};
 use rivet_core::{CpuStorageRef, DType, Tensor, WithDType};

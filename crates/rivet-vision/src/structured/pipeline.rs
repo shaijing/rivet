@@ -212,7 +212,7 @@ impl StructuredPipeline {
             *count += 1;
             let mut rng = ctx.stream(key);
             sample = match op {
-                StructuredOp::Image(op) => super::geometry::apply(sample, op, &mut rng, &ctx, key)?,
+                StructuredOp::Image(op) => super::dispatch::apply(sample, op, &mut rng, &ctx, key)?,
                 StructuredOp::ConvertBoxes(format) => sample.convert_boxes(*format)?,
                 StructuredOp::ClampBoxes => sample.clamp_boxes()?,
                 StructuredOp::ClampKeypoints => sample.clamp_keypoints()?,

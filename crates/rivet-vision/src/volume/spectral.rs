@@ -1,6 +1,6 @@
-use super::{IntoVolumeFloat, VolumeSample};
+use super::{VolumeSample, resample::IntoVolumeFloat};
 use crate::errors::{RivetResult, invalid_argument};
-use crate::{RandomStream, transforms::frequency::Fft3};
+use crate::{RandomStream, transforms::degradation::frequency::Fft3};
 use rivet_core::{CpuStorageRef, DType, Tensor, WithDType};
 use rustfft::num_complex::Complex64;
 

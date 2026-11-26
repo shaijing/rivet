@@ -1,6 +1,9 @@
-use super::{VolumeSample, axis_samples};
+use super::{
+    VolumeSample,
+    resample::{AxisSample, axis_samples},
+};
 use crate::errors::{RivetResult, invalid_argument};
-use crate::{RandomStream, transforms::noise::normal_pair};
+use crate::{RandomStream, transforms::degradation::noise::normal_pair};
 use rivet_core::{CpuStorageRef, DType, Tensor};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,7 +68,7 @@ impl BiasFieldConfig {
         let input = input.contiguous()?;
         Ok(input.with_cpu_storage(|storage, layout| {
             let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
-            let gain = |z: &super::AxisSample, y: &super::AxisSample, x: &super::AxisSample, f| {
+            let gain = |z: &AxisSample, y: &AxisSample, x: &AxisSample, f| {
                 let read = |zz, yy, xx| {
                     let index: usize = ((zz * coarse[1] + yy) * coarse[2] + xx) * fields + f;
                     f64::from(coefficients[index])

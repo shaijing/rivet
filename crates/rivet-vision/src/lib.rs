@@ -1,3 +1,9 @@
+//! Vision data sources, transform operators, and pipeline execution.
+//!
+//! Use [`api`] for common integration entry points. Implementation modules
+//! separate image transforms, pipeline planning and execution, and transforms
+//! for annotated images and other modalities.
+
 pub mod api;
 pub mod batch;
 pub mod cache;
@@ -7,8 +13,11 @@ pub mod pipeline;
 pub mod runtime;
 pub mod sample;
 pub mod source;
+pub mod spectrogram;
+pub mod structured;
 pub mod transforms;
-mod webp_codec;
+pub mod video;
+pub mod volume;
 
 pub mod sampler {
     pub(crate) use rivet_data::sampler::permute;
@@ -34,8 +43,3 @@ pub use source::ImageSource;
 /// Stable planning domain identity used by vision payloads and value
 /// properties. Other domain crates must use distinct IDs.
 pub const VISION_DOMAIN_ID: rivet_plan::DomainId = rivet_plan::DomainId::new(1);
-
-pub mod spectrogram;
-pub mod structured;
-pub mod video;
-pub mod volume;

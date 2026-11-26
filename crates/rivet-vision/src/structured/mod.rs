@@ -9,6 +9,7 @@ mod constrained_dropout;
 pub use constrained_dropout::ConstrainedCoarseDropoutConfig;
 mod copy_paste;
 pub use copy_paste::{CopyAndPasteConfig, CopyPasteDonor};
+mod dispatch;
 mod geometry;
 mod guided_dropout;
 pub use guided_dropout::GuidedCoarseDropoutConfig;

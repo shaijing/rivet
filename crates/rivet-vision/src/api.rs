@@ -1,11 +1,9 @@
-//! Stable image facade for integrations such as PyO3 bindings.
+//! Vision facade for integrations such as PyO3 bindings.
 //!
-//! The implementation remains split across `datasets`, `transforms`,
-//! `pipeline`, `runtime`, `sample`, and `source`. Consumers that need a
-//! supported cross-module entry point should import from this module instead
-//! of depending on those implementation paths directly.
+//! Collects data sources, configuration types, and pipeline and sample entry
+//! points used by bindings.
 
-pub use crate::batch::ImageBatchBuilder;
+pub use crate::batch::{BatchMixConfig, ImageBatchBuilder};
 pub use crate::cache::{
     CacheConfig, CacheLevel, CachePolicy, DEFAULT_DECODED_CHUNK_SIZE, DEFAULT_DECODED_SLAB_BYTES,
     DEFAULT_ENCODED_CHUNK_SIZE,
@@ -29,20 +27,26 @@ pub use crate::sample::image::{
     DecodedSample, EncodedImageSample, ImageAxisOrder, ImageBatch, ImageSample,
 };
 pub use crate::source::ImageSource;
+pub use crate::structured::{
+    AtLeastOneBBoxRandomCropConfig, BBoxSafeRandomCropConfig, BBoxSubsetSafeRandomCropConfig,
+    BoxFormat, RandomIoUCropConfig, StructuredBatch, StructuredLoader, StructuredOp,
+    StructuredPipeline, StructuredSample,
+};
 pub use crate::transforms::{
     AffineConfig, ArbitraryRotateConfig, AugMixConfig, AugMixPlan, AugmentOp, AugmentStep,
     AutoAugmentConfig, AutoAugmentPolicy, AutocontrastConfig, BrightnessConfig, CenterCropConfig,
     ColorJitterConfig, ContrastConfig, ConvertImageDtypeConfig, CropConfig, CropRegion,
     DecodeImageConfig, ElasticTransformConfig, EqualizeConfig, EraseConfig, EraseRegion,
     ErasingValue, FiveCropConfig, FlipConfig, FlipDirection, GammaConfig, GaussianBlurConfig,
-    GrayscaleConfig, HueConfig, InterpolationMode, InvertConfig, LayoutConfig,
+    GrayscaleConfig, HueConfig, InterpolationMode, InvertConfig, LayoutConfig, LetterBoxConfig,
     LinearTransformationConfig, NormalizeConfig, PadConfig, PaddingMode, PerspectiveConfig, Point2,
     PosterizeConfig, RandAugmentConfig, RandomAffineConfig, RandomCropConfig, RandomErasingConfig,
     RandomGaussianBlurConfig, RandomGrayscaleConfig, RandomHorizontalFlipConfig,
     RandomPerspectiveConfig, RandomResizedCropConfig, RandomRotationConfig, ResizeConfig,
     RotateConfig, RotationAngle, SaturationConfig, SharpnessConfig, SolarizeConfig, TenCropConfig,
-    TrivialAugmentWideConfig,
+    TrivialAugmentWideConfig, V2Config, gaussian_noise, shot_noise,
 };
+pub use crate::video::{VideoLayout, VideoSample, uniform_temporal_subsample};
 pub use rivet_core::DType;
 pub use rivet_data::random::{
     OpKey, RNG_ALGORITHM_VERSION, RandomContext, RandomDomain, RandomStream, SampleKey,
@@ -68,14 +72,3 @@ pub fn single_sample_batch(sample: DecodedSample) -> VisionResult<ImageBatch> {
 pub fn empty_image_batch() -> VisionResult<ImageBatch> {
     ImageBatchBuilder::with_capacity(0).finish()
 }
-
-pub use crate::transforms::{LetterBoxConfig, V2Config, gaussian_noise, shot_noise};
-
-pub use crate::batch::BatchMixConfig;
-
-pub use crate::structured::{
-    AtLeastOneBBoxRandomCropConfig, BBoxSafeRandomCropConfig, BBoxSubsetSafeRandomCropConfig,
-    BoxFormat, RandomIoUCropConfig, StructuredBatch, StructuredLoader, StructuredOp,
-    StructuredPipeline, StructuredSample,
-};
-pub use crate::video::{VideoLayout, VideoSample, uniform_temporal_subsample};

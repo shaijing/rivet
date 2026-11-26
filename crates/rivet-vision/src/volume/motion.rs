@@ -1,6 +1,8 @@
-use super::{Affine3DConfig, IntoVolumeFloat, VolumeBorder, VolumeInterpolation, VolumeSample};
+use super::{
+    Affine3DConfig, VolumeBorder, VolumeInterpolation, VolumeSample, resample::IntoVolumeFloat,
+};
 use crate::errors::{RivetResult, invalid_argument};
-use crate::{RandomStream, transforms::frequency::Fft3};
+use crate::{RandomStream, transforms::degradation::frequency::Fft3};
 use rivet_core::{CpuStorageRef, DType, Tensor};
 use rustfft::num_complex::Complex64;
 
