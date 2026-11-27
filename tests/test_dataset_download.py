@@ -640,3 +640,52 @@ def test_lance_requires_explicit_build_feature(tmp_path, server) -> None:
         rivet.LanceDataset(local)
     with pytest.raises(ValueError, match="requires the lance feature"):
         rivet.convert_imagefolder_lance(tmp_path, local)
+
+
+def test_delete_cached_dataset_by_name_and_format(tmp_path: Path, server, capsys) -> None:
+    from rivet._cli import main
+
+    endpoint, routes, requests = server
+    names = ["/a/reviews.jsonl", "/b/reviews.jsonl"]
+    for route in names:
+        routes[route] = (200, {}, b'{"text":"example"}\n')
+    first, second = (endpoint + route for route in names)
+    raw = download_dataset(first, cache_dir=tmp_path)
+    other_raw = download_dataset(second, cache_dir=tmp_path)
+    index = tmp_path / "manifests"
+    index.mkdir()
+    (index / "imports.json").write_text(json.dumps({"datasets": {
+        "other-source": {"path": str(other_raw)},
+        "reviews-jsonl": {"path": str(raw)},
+    }}))
+    arrow = download_dataset(first, cache_dir=tmp_path, format="arrow")
+    stream = download_dataset(first, cache_dir=tmp_path, format="arrow-ipc-stream")
+    other_arrow = download_dataset(second, cache_dir=tmp_path, format="arrow")
+
+    args = ["delete", "reviews-jsonl", "--cache-dir", str(tmp_path)]
+    assert main([*args, "--format", "arrow-ipc-stream"]) == 0
+    assert "Deleted 1 cache entry" in capsys.readouterr().out
+    assert not stream.exists()
+    assert raw.is_file() and arrow.is_dir() and other_arrow.is_dir()
+
+    native = arrow.parent / ("b" * 64)
+    native.mkdir()
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    (unrelated / "keep").write_text("outside the bundle")
+    (native / "train.lance").symlink_to(unrelated, target_is_directory=True)
+    (native / "dataset.json").write_text(
+        json.dumps({"format_version": 1, "splits": {"train": {"path": "train.lance"}}})
+    )
+    (native / "download-artifact").write_text(str(raw.relative_to(tmp_path / "downloads")))
+    assert rivet.delete_dataset("reviews-jsonl", cache_dir=tmp_path, format="lance") == 1
+    assert not native.exists() and raw.is_file()
+    assert (unrelated / "keep").read_text() == "outside the bundle"
+
+    assert rivet.delete_dataset("reviews-jsonl", cache_dir=tmp_path) == 2
+    assert not raw.parent.parent.exists()
+    assert not arrow.exists()
+    assert other_raw.is_file() and other_arrow.is_dir()
+    assert main(args) == 1
+    assert "no matching cached dataset entries" in capsys.readouterr().err
+    assert requests == names

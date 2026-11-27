@@ -1,9 +1,9 @@
 //! Discover completed downloads and prepared bundles in a Rivet cache.
 
-use super::{DatasetManifest, manifest_path};
-use crate::errors::DataResult;
+use super::{DatasetManifest, PreparedFormat, manifest_path};
+use crate::errors::{DataResult, invalid_argument};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -35,20 +35,27 @@ struct ImportRecord {
     revision: Option<String>,
 }
 
+fn cache_roots(root: &Path) -> io::Result<(PathBuf, PathBuf)> {
+    fn resolve(path: PathBuf) -> io::Result<PathBuf> {
+        match path.canonicalize() {
+            Ok(resolved) => Ok(resolved),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(path),
+            Err(err) => Err(err),
+        }
+    }
+
+    let root = std::path::absolute(root)?;
+    let downloads = super::download::download_cache_for(&root);
+    Ok((resolve(root)?, resolve(downloads)?))
+}
+
 /// List completed entries without opening dataset contents or accessing the network.
 pub fn list_datasets(root: impl AsRef<Path>) -> DataResult<Vec<DatasetEntry>> {
-    let requested = std::path::absolute(root.as_ref())?;
-    let downloads = super::download::download_cache_for(&requested);
-    let root = match requested.canonicalize() {
-        Ok(root) => root,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => requested,
-        Err(err) => return Err(err.into()),
-    };
-    let downloads = match downloads.canonicalize() {
-        Ok(root) => root,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => downloads,
-        Err(err) => return Err(err.into()),
-    };
+    let (root, downloads) = cache_roots(root.as_ref())?;
+    list_entries(&root, &downloads)
+}
+
+fn list_entries(root: &Path, downloads: &Path) -> DataResult<Vec<DatasetEntry>> {
     let mut imports = BTreeMap::new();
     for path in children(&root.join("manifests"), false)? {
         if let Ok(contents) = fs::read(path)
@@ -78,18 +85,18 @@ pub fn list_datasets(root: impl AsRef<Path>) -> DataResult<Vec<DatasetEntry>> {
         }
     }
 
-    for name_root in children(&root, true)? {
+    for name_root in children(root, true)? {
         for path in children(&name_root, true)? {
             let name = path.file_name().unwrap_or_default().as_encoded_bytes();
             if name.len() == 64
                 && name.iter().all(u8::is_ascii_hexdigit)
-                && let Some(entry) = prepared_entry(&path, &name_root, &downloads)?
+                && let Some(entry) = prepared_entry(&path, &name_root, downloads)?
             {
                 results.push(entry);
             }
         }
     }
-    for path in children(&root, true)?
+    for path in children(root, true)?
         .into_iter()
         .chain(children(&root.join("local/lance"), true)?)
     {
@@ -101,6 +108,114 @@ pub fn list_datasets(root: impl AsRef<Path>) -> DataResult<Vec<DatasetEntry>> {
     results.retain(|entry| seen.insert(entry.path.clone()));
     results.sort_by(|a, b| (&a.name, a.kind, &a.path).cmp(&(&b.name, b.kind, &b.path)));
     Ok(results)
+}
+
+/// Delete cached entries for an exact dataset name and return the number removed.
+/// A format limits removal to prepared entries in that format.
+pub fn delete_dataset(
+    root: impl AsRef<Path>,
+    name: &str,
+    format: Option<PreparedFormat>,
+) -> DataResult<usize> {
+    if name.trim().is_empty() {
+        return Err(invalid_argument("dataset name must not be empty"));
+    }
+    let (root, downloads) = cache_roots(root.as_ref())?;
+    let entries = list_entries(&root, &downloads)?;
+    let originals: BTreeMap<_, _> = entries
+        .iter()
+        .filter(|entry| entry.kind == "download")
+        .map(|entry| (&entry.path, entry.name.as_str()))
+        .collect();
+    let mut targets = BTreeSet::new();
+    for entry in &entries {
+        let display_name = entry
+            .raw_path
+            .as_ref()
+            .and_then(|path| originals.get(path).copied())
+            .unwrap_or(&entry.name);
+        let matches_format = format.is_none_or(|format| {
+            entry.kind != "download" && entry.formats.iter().all(|value| value == format.as_str())
+        });
+        if display_name != name || !matches_format {
+            continue;
+        }
+        let target = if entry.kind == "download" {
+            download_entry_root(&downloads, entry)?
+        } else {
+            if entry.path == root || !entry.path.starts_with(&root) {
+                return Err(invalid_argument("dataset is outside the Rivet cache"));
+            }
+            entry.path.clone()
+        };
+        match target.canonicalize() {
+            Ok(path) if path != target => {
+                return Err(invalid_argument(format!(
+                    "cache entry resolves through a symbolic link: {}",
+                    target.display()
+                )));
+            }
+            Ok(_) => {
+                targets.insert(target);
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    if targets.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no matching cached dataset entries for {name:?}"),
+        )
+        .into());
+    }
+
+    let mut removed = 0;
+    for target in targets {
+        let Some(parent) = target.parent() else {
+            continue;
+        };
+        // Detach the completed entry before removing its contents so readers
+        // and retries never discover a partially removed cache entry.
+        let trash = match tempfile::Builder::new()
+            .prefix(".delete-")
+            .tempdir_in(parent)
+        {
+            Ok(trash) => trash,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err.into()),
+        };
+        match fs::rename(&target, trash.path().join("entry")) {
+            Ok(()) => {
+                trash.close()?;
+                removed += 1;
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(removed)
+}
+
+fn download_entry_root(downloads: &Path, entry: &DatasetEntry) -> DataResult<PathBuf> {
+    let relative = entry
+        .path
+        .strip_prefix(downloads)
+        .map_err(invalid_argument)?;
+    let provider = entry
+        .provider
+        .ok_or_else(|| invalid_argument("missing download provider"))?;
+    if !relative.starts_with(provider) {
+        return Err(invalid_argument(
+            "invalid Rivet download provider directory",
+        ));
+    }
+    let depth = if provider == "torch" { 3 } else { 2 };
+    let path = downloads.join(relative.components().take(depth).collect::<PathBuf>());
+    if path == downloads || !path.join("artifact").is_file() {
+        return Err(invalid_argument("invalid Rivet download cache entry"));
+    }
+    Ok(path)
 }
 
 fn prepared_entry(

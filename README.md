@@ -140,6 +140,17 @@ preferred preparation.
 Both commands accept `--cache-dir`. Run `rivet download --help` for
 revision, archive extraction, and split selection options.
 
+Delete a dataset using the exact name shown by `rivet list`. By default this
+removes all matching original downloads and preparations. To remove one
+prepared format, pass `--format`. The Python API is
+`rivet.delete_dataset(name, cache_dir=None, format=None)` and returns the
+number of cache entries removed.
+
+```bash
+rivet delete cifar10 --format lance
+rivet delete uoft-cs/cifar10
+```
+
 ### Download torchvision datasets
 
 With torchvision installed, use `torch:<class-name>` to download original

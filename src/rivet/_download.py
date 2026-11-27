@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-from ._rivet import _dataset_cache, _list_datasets, download_dataset
+from ._rivet import _dataset_cache, _list_datasets, delete_dataset, download_dataset
 
-__all__ = ["download_dataset", "list_datasets"]
+__all__ = ["delete_dataset", "download_dataset", "list_datasets"]
 
 
 def list_datasets(cache_dir: str | Path | None = None) -> list[dict]:

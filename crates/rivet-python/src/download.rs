@@ -193,3 +193,29 @@ pub(crate) fn extract_data_files(value: &Bound<'_, PyAny>) -> PyResult<DataFiles
 pub(crate) fn _dataset_cache() -> PyResult<PathBuf> {
     dataset::dataset_cache_dir().map_err(to_py_err)
 }
+
+/// Delete cached entries for an exact dataset name and return the number removed.
+#[pyfunction]
+#[pyo3(signature = (name, *, cache_dir=None, format=None))]
+pub(crate) fn delete_dataset(
+    py: Python<'_>,
+    name: String,
+    cache_dir: Option<PathBuf>,
+    format: Option<&str>,
+) -> PyResult<usize> {
+    let format = format
+        .map(str::parse::<PreparedFormat>)
+        .transpose()
+        .map_err(to_py_err)?;
+    let root = match expand_cache_dir(py, cache_dir)? {
+        Some(root) => root,
+        None => dataset::dataset_cache_dir().map_err(to_py_err)?,
+    };
+    py.detach(move || dataset::delete_dataset(root, &name, format))
+        .map_err(|err| match err {
+            DataError::Io(err) if err.kind() == ErrorKind::NotFound => {
+                PyFileNotFoundError::new_err(err.to_string())
+            }
+            err => to_py_err(err),
+        })
+}

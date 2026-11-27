@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from importlib.metadata import version
 from pathlib import Path
 
-from ._download import _dataset_cache, download_dataset, list_datasets
+from ._download import _dataset_cache, delete_dataset, download_dataset, list_datasets
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -53,6 +53,14 @@ def _parser() -> argparse.ArgumentParser:
         "--json-column",
         action="append",
         help="name a positional JSON column (repeatable)",
+    )
+    delete = commands.add_parser("delete", help="delete cached datasets by name")
+    delete.add_argument("name", help="exact dataset name shown by rivet list")
+    delete.add_argument("--cache-dir", type=Path, help="override the XDG dataset cache")
+    delete.add_argument(
+        "--format",
+        choices=("arrow", "arrow-ipc-file", "arrow-ipc-stream", "lance"),
+        help="delete preparations in this format only",
     )
     return parser
 
@@ -196,6 +204,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps(entries, default=str, ensure_ascii=False))
             else:
                 _print_datasets(entries)
+        elif args.command == "delete":
+            count = delete_dataset(args.name, cache_dir=args.cache_dir, format=args.format)
+            print(f"Deleted {count} cache {'entry' if count == 1 else 'entries'} for {args.name}.")
         else:
             data_files = args.data_file
             if args.split_file:

@@ -39,6 +39,7 @@ fn _rivet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dataset::_convert_torch_images, m)?)?;
     m.add_function(wrap_pyfunction!(dataset::_list_datasets, m)?)?;
     m.add_function(wrap_pyfunction!(download::download_dataset, m)?)?;
+    m.add_function(wrap_pyfunction!(download::delete_dataset, m)?)?;
     m.add_function(wrap_pyfunction!(download::_dataset_cache, m)?)?;
     Ok(())
 }
