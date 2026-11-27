@@ -27,9 +27,9 @@ parquet = "58.4.1"
 percent-encoding = "2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "socks", "gzip", "brotli", "deflate"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+serde_json.workspace = true
 sha2 = "0.11"
-tar = "0.4"
+tar.workspace = true
 tempfile = "3"
 thiserror.workspace = true
 tokio = { workspace = true, optional = true }

@@ -22,9 +22,9 @@ mozjpeg = { version = "0.10.13", default-features = false }
 lance = { workspace = true, optional = true }
 rivet-core.workspace = true
 rivet-data.workspace = true
-rivet-exec.workspace = true
+rivet-exec = { path = "../rivet-exec" }
 rivet-plan.workspace = true
-serde_json = "1.0.154"
+serde_json.workspace = true
 tempfile = "3.27.0"
 thiserror.workspace = true
 tokio = { workspace = true, optional = true }

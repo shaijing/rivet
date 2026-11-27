@@ -30,9 +30,7 @@ memmap2 = "0.9.12"
 rivet-core = { path = "crates/rivet-core" }
 rivet-data = { path = "crates/rivet-data" }
 rivet-plan = { path = "crates/rivet-plan" }
-rivet-exec = { path = "crates/rivet-exec" }
-rivet-text = { path = "crates/rivet-text" }
-rivet-vision = { path = "crates/rivet-vision" }
+serde_json = "1.0.154"
+tar = "0.4"
 thiserror = "2.0.21"
-tokenizers = "1.0.0-rc.4"
 tokio = { version = "1.54.1", features = ["full"] }
