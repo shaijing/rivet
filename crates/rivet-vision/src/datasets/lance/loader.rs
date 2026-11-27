@@ -1,12 +1,13 @@
 use super::dataset::LanceImageDataset;
+use crate::datasets::ArrowImageDataset;
 use crate::errors::{RivetResult, invalid_argument as vision_invalid_argument};
 use crate::source::ImageSource;
 use arrow::datatypes::DataType;
 use rivet_data::dataset::source::Dataset;
 use rivet_data::dataset::{
-    DatasetBundle, DatasetLoadResult, DatasetManifest, DownloadFormat, DownloadOptions, Feature,
-    ImageRepresentation, MANIFEST_FILE_NAME, TorchDatasetProvider, download_dataset_with_torch,
-    is_remote_dataset, manifest_path,
+    DataFiles, DatasetBundle, DatasetLoadResult, DatasetManifest, DownloadFormat, DownloadOptions,
+    Feature, ImageRepresentation, MANIFEST_FILE_NAME, TorchDatasetProvider,
+    download_dataset_with_torch, is_remote_dataset, manifest_path, prepare_downloaded_path,
 };
 use rivet_data::errors::DataResult;
 use std::collections::BTreeMap;
@@ -45,6 +46,8 @@ pub struct LoadDatasetOptions {
     pub offline: bool,
     pub image_column: String,
     pub label_column: String,
+    pub data_files: Option<DataFiles>,
+    pub json_columns: Option<Vec<String>>,
 }
 
 impl Default for LoadDatasetOptions {
@@ -56,11 +59,13 @@ impl Default for LoadDatasetOptions {
             offline: false,
             image_column: "image".into(),
             label_column: "label".into(),
+            data_files: None,
+            json_columns: None,
         }
     }
 }
 
-/// Open a local Lance image dataset or download and open a remote one.
+/// Open local image data or prepare and open a remote Arrow IPC bundle.
 /// Async callers should run this API on a blocking thread.
 pub fn load_dataset<'a>(
     location: impl Into<DatasetLocation<'a>>,
@@ -75,6 +80,15 @@ pub fn load_dataset_with_torch<'a>(
     options: &LoadDatasetOptions,
     torch: Option<&dyn TorchDatasetProvider>,
 ) -> RivetResult<DatasetLoadResult<ImageSource>> {
+    let download_options = DownloadOptions {
+        revision: options.revision.clone(),
+        cache_dir: options.cache_dir.clone(),
+        offline: options.offline,
+        format: DownloadFormat::Arrow,
+        data_files: options.data_files.clone(),
+        json_columns: options.json_columns.clone(),
+        ..DownloadOptions::default()
+    };
     let open = |path: &Path, cache_root: Option<&Path>| {
         if options.split.is_some() && is_lance_path(path) && manifest_path(path).is_none() {
             return Err(vision_invalid_argument(
@@ -95,34 +109,41 @@ pub fn load_dataset_with_torch<'a>(
                     "revision requires a remote dataset source",
                 ));
             }
-            open(path, None)?
+            if let Some(prepared) = prepare_downloaded_path(path, &download_options, torch)? {
+                open_arrow_bundle(&prepared, options)?
+            } else if path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|ext| matches!(ext.to_str(), Some("arrow" | "ipc" | "feather")))
+            {
+                if options.split.is_some() {
+                    return Err(vision_invalid_argument(
+                        "split cannot be specified when loading a single Arrow IPC path",
+                    ));
+                }
+                let dataset = Arc::new(ArrowImageDataset::new_with_image_alias(
+                    vec![path.to_owned()],
+                    options.image_column.clone(),
+                    options.label_column.clone(),
+                    true,
+                )?);
+                DatasetLoadResult::Single(ImageSource::from_encoded(dataset))
+            } else if manifest_path(path).is_some()
+                && DatasetManifest::read(path).is_ok_and(|manifest| {
+                    manifest
+                        .splits
+                        .values()
+                        .all(|split| split.uri.ends_with(".arrow"))
+                })
+            {
+                open_arrow_bundle(path, options)?
+            } else {
+                open(path, None)?
+            }
         }
         DatasetLocation::Remote(source) => {
-            let is_torch = source.starts_with("torch:");
-            let payload = download_dataset_with_torch(
-                source,
-                &DownloadOptions {
-                    revision: options.revision.clone(),
-                    cache_dir: options.cache_dir.clone(),
-                    offline: options.offline,
-                    format: if is_torch {
-                        DownloadFormat::Lance
-                    } else {
-                        DownloadFormat::Raw
-                    },
-                    ..DownloadOptions::default()
-                },
-                torch,
-            )?;
-            let root = if is_torch {
-                payload.clone()
-            } else {
-                downloaded_lance_root(&payload)?
-            };
-            let cache_root = payload
-                .canonicalize()
-                .map_err(rivet_data::DataError::from)?;
-            open(&root, Some(&cache_root))?
+            let payload = download_dataset_with_torch(source, &download_options, torch)?;
+            open_arrow_bundle(&payload, options)?
         }
     };
     match (loaded, options.split.as_deref()) {
@@ -140,49 +161,35 @@ pub fn load_dataset_with_torch<'a>(
     }
 }
 
-fn downloaded_lance_root(payload: &Path) -> RivetResult<PathBuf> {
-    let mut pending = Vec::new();
-    if payload.is_dir() {
-        pending.push(payload.to_owned());
-    }
-    let mut candidate = None;
-    while let Some(path) = pending.pop() {
-        let mut found = is_lance_path(&path) || manifest_path(&path).is_some();
-        let mut children = Vec::new();
-        if !found {
-            for entry in std::fs::read_dir(&path).map_err(rivet_data::DataError::from)? {
-                let entry = entry.map_err(rivet_data::DataError::from)?;
-                let child = entry.path();
-                if is_lance_path(&child) && child.is_dir() && manifest_path(&child).is_none() {
-                    found = true;
-                    break;
-                }
-                if entry
-                    .file_type()
-                    .map_err(rivet_data::DataError::from)?
-                    .is_dir()
-                {
-                    children.push(child);
-                }
-            }
+fn open_arrow_bundle(
+    root: &Path,
+    options: &LoadDatasetOptions,
+) -> RivetResult<DatasetLoadResult<ImageSource>> {
+    let manifest = DatasetManifest::read(root)?;
+    let (image_column, label_column, label_dtype) =
+        manifest_columns(&manifest, &options.image_column, &options.label_column)?;
+    let cache_root = root.canonicalize().map_err(rivet_data::DataError::from)?;
+    let mut splits = BTreeMap::new();
+    for (name, split) in &manifest.splits {
+        let path = manifest.split_path(root, name, split)?;
+        validate_cached_path(&path, Some(&cache_root))?;
+        let dataset = Arc::new(ArrowImageDataset::new_with_image_alias(
+            vec![path],
+            image_column.clone(),
+            label_column.clone(),
+            manifest.format_version == 1,
+        )?);
+        validate_label_dtype(dataset.schema(), &label_column, label_dtype.as_deref())?;
+        if split.num_rows.is_some_and(|rows| rows != dataset.len()) {
+            return Err(vision_invalid_argument(format!(
+                "manifest row count for split {name:?} does not match Arrow IPC File"
+            )));
         }
-        if found {
-            if candidate.replace(path).is_some() {
-                return Err(vision_invalid_argument(format!(
-                    "downloaded source contains multiple Lance dataset roots; inspect {}",
-                    payload.display(),
-                )));
-            }
-        } else {
-            pending.extend(children);
-        }
+        splits.insert(name.clone(), ImageSource::from_encoded(dataset));
     }
-    candidate.ok_or_else(|| {
-        vision_invalid_argument(format!(
-            "downloaded source contains no Lance dataset; inspect {}",
-            payload.display(),
-        ))
-    })
+    Ok(DatasetLoadResult::Bundle(DatasetBundle::from_splits(
+        splits,
+    )))
 }
 
 fn validate_cached_path(path: &Path, cache_root: Option<&Path>) -> RivetResult<()> {

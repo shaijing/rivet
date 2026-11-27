@@ -2,7 +2,7 @@
 
 Use :meth:`TextDataset.from_files` for plain text,
 :meth:`TextDataset.from_records` for structured files and archives, or
-:meth:`TextDataset.from_arrow` for an Arrow IPC stream. Pass the dataset and a
+:meth:`TextDataset.from_arrow` for Arrow IPC File or Stream. Pass the dataset and a
 :class:`TextTokenizer` to :class:`TextPipeline` to build a reusable pipeline.
 
 Example::

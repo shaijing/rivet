@@ -126,3 +126,23 @@ pub(super) fn unpack(artifact: &Path, root: &Path) -> DataResult<bool> {
     }
     Ok(true)
 }
+
+/// Expand a compressed single file into the preparation workspace.
+pub(super) fn decompress_file(source: &Path, root: &Path) -> DataResult<Option<PathBuf>> {
+    let Some(extension) = source.extension().and_then(|ext| ext.to_str()) else {
+        return Ok(None);
+    };
+    let destination = root.join(source.file_stem().unwrap_or_default());
+    if !super::tabular::is_tabular_file(&destination) {
+        return Ok(None);
+    }
+    let mut reader: Box<dyn Read> = match extension.to_ascii_lowercase().as_str() {
+        "gz" => Box::new(flate2::read::MultiGzDecoder::new(File::open(source)?)),
+        "bz2" => Box::new(bzip2::read::MultiBzDecoder::new(File::open(source)?)),
+        "xz" => Box::new(lzma_rust2::XzReader::new(File::open(source)?, true)),
+        _ => return Ok(None),
+    };
+    fs::create_dir(root)?;
+    io::copy(&mut reader, &mut File::create_new(&destination)?)?;
+    Ok(Some(destination))
+}

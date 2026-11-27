@@ -53,7 +53,8 @@ def test_local_text_pipeline(tmp_path):
     )
 
 
-def test_structured_and_arrow_sources(tmp_path):
+@pytest.mark.parametrize("ipc_writer", [pa.ipc.new_file, pa.ipc.new_stream])
+def test_structured_and_arrow_sources(tmp_path, ipc_writer):
     text = rivet.text
     rows = tmp_path / "reviews.jsonl"
     rows.write_text(
@@ -65,7 +66,7 @@ def test_structured_and_arrow_sources(tmp_path):
     batch = pa.record_batch(
         {"body": ["hello", "world"], "pair": ["world", "hello"], "class": [2, 4]}
     )
-    with pa.ipc.new_stream(arrow, batch.schema) as writer:
+    with ipc_writer(arrow, batch.schema) as writer:
         writer.write_batch(batch)
     columns = {
         "text_column": "body",

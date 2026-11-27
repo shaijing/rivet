@@ -6,6 +6,7 @@ use arrow::array::{Array, Int64Array, LargeStringArray, StringArray};
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
 use arrow_ipc::reader::StreamReader;
+use rivet_data::dataset::arrow::MmapArrowTable;
 use rivet_data::dataset::source::{Dataset, SourceCapabilities, validate_indices};
 use rivet_data::errors::{DataResult, invalid_argument};
 use std::io::Read;
@@ -62,6 +63,11 @@ impl ArrowTextDataset {
         validate_schema(&reader.schema(), &columns)?;
         let batches = reader.collect::<Result<Vec<_>, _>>()?;
         Self::from_batches(batches, columns)
+    }
+    pub fn open_ipc(path: impl AsRef<Path>, columns: TextColumns) -> TextResult<Self> {
+        let table = MmapArrowTable::from_files([path])?;
+        validate_schema(table.schema(), &columns)?;
+        Self::from_batches(table.batches().to_vec(), columns)
     }
     pub fn open_ipc_stream(path: impl AsRef<Path>, columns: TextColumns) -> TextResult<Self> {
         Self::from_ipc_stream(std::fs::File::open(path)?, columns)

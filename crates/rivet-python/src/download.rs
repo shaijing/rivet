@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use pyo3::exceptions::{PyFileNotFoundError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyMapping, PyString};
-use rivet_data::dataset::{self, DataFiles, DownloadFormat, DownloadOptions, TorchDatasetProvider};
+use rivet_data::dataset::{
+    self, DataFiles, DownloadFormat, DownloadOptions, PreparedFormat, TorchDatasetProvider,
+};
 use rivet_data::{DataError, DataResult};
 use rivet_vision::VisionError;
 
@@ -22,12 +24,14 @@ impl Torchvision {
         function: &str,
         location: &str,
         root: &Path,
-        output: Option<&Path>,
+        output: Option<(&Path, PreparedFormat)>,
     ) -> DataResult<()> {
         Python::attach(|py| {
             let module = py.import("rivet._torch_dataset")?;
             match output {
-                Some(output) => module.call_method1(function, (location, root, output))?,
+                Some((output, format)) => {
+                    module.call_method1(function, (location, root, output, format.as_str()))?
+                }
                 None => module.call_method1(function, (location, root))?,
             };
             Ok(())
@@ -47,14 +51,33 @@ impl TorchDatasetProvider for Torchvision {
     }
 
     fn convert(&self, location: &str, root: &Path, destination: &Path) -> DataResult<()> {
-        self.call("_convert_torch", location, root, Some(destination))
+        self.convert_prepared(location, root, destination, PreparedFormat::Lance)
+    }
+
+    fn convert_arrow(&self, location: &str, root: &Path, destination: &Path) -> DataResult<()> {
+        self.convert_prepared(location, root, destination, PreparedFormat::ArrowIpcFile)
+    }
+
+    fn convert_prepared(
+        &self,
+        location: &str,
+        root: &Path,
+        destination: &Path,
+        format: PreparedFormat,
+    ) -> DataResult<()> {
+        self.call(
+            "_convert_torch",
+            location,
+            root,
+            Some((destination, format)),
+        )
     }
 }
 
-/// Return the local path to a downloaded dataset or derived Lance bundle.
+/// Return the local path to a downloaded dataset or prepared bundle.
 ///
 /// Set offline=True to reuse only completed cache entries and extract=False
-/// to keep HTTP archives. Use data_files and json_columns with format="lance".
+/// to keep HTTP archives. Use data_files and json_columns with a prepared format.
 #[pyfunction]
 #[pyo3(signature = (source, *, revision=None, cache_dir=None, offline=false, extract=true, format="raw", data_files=None, json_columns=None))]
 #[allow(clippy::too_many_arguments)]
@@ -69,14 +92,10 @@ pub(crate) fn download_dataset(
     data_files: Option<Bound<'_, PyAny>>,
     json_columns: Option<Bound<'_, PyAny>>,
 ) -> PyResult<PathBuf> {
-    let format = match format {
-        "raw" => DownloadFormat::Raw,
-        "lance" => DownloadFormat::Lance,
-        _ => return Err(PyValueError::new_err("format must be 'raw' or 'lance'")),
-    };
+    let format = format.parse::<DownloadFormat>().map_err(to_py_err)?;
     if format == DownloadFormat::Raw && (data_files.is_some() || json_columns.is_some()) {
         return Err(PyValueError::new_err(
-            "data_files and json_columns require format='lance'",
+            "data_files and json_columns require a prepared format",
         ));
     }
     let data_files = data_files.as_ref().map(extract_data_files).transpose()?;
@@ -150,7 +169,7 @@ pub(crate) fn with_torchvision<T: Send>(
     })
 }
 
-fn extract_data_files(value: &Bound<'_, PyAny>) -> PyResult<DataFiles> {
+pub(crate) fn extract_data_files(value: &Bound<'_, PyAny>) -> PyResult<DataFiles> {
     if value.is_instance_of::<PyString>() {
         return Ok(DataFiles::File(value.extract()?));
     }

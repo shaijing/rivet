@@ -134,7 +134,7 @@ pub(super) fn http(source: &str, destination: &Path, extract: bool) -> DataResul
     if extract {
         let unpacked = destination.with_file_name("unpacked");
         if archive::unpack(&artifact, &unpacked)? {
-            fs::remove_dir_all(destination)?;
+            fs::rename(destination, destination.with_file_name("original"))?;
             fs::rename(unpacked, destination)?;
             return Ok(destination.to_owned());
         }

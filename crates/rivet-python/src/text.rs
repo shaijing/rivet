@@ -134,7 +134,7 @@ impl PyTextDataset {
         })
     }
 
-    /// Read an Arrow IPC stream from a local file.
+    /// Read Arrow IPC File or Stream from a local path.
     #[staticmethod]
     #[pyo3(signature = (path, *, text_column="text", text_pair_column=None, label_column=None))]
     fn from_arrow(
@@ -150,7 +150,7 @@ impl PyTextDataset {
             label: label_column,
         };
         let source = py
-            .detach(|| ArrowTextDataset::open_ipc_stream(path, columns))
+            .detach(|| ArrowTextDataset::open_ipc(path, columns))
             .map_err(to_py_err)?;
         Ok(Self {
             inner: Arc::new(source),

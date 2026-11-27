@@ -19,7 +19,7 @@ pub use loader::{
 };
 #[cfg(test)]
 pub(super) use schema::validate_schema;
-pub use torch_convert::{TorchImageSplit, convert_torch_images};
+pub use torch_convert::{TorchImageSplit, convert_torch_bundle, convert_torch_images};
 
 #[cfg(test)]
 mod tests {

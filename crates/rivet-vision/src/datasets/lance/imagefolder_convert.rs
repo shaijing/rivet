@@ -137,6 +137,7 @@ pub fn convert_imagefolder_dataset(
         false,
         "imagefolder",
         Some(&classes),
+        "lance",
     )?;
 
     publish_bundle(temp, &staging, &output, overwrite)?;

@@ -96,7 +96,7 @@ def _download_torch(location: str, root: Path) -> None:
         dataset(root=str(root), download=True, **options)
 
 
-def _convert_torch(location: str, root: Path, destination: Path) -> None:
+def _convert_torch(location: str, root: Path, destination: Path, format: str) -> None:
     """Stage torchvision's in-memory pixel arrays for the Rust image writer."""
     import tempfile
 
@@ -154,4 +154,4 @@ def _convert_torch(location: str, root: Path, destination: Path) -> None:
             targets.astype("<i4", copy=False).tofile(labels)
             rows, height, width, channels = pixels.shape
             splits[split] = (images, labels, rows, width, height, channels)
-        _convert_torch_images(destination, splits, classes)
+        _convert_torch_images(destination, splits, classes, format)

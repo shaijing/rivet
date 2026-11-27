@@ -22,13 +22,33 @@ impl ArrowImageDataset {
         image_column: String,
         label_column: String,
     ) -> DataResult<Self> {
+        Self::new_with_image_alias(arrow_files, image_column, label_column, false)
+    }
+
+    pub(crate) fn new_with_image_alias(
+        arrow_files: Vec<PathBuf>,
+        mut image_column: String,
+        label_column: String,
+        allow_img: bool,
+    ) -> DataResult<Self> {
         let table = Arc::new(MmapArrowTable::from_files(&arrow_files)?);
+        if allow_img
+            && image_column == "image"
+            && table.schema().index_of("image").is_err()
+            && table.schema().index_of("img").is_ok()
+        {
+            image_column = "img".into();
+        }
         validate_image_schema(table.schema(), &image_column, &label_column)?;
         Ok(Self {
             table,
             image_column,
             label_column,
         })
+    }
+
+    pub(crate) fn schema(&self) -> &arrow::datatypes::Schema {
+        self.table.schema()
     }
 
     fn get_one(&self, index: usize) -> DataResult<EncodedImageSample> {

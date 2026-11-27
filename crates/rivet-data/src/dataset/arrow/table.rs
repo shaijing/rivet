@@ -85,6 +85,11 @@ impl MmapArrowTable {
         &self.schema
     }
 
+    /// Return the decoded batches, sharing the table's data buffers.
+    pub fn batches(&self) -> &[RecordBatch] {
+        &self.batches
+    }
+
     pub fn locate_row(&self, index: usize) -> DataResult<(&RecordBatch, usize)> {
         if index >= self.len {
             return Err(DataError::IndexOutOfRange {

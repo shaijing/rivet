@@ -1,11 +1,12 @@
-//! Write staged torchvision pixel arrays as losslessly encoded Lance images.
+//! Write staged torchvision pixel arrays as losslessly encoded images.
 
 use super::convert::{native_schema, validate_split_name, write_image_manifest};
 use crate::errors::{RivetResult, invalid_argument};
 use arrow::array::{BinaryBuilder, Int32Builder};
 use arrow::error::ArrowError;
-use arrow::record_batch::{RecordBatch, RecordBatchIterator};
+use arrow::record_batch::RecordBatch;
 use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
+use rivet_data::dataset::{PreparedFormat, PreparedWriter};
 use rivet_data::errors::DataError;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -20,11 +21,17 @@ pub fn convert_torch_images(
     splits: BTreeMap<String, TorchImageSplit>,
     classes: Option<&[String]>,
 ) -> RivetResult<()> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .map_err(DataError::from)?;
+    convert_torch_bundle(output, splits, classes, PreparedFormat::Lance)
+}
+
+pub fn convert_torch_bundle(
+    output: &Path,
+    splits: BTreeMap<String, TorchImageSplit>,
+    classes: Option<&[String]>,
+    format: PreparedFormat,
+) -> RivetResult<()> {
+    let writer = PreparedWriter::new(format)?;
+    let extension = format.extension();
     fs::create_dir(output).map_err(DataError::from)?;
     let schema = native_schema(false);
     let mut rows_by_split = BTreeMap::new();
@@ -63,15 +70,16 @@ pub fn convert_torch_images(
                 vec![Arc::new(encoded.finish()), Arc::new(targets.finish())],
             )
         });
-        let path = output.join(format!("{split}.lance"));
-        let uri = path
-            .to_str()
-            .ok_or_else(|| invalid_argument("Lance output path must be UTF-8"))?;
-        let reader = RecordBatchIterator::new(batches, schema.clone());
-        runtime
-            .block_on(lance::Dataset::write(reader, uri, None))
-            .map_err(DataError::from)?;
+        let path = output.join(format!("{split}.{extension}"));
+        writer.write_split(&path, schema.clone(), batches)?;
         rows_by_split.insert(split, rows);
     }
-    write_image_manifest(output, &rows_by_split, false, "torchvision", classes)
+    write_image_manifest(
+        output,
+        &rows_by_split,
+        false,
+        "torchvision",
+        classes,
+        extension,
+    )
 }

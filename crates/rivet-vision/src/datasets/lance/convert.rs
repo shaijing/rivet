@@ -214,6 +214,7 @@ pub fn convert_huggingface_dataset(
         options.keep_path,
         "huggingface-arrow",
         classes.as_deref(),
+        "lance",
     )?;
     publish_bundle(temp, &staging, &output_root, options.overwrite)?;
     Ok(LanceConversionReport {
@@ -611,6 +612,7 @@ pub(super) fn write_image_manifest(
     keep_path: bool,
     source_format: &str,
     classes: Option<&[String]>,
+    extension: &str,
 ) -> RivetResult<()> {
     let mut features = serde_json::json!({
         "image": {
@@ -640,7 +642,7 @@ pub(super) fn write_image_manifest(
             (
                 name.clone(),
                 serde_json::json!({
-                    "uri": format!("{name}.lance"),
+                    "uri": format!("{name}.{extension}"),
                     "num_rows": rows
                 }),
             )

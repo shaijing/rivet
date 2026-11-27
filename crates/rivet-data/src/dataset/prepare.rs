@@ -1,4 +1,4 @@
-//! Convert local tabular files into a Lance split bundle.
+//! Convert local tabular files into Arrow IPC File or Lance split bundles.
 
 use crate::dataset::MANIFEST_FILE_NAME;
 use crate::errors::{DataResult, invalid_argument};
@@ -8,36 +8,95 @@ use arrow::csv::reader::{Format, ReaderBuilder as CsvReaderBuilder};
 use arrow::datatypes::{DataType, Schema, SchemaRef};
 use arrow::error::ArrowError;
 use arrow::ipc::reader::{FileReader, StreamReader};
+use arrow::ipc::writer::{FileWriter, StreamWriter};
 use arrow::json::ReaderBuilder as JsonReaderBuilder;
 use arrow::json::reader::{infer_json_schema_from_iterator, infer_json_schema_from_seekable};
 use arrow::record_batch::{RecordBatch, RecordBatchIterator, RecordBatchReader};
+use arrow_array::RecordBatchWriter;
 use lance::Dataset;
 use lance::dataset::WriteParams;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{BufReader, Seek};
+use std::io::{BufReader, BufWriter, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::runtime::Builder;
+use tokio::runtime::{Builder, Runtime};
 
 const BATCH_SIZE: usize = 4096;
 type BatchReader = Box<dyn RecordBatchReader + Send>;
+
+/// Physical storage format of a prepared dataset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreparedFormat {
+    ArrowIpcFile,
+    ArrowIpcStream,
+    Lance,
+}
+
+impl PreparedFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ArrowIpcFile => "arrow-ipc-file",
+            Self::ArrowIpcStream => "arrow-ipc-stream",
+            Self::Lance => "lance",
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::ArrowIpcFile | Self::ArrowIpcStream => "arrow",
+            Self::Lance => "lance",
+        }
+    }
+}
+
+impl std::str::FromStr for PreparedFormat {
+    type Err = crate::errors::DataError;
+
+    fn from_str(value: &str) -> DataResult<Self> {
+        match value {
+            "arrow" | "arrow-ipc-file" => Ok(Self::ArrowIpcFile),
+            "arrow-ipc-stream" => Ok(Self::ArrowIpcStream),
+            "lance" => Ok(Self::Lance),
+            _ => Err(invalid_argument(
+                "format must be 'arrow-ipc-file', 'arrow-ipc-stream', or 'lance'",
+            )),
+        }
+    }
+}
 
 /// Convert selected local files and write a manifest to a fresh output directory.
 /// The caller owns publication of the directory upon success.
 pub fn convert_files_to_lance(
     output: &Path,
     name: &str,
-    mut files: BTreeMap<String, Vec<PathBuf>>,
+    files: BTreeMap<String, Vec<PathBuf>>,
     json_columns: Option<&[String]>,
     detect_json_splits: bool,
 ) -> DataResult<()> {
+    convert_files(
+        output,
+        name,
+        files,
+        json_columns,
+        detect_json_splits,
+        PreparedFormat::Lance,
+    )
+}
+
+/// Convert selected inputs into one prepared dataset bundle.
+pub fn convert_files(
+    output: &Path,
+    name: &str,
+    mut files: BTreeMap<String, Vec<PathBuf>>,
+    json_columns: Option<&[String]>,
+    detect_json_splits: bool,
+    format: PreparedFormat,
+) -> DataResult<()> {
     if files.is_empty() || files.values().any(Vec::is_empty) {
-        return Err(invalid_argument(
-            "each Lance split needs at least one input file",
-        ));
+        return Err(invalid_argument("each split needs at least one input file"));
     }
     fs::create_dir_all(output)?;
     let mut groups = BTreeMap::new();
@@ -89,10 +148,7 @@ pub fn convert_files_to_lance(
                 .collect::<DataResult<Vec<_>>>()?;
             Ok::<_, crate::errors::DataError>((split, readers))
         }));
-    let runtime = Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()?;
+    let writer = PreparedWriter::new(format)?;
     let mut splits = BTreeMap::new();
     for group in groups {
         let (split, readers) = group?;
@@ -101,34 +157,124 @@ pub fn convert_files_to_lance(
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
         {
-            return Err(invalid_argument(format!(
-                "invalid Lance split name: {split:?}"
-            )));
+            return Err(invalid_argument(format!("invalid split name: {split:?}")));
         }
-        let file_name = format!("{split}.lance");
+        let extension = format.extension();
+        let file_name = format!("{split}.{extension}");
         let path = output.join(&file_name);
-        let uri = path
-            .to_str()
-            .ok_or_else(|| invalid_argument("Lance output path must be UTF-8"))?;
         let schema = merged_schema(readers.iter().map(|reader| reader.schema()))?;
         let target_schema = schema.clone();
         let batches = readers
             .into_iter()
             .flatten()
             .map(move |batch| align_batch(batch?, &target_schema));
-        let params = WriteParams::with_storage_version("2.1".parse()?);
-        let rows = runtime.block_on(async {
-            let dataset =
-                Dataset::write(RecordBatchIterator::new(batches, schema), uri, Some(params))
-                    .await?;
-            dataset.count_rows(None).await
-        })?;
+        let rows = writer.write_split(&path, schema, batches)?;
         splits.insert(split, json!({"path": file_name, "num_rows": rows}));
     }
     let manifest = json!({"format_version": 1, "name": name, "splits": splits});
     let manifest_file = File::create(output.join(MANIFEST_FILE_NAME))?;
     serde_json::to_writer_pretty(manifest_file, &manifest).map_err(std::io::Error::other)?;
     Ok(())
+}
+
+/// Reuse the same writer configuration for all splits in a bundle.
+pub struct PreparedWriter {
+    format: PreparedFormat,
+    runtime: Option<Runtime>,
+}
+
+impl PreparedWriter {
+    pub fn new(format: PreparedFormat) -> DataResult<Self> {
+        let runtime = (format == PreparedFormat::Lance)
+            .then(|| {
+                Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+            })
+            .transpose()?;
+        Ok(Self { format, runtime })
+    }
+
+    pub fn write_split(
+        &self,
+        path: &Path,
+        schema: SchemaRef,
+        batches: impl Iterator<Item = Result<RecordBatch, ArrowError>> + Send + 'static,
+    ) -> DataResult<usize> {
+        match self.format {
+            PreparedFormat::ArrowIpcFile => {
+                let file = BufWriter::new(File::create(path)?);
+                write_ipc(FileWriter::try_new(file, &schema)?, batches)
+            }
+            PreparedFormat::ArrowIpcStream => {
+                let file = BufWriter::new(File::create(path)?);
+                write_ipc(StreamWriter::try_new(file, &schema)?, batches)
+            }
+            PreparedFormat::Lance => {
+                let uri = path
+                    .to_str()
+                    .ok_or_else(|| invalid_argument("Lance output path must be UTF-8"))?;
+                let params = WriteParams::with_storage_version("2.1".parse()?);
+                let runtime = self.runtime.as_ref().expect("Lance writer runtime");
+                Ok(runtime.block_on(async {
+                    let dataset = Dataset::write(
+                        RecordBatchIterator::new(batches, schema),
+                        uri,
+                        Some(params),
+                    )
+                    .await?;
+                    dataset.count_rows(None).await
+                })?)
+            }
+        }
+    }
+}
+
+fn write_ipc(
+    mut writer: impl RecordBatchWriter,
+    batches: impl Iterator<Item = Result<RecordBatch, ArrowError>>,
+) -> DataResult<usize> {
+    let mut rows = 0;
+    for batch in batches {
+        let batch = batch?;
+        writer.write(&batch)?;
+        rows += batch.num_rows();
+    }
+    writer.close()?;
+    Ok(rows)
+}
+
+/// Convert a Lance split in bounded batches, preserving its Arrow schema.
+pub(crate) fn convert_lance_split(
+    input: &Path,
+    output: &Path,
+    writer: &PreparedWriter,
+) -> DataResult<usize> {
+    let table = Arc::new(super::lance::LanceTable::open(input)?);
+    let reader = Arc::clone(&table);
+    let schema = table.schema().clone();
+    let writing_lance = writer.format == PreparedFormat::Lance;
+    let batches = (0..table.len()).step_by(BATCH_SIZE).map(move |start| {
+        let end = start.saturating_add(BATCH_SIZE).min(reader.len());
+        let indices: Vec<_> = (start..end).collect();
+        let columns: Vec<_> = reader
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect();
+        let take = || reader.take(&indices, &columns);
+        // Lance polls the reader in Tokio. Allow the synchronous table reader
+        // to block on its own runtime when it shares that worker thread.
+        let batch = if writing_lance && tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::block_in_place(take)
+        } else {
+            take()
+        };
+        batch.map_err(|err| ArrowError::ExternalError(Box::new(err)))
+    });
+    writer.write_split(output, schema, batches)
 }
 
 fn extension(path: &Path) -> String {
@@ -162,7 +308,7 @@ fn open_file(path: &Path, columns: Option<&[String]>) -> DataResult<BatchReader>
                     .map_err(parquet_error)?,
             )
         }
-        "arrow" => match FileReader::try_new(file, None) {
+        "arrow" | "ipc" | "feather" => match FileReader::try_new(file, None) {
             Ok(reader) => Box::new(reader),
             Err(_) => Box::new(StreamReader::try_new_buffered(File::open(path)?, None)?),
         },
@@ -295,9 +441,7 @@ fn merged_schema(schemas: impl IntoIterator<Item = SchemaRef>) -> DataResult<Sch
         Schema::new_with_metadata(fields, schema.metadata().clone())
     }))?;
     if merged.fields().is_empty() {
-        return Err(invalid_argument(
-            "cannot infer a Lance schema from empty input",
-        ));
+        return Err(invalid_argument("cannot infer a schema from empty input"));
     }
     let fields: Vec<_> = merged
         .fields

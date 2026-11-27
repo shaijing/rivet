@@ -2,7 +2,7 @@
 
 mod archive;
 mod remote;
-mod tabular;
+pub(super) mod tabular;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use url::Url;
 
+use super::PreparedFormat;
 use crate::errors::{DataResult, invalid_argument};
 
 #[derive(Debug, Clone, Default)]
@@ -32,6 +33,34 @@ pub enum DownloadFormat {
     #[default]
     Raw,
     Lance,
+    Arrow,
+    ArrowStream,
+}
+
+impl DownloadFormat {
+    pub fn prepared(self) -> Option<PreparedFormat> {
+        match self {
+            Self::Raw => None,
+            Self::Arrow => Some(PreparedFormat::ArrowIpcFile),
+            Self::ArrowStream => Some(PreparedFormat::ArrowIpcStream),
+            Self::Lance => Some(PreparedFormat::Lance),
+        }
+    }
+}
+
+impl std::str::FromStr for DownloadFormat {
+    type Err = crate::errors::DataError;
+
+    fn from_str(value: &str) -> DataResult<Self> {
+        if value == "raw" {
+            return Ok(Self::Raw);
+        }
+        Ok(match value.parse::<PreparedFormat>()? {
+            PreparedFormat::ArrowIpcFile => Self::Arrow,
+            PreparedFormat::ArrowIpcStream => Self::ArrowStream,
+            PreparedFormat::Lance => Self::Lance,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +75,39 @@ pub trait TorchDatasetProvider {
 
     /// Write a Lance bundle to the supplied staging path.
     fn convert(&self, location: &str, raw: &Path, destination: &Path) -> DataResult<()>;
+
+    /// Write an Arrow IPC File bundle to the supplied staging path.
+    fn convert_arrow(&self, location: &str, raw: &Path, destination: &Path) -> DataResult<()> {
+        let native = tempfile::tempdir_in(destination.parent().unwrap())?;
+        let bundle = native.path().join("bundle");
+        self.convert(location, raw, &bundle)?;
+        tabular::convert_lance_bundle(
+            &bundle,
+            destination,
+            "torchvision",
+            PreparedFormat::ArrowIpcFile,
+        )
+    }
+
+    /// Write a bundle in the selected format.
+    fn convert_prepared(
+        &self,
+        location: &str,
+        raw: &Path,
+        destination: &Path,
+        format: PreparedFormat,
+    ) -> DataResult<()> {
+        match format {
+            PreparedFormat::Lance => self.convert(location, raw, destination),
+            PreparedFormat::ArrowIpcFile => self.convert_arrow(location, raw, destination),
+            PreparedFormat::ArrowIpcStream => {
+                let native = tempfile::tempdir_in(destination.parent().unwrap())?;
+                let bundle = native.path().join("bundle");
+                self.convert(location, raw, &bundle)?;
+                tabular::convert_lance_bundle(&bundle, destination, "torchvision", format)
+            }
+        }
+    }
 }
 
 pub fn dataset_cache_dir() -> DataResult<PathBuf> {
@@ -55,6 +117,39 @@ pub fn dataset_cache_dir() -> DataResult<PathBuf> {
         .or_else(|| dirs::home_dir().map(|path| path.join(".cache")))
         .ok_or_else(|| io::Error::other("cannot determine the dataset cache directory"))?;
     Ok(base.join("rivet/datasets"))
+}
+
+pub(in crate::dataset) fn download_cache_for(cache: &Path) -> PathBuf {
+    if let Ok(default) = dataset_cache_dir()
+        && (default == cache || default.canonicalize().is_ok_and(|path| path == cache))
+    {
+        return default.with_file_name("downloads");
+    }
+    cache.join("downloads")
+}
+
+fn dataset_cache_for_download(raw_root: &Path, override_root: Option<&Path>) -> Option<PathBuf> {
+    if let Some(cache) = override_root
+        && let Ok(cache) = std::path::absolute(cache)
+        && download_cache_for(&cache)
+            .canonicalize()
+            .is_ok_and(|root| root == raw_root)
+    {
+        return Some(cache);
+    }
+    if let Ok(default) = dataset_cache_dir()
+        && download_cache_for(&default)
+            .canonicalize()
+            .is_ok_and(|root| root == raw_root)
+    {
+        return Some(default);
+    }
+    if raw_root.file_name().is_some_and(|part| part == "downloads")
+        && let Some(parent) = raw_root.parent()
+    {
+        return Some(parent.to_owned());
+    }
+    None
 }
 
 pub fn is_remote_dataset(source: &str) -> bool {
@@ -80,7 +175,7 @@ pub fn download_dataset_with_torch(
         && (options.data_files.is_some() || options.json_columns.is_some())
     {
         return Err(invalid_argument(
-            "data_files and json_columns require format='lance'",
+            "data_files and json_columns require a prepared format",
         ));
     }
     if !is_remote_dataset(source) {
@@ -115,8 +210,16 @@ pub fn download_dataset_with_torch(
         _ => (provider, location),
     };
     let extract = provider == "http" && !options.keep_archive;
-    let key = cache_key(&json!([location, revision, extract]));
-    let entry = cache.join(provider).join(&key);
+    let mut key = cache_key(&json!([location, revision, extract]));
+    let mut entry = download_cache_for(&cache).join(provider).join(&key);
+    if extract && options.format.prepared().is_some() && !entry.is_dir() {
+        let archive_key = cache_key(&json!([location, revision, false]));
+        let archive_entry = download_cache_for(&cache).join(provider).join(&archive_key);
+        if archive_entry.join("artifact").is_file() {
+            key = archive_key;
+            entry = archive_entry;
+        }
+    }
     let name = location
         .split(['?', '#'])
         .next()
@@ -142,10 +245,88 @@ pub fn download_dataset_with_torch(
         )
     };
 
-    if options.format == DownloadFormat::Raw {
+    let Some(format) = options.format.prepared() else {
         return raw();
+    };
+    tabular::derive(
+        &cache,
+        name,
+        &format!("{provider}/{key}"),
+        options,
+        format,
+        raw,
+    )
+}
+
+/// Prepare a path previously returned by a raw download. Other local paths
+/// are left to the caller's local dataset reader.
+pub fn prepare_downloaded_path(
+    path: &Path,
+    options: &DownloadOptions,
+    torch: Option<&dyn TorchDatasetProvider>,
+) -> DataResult<Option<PathBuf>> {
+    let path = match path.canonicalize() {
+        Ok(path) => path,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    for entry in path.ancestors() {
+        let Some(parent) = entry.parent() else { break };
+        let Some(key) = entry.file_name().and_then(|part| part.to_str()) else {
+            continue;
+        };
+        if key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            continue;
+        }
+        let provider = parent
+            .file_name()
+            .and_then(|part| part.to_str())
+            .unwrap_or_default();
+        let is_torch = parent
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|part| part == "torch");
+        if !is_torch && !matches!(provider, "hf" | "git" | "http") {
+            continue;
+        }
+        let Ok(artifact) = fs::read_to_string(entry.join("artifact")) else {
+            continue;
+        };
+        if entry.join(relative_path(&artifact)?) != path {
+            continue;
+        }
+        let mut options = options.clone();
+        options.format = DownloadFormat::Arrow;
+        let raw_root = if is_torch {
+            parent.parent().and_then(Path::parent).unwrap()
+        } else {
+            parent.parent().unwrap()
+        };
+        let Some(cache) = dataset_cache_for_download(raw_root, options.cache_dir.as_deref()) else {
+            return Ok(None);
+        };
+        if is_torch {
+            let location = fs::read_to_string(entry.join("torch-location"))?;
+            options.offline = true;
+            return download_torch(&location, &options, &cache, torch).map(Some);
+        }
+        let name = fs::read_to_string(entry.join("dataset-name")).unwrap_or_else(|_| {
+            path.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        });
+        return tabular::derive(
+            &cache,
+            name.rsplit('/').next().unwrap_or(&name),
+            &format!("{provider}/{key}"),
+            &options,
+            PreparedFormat::ArrowIpcFile,
+            || Ok(path.clone()),
+        )
+        .map(Some);
     }
-    tabular::derive(&cache, name, &format!("{provider}/{key}"), options, raw)
+    Ok(None)
 }
 
 fn download_torch(
@@ -189,7 +370,10 @@ fn download_torch(
         kwargs.insert(key, value);
     }
     let key = cache_key(&json!(kwargs));
-    let entry = cache.join("torch").join(&name).join(&key);
+    let entry = download_cache_for(cache)
+        .join("torch")
+        .join(&name)
+        .join(&key);
     let require_torch =
         || torch.ok_or_else(|| invalid_argument("torch: requires a torchvision dataset provider"));
     let raw = || {
@@ -197,13 +381,14 @@ fn download_torch(
             let provider = require_torch()?;
             fs::create_dir(payload)?;
             provider.download(location, payload)?;
+            fs::write(payload.parent().unwrap().join("torch-location"), location)?;
             Ok(payload.to_owned())
         })
     };
 
-    if options.format == DownloadFormat::Raw {
+    let Some(format) = options.format.prepared() else {
         return raw();
-    }
+    };
     if options.data_files.is_some() || options.json_columns.is_some() {
         return Err(invalid_argument(
             "torch: selects data with torchvision constructor options",
@@ -222,19 +407,18 @@ fn download_torch(
             | "stl10"
     ) {
         return Err(invalid_argument(format!(
-            "Lance conversion is unavailable for torchvision dataset {name:?}"
+            "conversion is unavailable for torchvision dataset {name:?}"
         )));
     }
-    let output = cache
-        .join("derived/lance")
-        .join(name)
-        .join(format!("torch-v1-{key}"));
+    let prepared_key = cache_key(&json!([1, "torch", key, format.as_str()]));
+    let output = cache.join(&name).join(prepared_key);
     if output.join("dataset.json").is_file() {
         return Ok(output);
     }
     let raw = raw()?;
     publish_derived(output, |staging| {
-        require_torch()?.convert(location, &raw, staging)
+        require_torch()?.convert_prepared(location, &raw, staging, format)?;
+        write_raw_link(staging, cache, &raw)
     })
 }
 
@@ -278,6 +462,23 @@ fn download_raw(
     )?;
     publish(&staging, entry, || entry.join("artifact").is_file())?;
     artifact()
+}
+
+fn write_raw_link(staging: &Path, cache: &Path, raw: &Path) -> DataResult<()> {
+    let relative_to = |base: &Path| {
+        raw.strip_prefix(base).map(Path::to_owned).ok().or_else(|| {
+            raw.strip_prefix(base.canonicalize().ok()?)
+                .map(Path::to_owned)
+                .ok()
+        })
+    };
+    let relative = relative_to(&download_cache_for(cache))
+        .ok_or_else(|| invalid_argument("original artifact is outside the Rivet download cache"))?;
+    fs::write(
+        staging.join("download-artifact"),
+        relative.to_string_lossy().as_bytes(),
+    )?;
+    Ok(())
 }
 
 fn publish_derived(

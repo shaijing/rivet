@@ -198,9 +198,9 @@ impl PyLanceDatasetDict {
     }
 }
 
-/// Open a local or remote Lance image dataset, optionally selecting one split.
+/// Open a local image dataset or prepare a remote image dataset as Arrow IPC File.
 #[pyfunction]
-#[pyo3(signature = (path, *, split=None, revision=None, cache_dir=None, offline=false, image_column="image", label_column="label"))]
+#[pyo3(signature = (path, *, split=None, revision=None, cache_dir=None, offline=false, image_column="image", label_column="label", data_files=None, json_columns=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn load_dataset<'py>(
     py: Python<'py>,
@@ -211,8 +211,10 @@ pub(crate) fn load_dataset<'py>(
     offline: bool,
     image_column: &str,
     label_column: &str,
+    data_files: Option<Bound<'py, PyAny>>,
+    json_columns: Option<Vec<String>>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    use crate::download::{expand_cache_dir, with_torchvision};
+    use crate::download::{expand_cache_dir, extract_data_files, with_torchvision};
     use pyo3::types::{PyString, PyStringMethods};
     use rivet_data::dataset::is_remote_dataset;
 
@@ -225,11 +227,7 @@ pub(crate) fn load_dataset<'py>(
     } else {
         None
     };
-    let cache_dir = if remote.is_some() {
-        expand_cache_dir(py, cache_dir)?
-    } else {
-        None
-    };
+    let cache_dir = expand_cache_dir(py, cache_dir)?;
     let local = if remote.is_none() {
         Some(path.extract::<PathBuf>()?)
     } else {
@@ -242,6 +240,8 @@ pub(crate) fn load_dataset<'py>(
         offline,
         image_column: image_column.to_owned(),
         label_column: label_column.to_owned(),
+        data_files: data_files.as_ref().map(extract_data_files).transpose()?,
+        json_columns,
     };
     let loaded = with_torchvision(py, move |provider| {
         let location = match &remote {
@@ -357,9 +357,16 @@ pub(crate) fn _convert_torch_images(
     output: PathBuf,
     splits: std::collections::BTreeMap<String, rivet_vision::datasets::lance::TorchImageSplit>,
     classes: Option<Vec<String>>,
+    format: &str,
 ) -> PyResult<()> {
+    let format = format.parse().map_err(to_py_err)?;
     py.detach(move || {
-        rivet_vision::datasets::lance::convert_torch_images(&output, splits, classes.as_deref())
+        rivet_vision::datasets::lance::convert_torch_bundle(
+            &output,
+            splits,
+            classes.as_deref(),
+            format,
+        )
     })
     .map_err(to_py_err)
 }
@@ -380,6 +387,9 @@ pub(crate) fn _list_datasets(py: Python<'_>, cache_dir: PathBuf) -> PyResult<Vec
             result.set_item("source", entry.source)?;
             result.set_item("revision", entry.revision)?;
             result.set_item("splits", entry.splits)?;
+            result.set_item("formats", entry.formats)?;
+            result.set_item("raw_path", entry.raw_path)?;
+            result.set_item("original_path", entry.original_path)?;
             Ok(result.unbind())
         })
         .collect()

@@ -1,4 +1,4 @@
-//! Discover completed downloads and Lance bundles in a Rivet cache.
+//! Discover completed downloads and prepared bundles in a Rivet cache.
 
 use super::{DatasetManifest, manifest_path};
 use crate::errors::DataResult;
@@ -17,6 +17,9 @@ pub struct DatasetEntry {
     pub source: Option<String>,
     pub revision: Option<String>,
     pub splits: Vec<String>,
+    pub formats: Vec<String>,
+    pub raw_path: Option<PathBuf>,
+    pub original_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -34,9 +37,16 @@ struct ImportRecord {
 
 /// List completed entries without opening dataset contents or accessing the network.
 pub fn list_datasets(root: impl AsRef<Path>) -> DataResult<Vec<DatasetEntry>> {
-    let root = match root.as_ref().canonicalize() {
+    let requested = std::path::absolute(root.as_ref())?;
+    let downloads = super::download::download_cache_for(&requested);
+    let root = match requested.canonicalize() {
         Ok(root) => root,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => requested,
+        Err(err) => return Err(err.into()),
+    };
+    let downloads = match downloads.canonicalize() {
+        Ok(root) => root,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => downloads,
         Err(err) => return Err(err.into()),
     };
     let mut imports = BTreeMap::new();
@@ -55,7 +65,7 @@ pub fn list_datasets(root: impl AsRef<Path>) -> DataResult<Vec<DatasetEntry>> {
 
     let mut results = Vec::new();
     for provider in ["hf", "git", "http", "torch"] {
-        for path in children(&root.join(provider), true)? {
+        for path in children(&downloads.join(provider), true)? {
             if provider == "torch" {
                 for entry in children(&path, true)? {
                     if let Some(item) = download_entry(&entry, provider, Some(&path), &imports)? {
@@ -68,13 +78,14 @@ pub fn list_datasets(root: impl AsRef<Path>) -> DataResult<Vec<DatasetEntry>> {
         }
     }
 
-    for name_root in children(&root.join("derived/lance"), true)? {
-        if let Some(item) = lance_entry(&name_root, "derived", None)? {
-            results.push(item);
-        }
+    for name_root in children(&root, true)? {
         for path in children(&name_root, true)? {
-            if let Some(item) = lance_entry(&path, "derived", Some(&name_root))? {
-                results.push(item);
+            let name = path.file_name().unwrap_or_default().as_encoded_bytes();
+            if name.len() == 64
+                && name.iter().all(u8::is_ascii_hexdigit)
+                && let Some(entry) = prepared_entry(&path, &name_root, &downloads)?
+            {
+                results.push(entry);
             }
         }
     }
@@ -82,12 +93,49 @@ pub fn list_datasets(root: impl AsRef<Path>) -> DataResult<Vec<DatasetEntry>> {
         .into_iter()
         .chain(children(&root.join("local/lance"), true)?)
     {
-        if let Some(item) = lance_entry(&path, "local", None)? {
+        if let Some(item) = lance_entry(&path)? {
             results.push(item);
         }
     }
+    let mut seen = std::collections::HashSet::new();
+    results.retain(|entry| seen.insert(entry.path.clone()));
     results.sort_by(|a, b| (&a.name, a.kind, &a.path).cmp(&(&b.name, b.kind, &b.path)));
     Ok(results)
+}
+
+fn prepared_entry(
+    path: &Path,
+    name_root: &Path,
+    downloads: &Path,
+) -> DataResult<Option<DatasetEntry>> {
+    let Ok(manifest) = DatasetManifest::read(path) else {
+        return Ok(None);
+    };
+    let mut formats = std::collections::BTreeSet::new();
+    for (name, split) in &manifest.splits {
+        let Ok(split_path) = manifest.split_path(path, name, split) else {
+            return Ok(None);
+        };
+        if split_path.is_file() {
+            formats.insert(file_format(&split_path));
+        } else if split_path.is_dir() && split_path.extension().is_some_and(|ext| ext == "lance") {
+            formats.insert("lance".to_owned());
+        } else {
+            return Ok(None);
+        }
+    }
+    Ok(Some(DatasetEntry {
+        name: display_name(name_root),
+        path: path.to_owned(),
+        kind: "derived",
+        provider: None,
+        source: None,
+        revision: None,
+        splits: manifest.splits.into_keys().collect(),
+        formats: formats.into_iter().collect(),
+        raw_path: read_raw_link(downloads, path),
+        original_path: None,
+    }))
 }
 
 fn children(path: &Path, directories: bool) -> io::Result<Vec<PathBuf>> {
@@ -158,9 +206,20 @@ fn download_entry(
                 display_name(name_root.unwrap_or(if path.is_file() { &path } else { entry }))
             })
     });
+    let original = children(&entry.join("original"), false)?;
+    let formats = if provider == "torch" {
+        vec!["torchvision".into()]
+    } else if let Some(archive) = original.first() {
+        vec![file_format(archive)]
+    } else {
+        raw_formats(&path)?
+    };
     Ok(Some(DatasetEntry {
         name,
         path,
+        formats,
+        raw_path: None,
+        original_path: original.into_iter().next(),
         kind: "download",
         provider: Some(provider),
         source: imported.and_then(|(_, item)| item.source.clone()),
@@ -169,11 +228,7 @@ fn download_entry(
     }))
 }
 
-fn lance_entry(
-    path: &Path,
-    kind: &'static str,
-    name_root: Option<&Path>,
-) -> DataResult<Option<DatasetEntry>> {
+fn lance_entry(path: &Path) -> DataResult<Option<DatasetEntry>> {
     let (name, splits) = if manifest_path(path).is_some() {
         let Ok(manifest) = DatasetManifest::read(path) else {
             return Ok(None);
@@ -185,7 +240,7 @@ fn lance_entry(
         }) {
             return Ok(None);
         }
-        let name = name_root.map_or(manifest.dataset.name, display_name);
+        let name = manifest.dataset.name;
         (name, manifest.splits.into_keys().collect())
     } else if path.extension().is_some_and(|ext| ext == "lance") && path.join("_versions").is_dir()
     {
@@ -206,18 +261,118 @@ fn lance_entry(
         if splits.is_empty() {
             return Ok(None);
         }
-        (display_name(name_root.unwrap_or(path)), splits)
+        (display_name(path), splits)
     };
 
     Ok(Some(DatasetEntry {
         name,
         path: path.to_path_buf(),
-        kind,
+        formats: vec!["lance".into()],
+        raw_path: None,
+        original_path: None,
+        kind: "local",
         provider: None,
         source: None,
         revision: None,
         splits,
     }))
+}
+
+fn read_raw_link(downloads: &Path, path: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string(path.join("download-artifact")).ok()?;
+    let relative = Path::new(&text);
+    if relative.as_os_str().is_empty()
+        || !relative
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
+    {
+        return None;
+    }
+    Some(downloads.join(relative))
+}
+
+fn file_format(path: &Path) -> String {
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("unknown")
+        .to_ascii_lowercase();
+    if matches!(ext.as_str(), "gz" | "bz2" | "xz")
+        && let Some(inner) = path.file_stem().map(Path::new)
+        && let Some(inner_ext) = inner.extension().and_then(|ext| ext.to_str())
+        && (super::download::tabular::is_tabular_file(inner)
+            || inner_ext.eq_ignore_ascii_case("tar"))
+    {
+        return format!("{}.{}", inner_ext.to_ascii_lowercase(), ext);
+    }
+    if matches!(ext.as_str(), "arrow" | "ipc" | "feather") {
+        use std::io::Read;
+        let mut magic = [0; 6];
+        if fs::File::open(path)
+            .and_then(|mut f| f.read_exact(&mut magic))
+            .is_ok()
+        {
+            return if &magic == b"ARROW1" {
+                "arrow-ipc-file"
+            } else {
+                "arrow-ipc-stream"
+            }
+            .into();
+        }
+    }
+    ext
+}
+
+fn raw_formats(path: &Path) -> io::Result<Vec<String>> {
+    if path.is_file() {
+        return Ok(vec![file_format(path)]);
+    }
+    let mut formats = std::collections::BTreeSet::new();
+    let mut entries = walkdir::WalkDir::new(path)
+        .into_iter()
+        .filter_entry(|entry| {
+            entry.depth() == 0 || !entry.file_name().to_string_lossy().starts_with('.')
+        });
+    while let Some(entry) = entries.next() {
+        let entry = entry.map_err(io::Error::from)?;
+        let candidate = entry.path();
+        if entry.file_type().is_dir() && candidate.extension().is_some_and(|ext| ext == "lance") {
+            formats.insert("lance".to_owned());
+            entries.skip_current_dir();
+        } else if entry.file_type().is_file()
+            && (super::download::tabular::is_tabular_file(candidate)
+                || candidate
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| {
+                        matches!(
+                            ext.to_ascii_lowercase().as_str(),
+                            "zip"
+                                | "tar"
+                                | "gz"
+                                | "bz2"
+                                | "xz"
+                                | "txt"
+                                | "jpg"
+                                | "jpeg"
+                                | "png"
+                                | "webp"
+                                | "wav"
+                                | "flac"
+                        )
+                    }))
+            && !matches!(
+                entry.file_name().to_str(),
+                Some("dataset.json" | "dataset.rivet.json" | "dataset_infos.json")
+            )
+        {
+            formats.insert(file_format(candidate));
+        }
+    }
+    if formats.is_empty() {
+        formats.insert("directory".into());
+    }
+    Ok(formats.into_iter().collect())
 }
 
 fn display_name(path: &Path) -> String {

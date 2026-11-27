@@ -37,25 +37,36 @@ other hosts. Git downloads require the `git` executable. Hugging Face uses
 the Hub token from `HF_TOKEN` or the saved Hugging Face token file.
 Pass `revision` for a Git or Hugging Face branch, tag, or commit.
 
-Downloads are stored in `$XDG_CACHE_HOME/rivet/datasets`, defaulting to
-`~/.cache/rivet/datasets`. Pass `cache_dir` to override the dataset cache
-directory or `offline=True` to use only a completed cache entry. The first
+Original downloads go to `$XDG_CACHE_HOME/rivet/downloads`, and prepared
+datasets go to `$XDG_CACHE_HOME/rivet/datasets`. The default XDG cache root is
+`~/.cache`. With `cache_dir`, originals go to `<cache_dir>/downloads` and
+prepared bundles to `<cache_dir>/<dataset>/<cache-key>`. Use `offline=True` to
+use only cached files. The first
 successful download is reused for the same source and revision. Pin a commit
 for reproducibility or remove the corresponding cache entry to update a
-moving branch. HTTP(S) ZIP and TAR archives are extracted by default. Pass
-`extract=False` to keep the downloaded file.
+moving branch. Rivet retains the original HTTP archive and extracts a separate
+copy by default. Pass `extract=False` to skip extraction.
 
-`rivet.load_dataset()` also accepts these source strings when the downloaded
-contents contain a Lance dataset or split bundle. It recognizes
-`dataset.json`, legacy `dataset.rivet.json`, and directories containing
-`*.lance` splits. Existing local Lance paths work with the same API. For
-other formats, use the path returned by `download_dataset()` with the reader
-for that format.
+By default `download_dataset()` only populates the original cache.
+`rivet.load_dataset("hf:uoft-cs/cifar10", split="train")` prepares the downloaded
+data as Arrow IPC File, then opens the prepared image split with mmap. A local
+path returned by a Rivet download can trigger the same preparation. Prepared
+bundles are cached under `datasets/<dataset>/<cache-key>` and reused on later
+loads.
+Source readers accept Parquet, Arrow IPC File or Stream, CSV, TSV, JSON, JSONL,
+and Lance bundles, including ZIP and TAR downloads and standalone compressed
+tabular files. Supported torchvision sources also prepare Arrow IPC File.
+Use `data_files` for ambiguous downloads or to select a subset of files.
+To prepare a tabular dataset without opening it as an image dataset, call
+`download_dataset(source, format="arrow")`. Text readers can open its split
+files with `rivet.text.TextDataset.from_arrow()`. The preparation formats are
+`arrow-ipc-file` (`arrow` is an alias), `arrow-ipc-stream`, and `lance`.
+Each format has its own cache key in the same dataset directory.
 
 ### Download from Rust
 
 Use `rivet_data::dataset::download_dataset` with `DownloadOptions` for the
-same cache, archive extraction, and optional Lance conversion.
+same cache, archive extraction, and optional format conversion.
 
 ```rust
 use rivet_data::dataset::{DownloadFormat, DownloadOptions, download_dataset};
@@ -63,7 +74,7 @@ use rivet_data::dataset::{DownloadFormat, DownloadOptions, download_dataset};
 let dataset = download_dataset(
     "hf:SetFit/sst5",
     &DownloadOptions {
-        format: DownloadFormat::Lance,
+        format: DownloadFormat::Arrow,
         ..DownloadOptions::default()
     },
 )?;
@@ -74,7 +85,7 @@ For `torch:` sources, `download_dataset_with_torch` accepts a
 torchvision as that provider.
 
 Use `rivet_vision::api::load_dataset` to
-open a local Lance image dataset or download and open a remote Lance source.
+open a local image dataset or prepare a remote source as Arrow IPC File.
 The result is `DatasetLoadResult::Single` for a physical dataset or a selected
 split, and `DatasetLoadResult::Bundle` for a collection of named splits.
 
@@ -92,8 +103,8 @@ let train = load_dataset(
 
 ### List cached datasets
 
-`rivet.list_datasets()` inventories completed downloads, derived Lance
-datasets and local Lance datasets under the XDG cache. Pass `cache_dir`
+`rivet.list_datasets()` inventories completed downloads, prepared bundles,
+and local Lance datasets under the XDG cache. Pass `cache_dir`
 to scan a different root. The scan reads cache metadata and works offline.
 
 ```python
@@ -117,13 +128,14 @@ python -m pip install /path/to/rivet.whl
 
 rivet list
 rivet list --json
-rivet download hf:SetFit/sst5 --format lance
+rivet download hf:SetFit/sst5 --format arrow
 rivet download torch:CIFAR10 --format lance --offline
 ```
 
-`rivet list` prints one row per dataset name, preferring Lance datasets and
-extracted directories. Use `--all` to inspect every cache entry and `--json`
-when consuming the output in scripts.
+`rivet list` shows the original format, prepared format, and splits in one
+row per dataset name. A download that has yet to
+be prepared has only original fields. Use `--all` to show every cached variant and `--json` to get the
+`original` and `prepared` entries as structured data.
 Both commands accept `--cache-dir`. Run `rivet download --help` for
 revision, archive extraction, and split selection options.
 
@@ -131,17 +143,17 @@ revision, archive extraction, and split selection options.
 
 With torchvision installed, use `torch:<class-name>` to download original
 dataset files. For supported image classification datasets such as CIFAR-10,
-Rivet can convert those files into native Lance splits and open them directly.
+Rivet prepares those files as Arrow IPC File splits on first load.
 
 ```python
 import rivet
 
 train = rivet.load_dataset("torch:CIFAR10", split="train")
-bundle = rivet.download_dataset("torch:CIFAR10", format="lance", offline=True)
+bundle = rivet.download_dataset("torch:CIFAR10", format="arrow", offline=True)
 ```
 
-Rivet retains raw files under `$XDG_CACHE_HOME/rivet/datasets/torch` and
-writes converted splits under `derived/lance/<dataset>` in the same cache.
+Rivet retains raw files under `$XDG_CACHE_HOME/rivet/downloads/torch` and
+writes prepared splits under `datasets/<dataset>/<cache-key>` in the same cache.
 Rust losslessly encodes the pixels and preserves the original class IDs,
 class names when available, and sample order. `offline=True` reuses a
 completed conversion or converts an existing raw download. The default
@@ -188,7 +200,7 @@ class label can also be opened through `rivet.load_dataset()` with the
 appropriate column names.
 
 Raw downloads stay in the provider directories. Converted datasets are
-stored under `derived/lance/<dataset>/<cache-key>` in the same XDG cache
+stored under `datasets/<dataset>/<cache-key>` in the same XDG cache
 and reused for the same source, revision, and conversion options.
 With `offline=True`, Rivet can open a completed conversion or build one
 from a cached raw download.

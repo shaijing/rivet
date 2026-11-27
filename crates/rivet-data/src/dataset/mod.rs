@@ -4,15 +4,18 @@ pub mod catalog;
 pub mod download;
 pub mod manifest;
 pub mod memory;
+mod prepare;
 pub mod source;
 
 pub mod lance;
+
+pub use prepare::{PreparedFormat, PreparedWriter, convert_files};
 
 pub use bundle::{DatasetBundle, DatasetLoadResult};
 pub use catalog::{DatasetEntry, list_datasets};
 pub use download::{
     DataFiles, DownloadFormat, DownloadOptions, TorchDatasetProvider, dataset_cache_dir,
-    download_dataset, download_dataset_with_torch, is_remote_dataset,
+    download_dataset, download_dataset_with_torch, is_remote_dataset, prepare_downloaded_path,
 };
 pub use manifest::{
     ClassLabelFeature, DatasetManifest, Feature, ImageFeature, ImageRepresentation,

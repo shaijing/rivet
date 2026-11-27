@@ -1,13 +1,18 @@
 use std::collections::{BTreeMap, HashSet};
-use std::io;
 use std::path::{Path, PathBuf};
+use std::{fs, io};
 
 use glob::{MatchOptions, Pattern};
 use serde_json::json;
 use walkdir::WalkDir;
 
-use super::{DataFiles, DownloadOptions, cache_key, publish_derived, relative_path};
-use crate::dataset::lance::convert_files_to_lance;
+use super::{
+    DataFiles, DownloadOptions, cache_key, publish_derived, relative_path, write_raw_link,
+};
+use crate::dataset::prepare::convert_lance_split;
+use crate::dataset::{
+    DatasetManifest, PreparedFormat, PreparedWriter, convert_files, manifest_path,
+};
 use crate::errors::{DataResult, invalid_argument};
 
 const SPLITS: [&str; 5] = ["train", "test", "dev", "val", "validation"];
@@ -17,6 +22,7 @@ pub(super) fn derive(
     name: &str,
     source_key: &str,
     options: &DownloadOptions,
+    format: PreparedFormat,
     download: impl FnOnce() -> DataResult<PathBuf>,
 ) -> DataResult<PathBuf> {
     let files = match &options.data_files {
@@ -33,9 +39,7 @@ pub(super) fn derive(
                         .bytes()
                         .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
                 {
-                    return Err(invalid_argument(format!(
-                        "invalid Lance split name: {split:?}"
-                    )));
+                    return Err(invalid_argument(format!("invalid split name: {split:?}")));
                 }
             }
             json!(splits)
@@ -65,13 +69,40 @@ pub(super) fn derive(
         .collect();
     let name: String = name.trim_matches('-').chars().take(80).collect();
     let name = if name.is_empty() { "dataset" } else { &name };
-    let key = cache_key(&json!([1, source_key, files, options.json_columns]));
-    let output = cache.join("derived/lance").join(name).join(key);
+    let key = cache_key(&json!([
+        2,
+        source_key,
+        files,
+        options.json_columns,
+        format.as_str()
+    ]));
+    let output = cache.join(name).join(key);
     if output.join("dataset.json").is_file() {
         return Ok(output);
     }
 
-    let payload = download()?;
+    let raw = download()?;
+    let extraction = (raw.is_file() && !is_tabular_file(&raw))
+        .then(tempfile::tempdir)
+        .transpose()?;
+    let payload = if let Some(temp) = &extraction {
+        let target = temp.path().join("data");
+        if super::archive::unpack(&raw, &target)? {
+            target
+        } else {
+            super::archive::decompress_file(&raw, &target)?.unwrap_or_else(|| raw.clone())
+        }
+    } else {
+        raw.clone()
+    };
+    if options.data_files.is_none() {
+        if let Some(root) = find_lance_root(&payload)? {
+            return publish_derived(output, |staging| {
+                convert_lance_bundle(&root, staging, name, format)?;
+                write_raw_link(staging, cache, &raw)
+            });
+        }
+    }
     let base = if payload.is_dir() {
         &payload
     } else {
@@ -88,14 +119,35 @@ pub(super) fn derive(
         }
     }
     publish_derived(output, |staging| {
-        convert_files_to_lance(
+        convert_files(
             staging,
             name,
             groups,
             options.json_columns.as_deref(),
             !matches!(&options.data_files, Some(DataFiles::Splits(_))),
-        )
+            format,
+        )?;
+        write_raw_link(staging, cache, &raw)
     })
+}
+
+pub(in crate::dataset) fn is_tabular_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "parquet"
+                    | "arrow"
+                    | "ipc"
+                    | "feather"
+                    | "csv"
+                    | "tsv"
+                    | "jsonl"
+                    | "ndjson"
+                    | "json"
+            )
+        })
 }
 
 fn select_files(
@@ -171,13 +223,18 @@ fn select_files(
             .unwrap_or_default()
             .to_string_lossy()
             .to_ascii_lowercase();
-        if !matches!(
-            extension.as_str(),
-            "parquet" | "arrow" | "csv" | "tsv" | "jsonl" | "ndjson" | "json"
-        ) || relative
-            .iter()
-            .any(|part| part.to_string_lossy().starts_with('.') || part == "__MACOSX")
-            || (payload.is_dir() && matches!(&*name, "dataset.json" | "dataset.rivet.json"))
+        if !is_tabular_file(&path)
+            || relative
+                .iter()
+                .any(|part| part.to_string_lossy().starts_with('.') || part == "__MACOSX")
+            || (payload.is_dir()
+                && matches!(
+                    &*name,
+                    "dataset.json"
+                        | "dataset.rivet.json"
+                        | "dataset_infos.json"
+                        | "dataset_info.json"
+                ))
             || name.ends_with(".metadata.json")
         {
             continue;
@@ -214,4 +271,119 @@ fn select_files(
         ));
     }
     Ok(groups)
+}
+
+fn find_lance_root(payload: &Path) -> DataResult<Option<PathBuf>> {
+    if !payload.is_dir() {
+        return Ok(None);
+    }
+    let mut found = None;
+    let mut dirs = WalkDir::new(payload).into_iter();
+    while let Some(entry) = dirs.next() {
+        let entry = entry.map_err(io::Error::from)?;
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if path != payload && entry.file_name().to_string_lossy().starts_with('.') {
+            dirs.skip_current_dir();
+            continue;
+        }
+        let has_lance_splits = fs::read_dir(path)?.any(|child| {
+            child.is_ok_and(|child| {
+                child.path().extension().is_some_and(|ext| ext == "lance")
+                    && child.path().join("_versions").is_dir()
+            })
+        });
+        let has_lance_manifest = manifest_path(path).is_some_and(|manifest| {
+            manifest
+                .file_name()
+                .is_some_and(|name| name == "dataset.rivet.json")
+                || DatasetManifest::load(manifest)
+                    .is_ok_and(|m| m.splits.values().any(|s| s.uri.ends_with(".lance")))
+        });
+        if path.extension().is_some_and(|ext| ext == "lance")
+            || has_lance_splits
+            || has_lance_manifest
+        {
+            if found.replace(path.to_owned()).is_some() {
+                return Err(invalid_argument(
+                    "download contains multiple Lance dataset roots",
+                ));
+            }
+            dirs.skip_current_dir();
+        }
+    }
+    Ok(found)
+}
+
+pub(super) fn convert_lance_bundle(
+    root: &Path,
+    output: &Path,
+    name: &str,
+    format: PreparedFormat,
+) -> DataResult<()> {
+    let manifest = manifest_path(root).map(DatasetManifest::load).transpose()?;
+    let paths = if let Some(manifest) = &manifest {
+        manifest
+            .splits
+            .iter()
+            .map(|(name, split)| {
+                Ok((
+                    name.clone(),
+                    manifest.split_path(root, name, split)?,
+                    split.num_rows,
+                ))
+            })
+            .collect::<DataResult<Vec<_>>>()?
+    } else if root.extension().is_some_and(|ext| ext == "lance") {
+        vec![("train".to_owned(), root.to_owned(), None)]
+    } else {
+        let mut paths = Vec::new();
+        for entry in fs::read_dir(root)? {
+            let path = entry?.path();
+            if path.is_dir() && path.extension().is_some_and(|ext| ext == "lance") {
+                paths.push((
+                    path.file_stem().unwrap().to_string_lossy().into_owned(),
+                    path,
+                    None,
+                ));
+            }
+        }
+        paths
+    };
+
+    fs::create_dir_all(output)?;
+    let root = root.canonicalize()?;
+    let mut splits = BTreeMap::new();
+    let writer = PreparedWriter::new(format)?;
+    for (split, path, expected) in paths {
+        if !path.canonicalize()?.starts_with(&root) {
+            return Err(invalid_argument(format!(
+                "downloaded dataset path leaves the cache: {}",
+                path.display()
+            )));
+        }
+        if !super::archive::safe_component(&split) {
+            return Err(invalid_argument(format!("invalid split name: {split:?}")));
+        }
+        let file = format!("{split}.{}", format.extension());
+        let rows = convert_lance_split(&path, &output.join(&file), &writer)?;
+        if expected.is_some_and(|expected| rows != expected) {
+            return Err(invalid_argument(format!(
+                "manifest row count for split {split:?} does not match the source"
+            )));
+        }
+        splits.insert(split, json!({"uri": file, "path": file, "num_rows": rows}));
+    }
+    let value = if let Some(manifest) = manifest.filter(|m| m.format_version == 2) {
+        let mut value = serde_json::to_value(manifest).map_err(io::Error::other)?;
+        value["splits"] = json!(splits);
+        value
+    } else {
+        json!({"format_version": 1, "name": name, "splits": splits})
+    };
+    serde_json::to_writer_pretty(fs::File::create(output.join("dataset.json"))?, &value)
+        .map_err(io::Error::other)?;
+    Ok(())
 }
