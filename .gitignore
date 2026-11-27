@@ -72,5 +72,8 @@ docs/_build/
 # Pyenv
 .python-version
 
+# Ruff
+.ruff_cache/
+
 # Agents
 /.agents

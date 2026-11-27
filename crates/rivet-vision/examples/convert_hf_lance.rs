@@ -2,7 +2,7 @@
 //!
 //! Usage:
 //!   cargo run -j 12 -p rivet-vision \
-//!     --example convert_hf_lance -- <hf-arrow-root> [output-root]
+//!     --features lance --example convert_hf_lance -- <hf-arrow-root> [output-root]
 //!
 //! Optional flags:
 //!   --image-column <name>  (default: img)
@@ -80,7 +80,11 @@ fn default_output_root(input: &std::path::Path) -> rivet_data::DataResult<PathBu
         .rsplit_once("___")
         .map(|(_, name)| name)
         .unwrap_or(raw_name);
+    let dataset_name = match std::path::Path::new(dataset_name).components().next() {
+        Some(std::path::Component::Normal(_)) => dataset_name,
+        _ => "dataset",
+    };
     Ok(rivet_data::dataset::dataset_cache_dir()?
-        .join("local/lance")
-        .join(dataset_name))
+        .join(dataset_name)
+        .join("lance"))
 }

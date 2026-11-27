@@ -1,6 +1,6 @@
 //! Discover completed downloads and prepared bundles in a Rivet cache.
 
-use super::{DatasetManifest, PreparedFormat, manifest_path};
+use super::{DatasetManifest, PreparedFormat};
 use crate::errors::{DataResult, invalid_argument};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -86,26 +86,15 @@ fn list_entries(root: &Path, downloads: &Path) -> DataResult<Vec<DatasetEntry>> 
     }
 
     for name_root in children(root, true)? {
+        if let Some(entry) = prepared_entry(&name_root, &name_root, downloads)? {
+            results.push(entry);
+        }
         for path in children(&name_root, true)? {
-            let name = path.file_name().unwrap_or_default().as_encoded_bytes();
-            if name.len() == 64
-                && name.iter().all(u8::is_ascii_hexdigit)
-                && let Some(entry) = prepared_entry(&path, &name_root, downloads)?
-            {
+            if let Some(entry) = prepared_entry(&path, &name_root, downloads)? {
                 results.push(entry);
             }
         }
     }
-    for path in children(root, true)?
-        .into_iter()
-        .chain(children(&root.join("local/lance"), true)?)
-    {
-        if let Some(item) = lance_entry(&path)? {
-            results.push(item);
-        }
-    }
-    let mut seen = std::collections::HashSet::new();
-    results.retain(|entry| seen.insert(entry.path.clone()));
     results.sort_by(|a, b| (&a.name, a.kind, &a.path).cmp(&(&b.name, b.kind, &b.path)));
     Ok(results)
 }
@@ -226,6 +215,13 @@ fn prepared_entry(
     let Ok(manifest) = DatasetManifest::read(path) else {
         return Ok(None);
     };
+    let raw_path = read_raw_link(downloads, path);
+    let is_local = raw_path.is_none() && manifest.is_local();
+    let key = path.file_name().unwrap_or_default().as_encoded_bytes();
+    if !is_local && (path == name_root || key.len() != 64 || !key.iter().all(u8::is_ascii_hexdigit))
+    {
+        return Ok(None);
+    }
     let mut formats = std::collections::BTreeSet::new();
     for (name, split) in &manifest.splits {
         let Ok(split_path) = manifest.split_path(path, name, split) else {
@@ -240,15 +236,19 @@ fn prepared_entry(
         }
     }
     Ok(Some(DatasetEntry {
-        name: display_name(name_root),
+        name: if is_local {
+            manifest.dataset.name
+        } else {
+            display_name(name_root)
+        },
         path: path.to_owned(),
-        kind: "derived",
+        kind: if is_local { "local" } else { "derived" },
         provider: None,
         source: None,
         revision: None,
         splits: manifest.splits.into_keys().collect(),
         formats: formats.into_iter().collect(),
-        raw_path: read_raw_link(downloads, path),
+        raw_path,
         original_path: None,
     }))
 }
@@ -340,56 +340,6 @@ fn download_entry(
         source: imported.and_then(|(_, item)| item.source.clone()),
         revision: imported.and_then(|(_, item)| item.revision.clone()),
         splits: Vec::new(),
-    }))
-}
-
-fn lance_entry(path: &Path) -> DataResult<Option<DatasetEntry>> {
-    let (name, splits) = if manifest_path(path).is_some() {
-        let Ok(manifest) = DatasetManifest::read(path) else {
-            return Ok(None);
-        };
-        if manifest.splits.iter().any(|(name, split)| {
-            manifest
-                .split_path(path, name, split)
-                .map_or(true, |path| !path.is_dir())
-        }) {
-            return Ok(None);
-        }
-        let name = manifest.dataset.name;
-        (name, manifest.splits.into_keys().collect())
-    } else if path.extension().is_some_and(|ext| ext == "lance") && path.join("_versions").is_dir()
-    {
-        (display_name(path), Vec::new())
-    } else {
-        let splits: Vec<_> = children(path, true)?
-            .into_iter()
-            .filter(|child| {
-                child.extension().is_some_and(|ext| ext == "lance")
-                    && child.join("_versions").is_dir()
-            })
-            .filter_map(|child| {
-                child
-                    .file_stem()
-                    .map(|name| name.to_string_lossy().into_owned())
-            })
-            .collect();
-        if splits.is_empty() {
-            return Ok(None);
-        }
-        (display_name(path), splits)
-    };
-
-    Ok(Some(DatasetEntry {
-        name,
-        path: path.to_path_buf(),
-        formats: vec!["lance".into()],
-        raw_path: None,
-        original_path: None,
-        kind: "local",
-        provider: None,
-        source: None,
-        revision: None,
-        splits,
     }))
 }
 

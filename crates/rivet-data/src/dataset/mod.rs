@@ -19,8 +19,9 @@ pub use download::{
     download_dataset, download_dataset_with_torch, is_remote_dataset, prepare_downloaded_path,
 };
 pub use manifest::{
-    ClassLabelFeature, DatasetManifest, Feature, ImageFeature, ImageRepresentation,
-    LEGACY_MANIFEST_FILE_NAME, MANIFEST_FILE_NAME, SplitManifest, manifest_path,
+    ClassLabelFeature, DATASET_ORIGIN_KEY, DatasetManifest, Feature, ImageFeature,
+    ImageRepresentation, LEGACY_MANIFEST_FILE_NAME, MANIFEST_FILE_NAME, SplitManifest,
+    manifest_path,
 };
 pub use memory::MemoryDataset;
 pub use source::{AccessPattern, Dataset, Source, SourceCapabilities};

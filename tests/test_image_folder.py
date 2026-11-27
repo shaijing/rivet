@@ -116,6 +116,7 @@ def test_convert_imagefolder_lance_preserves_classes_and_encoded_images(
     manifest = json.loads((output / "dataset.json").read_text())
     assert manifest["features"]["label"]["names"] == ["ant", "zebra"]
     assert manifest["created_by"]["source_format"] == "imagefolder"
+    assert manifest["extensions"]["rivet.origin"] == "local"
     assert rivet.load_dataset(output).keys() == ["train", "val"]
     dataset = rivet.load_dataset(output, split="train")
     assert [dataset.get_encoded(i)["label"] for i in range(len(dataset))] == [0, 1]

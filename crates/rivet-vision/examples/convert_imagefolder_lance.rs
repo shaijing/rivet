@@ -3,11 +3,11 @@
 //! Expected input layout: `<input>/<split>/<class>/*.{jpg,jpeg,png,bmp,webp}`.
 //! Usage:
 //!   cargo run -j 12 -p rivet-vision \
-//!     --example convert_imagefolder_lance -- <imagefolder-root> [output-root] [--overwrite]
+//!     --features lance --example convert_imagefolder_lance -- <imagefolder-root> [output-root] [--overwrite]
 //!
 //! Example:
 //!   cargo run -j 12 -p rivet-vision \
-//!     --example convert_imagefolder_lance -- \
+//!     --features lance --example convert_imagefolder_lance -- \
 //!     ./nuimages_classification \
 //!     ./nuimages_classification.lance
 
@@ -33,11 +33,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!("unknown argument {arg}; {}", usage()).into());
         }
     }
-    let output_root = output_root.unwrap_or_else(|| {
-        let mut output = input_root.as_os_str().to_owned();
-        output.push(".lance");
-        PathBuf::from(output)
-    });
+    let output_root = match output_root {
+        Some(path) => path,
+        None => {
+            let input = input_root.canonicalize()?;
+            let name = input.file_name().ok_or("input must name an ImageFolder")?;
+            rivet_data::dataset::dataset_cache_dir()?
+                .join(name)
+                .join("lance")
+        }
+    };
     let report = convert_imagefolder_dataset(input_root, output_root, None, overwrite)?;
     for (split, rows) in report.rows_by_split {
         println!("{split}: {rows} images");

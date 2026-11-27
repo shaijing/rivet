@@ -5,7 +5,9 @@
 //! Python or on a Hub client. The conversion is streaming: each input record
 //! batch is normalized and handed directly to Lance.
 
-use crate::datasets::image_bundle::{native_schema, validate_split_name, write_image_manifest};
+use crate::datasets::image_bundle::{
+    local_bundle_name, native_schema, validate_split_name, write_image_manifest,
+};
 use arrow::array::{Array, ArrayRef, StructArray};
 use arrow::compute::cast;
 #[cfg(test)]
@@ -219,6 +221,7 @@ pub fn convert_huggingface_dataset(
         "huggingface-arrow",
         classes.as_deref(),
         "lance",
+        Some(local_bundle_name(&output_root)),
     )?;
     publish_bundle(temp, &staging, &output_root, options.overwrite)?;
     Ok(LanceConversionReport {

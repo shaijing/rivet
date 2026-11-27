@@ -82,5 +82,6 @@ pub fn convert_torch_bundle(
         "torchvision",
         classes,
         extension,
+        None,
     )
 }

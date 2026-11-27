@@ -148,7 +148,17 @@ struct SplitManifestV1 {
     num_rows: Option<usize>,
 }
 
+/// Manifest extension used to identify datasets prepared from local inputs.
+pub const DATASET_ORIGIN_KEY: &str = "rivet.origin";
+
 impl DatasetManifest {
+    pub fn is_local(&self) -> bool {
+        self.extensions
+            .get(DATASET_ORIGIN_KEY)
+            .and_then(serde_json::Value::as_str)
+            == Some("local")
+    }
+
     /// Read the canonical `dataset.json`, falling back to the v1 filename.
     pub fn read(root: &Path) -> DataResult<Self> {
         let path = manifest_path(root).ok_or_else(|| {

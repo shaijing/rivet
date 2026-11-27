@@ -1,6 +1,8 @@
 use super::convert::{LanceConversionReport, check_output, publish_bundle, resolve_directory};
 use crate::datasets::ImageFolderDatasetCore;
-use crate::datasets::image_bundle::{native_schema, validate_split_name, write_image_manifest};
+use crate::datasets::image_bundle::{
+    local_bundle_name, native_schema, validate_split_name, write_image_manifest,
+};
 use crate::errors::{RivetResult, invalid_argument};
 use arrow::array::{BinaryArray, Int32Array};
 use arrow::error::ArrowError;
@@ -136,6 +138,7 @@ pub fn convert_imagefolder_dataset(
         "imagefolder",
         Some(&classes),
         "lance",
+        Some(local_bundle_name(&output)),
     )?;
 
     publish_bundle(temp, &staging, &output, overwrite)?;

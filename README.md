@@ -101,6 +101,10 @@ let train = load_dataset(
 )?;
 ```
 
+Local conversion bundles live under the same dataset cache directory. Their
+v2 manifests record `"extensions": {"rivet.origin": "local"}`, which lets
+Rivet identify local datasets regardless of their physical storage format.
+
 ### List cached datasets
 
 `rivet.list_datasets()` inventories completed downloads, prepared bundles,
@@ -568,7 +572,7 @@ The converter discovers common `train`, `validation`, and `test` shard names,
 writes encoded images and integer labels to one `.lance` directory per split,
 and preserves Hugging Face class names in the Rivet `dataset.json` manifest
 when available. Without an explicit output path, the bundle is written under
-`$XDG_CACHE_HOME/rivet/datasets/local/lance/<dataset-name>`, with `~/.cache`
+`$XDG_CACHE_HOME/rivet/datasets/<dataset-name>/lance`, with `~/.cache`
 as the fallback cache root. Each physical Lance data file targets a maximum of 2
 GiB and 1,048,576 rows by default; Lance checks the byte limit at row-group
 boundaries, so the final file can be slightly larger. Override these settings

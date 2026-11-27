@@ -428,8 +428,15 @@ def test_list_datasets_includes_completed_downloads_and_lance(
     (derived / "dataset.json").write_text(
         json.dumps({"format_version": 1, "splits": {"train": {"path": "train.lance"}}})
     )
-    local = cache / "local" / "lance" / "single.lance"
-    (local / "_versions").mkdir(parents=True)
+    local = cache / "single" / "lance"
+    (local / "train.lance").mkdir(parents=True)
+    (local / "dataset.json").write_text(json.dumps({
+        "format_version": 2,
+        "dataset": {"name": "single"},
+        "features": {"value": {"type": "scalar", "column": "value"}},
+        "splits": {"train": {"uri": "train.lance", "num_rows": 1}},
+        "extensions": {"rivet.origin": "local"},
+    }))
     pending = cache.with_name("downloads") / "hf" / ".download-in-progress"
     (pending / "data").mkdir(parents=True)
     (pending / "artifact").write_text("data")
@@ -441,7 +448,7 @@ def test_list_datasets_includes_completed_downloads_and_lance(
     assert [(entry["name"], entry["kind"], entry["path"]) for entry in entries] == [
         ("converted", "derived", derived),
         ("named", "download", raw),
-        ("single.lance", "local", local),
+        ("single", "local", local),
     ]
     assert entries[0]["splits"] == ["train"]
     assert entries[1]["provider"] == "http"
