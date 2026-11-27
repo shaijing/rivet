@@ -26,7 +26,7 @@ def _parser() -> argparse.ArgumentParser:
         "--cache-dir", type=Path, help="override the XDG dataset cache"
     )
     listing.add_argument("--json", action="store_true", help="emit JSON")
-    listing.add_argument("--all", action="store_true", help="show every cached variant")
+    listing.add_argument("--all", action="store_true", help="show every original download variant")
 
     download = commands.add_parser("download", help="download or convert a dataset")
     download.add_argument("source", help="hf:, git:, github:, torch:, or HTTP(S) source")
@@ -59,26 +59,37 @@ def _parser() -> argparse.ArgumentParser:
 
 def _dataset_rows(entries: list[dict], show_all: bool) -> list[dict]:
     originals = {entry["path"]: entry for entry in entries if entry["kind"] == "download"}
-    rows = []
-    used = set()
+    variants = {path: [] for path in originals}
+    unlinked = []
     for entry in entries:
         if entry["kind"] == "download":
             continue
-        original = originals.get(entry["raw_path"])
-        if original:
-            used.add(original["path"])
-        rows.append((original, entry))
-    rows.extend((entry, None) for path, entry in originals.items() if path not in used)
+        if entry["raw_path"] in variants:
+            variants[entry["raw_path"]].append(entry)
+        else:
+            unlinked.append((None, [entry]))
 
-    def priority(row: tuple[dict | None, dict | None]) -> tuple:
+    def prepared_priority(entry: dict) -> tuple:
+        return (
+            "arrow-ipc-file" not in entry["formats"],
+            -len(entry["splits"]),
+            entry["path"],
+        )
+
+    rows = [
+        (original, sorted(variants[path], key=prepared_priority))
+        for path, original in originals.items()
+    ]
+    rows.extend(unlinked)
+
+    def priority(row: tuple[dict | None, list[dict]]) -> tuple:
         original, prepared = row
-        entry = original or prepared
+        entry = original or prepared[0]
         return (
             entry["name"],
-            not (prepared and "arrow-ipc-file" in prepared["formats"]),
-            prepared is None,
-            original is None,
-            -len(prepared["splits"]) if prepared else 0,
+            not (original and prepared),
+            not prepared,
+            prepared_priority(prepared[0]) if prepared else (),
             entry["path"],
         )
 
@@ -100,7 +111,7 @@ def _dataset_rows(entries: list[dict], show_all: bool) -> list[dict]:
 
         merged = {}
         for original, prepared in ordered:
-            name = (original or prepared)["name"]
+            name = (original or prepared[0])["name"]
             merged.setdefault(
                 name,
                 (original if prepared and original else preferred_originals.get(name), prepared),
@@ -109,10 +120,11 @@ def _dataset_rows(entries: list[dict], show_all: bool) -> list[dict]:
 
     return [
         {
-            "name": (original or prepared)["name"],
-            "provider": (original or prepared)["provider"],
+            "name": (original or prepared[0])["name"],
+            "provider": (original or prepared[0])["provider"],
             "original": original,
-            "prepared": prepared,
+            "prepared": prepared[0] if prepared else None,
+            "prepared_variants": prepared,
         }
         for original, prepared in ordered
     ]
@@ -127,20 +139,24 @@ def _print_datasets(entries: list[dict]) -> None:
         "NAME",
         "PROVIDER",
         "ORIGINAL FORMAT",
-        "PREPARED FORMAT",
+        "PREPARED FORMATS",
         "SPLITS",
     )
 
     def formats(entry: dict | None) -> str:
         return ", ".join(entry["formats"]) if entry else "-"
 
+    def prepared_values(entry: dict, field: str) -> str:
+        values = {value for variant in entry["prepared_variants"] for value in variant[field]}
+        return ", ".join(sorted(values)) or "-"
+
     rows = [
         (
             entry["name"],
             entry["provider"] or "-",
             formats(entry["original"]),
-            formats(entry["prepared"]),
-            ", ".join((entry["prepared"] or {}).get("splits", ())) or "-",
+            prepared_values(entry, "formats"),
+            prepared_values(entry, "splits"),
         )
         for entry in entries
     ]

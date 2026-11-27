@@ -567,10 +567,17 @@ def test_prepared_formats_share_dataset_directory(tmp_path: Path, server, capsys
         outputs["arrow-ipc-file"]
     )
 
-    assert main(["list", "--json", "--all", "--cache-dir", str(tmp_path)]) == 0
-    rows = json.loads(capsys.readouterr().out)
-    assert {row["prepared"]["formats"][0] for row in rows} == set(formats)
-    assert {row["original"]["path"] for row in rows} == {str(raw)}
+    args = ["list", "--cache-dir", str(tmp_path)]
+    for flags in ([], ["--all"]):
+        assert main([*args, "--json", *flags]) == 0
+        [row] = json.loads(capsys.readouterr().out)
+        assert {variant["formats"][0] for variant in row["prepared_variants"]} == set(formats)
+        assert row["prepared"]["formats"] == ["arrow-ipc-file"]
+        assert row["original"]["path"] == str(raw)
+
+        assert main([*args, *flags]) == 0
+        _, _, dataset_row = capsys.readouterr().out.splitlines()
+        assert ", ".join(formats) in dataset_row
     assert raw.read_bytes() == content
     assert requests == [route]
 

@@ -132,10 +132,11 @@ rivet download hf:SetFit/sst5 --format arrow
 rivet download torch:CIFAR10 --format lance --offline
 ```
 
-`rivet list` shows the original format, prepared format, and splits in one
-row per dataset name. A download that has yet to
-be prepared has only original fields. Use `--all` to show every cached variant and `--json` to get the
-`original` and `prepared` entries as structured data.
+`rivet list` shows the original format, all prepared formats for the selected
+original download, and the union of their splits in one row per dataset name.
+Use `--all` to show separate original download variants. With `--json`,
+`prepared_variants` lists all preparations in a row and `prepared` gives the
+preferred preparation.
 Both commands accept `--cache-dir`. Run `rivet download --help` for
 revision, archive extraction, and split selection options.
 
