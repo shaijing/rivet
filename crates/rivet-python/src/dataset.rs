@@ -12,7 +12,7 @@ use rivet_vision::api::{
 };
 use rivet_vision::api::{
     CacheConfig, CacheLevel, DEFAULT_ENCODED_CHUNK_SIZE, DatasetLocation, ImageSource,
-    LanceImageDataset, LoadDatasetOptions, load_dataset_with_torch, load_lance_image_dataset,
+    LoadDatasetOptions, load_dataset_with_torch, load_lance_image_dataset,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -79,11 +79,23 @@ impl PyLanceDataset {
     #[new]
     #[pyo3(signature = (path, image_column="image", label_column="label"))]
     fn new(path: PathBuf, image_column: &str, label_column: &str) -> PyResult<Self> {
-        Ok(Self {
-            inner: ImageSource::from_encoded(Arc::new(
-                LanceImageDataset::open(path, image_column, label_column).map_err(to_py_err)?,
-            )),
-        })
+        #[cfg(feature = "lance")]
+        {
+            Ok(Self {
+                inner: ImageSource::from_encoded(Arc::new(
+                    rivet_vision::api::LanceImageDataset::open(path, image_column, label_column)
+                        .map_err(to_py_err)?,
+                )),
+            })
+        }
+        #[cfg(not(feature = "lance"))]
+        {
+            let _ = (path, image_column, label_column);
+            rivet_data::dataset::PreparedFormat::Lance
+                .ensure_available()
+                .map_err(to_py_err)?;
+            unreachable!("Lance feature check")
+        }
     }
 
     fn __len__(&self) -> usize {
@@ -344,29 +356,40 @@ pub(crate) fn _convert_imagefolder_lance(
     split: Option<String>,
     overwrite: bool,
 ) -> PyResult<PathBuf> {
-    py.detach(move || {
-        rivet_vision::api::convert_imagefolder_dataset(root, output, split.as_deref(), overwrite)
+    #[cfg(feature = "lance")]
+    {
+        py.detach(move || {
+            rivet_vision::api::convert_imagefolder_dataset(
+                root,
+                output,
+                split.as_deref(),
+                overwrite,
+            )
             .map(|report| report.output_root)
-    })
-    .map_err(to_py_err)
+        })
+        .map_err(to_py_err)
+    }
+    #[cfg(not(feature = "lance"))]
+    {
+        let _ = (py, root, output, split, overwrite);
+        rivet_data::dataset::PreparedFormat::Lance
+            .ensure_available()
+            .map_err(to_py_err)?;
+        unreachable!("Lance feature check")
+    }
 }
 
 #[pyfunction]
 pub(crate) fn _convert_torch_images(
     py: Python<'_>,
     output: PathBuf,
-    splits: std::collections::BTreeMap<String, rivet_vision::datasets::lance::TorchImageSplit>,
+    splits: std::collections::BTreeMap<String, rivet_vision::datasets::TorchImageSplit>,
     classes: Option<Vec<String>>,
     format: &str,
 ) -> PyResult<()> {
     let format = format.parse().map_err(to_py_err)?;
     py.detach(move || {
-        rivet_vision::datasets::lance::convert_torch_bundle(
-            &output,
-            splits,
-            classes.as_deref(),
-            format,
-        )
+        rivet_vision::datasets::convert_torch_bundle(&output, splits, classes.as_deref(), format)
     })
     .map_err(to_py_err)
 }

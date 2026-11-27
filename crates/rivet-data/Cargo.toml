@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 description = "Dataset abstractions, storage backends, sampling, caching, and runtime primitives"
 
+[features]
+lance = ["dep:lance", "dep:tokio"]
+
 [dependencies]
 arrow-array.workspace = true
 arrow-buffer.workspace = true
@@ -17,7 +20,7 @@ dirs = "6"
 flate2 = "1"
 glob = "0.3"
 hex = "0.4"
-lance.workspace = true
+lance = { workspace = true, optional = true }
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
 memmap2.workspace = true
 parquet = "58.4.1"
@@ -29,7 +32,7 @@ sha2 = "0.11"
 tar = "0.4"
 tempfile = "3"
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, optional = true }
 url = "2"
 walkdir = "2"
 zip = { version = "9.8", default-features = false, features = ["deflate", "bzip2", "lzma"] }

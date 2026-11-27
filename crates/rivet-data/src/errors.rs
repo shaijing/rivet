@@ -10,6 +10,7 @@ pub enum DataError {
     #[error("Arrow error: {0}")]
     Arrow(#[from] arrow::error::ArrowError),
 
+    #[cfg(feature = "lance")]
     #[error("Lance error: {0}")]
     Lance(#[from] lance::Error),
 

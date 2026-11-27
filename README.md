@@ -12,7 +12,7 @@
 
 Rivet is a Rust and Python image data pipeline for loading, transforming, and
 batching datasets. It provides zero-copy tensor views where possible, bounded
-multi-worker loading, deterministic sampling, and Lance-backed dataset support.
+multi-worker loading, deterministic sampling, and optional Lance-backed dataset support.
 
 The Rust [pipeline IR](docs/pipeline-ir.md) supports executable DAGs with shared
 inputs and image branch joins, while retaining the CPU linear fast path.
@@ -28,7 +28,7 @@ import rivet
 snapshot = rivet.download_dataset("hf:ylecun/mnist")
 checkout = rivet.download_dataset("git:owner/dataset", revision="v1")
 archive = rivet.download_dataset("https://example.org/dataset.tar.gz")
-train = rivet.load_dataset("https://example.org/images-lance.zip", split="train")
+train = rivet.load_dataset("https://example.org/images.parquet", split="train")
 ```
 
 `git:owner/repo` and `github:owner/repo` resolve to GitHub. Use
@@ -54,8 +54,8 @@ path returned by a Rivet download can trigger the same preparation. Prepared
 bundles are cached under `datasets/<dataset>/<cache-key>` and reused on later
 loads.
 Source readers accept Parquet, Arrow IPC File or Stream, CSV, TSV, JSON, JSONL,
-and Lance bundles, including ZIP and TAR downloads and standalone compressed
-tabular files. Supported torchvision sources also prepare Arrow IPC File.
+and, with the optional `lance` feature, Lance bundles. Rivet also supports ZIP
+and TAR downloads plus standalone compressed tabular files. Supported torchvision sources also prepare Arrow IPC File.
 Use `data_files` for ambiguous downloads or to select a subset of files.
 To prepare a tabular dataset without opening it as an image dataset, call
 `download_dataset(source, format="arrow")`. Text readers can open its split
@@ -129,7 +129,7 @@ python -m pip install /path/to/rivet.whl
 rivet list
 rivet list --json
 rivet download hf:SetFit/sst5 --format arrow
-rivet download torch:CIFAR10 --format lance --offline
+rivet download torch:CIFAR10 --format arrow --offline
 ```
 
 `rivet list` shows the original format, all prepared formats for the selected
@@ -165,7 +165,7 @@ argument use both splits unless a split is specified.
 
 ### Convert downloads to Lance
 
-Pass `format="lance"` to download and convert supported tabular files.
+Build with `--features lance` and pass `format="lance"` to convert supported tabular files.
 Conversion runs in the Rivet Rust extension. The example uses `pylance` to
 read the resulting text table.
 
@@ -208,7 +208,7 @@ from a cached raw download.
 
 ### Convert an ImageFolder to Lance
 
-Use `rivet.vision.convert_imagefolder_lance()` with a torchvision-style
+With the `lance` feature, use `rivet.vision.convert_imagefolder_lance()` with a torchvision-style
 `root/<split>/<class>/<image>` directory tree. For a single
 `root/<class>/<image>` tree, provide a split name.
 
@@ -282,7 +282,11 @@ maturin develop --release -j 12 --features blas
 maturin build --release -j 12 --features blas
 ```
 
-Lance is included in every build. BLAS is selected at compile time.
+Arrow IPC is available in the default build. Enable the optional Lance backend
+with `maturin develop --release -j 12 --features lance` or
+`maturin build --release -j 12 --features lance`. Rust callers can enable the
+`lance` feature on `rivet-data` or `rivet-vision` as appropriate.
+BLAS is selected at compile time.
 
 The native runtime on `main` supports CPU execution. CUDA development lives on
 the `cuda/cuda13.3` branch. The tensor device and storage boundaries remain in
@@ -545,7 +549,7 @@ To convert a local Hugging Face Arrow cache into Rivet-native Lance splits:
 
 ```bash
 cargo run -j 12 -p rivet-vision \
-  --example convert_hf_lance -- \
+  --features lance --example convert_hf_lance -- \
   /path/to/huggingface/dataset-revision /path/to/output
 ```
 
@@ -655,7 +659,7 @@ per view; `drop_last` counts source samples. Put `skip`/`take`/`shuffle` before
 the crop. See the [multi-view guide](docs/torchvision-coverage.md#multi-view-pipelines)
 for crop order, layouts, random streams and grouping examples.
 
-Lance support is enabled by default and uses the native image schema (`image` plus
+With the `lance` feature, the Lance backend uses the native image schema (`image` plus
 `label`) or the supported Hugging Face-compatible image struct.
 
 ## License

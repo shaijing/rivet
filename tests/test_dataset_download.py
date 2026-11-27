@@ -15,7 +15,10 @@ from threading import Thread
 import pytest
 
 import rivet
+from rivet._rivet import _HAS_LANCE
 from rivet.vision import download_dataset
+
+requires_lance = pytest.mark.skipif(not _HAS_LANCE, reason="Rivet built without Lance")
 
 
 @pytest.fixture
@@ -170,6 +173,7 @@ def test_git_download_at_revision(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("extension", ["zip", "tar", "tar.gz", "tar.bz2", "tar.xz"])
+@requires_lance
 def test_remote_lance_archive_keeps_legacy_manifest(
     tmp_path: Path, extension: str, server
 ) -> None:
@@ -207,6 +211,7 @@ def test_remote_lance_archive_keeps_legacy_manifest(
         assert lance.dataset(prepared / "train.lance").to_table()["label"].to_pylist() == [7]
 
 
+@requires_lance
 def test_remote_lance_manifest_cannot_open_split_outside_cache(tmp_path: Path, server):
     endpoint, routes, _ = server
     external_split = tmp_path / "outside.lance"
@@ -228,6 +233,7 @@ def test_remote_lance_manifest_cannot_open_split_outside_cache(tmp_path: Path, s
         rivet.load_dataset(f"{endpoint}/bundle.zip", cache_dir=tmp_path / "cache")
 
 
+@requires_lance
 def test_download_parquet_as_lance_and_reuse(
     monkeypatch, tmp_path: Path, server
 ) -> None:
@@ -273,6 +279,7 @@ def test_download_parquet_as_lance_and_reuse(
     assert requests == ["/train.parquet"]
 
 
+@requires_lance
 def test_download_grouped_json_preserves_splits(tmp_path: Path, server) -> None:
     lance = pytest.importorskip("lance")
     endpoint, routes, requests = server
@@ -294,6 +301,7 @@ def test_download_grouped_json_preserves_splits(tmp_path: Path, server) -> None:
     assert requests == ["/records.json"]
 
 
+@requires_lance
 def test_download_lance_merges_selected_shards(tmp_path: Path, server) -> None:
     lance = pytest.importorskip("lance")
     endpoint, routes, _ = server
@@ -370,10 +378,12 @@ def test_torchvision_download_preserves_native_root(
     assert (
         bundle["test"].get_decoded(0)["images"][0].tolist() == [[[75, 75, 75]] * 3] * 2
     )
-    derived = download_dataset("torch:CIFAR10", format="lance", offline=True)
-    assert derived.parent == tmp_path / "rivet" / "datasets" / "cifar10"
+    expected_parent = tmp_path / "rivet" / "datasets" / "cifar10"
+    if _HAS_LANCE:
+        derived = download_dataset("torch:CIFAR10", format="lance", offline=True)
+        assert derived.parent == expected_parent
     stream = download_dataset("torch:CIFAR10", format="arrow-ipc-stream", offline=True)
-    assert stream.parent == derived.parent
+    assert stream.parent == expected_parent
     assert rivet.load_dataset(stream, split="test").get_encoded(0)["label"] == 1
     assert (
         rivet.load_dataset(
@@ -384,19 +394,17 @@ def test_torchvision_download_preserves_native_root(
     with pytest.raises(ValueError, match="variant"):
         download_dataset("torch:ExtendedDigits")
     download_dataset("torch:ExtendedDigits?train=false&variant=letters")
-    assert calls == [
+    expected = [
         (True, True),
         (False, True),
         (False, True),
         (True, False),
         (False, False),
-        (True, False),
-        (False, False),
-        (True, False),
-        (False, False),
-        (False, False),
-        (False, True),
     ]
+    if _HAS_LANCE:
+        expected += [(True, False), (False, False)]
+    expected += [(True, False), (False, False), (False, False), (False, True)]
+    assert calls == expected
 
 
 def test_list_datasets_includes_completed_downloads_and_lance(
@@ -540,8 +548,6 @@ def test_prepare_compressed_jsonl_for_text(tmp_path, server) -> None:
 def test_prepared_formats_share_dataset_directory(tmp_path: Path, server, capsys) -> None:
     import pyarrow as pa
 
-    lance = pytest.importorskip("lance")
-
     from rivet._cli import main
 
     endpoint, routes, requests = server
@@ -550,19 +556,23 @@ def test_prepared_formats_share_dataset_directory(tmp_path: Path, server, capsys
     routes[route] = (200, {}, content)
     source = endpoint + route
     raw = download_dataset(source, cache_dir=tmp_path)
-    formats = ("arrow-ipc-file", "arrow-ipc-stream", "lance")
+    formats = ("arrow-ipc-file", "arrow-ipc-stream")
+    if _HAS_LANCE:
+        formats += ("lance",)
     outputs = {
         format: download_dataset(source, format=format, cache_dir=tmp_path, offline=True)
         for format in formats
     }
-    assert len(set(outputs.values())) == 3
+    assert len(set(outputs.values())) == len(formats)
     assert {p.parent for p in outputs.values()} == {tmp_path / "train-jsonl"}
 
     with pa.ipc.open_file(str(outputs["arrow-ipc-file"] / "train.arrow")) as reader:
         ipc_file = reader.read_all()
     with pa.ipc.open_stream(str(outputs["arrow-ipc-stream"] / "train.arrow")) as reader:
         assert reader.read_all().equals(ipc_file)
-    assert lance.dataset(outputs["lance"] / "train.lance").to_table().equals(ipc_file)
+    if _HAS_LANCE:
+        lance = pytest.importorskip("lance")
+        assert lance.dataset(outputs["lance"] / "train.lance").to_table().equals(ipc_file)
     assert download_dataset(source, format="arrow", cache_dir=tmp_path, offline=True) == (
         outputs["arrow-ipc-file"]
     )
@@ -611,3 +621,22 @@ def test_cli_list_merges_variants_by_dataset_name(tmp_path: Path, capsys) -> Non
 
     assert main([*args, "--all"]) == 0
     assert len(json.loads(capsys.readouterr().out)) == 3
+
+
+@pytest.mark.skipif(_HAS_LANCE, reason="Rivet built with Lance")
+def test_lance_requires_explicit_build_feature(tmp_path, server) -> None:
+    endpoint, _, requests = server
+    source = endpoint + "/train.parquet"
+    with pytest.raises(ValueError, match="requires the lance feature"):
+        download_dataset(source, cache_dir=tmp_path, format="lance")
+    assert not requests
+    assert not list(tmp_path.iterdir())
+
+    local = tmp_path / "train.lance"
+    local.mkdir()
+    with pytest.raises(ValueError, match="requires the lance feature"):
+        rivet.load_dataset(local)
+    with pytest.raises(ValueError, match="requires the lance feature"):
+        rivet.LanceDataset(local)
+    with pytest.raises(ValueError, match="requires the lance feature"):
+        rivet.convert_imagefolder_lance(tmp_path, local)

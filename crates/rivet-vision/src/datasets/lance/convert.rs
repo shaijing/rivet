@@ -5,9 +5,12 @@
 //! Python or on a Hub client. The conversion is streaming: each input record
 //! batch is normalized and handed directly to Lance.
 
+use crate::datasets::image_bundle::{native_schema, validate_split_name, write_image_manifest};
 use arrow::array::{Array, ArrayRef, StructArray};
 use arrow::compute::cast;
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+#[cfg(test)]
+use arrow::datatypes::Field;
+use arrow::datatypes::{DataType, Schema, SchemaRef};
 use arrow::error::ArrowError;
 use arrow::record_batch::{RecordBatch, RecordBatchIterator};
 use arrow_ipc::reader::StreamReader;
@@ -15,6 +18,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::sync::Arc;
 use tokio::runtime::Builder;
 use walkdir::WalkDir;
@@ -337,17 +341,6 @@ fn convert_batch(
     RecordBatch::try_new(native_schema(options.keep_path), columns)
 }
 
-pub(super) fn native_schema(keep_path: bool) -> SchemaRef {
-    let mut fields = vec![
-        Field::new("image", DataType::Binary, false),
-        Field::new("label", DataType::Int32, false),
-    ];
-    if keep_path {
-        fields.push(Field::new("path", DataType::Utf8, true));
-    }
-    Arc::new(Schema::new(fields))
-}
-
 fn validate_input_schema(
     schema: &SchemaRef,
     options: &HuggingFaceLanceOptions,
@@ -527,20 +520,6 @@ fn infer_split_name(path: &Path) -> Option<String> {
     None
 }
 
-pub(super) fn validate_split_name(name: &str) -> RivetResult<()> {
-    let path = Path::new(name);
-    if name.is_empty()
-        || path.is_absolute()
-        || path.components().count() != 1
-        || path.file_name().and_then(|value| value.to_str()) != Some(name)
-    {
-        return Err(invalid_argument(format!(
-            "invalid split name {name:?}; split names must be one relative path component"
-        )));
-    }
-    Ok(())
-}
-
 fn class_names(schema: &Schema, label_column: &str) -> RivetResult<Option<Vec<String>>> {
     let Some(metadata) = schema.metadata().get("huggingface") else {
         return Ok(None);
@@ -603,71 +582,6 @@ pub(super) fn publish_bundle(
         }
         return Err(DataError::from(err).into());
     }
-    Ok(())
-}
-
-pub(super) fn write_image_manifest(
-    output_root: &Path,
-    rows_by_split: &BTreeMap<String, usize>,
-    keep_path: bool,
-    source_format: &str,
-    classes: Option<&[String]>,
-    extension: &str,
-) -> RivetResult<()> {
-    let mut features = serde_json::json!({
-        "image": {
-            "type": "image",
-            "column": "image",
-            "representation": "encoded"
-        },
-        "label": {
-            "type": "class_label",
-            "column": "label",
-            "dtype": "int32"
-        }
-    });
-    if let Some(classes) = classes {
-        features["label"]["names"] = serde_json::json!(classes);
-    }
-    if keep_path {
-        features["path"] = serde_json::json!({
-            "type": "text",
-            "column": "path"
-        });
-    }
-
-    let splits = rows_by_split
-        .iter()
-        .map(|(name, rows)| {
-            (
-                name.clone(),
-                serde_json::json!({
-                    "uri": format!("{name}.{extension}"),
-                    "num_rows": rows
-                }),
-            )
-        })
-        .collect::<serde_json::Map<_, _>>();
-    let dataset_name = output_root
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .unwrap_or("rivet-dataset");
-    let manifest = serde_json::json!({
-        "format_version": 2,
-        "dataset": {"name": dataset_name, "modality": "image"},
-        "features": features,
-        "splits": splits,
-        "created_by": {
-            "tool": "rivet",
-            "version": env!("CARGO_PKG_VERSION"),
-            "source_format": source_format
-        }
-    });
-    let contents = serde_json::to_vec_pretty(&manifest)
-        .map_err(|error| invalid_argument(format!("serialize dataset manifest: {error}")))?;
-    std::fs::write(output_root.join("dataset.json"), contents)
-        .map_err(|error| invalid_argument(format!("write dataset manifest: {error}")))?;
     Ok(())
 }
 

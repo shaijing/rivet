@@ -13,7 +13,9 @@ use arrow::json::ReaderBuilder as JsonReaderBuilder;
 use arrow::json::reader::{infer_json_schema_from_iterator, infer_json_schema_from_seekable};
 use arrow::record_batch::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_array::RecordBatchWriter;
+#[cfg(feature = "lance")]
 use lance::Dataset;
+#[cfg(feature = "lance")]
 use lance::dataset::WriteParams;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::{Value, json};
@@ -22,6 +24,7 @@ use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(feature = "lance")]
 use tokio::runtime::{Builder, Runtime};
 
 const BATCH_SIZE: usize = 4096;
@@ -42,6 +45,16 @@ impl PreparedFormat {
             Self::ArrowIpcStream => "arrow-ipc-stream",
             Self::Lance => "lance",
         }
+    }
+
+    /// Check that this build can write the requested storage format.
+    pub fn ensure_available(self) -> DataResult<()> {
+        if self == Self::Lance && !cfg!(feature = "lance") {
+            return Err(invalid_argument(
+                "Lance support requires the lance feature (maturin develop --features lance)",
+            ));
+        }
+        Ok(())
     }
 
     pub fn extension(self) -> &'static str {
@@ -69,6 +82,7 @@ impl std::str::FromStr for PreparedFormat {
 
 /// Convert selected local files and write a manifest to a fresh output directory.
 /// The caller owns publication of the directory upon success.
+#[cfg(feature = "lance")]
 pub fn convert_files_to_lance(
     output: &Path,
     name: &str,
@@ -98,6 +112,7 @@ pub fn convert_files(
     if files.is_empty() || files.values().any(Vec::is_empty) {
         return Err(invalid_argument("each split needs at least one input file"));
     }
+    let writer = PreparedWriter::new(format)?;
     fs::create_dir_all(output)?;
     let mut groups = BTreeMap::new();
     let single_json = detect_json_splits
@@ -148,7 +163,6 @@ pub fn convert_files(
                 .collect::<DataResult<Vec<_>>>()?;
             Ok::<_, crate::errors::DataError>((split, readers))
         }));
-    let writer = PreparedWriter::new(format)?;
     let mut splits = BTreeMap::new();
     for group in groups {
         let (split, readers) = group?;
@@ -180,11 +194,14 @@ pub fn convert_files(
 /// Reuse the same writer configuration for all splits in a bundle.
 pub struct PreparedWriter {
     format: PreparedFormat,
+    #[cfg(feature = "lance")]
     runtime: Option<Runtime>,
 }
 
 impl PreparedWriter {
     pub fn new(format: PreparedFormat) -> DataResult<Self> {
+        format.ensure_available()?;
+        #[cfg(feature = "lance")]
         let runtime = (format == PreparedFormat::Lance)
             .then(|| {
                 Builder::new_multi_thread()
@@ -193,7 +210,11 @@ impl PreparedWriter {
                     .build()
             })
             .transpose()?;
-        Ok(Self { format, runtime })
+        Ok(Self {
+            format,
+            #[cfg(feature = "lance")]
+            runtime,
+        })
     }
 
     pub fn write_split(
@@ -211,6 +232,9 @@ impl PreparedWriter {
                 let file = BufWriter::new(File::create(path)?);
                 write_ipc(StreamWriter::try_new(file, &schema)?, batches)
             }
+            #[cfg(not(feature = "lance"))]
+            PreparedFormat::Lance => unreachable!("validated writer format"),
+            #[cfg(feature = "lance")]
             PreparedFormat::Lance => {
                 let uri = path
                     .to_str()
@@ -246,6 +270,7 @@ fn write_ipc(
 }
 
 /// Convert a Lance split in bounded batches, preserving its Arrow schema.
+#[cfg(feature = "lance")]
 pub(crate) fn convert_lance_split(
     input: &Path,
     output: &Path,

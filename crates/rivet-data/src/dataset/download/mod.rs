@@ -78,15 +78,7 @@ pub trait TorchDatasetProvider {
 
     /// Write an Arrow IPC File bundle to the supplied staging path.
     fn convert_arrow(&self, location: &str, raw: &Path, destination: &Path) -> DataResult<()> {
-        let native = tempfile::tempdir_in(destination.parent().unwrap())?;
-        let bundle = native.path().join("bundle");
-        self.convert(location, raw, &bundle)?;
-        tabular::convert_lance_bundle(
-            &bundle,
-            destination,
-            "torchvision",
-            PreparedFormat::ArrowIpcFile,
-        )
+        self.convert_via_lance(location, raw, destination, PreparedFormat::ArrowIpcFile)
     }
 
     /// Write a bundle in the selected format.
@@ -101,12 +93,24 @@ pub trait TorchDatasetProvider {
             PreparedFormat::Lance => self.convert(location, raw, destination),
             PreparedFormat::ArrowIpcFile => self.convert_arrow(location, raw, destination),
             PreparedFormat::ArrowIpcStream => {
-                let native = tempfile::tempdir_in(destination.parent().unwrap())?;
-                let bundle = native.path().join("bundle");
-                self.convert(location, raw, &bundle)?;
-                tabular::convert_lance_bundle(&bundle, destination, "torchvision", format)
+                self.convert_via_lance(location, raw, destination, format)
             }
         }
+    }
+
+    #[doc(hidden)]
+    fn convert_via_lance(
+        &self,
+        location: &str,
+        raw: &Path,
+        destination: &Path,
+        format: PreparedFormat,
+    ) -> DataResult<()> {
+        PreparedFormat::Lance.ensure_available()?;
+        let native = tempfile::tempdir_in(destination.parent().unwrap())?;
+        let bundle = native.path().join("bundle");
+        self.convert(location, raw, &bundle)?;
+        tabular::convert_lance_bundle(&bundle, destination, "torchvision", format)
     }
 }
 
@@ -177,6 +181,9 @@ pub fn download_dataset_with_torch(
         return Err(invalid_argument(
             "data_files and json_columns require a prepared format",
         ));
+    }
+    if let Some(format) = options.format.prepared() {
+        format.ensure_available()?;
     }
     if !is_remote_dataset(source) {
         return Err(invalid_argument(

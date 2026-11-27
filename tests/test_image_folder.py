@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 import rivet
+from rivet._rivet import _HAS_LANCE
 
 PNG_1X1 = (
     b"\x89PNG\r\n\x1a\n"
@@ -96,6 +97,7 @@ def test_image_folder_pipeline_returns_readonly_zero_copy_numpy_views(
     assert not normalized.flags.writeable
 
 
+@pytest.mark.skipif(not _HAS_LANCE, reason="Rivet built without Lance")
 def test_convert_imagefolder_lance_preserves_classes_and_encoded_images(
     tmp_path: Path,
 ) -> None:
@@ -127,6 +129,7 @@ def test_convert_imagefolder_lance_preserves_classes_and_encoded_images(
     assert rivet.load_dataset(output).keys() == ["train", "val"]
 
 
+@pytest.mark.skipif(not _HAS_LANCE, reason="Rivet built without Lance")
 def test_convert_single_imagefolder_lance_and_overwrite(tmp_path: Path) -> None:
     root = tmp_path / "source"
     cat = root / "cat"

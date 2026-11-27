@@ -9,10 +9,9 @@ use walkdir::WalkDir;
 use super::{
     DataFiles, DownloadOptions, cache_key, publish_derived, relative_path, write_raw_link,
 };
+#[cfg(feature = "lance")]
 use crate::dataset::prepare::convert_lance_split;
-use crate::dataset::{
-    DatasetManifest, PreparedFormat, PreparedWriter, convert_files, manifest_path,
-};
+use crate::dataset::{DatasetManifest, PreparedFormat, convert_files, manifest_path};
 use crate::errors::{DataResult, invalid_argument};
 
 const SPLITS: [&str; 5] = ["train", "test", "dev", "val", "validation"];
@@ -317,6 +316,7 @@ fn find_lance_root(payload: &Path) -> DataResult<Option<PathBuf>> {
     Ok(found)
 }
 
+#[cfg(feature = "lance")]
 pub(super) fn convert_lance_bundle(
     root: &Path,
     output: &Path,
@@ -356,7 +356,7 @@ pub(super) fn convert_lance_bundle(
     fs::create_dir_all(output)?;
     let root = root.canonicalize()?;
     let mut splits = BTreeMap::new();
-    let writer = PreparedWriter::new(format)?;
+    let writer = crate::dataset::PreparedWriter::new(format)?;
     for (split, path, expected) in paths {
         if !path.canonicalize()?.starts_with(&root) {
             return Err(invalid_argument(format!(
@@ -386,4 +386,14 @@ pub(super) fn convert_lance_bundle(
     serde_json::to_writer_pretty(fs::File::create(output.join("dataset.json"))?, &value)
         .map_err(io::Error::other)?;
     Ok(())
+}
+
+#[cfg(not(feature = "lance"))]
+pub(super) fn convert_lance_bundle(
+    _root: &Path,
+    _output: &Path,
+    _name: &str,
+    _format: PreparedFormat,
+) -> DataResult<()> {
+    PreparedFormat::Lance.ensure_available()
 }

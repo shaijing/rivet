@@ -1,8 +1,6 @@
-use super::convert::{
-    LanceConversionReport, check_output, native_schema, publish_bundle, resolve_directory,
-    validate_split_name, write_image_manifest,
-};
+use super::convert::{LanceConversionReport, check_output, publish_bundle, resolve_directory};
 use crate::datasets::ImageFolderDatasetCore;
+use crate::datasets::image_bundle::{native_schema, validate_split_name, write_image_manifest};
 use crate::errors::{RivetResult, invalid_argument};
 use arrow::array::{BinaryArray, Int32Array};
 use arrow::error::ArrowError;

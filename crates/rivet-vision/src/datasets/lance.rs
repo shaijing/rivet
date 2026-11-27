@@ -1,11 +1,14 @@
 mod convert;
 mod dataset;
 mod imagefolder_convert;
-mod loader;
 mod row;
 mod schema;
-mod torch_convert;
 
+pub use super::loader::{
+    DatasetLocation, LoadDatasetOptions, load_dataset, load_dataset_with_torch,
+    load_lance_image_dataset,
+};
+pub use super::torch_convert::{TorchImageSplit, convert_torch_bundle, convert_torch_images};
 pub use convert::{
     DEFAULT_MAX_BYTES_PER_FILE, DEFAULT_MAX_ROWS_PER_FILE, HuggingFaceLanceOptions,
     HuggingFaceSplit, LanceConversionReport, convert_huggingface_dataset,
@@ -13,13 +16,8 @@ pub use convert::{
 };
 pub use dataset::LanceImageDataset;
 pub use imagefolder_convert::convert_imagefolder_dataset;
-pub use loader::{
-    DatasetLocation, LoadDatasetOptions, load_dataset, load_dataset_with_torch,
-    load_lance_image_dataset,
-};
 #[cfg(test)]
 pub(super) use schema::validate_schema;
-pub use torch_convert::{TorchImageSplit, convert_torch_bundle, convert_torch_images};
 
 #[cfg(test)]
 mod tests {

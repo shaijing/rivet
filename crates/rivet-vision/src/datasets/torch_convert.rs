@@ -1,6 +1,6 @@
 //! Write staged torchvision pixel arrays as losslessly encoded images.
 
-use super::convert::{native_schema, validate_split_name, write_image_manifest};
+use super::image_bundle::{native_schema, validate_split_name, write_image_manifest};
 use crate::errors::{RivetResult, invalid_argument};
 use arrow::array::{BinaryBuilder, Int32Builder};
 use arrow::error::ArrowError;
@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 pub type TorchImageSplit = (PathBuf, PathBuf, usize, u32, u32, u8);
 
+#[cfg(feature = "lance")]
 pub fn convert_torch_images(
     output: &Path,
     splits: BTreeMap<String, TorchImageSplit>,

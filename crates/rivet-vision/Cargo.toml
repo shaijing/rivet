@@ -7,6 +7,7 @@ repository.workspace = true
 description = "Image semantics, transforms, and image dataset adapters for Rivet"
 
 [features]
+lance = ["dep:lance", "dep:tokio", "rivet-data/lance"]
 blas = ["rivet-core/blas"]
 
 [dependencies]
@@ -18,7 +19,7 @@ image = "0.25.10"
 libm = "0.2.16"
 rustfft = "6.4.1"
 mozjpeg = { version = "0.10.13", default-features = false }
-lance.workspace = true
+lance = { workspace = true, optional = true }
 rivet-core.workspace = true
 rivet-data.workspace = true
 rivet-exec.workspace = true
@@ -26,7 +27,7 @@ rivet-plan.workspace = true
 serde_json = "1.0.154"
 tempfile = "3.27.0"
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, optional = true }
 walkdir = "2.5.0"
 webp = { version = "0.3.1", default-features = false }
 
@@ -44,3 +45,31 @@ harness = false
 [[bench]]
 name = "transforms"
 harness = false
+
+[[example]]
+name = "convert_hf_lance"
+required-features = ["lance"]
+
+[[example]]
+name = "convert_imagefolder_lance"
+required-features = ["lance"]
+
+[[example]]
+name = "lancedataset"
+required-features = ["lance"]
+
+[[example]]
+name = "lancecopy"
+required-features = ["lance"]
+
+[[example]]
+name = "lance"
+required-features = ["lance"]
+
+[[example]]
+name = "lance_cifar"
+required-features = ["lance"]
+
+[[example]]
+name = "lance_imagenet100"
+required-features = ["lance"]

@@ -1,14 +1,18 @@
-use super::dataset::LanceImageDataset;
+#[cfg(feature = "lance")]
+use super::LanceImageDataset;
 use crate::datasets::ArrowImageDataset;
 use crate::errors::{RivetResult, invalid_argument as vision_invalid_argument};
 use crate::source::ImageSource;
 use arrow::datatypes::DataType;
+#[cfg(feature = "lance")]
+use rivet_data::dataset::MANIFEST_FILE_NAME;
 use rivet_data::dataset::source::Dataset;
 use rivet_data::dataset::{
     DataFiles, DatasetBundle, DatasetLoadResult, DatasetManifest, DownloadFormat, DownloadOptions,
-    Feature, ImageRepresentation, MANIFEST_FILE_NAME, TorchDatasetProvider,
-    download_dataset_with_torch, is_remote_dataset, manifest_path, prepare_downloaded_path,
+    Feature, ImageRepresentation, TorchDatasetProvider, download_dataset_with_torch,
+    is_remote_dataset, manifest_path, prepare_downloaded_path,
 };
+#[cfg(feature = "lance")]
 use rivet_data::errors::DataResult;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -221,6 +225,7 @@ pub fn load_lance_image_dataset(
     )
 }
 
+#[cfg(feature = "lance")]
 fn open_lance_image_dataset(
     path: &Path,
     image_column: &str,
@@ -298,10 +303,22 @@ fn open_lance_image_dataset(
     )))
 }
 
+#[cfg(not(feature = "lance"))]
+fn open_lance_image_dataset(
+    _path: &Path,
+    _image_column: &str,
+    _label_column: &str,
+    _cache_root: Option<&Path>,
+) -> RivetResult<DatasetLoadResult<ImageSource>> {
+    rivet_data::dataset::PreparedFormat::Lance.ensure_available()?;
+    unreachable!("Lance feature check")
+}
+
 fn is_lance_path(path: &Path) -> bool {
     path.extension() == Some(OsStr::new("lance"))
 }
 
+#[cfg(feature = "lance")]
 struct ManifestSplitPath {
     name: String,
     path: PathBuf,
@@ -311,6 +328,7 @@ struct ManifestSplitPath {
     label_dtype: Option<String>,
 }
 
+#[cfg(feature = "lance")]
 fn manifest_split_paths(
     root: &Path,
     path: &Path,
@@ -364,7 +382,7 @@ fn manifest_columns(
     };
     if image.representation != ImageRepresentation::Encoded {
         return Err(vision_invalid_argument(format!(
-            "image feature '{name}' uses decoded representation, which the Lance image loader does not yet support"
+            "image feature '{name}' uses decoded representation, which the image dataset loader does not yet support"
         )));
     }
     let labels: Vec<_> = manifest
@@ -412,11 +430,12 @@ fn validate_label_dtype(
         Ok(())
     } else {
         Err(vision_invalid_argument(format!(
-            "class_label feature '{column}' expects {expected}, but Lance schema has {actual:?}"
+            "class_label feature '{column}' expects {expected}, but the stored schema has {actual:?}"
         )))
     }
 }
 
+#[cfg(feature = "lance")]
 fn discover_split_paths(root: &Path) -> DataResult<Vec<(String, PathBuf, Option<usize>)>> {
     let mut paths = Vec::new();
     for entry in std::fs::read_dir(root)? {

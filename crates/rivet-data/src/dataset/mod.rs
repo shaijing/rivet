@@ -7,6 +7,7 @@ pub mod memory;
 mod prepare;
 pub mod source;
 
+#[cfg(feature = "lance")]
 pub mod lance;
 
 pub use prepare::{PreparedFormat, PreparedWriter, convert_files};
