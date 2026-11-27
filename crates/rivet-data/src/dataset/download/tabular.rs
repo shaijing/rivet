@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
@@ -16,12 +17,20 @@ use crate::errors::{DataResult, invalid_argument};
 
 const SPLITS: [&str; 5] = ["train", "test", "dev", "val", "validation"];
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum PreparationSource {
+    Local,
+    Download,
+    RemoteLoad,
+}
+
 pub(super) fn derive(
     cache: &Path,
     name: &str,
     source_key: &str,
     options: &DownloadOptions,
     format: PreparedFormat,
+    source: PreparationSource,
     download: impl FnOnce() -> DataResult<PathBuf>,
 ) -> DataResult<PathBuf> {
     let files = match &options.data_files {
@@ -94,11 +103,29 @@ pub(super) fn derive(
     } else {
         raw.clone()
     };
+    let finish = |staging: &Path| {
+        if source != PreparationSource::Local {
+            write_raw_link(staging, cache, &raw)?;
+        }
+        Ok(())
+    };
     if options.data_files.is_none() {
-        if let Some(root) = find_lance_root(&payload)? {
+        if let Some(root) = find_bundle_root(&payload)? {
+            if source == PreparationSource::RemoteLoad
+                && extraction.is_none()
+                && bundle_matches_format(&root, format)?
+            {
+                return Ok(root);
+            }
             return publish_derived(output, |staging| {
-                convert_lance_bundle(&root, staging, name, format)?;
-                write_raw_link(staging, cache, &raw)
+                convert_bundle(
+                    &root,
+                    staging,
+                    name,
+                    format,
+                    source != PreparationSource::Local,
+                )?;
+                finish(staging)
             });
         }
     }
@@ -117,6 +144,32 @@ pub(super) fn derive(
             )));
         }
     }
+    if source == PreparationSource::RemoteLoad
+        && groups.len() == 1
+        && let Some((split, paths)) = groups.first_key_value()
+        && let [path] = paths.as_slice()
+        && path.is_file()
+        && matches_format(path, format)?
+    {
+        return publish_derived(output, |staging| {
+            fs::create_dir_all(staging)?;
+            let file = format!("{split}.arrow");
+            let rows = crate::dataset::prepare::open_file(path, None)?
+                .try_fold(0, |rows, batch| batch.map(|batch| rows + batch.num_rows()))?;
+            fs::copy(path, staging.join(&file))?;
+            let manifest = json!({
+                "format_version": 1,
+                "name": name,
+                "splits": {split: {"path": file, "num_rows": rows}},
+            });
+            serde_json::to_writer_pretty(
+                fs::File::create(staging.join("dataset.json"))?,
+                &manifest,
+            )
+            .map_err(io::Error::other)?;
+            finish(staging)
+        });
+    }
     publish_derived(output, |staging| {
         convert_files(
             staging,
@@ -126,7 +179,7 @@ pub(super) fn derive(
             !matches!(&options.data_files, Some(DataFiles::Splits(_))),
             format,
         )?;
-        write_raw_link(staging, cache, &raw)
+        finish(staging)
     })
 }
 
@@ -272,7 +325,20 @@ fn select_files(
     Ok(groups)
 }
 
-fn find_lance_root(payload: &Path) -> DataResult<Option<PathBuf>> {
+pub(super) fn is_lance_split_root(path: &Path) -> DataResult<bool> {
+    if !path.is_dir() {
+        return Ok(false);
+    }
+    for child in fs::read_dir(path)? {
+        let child = child?.path();
+        if child.extension().is_some_and(|ext| ext == "lance") && child.join("_versions").is_dir() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn find_bundle_root(payload: &Path) -> DataResult<Option<PathBuf>> {
     if !payload.is_dir() {
         return Ok(None);
     }
@@ -288,27 +354,18 @@ fn find_lance_root(payload: &Path) -> DataResult<Option<PathBuf>> {
             dirs.skip_current_dir();
             continue;
         }
-        let has_lance_splits = fs::read_dir(path)?.any(|child| {
-            child.is_ok_and(|child| {
-                child.path().extension().is_some_and(|ext| ext == "lance")
-                    && child.path().join("_versions").is_dir()
-            })
-        });
-        let has_lance_manifest = manifest_path(path).is_some_and(|manifest| {
+        let has_manifest = manifest_path(path).is_some_and(|manifest| {
             manifest
                 .file_name()
                 .is_some_and(|name| name == "dataset.rivet.json")
-                || DatasetManifest::load(manifest)
-                    .is_ok_and(|m| m.splits.values().any(|s| s.uri.ends_with(".lance")))
+                || DatasetManifest::load(manifest).is_ok()
         });
         if path.extension().is_some_and(|ext| ext == "lance")
-            || has_lance_splits
-            || has_lance_manifest
+            || is_lance_split_root(path)?
+            || has_manifest
         {
             if found.replace(path.to_owned()).is_some() {
-                return Err(invalid_argument(
-                    "download contains multiple Lance dataset roots",
-                ));
+                return Err(invalid_argument("download contains multiple dataset roots"));
             }
             dirs.skip_current_dir();
         }
@@ -316,14 +373,21 @@ fn find_lance_root(payload: &Path) -> DataResult<Option<PathBuf>> {
     Ok(found)
 }
 
-#[cfg(feature = "lance")]
-pub(super) fn convert_lance_bundle(
+pub(super) fn convert_bundle(
     root: &Path,
     output: &Path,
     name: &str,
     format: PreparedFormat,
+    confined: bool,
 ) -> DataResult<()> {
-    let manifest = manifest_path(root).map(DatasetManifest::load).transpose()?;
+    let manifest = manifest_path(root)
+        .map(|manifest| {
+            if confined && !manifest.canonicalize()?.starts_with(root.canonicalize()?) {
+                return Err(invalid_argument("dataset manifest leaves the cache"));
+            }
+            DatasetManifest::load(manifest)
+        })
+        .transpose()?;
     let paths = if let Some(manifest) = &manifest {
         manifest
             .splits
@@ -358,7 +422,7 @@ pub(super) fn convert_lance_bundle(
     let mut splits = BTreeMap::new();
     let writer = crate::dataset::PreparedWriter::new(format)?;
     for (split, path, expected) in paths {
-        if !path.canonicalize()?.starts_with(&root) {
+        if confined && !path.canonicalize()?.starts_with(&root) {
             return Err(invalid_argument(format!(
                 "downloaded dataset path leaves the cache: {}",
                 path.display()
@@ -368,7 +432,19 @@ pub(super) fn convert_lance_bundle(
             return Err(invalid_argument(format!("invalid split name: {split:?}")));
         }
         let file = format!("{split}.{}", format.extension());
-        let rows = convert_lance_split(&path, &output.join(&file), &writer)?;
+        let target = output.join(&file);
+        let rows = if path.extension().is_some_and(|ext| ext == "lance") {
+            PreparedFormat::Lance.ensure_available()?;
+            #[cfg(feature = "lance")]
+            {
+                convert_lance_split(&path, &target, &writer)?
+            }
+            #[cfg(not(feature = "lance"))]
+            unreachable!("validated Lance support")
+        } else {
+            let reader = crate::dataset::prepare::open_file(&path, None)?;
+            writer.write_split(&target, reader.schema(), reader)?
+        };
         if expected.is_some_and(|expected| rows != expected) {
             return Err(invalid_argument(format!(
                 "manifest row count for split {split:?} does not match the source"
@@ -388,12 +464,50 @@ pub(super) fn convert_lance_bundle(
     Ok(())
 }
 
-#[cfg(not(feature = "lance"))]
-pub(super) fn convert_lance_bundle(
-    _root: &Path,
-    _output: &Path,
-    _name: &str,
-    _format: PreparedFormat,
-) -> DataResult<()> {
-    PreparedFormat::Lance.ensure_available()
+pub(super) fn matches_format(path: &Path, format: PreparedFormat) -> DataResult<bool> {
+    if path.is_dir() {
+        return Ok(
+            format == PreparedFormat::Lance && path.extension().is_some_and(|ext| ext == "lance")
+        );
+    }
+    if format == PreparedFormat::Lance
+        || !path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                matches!(
+                    ext.to_ascii_lowercase().as_str(),
+                    "arrow" | "ipc" | "feather"
+                )
+            })
+    {
+        return Ok(false);
+    }
+    let mut magic = [0; 6];
+    fs::File::open(path)?.read_exact(&mut magic)?;
+    Ok((magic == *b"ARROW1") == (format == PreparedFormat::ArrowIpcFile))
+}
+
+pub(super) fn bundle_matches_format(root: &Path, format: PreparedFormat) -> DataResult<bool> {
+    let Some(manifest) = manifest_path(root) else {
+        return Ok(false);
+    };
+    let canonical_root = root.canonicalize()?;
+    if !manifest.canonicalize()?.starts_with(&canonical_root) {
+        return Err(invalid_argument("dataset manifest leaves the cache"));
+    }
+    let manifest = DatasetManifest::load(manifest)?;
+    for (name, split) in &manifest.splits {
+        let path = manifest.split_path(root, name, split)?;
+        if !path.canonicalize()?.starts_with(&canonical_root) {
+            return Err(invalid_argument(format!(
+                "downloaded dataset path leaves the cache: {}",
+                path.display()
+            )));
+        }
+        if !matches_format(&path, format)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }

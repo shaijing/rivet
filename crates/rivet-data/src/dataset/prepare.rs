@@ -315,7 +315,7 @@ fn read_json(path: &Path) -> DataResult<Value> {
         .map_err(|err| invalid_argument(format!("{}: {err}", path.display())))
 }
 
-fn open_file(path: &Path, columns: Option<&[String]>) -> DataResult<BatchReader> {
+pub(super) fn open_file(path: &Path, columns: Option<&[String]>) -> DataResult<BatchReader> {
     let suffix = extension(path);
     if suffix == "json" {
         return json_array(read_json(path)?, path, columns);

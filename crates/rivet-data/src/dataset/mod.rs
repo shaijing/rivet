@@ -17,6 +17,7 @@ pub use catalog::{DatasetEntry, delete_dataset, list_datasets};
 pub use download::{
     DataFiles, DownloadFormat, DownloadOptions, TorchDatasetProvider, dataset_cache_dir,
     download_dataset, download_dataset_with_torch, is_remote_dataset, prepare_downloaded_path,
+    prepare_local_dataset, prepare_remote_dataset,
 };
 pub use manifest::{
     ClassLabelFeature, DATASET_ORIGIN_KEY, DatasetManifest, Feature, ImageFeature,

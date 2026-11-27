@@ -210,9 +210,9 @@ impl PyLanceDatasetDict {
     }
 }
 
-/// Open a local image dataset or prepare a remote image dataset as Arrow IPC File.
+/// Open an image dataset, preparing the requested format when needed.
 #[pyfunction]
-#[pyo3(signature = (path, *, split=None, revision=None, cache_dir=None, offline=false, image_column="image", label_column="label", data_files=None, json_columns=None))]
+#[pyo3(signature = (path, *, split=None, revision=None, cache_dir=None, offline=false, image_column="image", label_column="label", data_files=None, json_columns=None, format="arrow-ipc-file"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn load_dataset<'py>(
     py: Python<'py>,
@@ -225,6 +225,7 @@ pub(crate) fn load_dataset<'py>(
     label_column: &str,
     data_files: Option<Bound<'py, PyAny>>,
     json_columns: Option<Vec<String>>,
+    format: &str,
 ) -> PyResult<Bound<'py, PyAny>> {
     use crate::download::{expand_cache_dir, extract_data_files, with_torchvision};
     use pyo3::types::{PyString, PyStringMethods};
@@ -246,6 +247,7 @@ pub(crate) fn load_dataset<'py>(
         None
     };
     let options = LoadDatasetOptions {
+        format: format.parse().map_err(to_py_err)?,
         split,
         revision,
         cache_dir,

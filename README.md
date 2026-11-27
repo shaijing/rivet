@@ -84,17 +84,22 @@ For `torch:` sources, `download_dataset_with_torch` accepts a
 `TorchDatasetProvider` for cache misses. The Python binding supplies
 torchvision as that provider.
 
-Use `rivet_vision::api::load_dataset` to
-open a local image dataset or prepare a remote source as Arrow IPC File.
+Use `rivet_vision::api::load_dataset` to open a local or remote image dataset.
+`LoadDatasetOptions::format` defaults to `PreparedFormat::ArrowIpcFile`.
+Select `PreparedFormat::ArrowIpcStream` or `PreparedFormat::Lance` to use a
+different storage format. Rivet prepares and caches a conversion when needed.
+The Python API accepts `format="arrow-ipc-file"`, `format="arrow-ipc-stream"`,
+or `format="lance"`. Lance requires a build with the `lance` feature.
 The result is `DatasetLoadResult::Single` for a physical dataset or a selected
 split, and `DatasetLoadResult::Bundle` for a collection of named splits.
 
 ```rust
-use rivet_vision::api::{LoadDatasetOptions, load_dataset};
+use rivet_vision::api::{LoadDatasetOptions, PreparedFormat, load_dataset};
 
 let train = load_dataset(
     "./images",
     &LoadDatasetOptions {
+        format: PreparedFormat::ArrowIpcStream,
         split: Some("train".into()),
         ..LoadDatasetOptions::default()
     },

@@ -100,12 +100,12 @@ def test_manifest_is_authoritative_and_physical_paths_stay_single(
         )
     )
 
-    dataset = rivet.load_dataset(tmp_path)
+    dataset = rivet.load_dataset(tmp_path, format="lance")
     assert dataset.keys() == ["train"]
     physical_path = tmp_path / "payload.lance"
     assert dataset["train"].path == physical_path
-    assert rivet.load_dataset(tmp_path, split="train").path == physical_path
-    physical = rivet.load_dataset(physical_path)
+    assert rivet.load_dataset(tmp_path, split="train", format="lance").path == physical_path
+    physical = rivet.load_dataset(physical_path, format="lance")
     assert physical.path == physical_path
     assert len(physical) == 2
 
@@ -208,7 +208,7 @@ def test_encoded_cache_is_explicit_and_keeps_original_lazy_dataset(
 ) -> None:
     _write_split(tmp_path / "train.lance", [0, 1, 2], image=PNG_1X1)
 
-    lazy = rivet.load_dataset(tmp_path / "train.lance")
+    lazy = rivet.load_dataset(tmp_path / "train.lance", format="lance")
     cached = lazy.cache("encoded", chunk_size=1)
 
     assert cached is not lazy

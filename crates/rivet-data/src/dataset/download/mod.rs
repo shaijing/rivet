@@ -13,7 +13,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use super::PreparedFormat;
+use tabular::PreparationSource;
+
+use super::{DatasetManifest, PreparedFormat, manifest_path};
 use crate::errors::{DataResult, invalid_argument};
 
 #[derive(Debug, Clone, Default)]
@@ -110,7 +112,7 @@ pub trait TorchDatasetProvider {
         let native = tempfile::tempdir_in(destination.parent().unwrap())?;
         let bundle = native.path().join("bundle");
         self.convert(location, raw, &bundle)?;
-        tabular::convert_lance_bundle(&bundle, destination, "torchvision", format)
+        tabular::convert_bundle(&bundle, destination, "torchvision", format, true)
     }
 }
 
@@ -174,6 +176,24 @@ pub fn download_dataset_with_torch(
     source: &str,
     options: &DownloadOptions,
     torch: Option<&dyn TorchDatasetProvider>,
+) -> DataResult<PathBuf> {
+    download_with_preparation(source, options, torch, PreparationSource::Download)
+}
+
+/// Prepare a remote dataset for loading, reusing an existing compatible bundle.
+pub fn prepare_remote_dataset(
+    source: &str,
+    options: &DownloadOptions,
+    torch: Option<&dyn TorchDatasetProvider>,
+) -> DataResult<PathBuf> {
+    download_with_preparation(source, options, torch, PreparationSource::RemoteLoad)
+}
+
+fn download_with_preparation(
+    source: &str,
+    options: &DownloadOptions,
+    torch: Option<&dyn TorchDatasetProvider>,
+    preparation: PreparationSource,
 ) -> DataResult<PathBuf> {
     if options.format == DownloadFormat::Raw
         && (options.data_files.is_some() || options.json_columns.is_some())
@@ -261,6 +281,7 @@ pub fn download_dataset_with_torch(
         &format!("{provider}/{key}"),
         options,
         format,
+        preparation,
         raw,
     )
 }
@@ -272,6 +293,11 @@ pub fn prepare_downloaded_path(
     options: &DownloadOptions,
     torch: Option<&dyn TorchDatasetProvider>,
 ) -> DataResult<Option<PathBuf>> {
+    let format = options
+        .format
+        .prepared()
+        .unwrap_or(PreparedFormat::ArrowIpcFile);
+    format.ensure_available()?;
     let path = match path.canonicalize() {
         Ok(path) => path,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -303,7 +329,9 @@ pub fn prepare_downloaded_path(
             continue;
         }
         let mut options = options.clone();
-        options.format = DownloadFormat::Arrow;
+        if options.format == DownloadFormat::Raw {
+            options.format = DownloadFormat::Arrow;
+        }
         let raw_root = if is_torch {
             parent.parent().and_then(Path::parent).unwrap()
         } else {
@@ -328,12 +356,98 @@ pub fn prepare_downloaded_path(
             name.rsplit('/').next().unwrap_or(&name),
             &format!("{provider}/{key}"),
             &options,
-            PreparedFormat::ArrowIpcFile,
+            format,
+            PreparationSource::RemoteLoad,
             || Ok(path.clone()),
         )
         .map(Some);
     }
     Ok(None)
+}
+
+/// Reuse matching local storage or derive a cached bundle in the requested format.
+pub fn prepare_local_dataset(path: &Path, options: &DownloadOptions) -> DataResult<PathBuf> {
+    let format = options
+        .format
+        .prepared()
+        .ok_or_else(|| invalid_argument("a prepared format is required to load a dataset"))?;
+    format.ensure_available()?;
+    let path = path.canonicalize()?;
+    let manifest = manifest_path(&path)
+        .map(DatasetManifest::load)
+        .transpose()?;
+    let split_paths = manifest
+        .as_ref()
+        .map(|manifest| {
+            manifest
+                .splits
+                .iter()
+                .map(|(name, split)| manifest.split_path(&path, name, split))
+                .collect::<DataResult<Vec<_>>>()
+        })
+        .transpose()?;
+    if options.data_files.is_none() && options.json_columns.is_none() {
+        if let Some(splits) = &split_paths {
+            let mut matches = true;
+            for split in splits {
+                matches &= tabular::matches_format(split, format)?;
+            }
+            if matches {
+                return Ok(path);
+            }
+        } else if tabular::matches_format(&path, format)?
+            || (format == PreparedFormat::Lance && tabular::is_lance_split_root(&path)?)
+        {
+            return Ok(path);
+        }
+    }
+
+    let cache = match &options.cache_dir {
+        Some(path) => std::path::absolute(path)?,
+        None => dataset_cache_dir()?,
+    };
+    fs::create_dir_all(&cache)?;
+    let cache = cache.canonicalize()?;
+    // Keep derived output outside the source walk, including when cache_dir
+    // is the source directory itself.
+    let output_cache = cache.join(".local-prepared");
+    let mut entries = Vec::new();
+    let inputs = if options.data_files.is_none() {
+        split_paths.unwrap_or_else(|| vec![path.clone()])
+    } else {
+        vec![path.clone()]
+    };
+    if let Some(manifest) = manifest_path(&path) {
+        entries.push(json!([manifest, fs::read_to_string(&manifest)?]));
+    }
+    for input in inputs {
+        for entry in walkdir::WalkDir::new(input.canonicalize()?)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_entry(|entry| entry.path() != output_cache)
+        {
+            let entry = entry.map_err(io::Error::from)?;
+            if entry.file_type().is_dir() {
+                continue;
+            }
+            let metadata = fs::metadata(entry.path())?;
+            entries.push(json!([entry.path(), metadata.len(), metadata.modified()?]));
+        }
+    }
+    let key = cache_key(&json!([path, entries]));
+    let name = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("dataset");
+    tabular::derive(
+        &output_cache,
+        name,
+        &key,
+        options,
+        format,
+        PreparationSource::Local,
+        || Ok(path.clone()),
+    )
 }
 
 fn download_torch(

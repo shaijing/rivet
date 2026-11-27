@@ -21,9 +21,25 @@ impl LanceImageDataset {
         image_column: impl Into<String>,
         label_column: impl Into<String>,
     ) -> DataResult<Self> {
+        Self::open_with_image_alias(path, image_column, label_column, false)
+    }
+
+    pub(crate) fn open_with_image_alias(
+        path: impl AsRef<Path>,
+        image_column: impl Into<String>,
+        label_column: impl Into<String>,
+        allow_img: bool,
+    ) -> DataResult<Self> {
         let path = path.as_ref().to_owned();
         let table = Arc::new(LanceTable::open(&path)?);
-        let image_column = image_column.into();
+        let mut image_column = image_column.into();
+        if allow_img
+            && image_column == "image"
+            && table.schema().index_of("image").is_err()
+            && table.schema().index_of("img").is_ok()
+        {
+            image_column = "img".into();
+        }
         let label_column = label_column.into();
         validate_schema(table.schema(), &image_column, &label_column)?;
 

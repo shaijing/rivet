@@ -75,3 +75,5 @@ pub fn single_sample_batch(sample: DecodedSample) -> VisionResult<ImageBatch> {
 pub fn empty_image_batch() -> VisionResult<ImageBatch> {
     ImageBatchBuilder::with_capacity(0).finish()
 }
+
+pub use rivet_data::dataset::PreparedFormat;

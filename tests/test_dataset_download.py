@@ -696,3 +696,61 @@ def test_delete_cached_dataset_by_name_and_format(tmp_path: Path, server, capsys
     assert main(args) == 1
     assert "no matching cached dataset entries" in capsys.readouterr().err
     assert requests == names
+
+
+def test_load_dataset_selects_and_converts_ipc_formats(tmp_path: Path, server) -> None:
+    import pyarrow as pa
+
+    endpoint, routes, requests = server
+    source = endpoint + "/train.arrow"
+    table = pa.table({"image": [b"encoded"], "label": [7]})
+    data = io.BytesIO()
+    with pa.ipc.new_stream(data, table.schema) as writer:
+        writer.write_table(table)
+    routes["/train.arrow"] = (200, {}, data.getvalue())
+
+    cache = tmp_path / "cache"
+    loaded = rivet.load_dataset(
+        source, format="arrow-ipc-stream", split="train", cache_dir=cache
+    )
+    assert loaded.get_encoded(0)["label"] == 7
+    stream = download_dataset(
+        source, format="arrow-ipc-stream", cache_dir=cache, offline=True
+    )
+    assert (stream / "train.arrow").read_bytes() == data.getvalue()
+    with pa.ipc.open_stream(str(stream / "train.arrow")) as reader:
+        assert reader.read_all().equals(table)
+    assert requests == ["/train.arrow"]
+
+    local_cache = tmp_path / "local-cache"
+    assert rivet.load_dataset(
+        stream, format="arrow-ipc-stream", split="train", cache_dir=local_cache
+    ).get_encoded(0)["label"] == 7
+    assert not local_cache.exists()
+
+    for _ in range(2):
+        assert rivet.load_dataset(stream, split="train", cache_dir=local_cache).get_encoded(0)[
+            "label"
+        ] == 7
+    (converted,) = local_cache.rglob("train.arrow")
+    with pa.ipc.open_file(str(converted)) as reader:
+        assert reader.read_all().equals(table)
+
+
+@requires_lance
+def test_load_dataset_converts_arrow_file_to_lance(tmp_path: Path) -> None:
+    import pyarrow as pa
+
+    source = tmp_path / "images.arrow"
+    table = pa.table({"image": [b"encoded"], "label": [7]})
+    with pa.ipc.new_file(str(source), table.schema) as writer:
+        writer.write_table(table)
+
+    cache = tmp_path / "cache"
+    dataset = rivet.load_dataset(source, format="lance", cache_dir=cache)
+    assert dataset.path.suffix == ".lance"
+    assert dataset.get_encoded(0)["label"] == 7
+    assert rivet.load_dataset(dataset.path, cache_dir=cache).get_encoded(0)["label"] == 7
+    (converted,) = cache.rglob("train.arrow")
+    with pa.ipc.open_file(str(converted)) as reader:
+        assert reader.read_all().equals(table)

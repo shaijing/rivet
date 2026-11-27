@@ -9,8 +9,8 @@ use rivet_data::dataset::MANIFEST_FILE_NAME;
 use rivet_data::dataset::source::Dataset;
 use rivet_data::dataset::{
     DataFiles, DatasetBundle, DatasetLoadResult, DatasetManifest, DownloadFormat, DownloadOptions,
-    Feature, ImageRepresentation, TorchDatasetProvider, download_dataset_with_torch,
-    is_remote_dataset, manifest_path, prepare_downloaded_path,
+    Feature, ImageRepresentation, PreparedFormat, TorchDatasetProvider, is_remote_dataset,
+    manifest_path, prepare_downloaded_path, prepare_local_dataset, prepare_remote_dataset,
 };
 #[cfg(feature = "lance")]
 use rivet_data::errors::DataResult;
@@ -44,6 +44,8 @@ impl<'a> From<&'a Path> for DatasetLocation<'a> {
 
 #[derive(Debug, Clone)]
 pub struct LoadDatasetOptions {
+    /// Physical storage format to reuse or prepare before opening.
+    pub format: PreparedFormat,
     pub split: Option<String>,
     pub revision: Option<String>,
     pub cache_dir: Option<PathBuf>,
@@ -57,6 +59,7 @@ pub struct LoadDatasetOptions {
 impl Default for LoadDatasetOptions {
     fn default() -> Self {
         Self {
+            format: PreparedFormat::ArrowIpcFile,
             split: None,
             revision: None,
             cache_dir: None,
@@ -69,7 +72,7 @@ impl Default for LoadDatasetOptions {
     }
 }
 
-/// Open local image data or prepare and open a remote Arrow IPC bundle.
+/// Open image data in the requested format, converting and caching it when needed.
 /// Async callers should run this API on a blocking thread.
 pub fn load_dataset<'a>(
     location: impl Into<DatasetLocation<'a>>,
@@ -84,27 +87,34 @@ pub fn load_dataset_with_torch<'a>(
     options: &LoadDatasetOptions,
     torch: Option<&dyn TorchDatasetProvider>,
 ) -> RivetResult<DatasetLoadResult<ImageSource>> {
+    options.format.ensure_available()?;
     let download_options = DownloadOptions {
         revision: options.revision.clone(),
         cache_dir: options.cache_dir.clone(),
         offline: options.offline,
-        format: DownloadFormat::Arrow,
+        format: match options.format {
+            PreparedFormat::ArrowIpcFile => DownloadFormat::Arrow,
+            PreparedFormat::ArrowIpcStream => DownloadFormat::ArrowStream,
+            PreparedFormat::Lance => DownloadFormat::Lance,
+        },
         data_files: options.data_files.clone(),
         json_columns: options.json_columns.clone(),
         ..DownloadOptions::default()
     };
-    let open = |path: &Path, cache_root: Option<&Path>| {
-        if options.split.is_some() && is_lance_path(path) && manifest_path(path).is_none() {
-            return Err(vision_invalid_argument(
-                "split cannot be specified when loading a single .lance dataset path",
-            ));
+    let open_bundle = |path: &Path, confined: bool| match options.format {
+        PreparedFormat::ArrowIpcFile | PreparedFormat::ArrowIpcStream => {
+            open_arrow_bundle(path, options)
         }
-        open_lance_image_dataset(
+        PreparedFormat::Lance => open_lance_image_dataset(
             path,
             &options.image_column,
             &options.label_column,
-            cache_root,
-        )
+            confined
+                .then(|| path.canonicalize())
+                .transpose()
+                .map_err(rivet_data::DataError::from)?
+                .as_deref(),
+        ),
     };
     let loaded = match location.into() {
         DatasetLocation::Local(path) => {
@@ -114,40 +124,61 @@ pub fn load_dataset_with_torch<'a>(
                 ));
             }
             if let Some(prepared) = prepare_downloaded_path(path, &download_options, torch)? {
-                open_arrow_bundle(&prepared, options)?
-            } else if path.is_file()
-                && path
-                    .extension()
-                    .is_some_and(|ext| matches!(ext.to_str(), Some("arrow" | "ipc" | "feather")))
-            {
-                if options.split.is_some() {
-                    return Err(vision_invalid_argument(
-                        "split cannot be specified when loading a single Arrow IPC path",
-                    ));
-                }
-                let dataset = Arc::new(ArrowImageDataset::new_with_image_alias(
-                    vec![path.to_owned()],
-                    options.image_column.clone(),
-                    options.label_column.clone(),
-                    true,
-                )?);
-                DatasetLoadResult::Single(ImageSource::from_encoded(dataset))
-            } else if manifest_path(path).is_some()
-                && DatasetManifest::read(path).is_ok_and(|manifest| {
-                    manifest
-                        .splits
-                        .values()
-                        .all(|split| split.uri.ends_with(".arrow"))
-                })
-            {
-                open_arrow_bundle(path, options)?
+                open_bundle(&prepared, true)?
             } else {
-                open(path, None)?
+                let lance = is_lance_path(path) && manifest_path(path).is_none();
+                if lance {
+                    PreparedFormat::Lance.ensure_available()?;
+                }
+                let arrow = path.is_file()
+                    && path.extension().and_then(OsStr::to_str).is_some_and(|ext| {
+                        matches!(
+                            ext.to_ascii_lowercase().as_str(),
+                            "arrow" | "ipc" | "feather"
+                        )
+                    });
+                if options.split.is_some() && (lance || arrow) {
+                    let kind = if lance { ".lance dataset" } else { "Arrow IPC" };
+                    return Err(vision_invalid_argument(format!(
+                        "split cannot be specified when loading a single {kind} path"
+                    )));
+                }
+                let prepared = prepare_local_dataset(path, &download_options)?;
+                if (lance || arrow) && manifest_path(&prepared).is_none() {
+                    match options.format {
+                        PreparedFormat::Lance => load_lance_image_dataset(
+                            prepared,
+                            &options.image_column,
+                            &options.label_column,
+                        )?,
+                        PreparedFormat::ArrowIpcFile | PreparedFormat::ArrowIpcStream => {
+                            let dataset = Arc::new(ArrowImageDataset::new_with_image_alias(
+                                vec![prepared],
+                                options.image_column.clone(),
+                                options.label_column.clone(),
+                                true,
+                            )?);
+                            DatasetLoadResult::Single(ImageSource::from_encoded(dataset))
+                        }
+                    }
+                } else {
+                    let loaded = open_bundle(&prepared, false)?;
+                    if (lance || arrow) && options.data_files.is_none() {
+                        let DatasetLoadResult::Bundle(bundle) = loaded else {
+                            unreachable!("converted single paths are stored in a bundle");
+                        };
+                        DatasetLoadResult::Single(bundle.split("train").ok_or_else(|| {
+                            vision_invalid_argument("converted dataset is missing the train split")
+                        })?)
+                    } else {
+                        loaded
+                    }
+                }
             }
         }
         DatasetLocation::Remote(source) => {
-            let payload = download_dataset_with_torch(source, &download_options, torch)?;
-            open_arrow_bundle(&payload, options)?
+            let payload = prepare_remote_dataset(source, &download_options, torch)?;
+            open_bundle(&payload, true)?
         }
     };
     match (loaded, options.split.as_deref()) {
@@ -266,6 +297,7 @@ fn open_lance_image_dataset(
                 image_column: image_column.to_owned(),
                 label_column: label_column.to_owned(),
                 label_dtype: None,
+                allow_img: false,
             })
             .collect()
     };
@@ -276,10 +308,11 @@ fn open_lance_image_dataset(
     }
     for split in split_paths {
         let label_column = split.label_column.clone();
-        let dataset = Arc::new(LanceImageDataset::open(
+        let dataset = Arc::new(LanceImageDataset::open_with_image_alias(
             &split.path,
             split.image_column,
             split.label_column,
+            split.allow_img,
         )?);
         validate_label_dtype(
             dataset.schema(),
@@ -326,6 +359,7 @@ struct ManifestSplitPath {
     image_column: String,
     label_column: String,
     label_dtype: Option<String>,
+    allow_img: bool,
 }
 
 #[cfg(feature = "lance")]
@@ -349,6 +383,7 @@ fn manifest_split_paths(
                 image_column: image_column.clone(),
                 label_column: label_column.clone(),
                 label_dtype: label_dtype.clone(),
+                allow_img: manifest.format_version == 1,
             })
         })
         .collect()
